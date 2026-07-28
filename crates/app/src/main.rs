@@ -6,8 +6,7 @@
 // direct zichtbaar zijn tijdens ontwikkelen.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod config;
-mod ui;
+use fitcom::{chat, config, ui};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -86,7 +85,24 @@ fn main() -> Result<()> {
         fitcom_net::spawn(mesh_cfg).context("netwerklaag starten")?
     };
 
-    let app = ui::App::new(cfg, identity, config_path, data_dir, mesh, runtime);
+    let store = fitcom_store::Store::open(&data_dir.join("chat.sqlite"), identity.peer_id)
+        .context("chat-database openen")?;
+    tracing::info!(ops = store.op_count().unwrap_or(0), "oplog geladen");
+
+    let mut chat = chat::Chat::new(store).context("chat opzetten")?;
+
+    // Naam vastleggen in de oplog zodat de anderen hem ook zien. Doet niets als hij
+    // al klopt, dus dit laat de log niet groeien bij elke start.
+    match chat.zet_naam(&cfg.display_name) {
+        Ok(cmds) => {
+            for cmd in cmds {
+                let _ = mesh.commands.try_send(cmd);
+            }
+        }
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "naam vastleggen mislukt"),
+    }
+
+    let app = ui::App::new(cfg, identity, config_path, data_dir, mesh, chat, runtime);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

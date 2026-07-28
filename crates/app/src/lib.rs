@@ -1,0 +1,9 @@
+//! FitCommunication als bibliotheek.
+//!
+//! `main.rs` is een dunne schil hieromheen. Het bestaan van deze lib heeft één reden:
+//! de koppeling tussen oplog en mesh — wie wanneer wat naar wie stuurt — is met een
+//! integratietest te controleren in plaats van met twee vensters en een logbestand.
+
+pub mod chat;
+pub mod config;
+pub mod ui;

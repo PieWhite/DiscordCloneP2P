@@ -21,11 +21,25 @@ fn init_tracing() {
         .try_init();
 }
 
-/// Een vrije poort claimen en meteen weer loslaten. Niet waterdicht tegen een race met
-/// een ander proces, maar veel betrouwbaarder dan vaste poortnummers in een test.
+/// Een vrije poort claimen en meteen weer loslaten.
+///
+/// De uitgedeelde poorten worden onthouden: tests in dit binary draaien parallel, en
+/// zonder dit kan het besturingssysteem tweemaal hetzelfde nummer teruggeven aan twee
+/// tests tegelijk. Dat leverde precies één op de zoveel runs een onverklaarbare fout op.
 async fn free_port() -> u16 {
-    let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    s.local_addr().unwrap().port()
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static UITGEDEELD: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    let uitgedeeld = UITGEDEELD.get_or_init(Default::default);
+
+    for _ in 0..100 {
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let p = s.local_addr().unwrap().port();
+        if uitgedeeld.lock().unwrap().insert(p) {
+            return p;
+        }
+    }
+    panic!("geen vrije poort gevonden");
 }
 
 fn config(me: PeerId, name: &str, my_port: u16, peer_port: u16) -> MeshConfig {

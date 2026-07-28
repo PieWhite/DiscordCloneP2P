@@ -134,14 +134,40 @@ enum OpKind {
   bijgewerkt naar `max(local, remote) + 1`.
 - `Edit`/`Delete` zijn last-writer-wins op `target`, gewonnen door de hoogste
   `(lamport, author)`. Renderen vouwt ze over de `Post` heen.
-- **Version vector** = `{author → max_seq}`. Sync bij (her)verbinding:
+- **Version vector** = `{author → hoogste *aaneengesloten* seq}`, niet `max_seq`.
+
+  Ops worden dicht genummerd, maar komen niet per se in die volgorde binnen: we kunnen
+  bij B de ops 6-10 van auteur A ophalen terwijl A zelf al 11 broadcast. Landt die 11
+  eerder, dan hebben we 1-5 en 11, met een gat. Melden we dan `max = 11`, dan zeggen we
+  "ik heb alles t/m 11" en krijgen we 6-10 nooit meer.
+
+  De op met een gat ervoor wordt wél bewaard, maar telt pas mee zodra het gat gedicht is.
+  Om dezelfde reden versturen we nooit ops voorbij onze eigen aaneengesloten reeks —
+  anders erft de ontvanger ons gat zonder het te weten.
+
+  Sync bij (her)verbinding:
   1. Beide kanten sturen `SyncRequest { have }`.
   2. Elke kant stuurt terug wat de ander mist: alle ops waarvan
      `seq > peer.have[author]`, voor elke auteur.
   3. Klaar. Convergentie in één ronde, ook na maanden offline.
-- Nieuwe ops gaan live via `OpBroadcast` naar alle verbonden peers; peers die offline
-  waren halen ze op via de sync bij reconnect. Een op is nooit "verloren" zolang één
-  peer hem heeft.
+### Drie wegen waarlangs een op zich verspreidt
+1. **Broadcast** bij het plaatsen — het normale geval waarin iedereen online is.
+2. **Inhaalslag bij (her)verbinding** — dekt de peer die weg was.
+3. **Doorsturen plus periodieke hersync** — dekt gedeeltelijke connectiviteit: A en C
+   kunnen elkaar niet bereiken, B beiden wel. Ontvangen ops die nieuw voor ons waren
+   sturen we door; ops die we al kenden niet, en dáármee stopt de lus vanzelf. Daarnaast
+   sturen we elke 30s ongevraagd onze version vector rond. Dat kost enkele tientallen
+   bytes en herstelt elke toestand die 1 en 2 gemist zouden hebben.
+
+Een op is nooit verloren zolang één peer hem heeft.
+
+### Weergaveregels
+- Sorteren op `(lamport, author)`. `wall_clock` mag nooit meedoen: de klokken van de
+  drie PC's lopen uiteen en dan zou de volgorde per peer verschillen.
+- `Edit`/`Delete` tellen alleen als `op.author == target.author`. Zonder die regel kan
+  iedereen andermans tekst herschrijven, en in een append-only log is dat niet terug
+  te draaien.
+- Per bericht wint de `Edit`/`Delete` met de hoogste `(lamport, author)`.
 
 ### SQLite-schema
 ```sql
@@ -212,11 +238,11 @@ Wie op dezelfde poort opnieuw wil starten — config herladen bijvoorbeeld — m
 ```
 crates/
   proto/     ControlMsg, Op, media-header, version vector — geen I/O, puur en testbaar
-  store/     rusqlite, oplog, sync-berekening
+  store/     rusqlite, oplog, timeline-opbouw, sync-berekening
   net/       quinn mesh, reconnect, UDP media-sockets
   audio/     capture, opus, jitterbuffer, mix, ns/vad
   video/     WGC capture, encoder-trait, MF impl, decoder, D3D11 render-venster
-  app/       eframe UI, config, tray, notificaties — de binary
+  app/       lib + binary: eframe UI, config, chat-plumbing, tray, notificaties
 ```
 `proto` en `store` hebben geen Windows- of hardware-afhankelijkheden en zijn daarom
 volledig unit-testbaar. Daar zit de subtiele logica, dus daar zitten de tests.

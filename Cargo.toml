@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/net", "crates/app"]
+members = ["crates/proto", "crates/net", "crates/app", "crates/store"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MIT"
 [workspace.dependencies]
 fitcom-proto = { path = "crates/proto" }
 fitcom-net = { path = "crates/net" }
+fitcom-store = { path = "crates/store" }
 
 [profile.release]
 opt-level = 3
