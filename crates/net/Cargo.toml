@@ -1,0 +1,22 @@
+[package]
+name = "fitcom-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+fitcom-proto = { version = "0.1.0", path = "../proto" }
+quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+# ring i.p.v. aws-lc-rs: die laatste vereist cmake + nasm om te bouwen op Windows.
+# Moet overeenkomen met quinn's "rustls-ring" feature, anders krijg je twee
+# crypto-providers en een panic op "no process-level CryptoProvider available".
+rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

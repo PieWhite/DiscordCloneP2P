@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo add:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(rustc --version)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "PowerShell(cargo build:*)",
+      "PowerShell(cargo check:*)",
+      "PowerShell(cargo test:*)",
+      "PowerShell(cargo clippy:*)",
+      "PowerShell(cargo fmt:*)",
+      "PowerShell(Get-CimInstance Win32_VideoController:*)",
+      "Read(//c/Users/rick_/Documents/DiscordCloneP2P/**)"
+    ]
+  }
+}

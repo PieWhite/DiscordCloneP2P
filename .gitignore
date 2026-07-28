@@ -1,0 +1,12 @@
+/target
+*.pdb
+
+# Lokale runtime-data: config, database, logs, certificaten.
+# Portable modus schrijft deze naast de exe.
+/data/
+/logs/
+/.localpeers/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+fitcom.toml

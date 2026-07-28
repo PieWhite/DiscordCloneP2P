@@ -1,0 +1,22 @@
+[package]
+name = "fitcom"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+directories = "6.0.0"
+eframe = "0.32.3"
+egui = "0.32.3"
+fitcom-net = { version = "0.1.0", path = "../net" }
+fitcom-proto = { version = "0.1.0", path = "../proto" }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.24.0", features = ["v4", "serde"] }
