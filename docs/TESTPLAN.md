@@ -287,6 +287,58 @@ stellen de inhoud te lezen, en dat is precies wat dit ontwerp voorkomt.*
 
 ---
 
+## Fase 7 — Tags, meldingen, niet storen, gebruikersnaam
+
+De tag-herkenning zelf (woordgrens, hoofdletterongevoeligheid, waar de cursor precies
+staat voor de autocomplete) is met unit-tests gedekt (`crates/app/src/tags.rs`). Wat
+alleen met de hand te controleren is: hoe het typen voelt, en of een Windows-melding er
+in het echt ook verschijnt — dat kan in deze omgeving niet automatisch getest worden.
+
+**7.1 Autocomplete**
+Typ `@` in de chatbox. Er moet een lijstje met peernamen verschijnen dat meefiltert
+terwijl je verder typt. Pijltjes omhoog/omlaag verplaatsen de markering, Tab of Enter
+vult de gemarkeerde naam in (met een spatie erachter) zonder dat er een tab-teken of een
+nieuwe regel achterblijft. Klikken op een suggestie moet hetzelfde doen.
+
+**7.2 Highlight bij een tag naar jezelf**
+Laat je vriend `@jouwnaam` in een bericht zetten. Dat bericht moet bij jou opvallen
+(gekleurd kader) tussen de rest van de geschiedenis, ook als je later terugscrollt. Een
+bericht met `@` gevolgd door iets dat niet op een bestaande naam lijkt (bijvoorbeeld
+`@Rickie` als jij `Rick` heet) mag **niet** highlighten.
+
+**7.3 Melding alleen bij een tag, en alleen als het venster verborgen is**
+Minimaliseer je venster. Laat je vriend eerst een gewoon bericht sturen (geen tag) — geen
+melding. Laat hem daarna `@jouwnaam` sturen — nu wel een Windows-melding met geluid.
+Herhaal met het venster **op de voorgrond**: ook met een tag mag er dan geen melding
+komen. *Dit dekt precies de twee voorwaarden uit fase 7: verborgen én getagd, niet
+"of".*
+
+**7.4 Geen melding voor ingehaalde geschiedenis**
+Sluit je app af. Laat je vriend een paar berichten sturen, waaronder eentje met
+`@jouwnaam`. Start je app weer op (venster mag gerust verborgen staan of naar de tray
+gaan). De ingehaalde berichten moeten gewoon verschijnen — inclusief de highlight op het
+getagde bericht — maar er mag **geen** Windows-melding voor komen. *Dit is het
+onderscheid tussen live binnenkomen en een inhaalslag; zie `docs/OVERDRACHT.md`.*
+
+**7.5 DM meldt zich ook alleen bij een tag**
+Stuur jezelf (via je vriend) een gewoon DM-bericht zonder tag terwijl je venster
+verborgen is — geen melding, ondanks dat het een DM is. Stuur daarna een DM mét
+`@jouwnaam` — wel een melding. *Bewust zo gekozen, zie beslissing 11 in
+`docs/OVERDRACHT.md`.*
+
+**7.6 Niet storen**
+Zet "niet storen" aan, minimaliseer, laat je vriend `@jouwnaam` sturen. Geen melding,
+geen geluid. Zet niet storen weer uit en herhaal — nu wel. Herstart de app: niet storen
+moet weer standaard uit staan.
+
+**7.7 Gebruikersnaam wijzigen**
+Open het profielvenster, wijzig je naam, sla op. Bij jezelf verandert je naam meteen
+overal waar hij getoond wordt (deelnemerslijst, eigen berichten in de geschiedenis). Bij
+je vriend moet de nieuwe naam verschijnen zonder dat hij iets doet. Herstart je app: de
+nieuwe naam moet blijven staan (staat nu in `config.toml`).
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

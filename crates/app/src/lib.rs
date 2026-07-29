@@ -10,5 +10,6 @@ pub mod engine;
 pub mod files;
 pub mod notify;
 pub mod streams;
+pub mod tags;
 pub mod tray;
 pub mod ui;

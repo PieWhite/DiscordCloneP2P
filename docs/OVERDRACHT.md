@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-30, na kanalen (DM's) bovenop fase 6.
+Laatst bijgewerkt: 2026-07-30, na fase 7 (tags, meldingen, niet storen, gebruikersnaam).
 
 ---
 
@@ -19,6 +19,7 @@ Laatst bijgewerkt: 2026-07-30, na kanalen (DM's) bovenop fase 6.
 | 5 — Screenshare uitbreiding | ✅ af, nog niet met een echte peer getest | ketentest + motortest blijven groen na de wijziging |
 | 6 — Bestandsdeling | ✅ af, nog niet met een echte peer getest | `crates/app/tests/file_deling.rs`: volledige overdracht + hash door de echte motor heen, geen GPU nodig |
 | Kanalen (DM's), na fase 6 | ✅ af, nog niet met een echte peer getest | `crates/app/tests/chat_sync.rs` (drie peers, volledige mesh, echte QUIC) + `crates/store/tests/convergentie.rs` (kanaal-scoping op store-niveau) |
+| 7 — Tags, meldingen, niet storen, gebruikersnaam | ✅ af, nog niet met een echte peer getest | `crates/app/src/tags.rs` (unit-tests op de tag-herkenning en cursor-parsing) + twee lokale instanties starten en verbinden schoon |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -200,6 +201,19 @@ versie op te hogen, zodat de bestaande `VersionMismatch`-afhandeling dit nu netj
 en (b) de tuple sowieso te vervangen door een benoemde struct (`VvEntry`), zodat een
 volgende uitbreiding hier niet opnieuw tegenaan loopt. Gevonden door de
 `protocol-reviewer`-agent, niet door een test — zie hieronder.
+
+### 11. Een DM meldt zich niet vanzelf — alleen bij een expliciete tag (fase 7)
+De ROADMAP liet in het midden of een DM een Windows-melding waard is zonder dat de tekst
+letterlijk `@jouwnaam` bevat — een DM is immers al aan jou persoonlijk gericht. Voorgelegd
+aan Rick vóór het bouwen, met als aanbeveling "DM's melden altijd". Rick koos het
+tegenovergestelde: **ook een DM meldt zich alleen bij een expliciete tag**, dezelfde regel
+als het algemene kanaal. Geen uitzondering voor DM's ingebouwd.
+
+Gevolg voor de implementatie: `Engine::overweeg_melding` (`crates/app/src/engine.rs`) kijkt
+nooit naar `Channel::is_general()` om te beslissen of er gemeld wordt — alleen naar
+`tags::bevat_tag`. Het kanaal is uitsluitend nog relevant om te bepalen welke
+"ongelezen"-teller (algemeen of per DM-partner) gebruikt wordt om vast te stellen of een
+op daadwerkelijk nieuw was, niet om de meldingsbeslissing zelf.
 
 ---
 
@@ -465,6 +479,58 @@ al zo getagd dat dat later als nieuwe waarde bij kan zonder protocolbreuk, zie `
 
 ---
 
+## Hoe tags en meldingen in elkaar zitten
+
+```
+crates/app/src/tags.rs      Puur tekstwerk: bevat_tag, actieve_tag, tag_suggesties.
+                             Geen state, geen UI — daarom met unit-tests gedekt.
+crates/app/src/engine.rs    overweeg_melding / meld_nieuw_bericht — de meldingsbeslissing.
+                             UiCommand::ZetNaam en ::NietStoren.
+crates/app/src/ui.rs        Autocomplete in de chatbox, highlight van een getagd bericht,
+                             het profielvenster en de niet-storenknop.
+```
+
+**Geen protocol- of storewijziging nodig.** `OpKind::SetNick` en de nickname-map in de
+timeline bestonden al sinds fase 2; deze fase voegt alleen een UI-ingang toe
+(`UiCommand::ZetNaam`) om er zelf een te versturen, plus tekstherkenning bovenop berichten
+die er al waren. `crates/proto` en `crates/store` zijn dus ongemoeid gebleven — geen
+protocol-reviewer-ronde nodig, in tegenstelling tot fase 9 die dat straks wel weer wordt.
+
+**Wie geldt als "getagd".** `tags::bevat_tag(body, naam)` zoekt `@naam` als los woord
+(hoofdletterongevoelig, met een woordgrens van niet-alfanumerieke tekens aan beide kanten)
+— dat voorkomt dat `@Rick` ook `@Rickie` of een e-mailadres raakt. De naam waartegen
+gecontroleerd wordt is steeds de actuele weergavenaam uit de timeline, niet een naam die bij
+het opstarten is meegegeven: verandert iemand zijn naam tijdens de sessie, dan geldt de
+nieuwe naam voor tags meteen, zonder herstart.
+
+**Live versus inhaalsync, zonder aparte status.** Zie beslissing 11 hierboven en de
+motivatie in `ROADMAP.md` fase 7: het onderscheid zit al in het berichttype
+(`OpBroadcast` = live, `SyncResponse` = inhaalslag), dus `Engine::op_mesh_event` hoeft alleen
+te kijken naar *hoe* een op binnenkwam, niet naar een los bijgehouden "peer is bijgewerkt"-
+vlaggetje. Om een dubbel bezorgde broadcast geen tweede melding te laten geven, wordt vóór
+en ná het verwerken de relevante ongelezen-teller (`chat.ongelezen` of `chat.ongelezen_dm`)
+vergeleken — alleen een echte toename telt als "nieuw".
+
+**Autocomplete in de chatbox (`ui.rs`).** egui's multiline `TextEdit` verwerkt Tab en Enter
+zelf al tijdens `.show()` — Tab voegt een tab-teken in, Enter (zonder shift) een nieuwe
+regel — vóórdat de eigen code de kans krijgt om te zien dat er een tag-suggestie
+afgerond moet worden. Vandaar `App::tag_actief`: onthoudt of er vórige frame een
+suggestielijst open stond, en zo ja, worden Tab/Enter dit frame uit de
+toetsenbordgebeurtenissen gehaald (`ui.input_mut`) vóórdat de `TextEdit` ze ziet. De eigen
+beslissing of Tab/Enter een tag moest afronden is dan al genomen (`ui.input` gelezen vóór
+het strippen), dus dat gaat niet verloren. Na het invullen van een suggestie wordt de
+cursor van de `TextEdit` expliciet verplaatst naar net na de ingevoegde naam
+(`TextEditState::cursor::set_char_range` + `store`) — anders blijft de oude
+cursorpositie hangen op een plek die na het vervangen van de tekst niet meer klopt.
+
+**Niet-storenmodus en de profielnaam zijn sessiestate, geen config.** Net als mute/deafen:
+`Engine::niet_storen` en de zojuist bewerkte naam in het profielvenster overleven geen
+herstart als los concept — de naam zelf wordt wel meteen naar `config.toml` geschreven
+(zodat hij bij de volgende start meteen weer klopt), maar de niet-storenschakelaar staat bij
+elke start weer uit.
+
+---
+
 ## Wat nog nooit met een echte peer getest is
 
 Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 t/m 6, en kanalen erna,
@@ -504,3 +570,14 @@ geen invoer naar het bureaublad sturen. Dat is dus het eerste om met de hand te 
 Hetzelfde geldt voor fase 5: het video-instellingenscherm en de overzichtstrook zijn
 alleen gecontroleerd op compileren, clippy en de bestaande ketentest/motortest (die
 blijven groen na de wijziging) — niet op hoe ze er in het echt uitzien.
+
+Van fase 7 is de tag-herkenning en de cursor-gebaseerde parsing die de autocomplete
+aandrijft gedekt met unit-tests in `crates/app/src/tags.rs` (woordgrens,
+hoofdletterongevoeligheid, waar de cursor precies staat). Twee lokale instanties starten en
+verbinden schoon, inclusief het versturen van `SetNick` bij opstart. **Niet geverifieerd,
+om dezelfde reden als bij eerdere fases:** het typen van `@` en de suggestielijst die
+verschijnt, Tab/Enter die daadwerkelijk de juiste naam invult zonder een tab-teken of
+nieuwe regel achter te laten, de highlight rond een getagd bericht, de niet-storenknop, en
+of een Windows-melding er in het echt ook zo uitziet als bedoeld. Dat moet Rick met de hand
+doen — bij voorkeur met minstens twee vensters tegelijk open, want het venster moet
+verborgen/geminimaliseerd zijn voordat er überhaupt een melding komt.

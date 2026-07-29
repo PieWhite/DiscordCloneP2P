@@ -16,11 +16,12 @@ use crate::config::{self, Config, VideoConfig};
 use crate::files::{DownloadStatus, Files, StartUpload};
 use crate::notify;
 use crate::streams::{Actie, Streams};
+use crate::tags;
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
-use fitcom_proto::{Channel, ControlMsg, OpId, PeerId};
+use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
 use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle, Miniatuur};
@@ -119,6 +120,9 @@ pub struct Snapshot {
     /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
     /// kanaal) — je kunt het een missen zonder het ander te missen.
     pub ongelezen_dm: HashMap<PeerId, usize>,
+    /// Onderdrukt alle Windows-meldingen, ook een directe tag naar jezelf. Geldt alleen
+    /// voor deze sessie, net als mute/deafen — geen configvermelding.
+    pub niet_storen: bool,
     pub fout: Option<String>,
 }
 
@@ -156,6 +160,11 @@ pub enum UiCommand {
     BiedBestandAan(PathBuf, Channel),
     /// Downloaden, of hervatten na een eerdere onderbreking.
     DownloadBestand(OpId),
+    /// Eigen weergavenaam wijzigen. Legt een `SetNick`-op vast zodra de motor hem
+    /// verwerkt, net als bij het opstarten.
+    ZetNaam(String),
+    /// Niet-storenmodus aan/uit. Onderdrukt alle Windows-meldingen, ook een tag.
+    NietStoren(bool),
 }
 
 pub struct EngineHandle {
@@ -228,6 +237,7 @@ pub fn spawn(
         file_tx,
         file_rx,
         fout: None,
+        niet_storen: false,
         snap_tx,
         voorgrond: voorgrond.clone(),
     };
@@ -282,6 +292,8 @@ struct Engine {
     file_rx: mpsc::Receiver<FileEvent>,
 
     fout: Option<String>,
+    /// Zie `Snapshot::niet_storen`.
+    niet_storen: bool,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
 }
@@ -453,11 +465,35 @@ impl Engine {
                         self.voer_uit(acties);
                     }
 
-                    let voor = self.chat.ongelezen;
+                    // Alleen een live `OpBroadcast` van een `Post` komt in aanmerking
+                    // voor een melding. Een `SyncResponse` is per definitie een
+                    // inhaalslag van gemiste geschiedenis (zie docs/OVERDRACHT.md) en
+                    // meldt daarom nooit, ongeacht de inhoud — dat onderscheid zit al
+                    // in het berichttype, dus zonder aparte "sync klaar"-status.
+                    let live_post = match &andere {
+                        ControlMsg::OpBroadcast(b) => match b.op.kind() {
+                            Ok(Some(OpKind::Post { body })) => Some((b.op.channel, body)),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let voor_alg = self.chat.ongelezen;
+                    let voor_dm = self.chat.ongelezen_dm().get(&from).copied().unwrap_or(0);
+
                     let r = self.chat.bij_bericht(from, andere);
                     self.verwerk(r);
-                    if self.chat.ongelezen > voor && !self.voorgrond.load(Ordering::Relaxed) {
-                        self.meld_nieuw_bericht(from);
+
+                    if let Some((channel, body)) = live_post {
+                        // Pas ná `bij_bericht` weten we of dit echt nieuw was: een
+                        // dubbel bezorgde broadcast mag geen tweede melding geven.
+                        let nieuw = if channel.is_general() {
+                            self.chat.ongelezen > voor_alg
+                        } else {
+                            self.chat.ongelezen_dm().get(&from).copied().unwrap_or(0) > voor_dm
+                        };
+                        if nieuw {
+                            self.overweeg_melding(from, &body);
+                        }
                     }
                 }
             },
@@ -920,7 +956,27 @@ impl Engine {
                 tokio::spawn(hash_en_bied_aan(pad, channel, tx));
             }
             UiCommand::DownloadBestand(file) => self.download_bestand(file),
+            UiCommand::ZetNaam(naam) => self.zet_naam(&naam),
+            UiCommand::NietStoren(aan) => self.niet_storen = aan,
         }
+    }
+
+    /// Legt een nieuwe weergavenaam vast: eerst in `config.toml` (zodat hij de volgende
+    /// start meteen weer klopt), dan als `SetNick`-op zodat de andere peers hem zien.
+    /// Een lege of ongewijzigde naam doet niets — `chat.zet_naam` dedupliceert dat laatste
+    /// zelf al, dus de log groeit hier niet van bij een dubbelklik op "opslaan".
+    fn zet_naam(&mut self, naam: &str) {
+        let naam = naam.trim();
+        if naam.is_empty() {
+            return;
+        }
+        self.cfg.display_name = naam.to_string();
+        if let Err(e) = self.cfg.save(&self.config_path) {
+            tracing::warn!(error = %format!("{e:#}"), "naam niet opgeslagen in config");
+            self.fout = Some(format!("naam opslaan: {e:#}"));
+        }
+        let r = self.chat.zet_naam(naam);
+        self.verwerk(r);
     }
 
     /// Start (of hervat) een download. Het hervatpunt komt van wat er al op schijf staat
@@ -1005,24 +1061,43 @@ impl Engine {
         }
     }
 
-    /// Toont het laatste bericht van deze peer als Windows-melding.
-    fn meld_nieuw_bericht(&mut self, van: PeerId) {
-        self.chat.refresh();
-        let tl = self.chat.timeline();
-        let naam = tl
+    /// Beslist of een net binnengekomen, live bericht een Windows-melding waard is.
+    /// Alleen bij een geldige tag naar jezelf — nooit bij elk bericht, en nooit in
+    /// niet-storenmodus, ongeacht de inhoud. Geldt gelijk voor het algemene kanaal en
+    /// een DM: een DM is niet vanzelf een melding waard, net zomin als een gewoon
+    /// bericht in het algemene kanaal dat is.
+    fn overweeg_melding(&mut self, van: PeerId, body: &str) {
+        if self.niet_storen || self.voorgrond.load(Ordering::Relaxed) {
+            return;
+        }
+        let eigen_naam = self.eigen_weergavenaam();
+        if tags::bevat_tag(body, &eigen_naam) {
+            self.meld_nieuw_bericht(van, body);
+        }
+    }
+
+    /// De weergavenaam waarop een tag naar "jezelf" gecontroleerd wordt: de naam zoals
+    /// die in de oplog staat (kan afwijken van `cfg.display_name` vlak na een
+    /// naamswijziging die nog niet verwerkt is), met de configwaarde als terugval.
+    fn eigen_weergavenaam(&self) -> String {
+        self.chat
+            .timeline()
+            .nicknames
+            .get(&self.chat.me())
+            .cloned()
+            .unwrap_or_else(|| self.cfg.display_name.clone())
+    }
+
+    /// Toont een Windows-melding voor een bericht dat al bevestigd is als meldingswaardig.
+    fn meld_nieuw_bericht(&mut self, van: PeerId, tekst: &str) {
+        let naam = self
+            .chat
+            .timeline()
             .nicknames
             .get(&van)
             .cloned()
             .unwrap_or_else(|| van.to_string()[..8].to_string());
-        let laatste = tl
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.author == van)
-            .map(|m| m.body.clone())
-            .unwrap_or_default();
-
-        notify::nieuw_bericht(&naam, &laatste);
+        notify::nieuw_bericht(&naam, tekst);
     }
 
     fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {
@@ -1113,6 +1188,7 @@ impl Engine {
             files,
             ongelezen: self.chat.ongelezen,
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
+            niet_storen: self.niet_storen,
             fout: self.fout.clone(),
         }));
     }

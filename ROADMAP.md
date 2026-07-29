@@ -144,7 +144,7 @@ al beantwoord vóór het plannen: auto-update (fase 11) haalt de nieuwe versie a
 maar past hem pas toe ná bevestiging, en YouTube-links (fase 8) krijgen geen voorvertoning
 via een externe API — zie `TODO.md`, sectie "Afgewezen".
 
-### Fase 7 — Tags, notificaties, niet storen, gebruikersnaam
+### Fase 7 — Tags, notificaties, niet storen, gebruikersnaam ✅
 Alles rond wie wanneer een melding krijgt, en je eigen identiteit aanpasbaar maken.
 
 - **`@username`-tags**: autocomplete in de chatbox op basis van de bestaande peerlijst
@@ -169,6 +169,25 @@ Alles rond wie wanneer een melding krijgt, en je eigen identiteit aanpasbaar mak
 **Klaar als:** een tag naar jezelf highlight in de chat, geeft een Windows-melding alleen
 als het venster verborgen is én het bericht live binnenkwam, blijft stil in niet-storenmodus,
 en een naamswijziging bij de ene peer verschijnt bij de andere twee zonder herstart.
+
+**Eén beslissing afgestemd met Rick tijdens het bouwen:** een DM meldt zich, net als het
+algemene kanaal, uitsluitend bij een expliciete `@jouwnaam`-tag — niet automatisch omdat
+het een DM is. Dat maakt de regel overal hetzelfde: geen melding zonder een tag, ook niet
+in een gesprek dat maar twee mensen zien.
+
+**Live vs. inhaalsync zonder aparte status.** Het onderscheid dat de meldingslaag nodig
+heeft ("is dit bericht net binnengekomen, of onderdeel van het inhalen van gemiste
+geschiedenis") zit al in het berichttype: een `OpBroadcast` is per definitie live, een
+`SyncResponse` per definitie een inhaalslag — zowel bij een verse verbinding als bij de
+periodieke hersync. Er is dus geen apart "sync met deze peer is klaar"-vlaggetje nodig; zie
+`docs/OVERDRACHT.md` voor de onderbouwing.
+
+**Getest:** de tag-herkenning (woordgrens, hoofdletterongevoeligheid, de cursor-gebaseerde
+autocomplete-parsing) heeft units-tests in `crates/app/src/tags.rs` — precies het soort
+randgevallen dat handmatig testen mist. Beide instanties startten schoon op en verbonden
+zonder fouten; **niet geverifieerd:** het typen van `@`, de suggestielijst, de highlight en
+de niet-storenknop zelf aanklikken, om dezelfde reden als bij eerdere fases — dat kan in
+deze omgeving niet automatisch, en moet Rick met de hand doen.
 
 ### Fase 8 — Chat verrijking: bestanden inline, plakken, links
 Bestanden en afbeeldingen horen in de conversatie te zitten, niet in een los paneel.

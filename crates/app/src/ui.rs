@@ -7,6 +7,7 @@
 use crate::config::VideoConfig;
 use crate::engine::{self, EngineHandle, FileView, PeerView, Snapshot, UiCommand};
 use crate::files::DownloadStatus;
+use crate::tags;
 use crate::tray;
 use eframe::egui;
 use fitcom_net::PeerStatus;
@@ -48,6 +49,17 @@ pub struct App {
     /// `Some` zolang het instellingenscherm open staat. Een kopie om in te bewerken,
     /// zodat "annuleren" niets hoeft terug te draaien.
     instellingen: Option<VideoConcept>,
+    /// `Some` zolang het profielvenster open staat. Bewerkbare kopie van de naam, zodat
+    /// "annuleren" niets hoeft terug te draaien.
+    profiel: Option<String>,
+    /// Welke suggestie in de @tag-autocomplete gemarkeerd is. Reset zodra de getypte
+    /// tag verandert, zie `chat_paneel`.
+    tag_selectie: usize,
+    /// Stond er vorige frame een suggestielijst open? Bepaalt of Tab/Enter dit frame
+    /// vóór het tekenen van het invoerveld uit de toetsenbordgebeurtenissen gehaald
+    /// moeten worden — anders voegt een multiline `TextEdit` zelf al een tab-teken of
+    /// nieuwe regel in vóórdat onze eigen code de tag kan afronden. Zie `chat_paneel`.
+    tag_actief: bool,
     /// Geladen teksturen voor het overzicht, met de pointer van de laatst geüploade
     /// `Arc` erbij. Zo hoeft een miniatuur die niet ververst is niet elke frame opnieuw
     /// naar de GPU; alleen een echt nieuwe `Arc` (van de kijk-thread) triggert dat.
@@ -91,6 +103,9 @@ impl App {
             naar_tray,
             bronkeuze: None,
             instellingen: None,
+            profiel: None,
+            tag_selectie: 0,
+            tag_actief: false,
             miniatuur_cache: HashMap::new(),
         }
     }
@@ -212,6 +227,7 @@ impl eframe::App for App {
         self.bestanden_paneel(ctx);
         self.bronkeuze_venster(ctx);
         self.instellingen_venster(ctx);
+        self.profiel_venster(ctx);
         self.statusbalk(ctx);
         self.overzicht_strook(ctx);
         self.chat_paneel(ctx);
@@ -225,6 +241,7 @@ impl App {
         let mut stream_cmd: Option<UiCommand> = None;
         let mut bronnen_openen = false;
         let mut kanaal_wissel: Option<Channel> = None;
+        let mut niet_storen_wijziging: Option<bool> = None;
 
         egui::SidePanel::left("deelnemers")
             .resizable(false)
@@ -260,11 +277,22 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.colored_label(GROEN, "\u{25CF}");
                     ui.label(
-                        egui::RichText::new(eigen)
+                        egui::RichText::new(&eigen)
                             .strong()
                             .color(kleur_van(self.mij)),
                     );
                     ui.weak("(jij)");
+                });
+                ui.horizontal(|ui| {
+                    if ui.small_button("naam wijzigen").clicked() {
+                        self.profiel = Some(eigen.clone());
+                    }
+                    if ui
+                        .selectable_label(self.snap.niet_storen, "\u{1F515} niet storen")
+                        .clicked()
+                    {
+                        niet_storen_wijziging = Some(!self.snap.niet_storen);
+                    }
                 });
                 if self.snap.voice.actief {
                     let niveau = if self.snap.voice.muted {
@@ -401,6 +429,9 @@ impl App {
         }
         if let Some(kanaal) = kanaal_wissel {
             self.wissel_kanaal(kanaal);
+        }
+        if let Some(aan) = niet_storen_wijziging {
+            self.stuur(UiCommand::NietStoren(aan));
         }
     }
 
@@ -938,6 +969,52 @@ impl App {
         }
     }
 
+    /// Eigen weergavenaam wijzigen. Bewerkt een kopie zodat "annuleren" niets hoeft
+    /// terug te draaien; pas "opslaan" stuurt een `SetNick`-op naar de motor, die hem
+    /// ook meteen in `config.toml` bewaart.
+    fn profiel_venster(&mut self, ctx: &egui::Context) {
+        let Some(concept) = &mut self.profiel else {
+            return;
+        };
+        let mut open = true;
+        let mut opslaan = false;
+        let mut annuleren = false;
+
+        egui::Window::new("Profiel")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("Weergavenaam").strong());
+                ui.small("Zichtbaar voor de andere peers, overal waar jouw naam getoond wordt.");
+                ui.add_space(6.0);
+                let veld = ui.add(egui::TextEdit::singleline(concept).desired_width(f32::INFINITY));
+                let enter = veld.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!concept.trim().is_empty(), egui::Button::new("Opslaan"))
+                        .clicked()
+                        || (enter && !concept.trim().is_empty())
+                    {
+                        opslaan = true;
+                    }
+                    if ui.button("Annuleren").clicked() {
+                        annuleren = true;
+                    }
+                });
+            });
+
+        if opslaan {
+            let naam = self.profiel.take().unwrap();
+            self.stuur(UiCommand::ZetNaam(naam));
+        } else if annuleren || !open {
+            self.profiel = None;
+        }
+    }
+
     fn chat_paneel(&mut self, ctx: &egui::Context) {
         // Invoer eerst vastzetten, zodat de berichtenlijst de rest van de hoogte krijgt
         // en niet onder het invoerveld doorloopt.
@@ -956,36 +1033,122 @@ impl App {
                     });
                 }
 
-                ui.horizontal(|ui| {
-                    let knop = if self.bewerkt.is_some() {
-                        "opslaan"
-                    } else {
-                        "versturen"
-                    };
-                    let breedte = (ui.available_width() - 90.0).max(80.0);
+                // Tab en Enter (zonder shift) horen een openstaande tag-suggestie af te
+                // ronden, niet een tab-teken of nieuwe regel in te voegen. Een multiline
+                // `TextEdit` doet dat laatste zelf al tijdens `.show()`, vóórdat onze
+                // eigen code de kans krijgt de tag te herkennen — dus als er vorige frame
+                // een suggestielijst open stond, halen we die toetsen er hier al uit.
+                let tab_gedrukt = ui.input(|i| i.key_pressed(egui::Key::Tab));
+                let enter_zonder_shift_gedrukt =
+                    ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+                if self.tag_actief {
+                    ui.input_mut(|i| i.events.retain(|e| !is_tag_toets(e)));
+                }
 
-                    let veld = ui.add_sized(
-                        [breedte, 24.0],
-                        egui::TextEdit::multiline(&mut self.invoer)
+                let knop = if self.bewerkt.is_some() {
+                    "opslaan"
+                } else {
+                    "versturen"
+                };
+
+                let (mut output, verstuur_geklikt) = ui
+                    .horizontal(|ui| {
+                        let breedte = (ui.available_width() - 90.0).max(80.0);
+                        let output = egui::TextEdit::multiline(&mut self.invoer)
                             .desired_rows(1)
-                            .hint_text("bericht… (shift+enter voor een nieuwe regel)"),
-                    );
+                            .desired_width(breedte)
+                            .hint_text("bericht… (shift+enter voor een nieuwe regel)")
+                            .show(ui);
+                        let geklikt = ui.button(knop).clicked();
+                        (output, geklikt)
+                    })
+                    .inner;
 
-                    // Enter verstuurt, shift+enter maakt een nieuwe regel. De TextEdit
-                    // heeft de enter al ingevoegd, dus die halen we er weer uit.
-                    let enter = veld.has_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+                // Welke tag er nog getypt wordt, op basis van de cursor. Alleen relevant
+                // zolang het veld focus heeft — anders zou een klik ergens anders de
+                // laatst gebruikte tag-positie laten "hangen".
+                let actieve_tag = if output.response.has_focus() {
+                    output.cursor_range.and_then(|c| {
+                        let cursor_byte = char_naar_byte(&self.invoer, c.primary.index);
+                        tags::actieve_tag(&self.invoer, cursor_byte)
+                            .map(|(start, query)| (start, query.to_string()))
+                    })
+                } else {
+                    None
+                };
 
-                    if ui.button(knop).clicked() || enter {
-                        if enter {
-                            if let Some(p) = self.invoer.rfind('\n') {
-                                self.invoer.truncate(p);
+                let namen: Vec<String> = self.snap.timeline.nicknames.values().cloned().collect();
+                let suggesties: Vec<String> = match &actieve_tag {
+                    Some((_, query)) => tags::tag_suggesties(&namen, query)
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    None => Vec::new(),
+                };
+                self.tag_actief = !suggesties.is_empty();
+                if suggesties.is_empty() {
+                    self.tag_selectie = 0;
+                } else {
+                    self.tag_selectie = self.tag_selectie.min(suggesties.len() - 1);
+                    if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                        self.tag_selectie = (self.tag_selectie + 1) % suggesties.len();
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                        self.tag_selectie =
+                            (self.tag_selectie + suggesties.len() - 1) % suggesties.len();
+                    }
+                }
+
+                let mut te_voltooien: Option<String> = None;
+                if !suggesties.is_empty() && (tab_gedrukt || enter_zonder_shift_gedrukt) {
+                    te_voltooien = Some(suggesties[self.tag_selectie].clone());
+                }
+
+                if !suggesties.is_empty() {
+                    ui.add_space(2.0);
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        for (i, naam) in suggesties.iter().enumerate() {
+                            if ui.selectable_label(i == self.tag_selectie, naam).clicked() {
+                                te_voltooien = Some(naam.clone());
                             }
                         }
-                        self.versturen();
-                        veld.request_focus();
+                    });
+                }
+
+                if let (Some((start, query)), Some(naam)) = (&actieve_tag, &te_voltooien) {
+                    let eind = start + 1 + query.len();
+                    let ingevoegd = format!("@{naam} ");
+                    self.invoer.replace_range(*start..eind, &ingevoegd);
+                    let nieuwe_cursor = self.invoer[..start + ingevoegd.len()].chars().count();
+                    output
+                        .state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(nieuwe_cursor),
+                        )));
+                    output.state.store(ui.ctx(), output.response.id);
+                    output.response.request_focus();
+                    self.tag_selectie = 0;
+                    self.tag_actief = false;
+                }
+
+                // Enter verstuurt alleen als hij niet net een tag heeft afgerond — dat
+                // is al hierboven verwerkt.
+                let enter_voor_versturen = te_voltooien.is_none()
+                    && output.response.has_focus()
+                    && enter_zonder_shift_gedrukt;
+
+                if verstuur_geklikt || enter_voor_versturen {
+                    // Stond er geen tag-popup open, dan heeft de TextEdit de enter al
+                    // als nieuwe regel verwerkt — die halen we er weer uit.
+                    if enter_voor_versturen {
+                        if let Some(p) = self.invoer.rfind('\n') {
+                            self.invoer.truncate(p);
+                        }
                     }
-                });
+                    self.versturen();
+                    output.response.request_focus();
+                }
                 ui.add_space(6.0);
             });
 
@@ -1017,6 +1180,10 @@ impl App {
             let gegroeid = berichten.len() != self.vorig_aantal;
             self.vorig_aantal = berichten.len();
 
+            // Waarop een tag naar "jezelf" gecontroleerd wordt: dezelfde naam die ook
+            // getoond wordt, dus exact wat een ander zou typen om jou te taggen.
+            let eigen_naam = self.naam_van(self.mij);
+
             egui::ScrollArea::vertical()
                 .stick_to_bottom(gegroeid)
                 .auto_shrink([false, false])
@@ -1033,33 +1200,50 @@ impl App {
                     }
 
                     for msg in berichten {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(self.naam_van(msg.author))
-                                    .strong()
-                                    .color(kleur_van(msg.author)),
-                            );
-                            ui.small(egui::RichText::new(tijd(msg.created_at)).weak());
-                            if msg.edited {
-                                ui.small(egui::RichText::new("(bewerkt)").weak());
-                            }
+                        let getagd = tags::bevat_tag(&msg.body, &eigen_naam);
 
-                            if msg.author == self.mij {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.small_button("verwijder").clicked() {
-                                            te_verwijderen = Some(msg.id);
-                                        }
-                                        if ui.small_button("bewerk").clicked() {
-                                            te_bewerken = Some((msg.id, msg.body.clone()));
-                                        }
-                                    },
+                        let mut teken = |ui: &mut egui::Ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(self.naam_van(msg.author))
+                                        .strong()
+                                        .color(kleur_van(msg.author)),
                                 );
-                            }
-                        });
+                                ui.small(egui::RichText::new(tijd(msg.created_at)).weak());
+                                if msg.edited {
+                                    ui.small(egui::RichText::new("(bewerkt)").weak());
+                                }
 
-                        toon_tekst(ui, &msg.body);
+                                if msg.author == self.mij {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("verwijder").clicked() {
+                                                te_verwijderen = Some(msg.id);
+                                            }
+                                            if ui.small_button("bewerk").clicked() {
+                                                te_bewerken = Some((msg.id, msg.body.clone()));
+                                            }
+                                        },
+                                    );
+                                }
+                            });
+
+                            toon_tekst(ui, &msg.body);
+                        };
+
+                        // Een tag naar jezelf springt eruit met een gekleurd kader —
+                        // subtiel genoeg om niet als foutmelding te lezen, opvallend
+                        // genoeg om in een lange geschiedenis terug te vinden.
+                        if getagd {
+                            egui::Frame::group(ui.style())
+                                .fill(TAG_ACHTERGROND)
+                                .stroke(egui::Stroke::new(1.0_f32, TAG_RAND))
+                                .inner_margin(6.0)
+                                .show(ui, teken);
+                        } else {
+                            teken(ui);
+                        }
                         ui.add_space(8.0);
                     }
                 });
@@ -1122,6 +1306,9 @@ const GROEN: egui::Color32 = egui::Color32::from_rgb(80, 200, 120);
 const GEEL: egui::Color32 = egui::Color32::from_rgb(220, 180, 70);
 const GRIJS: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);
 const ROOD: egui::Color32 = egui::Color32::from_rgb(220, 90, 90);
+/// Zacht genoeg om niet als foutmelding te lezen, zowel licht als donker thema.
+const TAG_ACHTERGROND: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 75, 20, 40);
+const TAG_RAND: egui::Color32 = GEEL;
 
 fn describe(status: &PeerStatus) -> (egui::Color32, String) {
     match status {
@@ -1193,6 +1380,37 @@ fn grootte_tekst(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Zet een egui-cursorpositie (teken-index) om naar een byte-offset in `s`. egui telt
+/// in tekens, `tags::actieve_tag` in bytes — nodig voor niet-ASCII namen.
+fn char_naar_byte(s: &str, char_index: usize) -> usize {
+    s.char_indices()
+        .nth(char_index)
+        .map(|(b, _)| b)
+        .unwrap_or(s.len())
+}
+
+/// Of dit een toets is die we uit de invoer moeten halen zolang er een tag-suggestie
+/// openstaat: Tab (voegt anders een tab-teken in) en Enter zonder shift (voegt anders
+/// een nieuwe regel in). Shift+Enter blijft gewoon een nieuwe regel geven.
+fn is_tag_toets(e: &egui::Event) -> bool {
+    matches!(
+        e,
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            pressed: true,
+            ..
+        }
+    ) || matches!(
+        e,
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            pressed: true,
+            modifiers,
+            ..
+        } if !modifiers.shift
+    )
 }
 
 fn tijd(millis: i64) -> String {
