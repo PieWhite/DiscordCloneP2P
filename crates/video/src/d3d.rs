@@ -233,6 +233,68 @@ impl D3dContext {
         };
         Ok((breedte, hoogte, pixels))
     }
+
+    /// Verkleint een BGRA-textuur naar `doel_breedte`×`doel_hoogte` en levert de pixels
+    /// in het werkgeheugen.
+    ///
+    /// Net als [`Self::lees_bgra`] een trage weg — GPU-naar-CPU — maar dan zonder het
+    /// hele beeld over te zetten: er wordt alleen bemonsterd wat er in de miniatuur
+    /// nodig is. Voor het overzicht in het hoofdvenster is dat een paar keer per
+    /// seconde, en dan telt de kwaliteit van dichtstbijzijnde-pixel-bemonstering niet:
+    /// het gaat om "leeft dit" zien, niet om scherpte.
+    pub fn lees_bgra_miniatuur(
+        &self,
+        tex: &ID3D11Texture2D,
+        doel_breedte: u32,
+        doel_hoogte: u32,
+    ) -> Result<Vec<u8>> {
+        let (breedte, hoogte) = afmetingen(tex);
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: breedte,
+            Height: hoogte,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut staging = None;
+        // SAFETY: `desc` is volledig ingevuld; de kopie gaat tussen twee texturen van
+        // gelijke afmeting en formaat.
+        let uit = unsafe {
+            self.device
+                .CreateTexture2D(&desc, None, Some(&mut staging))
+                .context("uitleestextuur aanmaken")?;
+            let staging = staging.context("D3D11 gaf geen textuur terug")?;
+            self.context.CopyResource(&staging, tex);
+
+            let mut kaart = D3D11_MAPPED_SUBRESOURCE::default();
+            self.context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut kaart))
+                .context("textuur uitlezen")?;
+
+            let mut uit = vec![0u8; (doel_breedte * doel_hoogte * 4) as usize];
+            for y in 0..doel_hoogte {
+                let bron_y = (y * hoogte) / doel_hoogte.max(1);
+                let rij = (kaart.pData as *const u8).add((bron_y * kaart.RowPitch) as usize);
+                for x in 0..doel_breedte {
+                    let bron_x = (x * breedte) / doel_breedte.max(1);
+                    let bron = std::slice::from_raw_parts(rij.add((bron_x * 4) as usize), 4);
+                    let doel = ((y * doel_breedte + x) * 4) as usize;
+                    uit[doel..doel + 4].copy_from_slice(bron);
+                }
+            }
+            self.context.Unmap(&staging, 0);
+            uit
+        };
+        Ok(uit)
+    }
 }
 
 /// Afmetingen van een bestaande textuur.

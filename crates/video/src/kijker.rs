@@ -33,13 +33,33 @@ const ONTVANG_TIMEOUT: Duration = Duration::from_millis(8);
 /// Niet vaker dan dit om een keyframe vragen. Bij aanhoudend verlies zou een verzoek
 /// per kapot beeld de deler bedelven en het probleem alleen maar erger maken.
 const KEYFRAME_PAUZE: Duration = Duration::from_millis(500);
+/// Hoe vaak er een miniatuur voor het overzicht in het hoofdvenster wordt afgeleid.
+/// Dit is geen weergavepad — twee keer per seconde is ruim genoeg om levend te ogen en
+/// te weinig om ook maar iets te merken van de GPU-naar-CPU-kopie die het kost.
+const MINIATUUR_INTERVAL: Duration = Duration::from_millis(500);
+/// Breedte van de miniatuur; de hoogte volgt de beeldverhouding van de bron.
+const MINIATUUR_BREEDTE: u32 = 192;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum KijkerEvent {
     /// De gebruiker heeft het venster gesloten.
     Gesloten,
     /// We zijn de draad kwijt; de deler moet een keyframe sturen.
     KeyframeNodig,
+    /// Een verkleind beeld voor het overzicht in het hoofdvenster. BGRA, net als de
+    /// textuur waar het uit komt — de UI zet dat zelf om naar wat egui verwacht.
+    Miniatuur(Miniatuur),
+}
+
+#[derive(Debug, Clone)]
+pub struct Miniatuur {
+    pub breedte: u32,
+    pub hoogte: u32,
+    /// BGRA, `breedte * hoogte * 4` bytes. Achter een `Arc` omdat dit elke tik opnieuw
+    /// de motor in en de snapshot in gekopieerd wordt; zonder dat zou elke publicatie
+    /// een paar honderd kilobyte per bekeken stream kopiëren in plaats van een
+    /// refcount op te hogen.
+    pub data: Arc<[u8]>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +147,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
         .spawn(move || match opzetten(&d3d, &cfg) {
             Ok((venster, decoder)) => {
                 let _ = klaar_tx.send(Ok(()));
-                kijk_lus(venster, decoder, socket, &cfg, &staat, &event_tx);
+                kijk_lus(venster, decoder, &d3d, socket, &cfg, &staat, &event_tx);
                 let _ = event_tx.send(KijkerEvent::Gesloten);
             }
             Err(e) => {
@@ -158,6 +178,7 @@ fn opzetten(d3d: &D3dContext, cfg: &KijkerConfig) -> Result<(Venster, Decoder)> 
 fn kijk_lus(
     mut venster: Venster,
     mut decoder: Decoder,
+    d3d: &D3dContext,
     socket: MediaSocket,
     cfg: &KijkerConfig,
     gedeeld: &Arc<Gedeeld>,
@@ -173,6 +194,7 @@ fn kijk_lus(
     let mut laatst_gevraagd = Instant::now() - KEYFRAME_PAUZE;
     let mut laatste_incompleet = 0u64;
     let mut laatste_pomp = Instant::now();
+    let mut laatste_miniatuur = Instant::now() - MINIATUUR_INTERVAL;
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         // Het venster bedienen mag niet bij elk pakket: bij 1080p60 zijn dat er
@@ -237,6 +259,18 @@ fn kijk_lus(
                 }
                 gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
                 meet_vertraging(gedeeld, tijd_hns);
+
+                if laatste_miniatuur.elapsed() >= MINIATUUR_INTERVAL {
+                    laatste_miniatuur = Instant::now();
+                    match maak_miniatuur(d3d, &beeld) {
+                        Ok(m) => {
+                            let _ = events.try_send(KijkerEvent::Miniatuur(m));
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %format!("{e:#}"), "miniatuur maken mislukt");
+                        }
+                    }
+                }
             }
             Ok(None) => {}
             Err(e) => {
@@ -275,6 +309,23 @@ fn meet_vertraging(gedeeld: &Arc<Gedeeld>, opgenomen_hns: i64) {
 /// Van de 90 kHz-klok op de draad terug naar de eenheden van Media Foundation.
 fn naar_hns(tijdstempel: u32) -> i64 {
     (u64::from(tijdstempel) * crate::codec::HNS_PER_SEC as u64 / 90_000) as i64
+}
+
+/// Verkleint het getoonde beeld tot een miniatuur voor het overzicht in het
+/// hoofdvenster. Loopt via `D3dContext::lees_bgra_miniatuur`, dat alleen de nodige
+/// pixels uit de uitleestextuur bemonstert in plaats van het hele beeld te kopiëren.
+fn maak_miniatuur(
+    d3d: &D3dContext,
+    beeld: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+) -> Result<Miniatuur> {
+    let (bron_b, bron_h) = crate::d3d::afmetingen(beeld);
+    let hoogte = ((MINIATUUR_BREEDTE as u64 * bron_h as u64) / bron_b.max(1) as u64).max(1) as u32;
+    let data = d3d.lees_bgra_miniatuur(beeld, MINIATUUR_BREEDTE, hoogte)?;
+    Ok(Miniatuur {
+        breedte: MINIATUUR_BREEDTE,
+        hoogte,
+        data: data.into(),
+    })
 }
 
 #[cfg(test)]

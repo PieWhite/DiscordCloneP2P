@@ -22,7 +22,7 @@ use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
 use fitcom_proto::{ControlMsg, OpId, PeerId};
 use fitcom_store::{Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
-use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle};
+use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle, Miniatuur};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -77,6 +77,9 @@ pub struct StreamView {
     /// Geluid in plaats van beeld: geen venster, wel een volumeschuif.
     pub is_geluid: bool,
     pub volume: f32,
+    /// Verkleind beeld voor het overzicht in het hoofdvenster. `None` tot het eerste
+    /// beeld binnen is, en altijd `None` voor geluid.
+    pub miniatuur: Option<Miniatuur>,
 }
 
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
@@ -172,6 +175,7 @@ pub fn spawn(
         bronnen: HashMap::new(),
         delers: HashMap::new(),
         kijkers: HashMap::new(),
+        miniaturen: HashMap::new(),
         stream_volumes: HashMap::new(),
         fout: None,
         snap_tx,
@@ -211,6 +215,10 @@ struct Engine {
     bronnen: HashMap<u32, Bron>,
     delers: HashMap<u32, DelerHandle>,
     kijkers: HashMap<(PeerId, u32), KijkerHandle>,
+    /// Laatste miniatuur per bekeken stream, voor het overzicht in het hoofdvenster.
+    /// Blijft hier staan in plaats van in `Streams`, want dat is pure beslislogica en
+    /// dit is een bijproduct van het decoderen.
+    miniaturen: HashMap<(PeerId, u32), Miniatuur>,
     /// Volume per bron, ook als de voice-sessie even niet draait. Zo blijft een
     /// zachtgezette stream zacht als je het gesprek verlaat en weer aansluit.
     stream_volumes: HashMap<(PeerId, u32), f32>,
@@ -594,6 +602,7 @@ impl Engine {
                     stream_id,
                 } => {
                     self.kijkers.remove(&(eigenaar, stream_id));
+                    self.miniaturen.remove(&(eigenaar, stream_id));
                     if let Some(v) = &self.voice {
                         v.vergeet_bron((eigenaar, stream_id));
                     }
@@ -714,6 +723,9 @@ impl Engine {
                 match ev {
                     KijkerEvent::Gesloten => gesloten.push((eigenaar, stream_id)),
                     KijkerEvent::KeyframeNodig => keyframes.push((eigenaar, stream_id)),
+                    KijkerEvent::Miniatuur(m) => {
+                        self.miniaturen.insert((eigenaar, stream_id), m);
+                    }
                 }
             }
         }
@@ -723,6 +735,7 @@ impl Engine {
             self.stuur_alles(cmds);
         }
         for (eigenaar, stream_id) in gesloten {
+            self.miniaturen.remove(&(eigenaar, stream_id));
             let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
             self.stuur_alles(cmds);
             self.voer_uit(acties);
@@ -886,6 +899,7 @@ impl Engine {
                     .get(&(s.eigenaar, s.id))
                     .copied()
                     .unwrap_or(1.0),
+                miniatuur: self.miniaturen.get(&(s.eigenaar, s.id)).cloned(),
             })
             .collect();
 
