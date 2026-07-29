@@ -126,7 +126,9 @@ seconde, geen enkel beeld onderweg kwijt, scherp leesbare tekst, en 3,1 ms tusse
 opnemen en tonen in een debug-build. Wat een tweede machine daaraan toevoegt is een echt
 netwerk, een andere GPU, en een oordeel over hoe het voelt.
 
-Desktop-audio (4.9) is nog niet gebouwd — dat is het laatste wat in deze fase openstaat.
+Van desktop-audio is de opnamekant bevestigd: met geluid aan komen er pakketten uit,
+zonder geluid geen enkel. Of het aan de andere kant ook klínkt kan alleen met een tweede
+machine — op één PC tapt de loopback het geluid af dat de andere instantie net afspeelde.
 
 **4.1** Deel je scherm; hij ziet het. Cursor is zichtbaar.
 **4.2** Tekst en code zijn scherp leesbaar, geen wazige randen om gekleurde letters.
@@ -145,7 +147,10 @@ terug. *Bij het opnieuw openen wordt er om een keyframe gevraagd; blijft het ven
 zwart, dan komt dat verzoek niet aan of wordt het niet gehonoreerd.*
 **4.7** Venster delen in plaats van scherm; alleen dat venster is zichtbaar.
 **4.8** Twee mensen delen tegelijk; beide beelden zijn te zien.
-**4.9** Desktop-audio komt mee en is los in volume te regelen van de stemmen.
+**4.9** Desktop-audio komt mee en is los in volume te regelen van de stemmen. *Jullie
+moeten allebei in het gesprek zitten; het geluid gaat over de voice-verbinding mee.
+Zonder gesprek staat de knop uitgegrijsd. Zet ook de schuif op nul: dan hoor je zijn
+spel niet meer maar hem nog wel.*
 **4.10** Bij de peer met de RTX 2080 Super: werkt decoderen daar ook? *Dit is de machine
 die de codeckeuze bepaalde.*
 **4.11** F11 of dubbelklik in het kijkvenster → beeldvullend, Escape of F11 → terug. Dit

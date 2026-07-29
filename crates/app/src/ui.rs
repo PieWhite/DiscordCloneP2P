@@ -228,17 +228,46 @@ impl App {
                     if let Some(id) = p.peer_id {
                         for s in self.snap.streams.iter().filter(|s| s.eigenaar == id) {
                             ui.horizontal(|ui| {
-                                ui.small("\u{1F5B5}");
-                                ui.small(&s.titel)
-                                    .on_hover_text(format!("{}×{}", s.breedte, s.hoogte));
+                                ui.small(if s.is_geluid {
+                                    "\u{1F50A}"
+                                } else {
+                                    "\u{1F5B5}"
+                                });
+                                let label = ui.small(&s.titel);
+                                if !s.is_geluid {
+                                    label.on_hover_text(format!("{}×{}", s.breedte, s.hoogte));
+                                }
                             });
-                            let knop = if s.kijken { "sluiten" } else { "bekijken" };
+
+                            let knop = match (s.is_geluid, s.kijken) {
+                                (true, true) => "niet meer luisteren",
+                                (true, false) => "meeluisteren",
+                                (false, true) => "sluiten",
+                                (false, false) => "bekijken",
+                            };
                             if ui.small_button(knop).clicked() {
                                 stream_cmd = Some(if s.kijken {
                                     UiCommand::StopKijken(id, s.stream_id)
                                 } else {
                                     UiCommand::Kijken(id, s.stream_id)
                                 });
+                            }
+
+                            // Meegedeeld geluid staat los van de stem: je wilt zijn
+                            // spel zachter kunnen zetten zonder hem te dempen.
+                            if s.is_geluid && s.kijken {
+                                let mut vol = s.volume;
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut vol, 0.0..=2.0)
+                                            .show_value(false)
+                                            .text("geluid"),
+                                    )
+                                    .changed()
+                                {
+                                    stream_cmd =
+                                        Some(UiCommand::StreamVolume(id, s.stream_id, vol));
+                                }
                             }
                         }
                     }
@@ -314,7 +343,38 @@ impl App {
         let openen = ui
             .add_sized([ui.available_width(), 26.0], egui::Button::new(label))
             .clicked();
+
+        // Bureaubladgeluid gaat over de voice-verbinding mee, dus zonder gesprek is er
+        // geen weg naar de anderen. Uitgrijzen legt dat beter uit dan een foutmelding
+        // achteraf.
+        ui.add_space(4.0);
+        let deelt_geluid = self.snap.eigen_streams.iter().any(|s| s.is_geluid);
+        let knop = ui.add_enabled(
+            self.snap.voice.actief,
+            egui::Button::new(if deelt_geluid {
+                "Geluid niet meer delen"
+            } else {
+                "Geluid van deze pc delen"
+            })
+            .min_size([ui.available_width(), 24.0].into()),
+        );
+        if !self.snap.voice.actief {
+            knop.on_disabled_hover_text("neem eerst deel aan het gesprek");
+        } else if knop.clicked() {
+            cmd = Some(match self.eigen_geluidsstream() {
+                Some(id) => UiCommand::StopDelen(id),
+                None => UiCommand::DeelBureaubladgeluid,
+            });
+        }
         (cmd, openen)
+    }
+
+    fn eigen_geluidsstream(&self) -> Option<u32> {
+        self.snap
+            .eigen_streams
+            .iter()
+            .find(|s| s.is_geluid)
+            .map(|s| s.stream_id)
     }
 
     fn open_bronkeuze(&mut self) {

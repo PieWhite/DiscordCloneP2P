@@ -15,15 +15,18 @@ Laatst bijgewerkt: 2026-07-29, na fase 4 deel 2.
 | 1 — Netwerklaag | ✅ af | **echt getest tussen twee PC's over Tailscale** |
 | 2 — Tekstchat | ✅ af, nog niet met een echte peer getest | 19 unit/integratietests, 3 lokale instanties |
 | 3 — Voice | ✅ af, nog niet met een echte peer getest | ketentests + rooktest op echte geluidskaart |
-| 4 — Screenshare | 🟡 **beeld af, desktop-audio niet** | volledige keten op echte GPU, 55 fps op 1080p |
+| 4 — Screenshare | ✅ af, nog niet met een echte peer getest | volledige keten op echte GPU, 55 fps op 1080p |
 
 **Beeld werkt van begin tot eind**: een bron aankondigen, intekenen, opnemen, coderen,
 versturen, samenstellen, decoderen en tonen. Gemeten op deze machine: 1080p op 55-56
 beelden per seconde, nul beelden onderweg kwijt, 3,1 ms tussen opnemen en tonen in een
 debug-build.
 
-Wat nog open staat is **desktop-audio**; dat staat onderaan met de ontwerpkeuze die er
-nog gemaakt moet worden.
+**Desktop-audio werkt ook**: het geluid van je PC gaat mee als eigen stream, met bij de
+luisteraar een volumeschuif los van je stem.
+
+Fase 4 is daarmee compleet op wat alleen met een tweede machine te controleren valt.
+Zie `docs/TESTPLAN.md`.
 
 ---
 
@@ -215,41 +218,34 @@ cargo test -p fitcom      --test stream_deling -- --ignored --nocapture # via de
 
 ---
 
-## Wat er nog moet in fase 4: desktop-audio
+## Hoe desktop-audio in elkaar zit
 
-Het laatste onderdeel. `cpal` 0.18 kan dit gewoon: bouw een **invoer**stroom op een
-**uitvoer**apparaat, dan zet WASAPI stilzwijgend loopback aan. Er is dus geen eigen
-WASAPI-code nodig, wat de oude aantekening hier wel vermoedde.
+Aankondigen en intekenen gaan via dezelfde `Streams` als screenshare, met
+`StreamKind::DESKTOP_AUDIO`. Het geluid zelf gaat **over de voice-verbinding**: de
+zender stuurt het vanaf zijn voice-socket, de luisteraar zet zijn *voice*-poort in de
+`StreamSubscribe`, en bij de ontvanger telt de bestaande mixer het er als extra bron bij
+op. De sleutel van `jitters`, `volumes` en `niveaus` is daarom `(PeerId, stream_id)` in
+plaats van `PeerId`.
 
-Verder is het de bestaande voice-keten: 48 kHz mono, Opus, eigen `stream_id`, bij de
-ontvanger een extra bron in de mixer met een eigen volumeschuif. Geen VAD en geen
-ruisonderdrukking — dat is muziek en spelgeluid, geen spraak, en een VAD zou er stukken
-uit knippen. Wel een stiltedrempel met ruime hangover, anders kost stilte bandbreedte.
+**Gevolg: je moet in het gesprek zitten om meegedeeld geluid te horen of te delen.** Dat
+is een bewuste afweging. De alternatieven waren een eigen poort per stream (consequent
+met video, maar dan heeft de ontvangende kant een tweede volledig weergavepad nodig los
+van de voice-sessie) of de weergave losknippen van de microfoon (grondiger, maar dat
+raakt code die werkt en al met een rooktest bevestigd is). De beperking valt in de
+praktijk weg: je deelt je scherm tijdens een gesprek.
 
-### De keuze die nog gemaakt moet worden
+De UI grijst de knop uit als je niet in het gesprek zit, en verlaat je het gesprek terwijl
+je geluid deelt, dan wordt dat netjes ingetrokken — anders blijven de anderen naar een
+dood adres sturen.
 
-Waar komt het geluid binnen? Twee wegen, en ze sluiten elkaar uit:
-
-**A. Over de voice-poort, als extra bron in de bestaande mixer.**
-De ontvanger heeft al een uitvoerapparaat open zodra hij in het gesprek zit, en
-`mix.rs` telt gewoon een bron extra op. De sleutel van `jitters`, `volumes` en `niveaus`
-moet dan van `PeerId` naar `(PeerId, stream_id)`. Klein en overzichtelijk.
-Nadeel: **je moet in het gesprek zitten om meegedeeld geluid te horen.**
-
-**B. Een eigen poort per stream, zoals video.**
-Consequent met screenshare en werkt zonder gesprek. Nadeel: de ontvangende kant heeft
-dan een tweede weergavepad nodig, los van de voice-sessie, met eigen apparaatkeuze en
-eigen mix. Dat is een flink stuk dubbel werk voor iets wat je in de praktijk altijd
-tijdens een gesprek gebruikt.
-
-**Aanbeveling: A**, met de aankondiging en het intekenen wél via `Streams`
-(`StreamKind::DESKTOP_AUDIO` bestaat al in het protocol). De intekenaar zet dan zijn
-*voice*-poort in `StreamSubscribe.media_port`. Zo blijft "kost niets als niemand
-luistert" overeind, wordt de mixer hergebruikt, en is de enige beperking dat je in het
-gesprek moet zitten — wat je toch al bent.
-
-Let op bij het uitvoeren: `Actie::StartDelen` zegt nu niet welke *soort* stream het is.
-De motor kan dat opzoeken met `self.streams.eigen()`, of `Actie` krijgt er een veld bij.
+Verdere keuzes:
+- `cpal` 0.18 doet loopback vanzelf: bouw een **invoer**stroom op een **uitvoer**apparaat.
+  Er is dus geen eigen WASAPI-code nodig, wat een oudere aantekening hier wel vermoedde.
+- Opus in `Application::Audio` op 96 kbit/s in plaats van `Voip` op 32. Het spraakmodel
+  knijpt bij muziek de hoge tonen eruit en laat percussie rammelen.
+- Geen VAD, wel een lage stiltedrempel met twee seconden hangover. Een VAD zou stukken
+  uit muziek knippen; de drempel zorgt alleen dat een PC waar niets speelt geen verkeer
+  veroorzaakt.
 
 ---
 
@@ -262,6 +258,11 @@ Fase 4 is op één machine wel volledig doorlopen, inclusief de UDP-weg over loo
 de motor met echte QUIC-verbindingen. Wat een tweede machine daaraan toevoegt: een echt
 netwerk met echt pakketverlies, een andere GPU (de RTX 2080 Super is de machine die de
 codeckeuze bepaalde), en een oordeel over hoe het voelt.
+
+Van desktop-audio is de opnamekant bevestigd op echte hardware — met geluid aan komen er
+pakketten uit, zonder geluid geen enkel. Dat het aan de andere kant ook *klinkt* is niet
+te controleren zonder tweede machine: op één PC tapt de loopback het geluid af dat de
+andere instantie net afspeelde.
 
 **Niet geverifieerd: de knoppen zelf.** De motor is via zijn commando's getest, maar op
 "Scherm delen…" en "bekijken" is nooit echt geklikt — in deze omgeving kan een script

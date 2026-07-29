@@ -35,7 +35,7 @@ Of het *klinkt* moet met een tweede machine beoordeeld worden — dat kan geen t
 Geen echo-onderdrukking, conform de afspraak dat iedereen een headset gebruikt. Dat
 scheelde een C++-bouwafhankelijkheid (WebRTC APM).
 
-## Fase 4 — Screenshare, eerste versie 🟡 beeld af
+## Fase 4 — Screenshare, eerste versie ✅
 WGC-capture van één monitor, H.264-encode via Media Foundation, UDP-fragmentatie,
 decode, D3D11-render in een pop-out venster, subscribe-on-demand, desktop-audio
 als aparte stream met eigen volume.
@@ -45,8 +45,9 @@ samenstellen, decoderen, tonen — plus het streambeheer eromheen en de knoppen 
 Op deze machine gemeten: 1080p op 55-56 beelden per seconde, geen enkel beeld onderweg
 kwijt, scherp leesbare tekst.
 
-**Nog niet af:** desktop-audio. Zie `docs/OVERDRACHT.md` voor de ontwerpkeuze die
-daarvoor nog gemaakt moet worden.
+**Desktop-audio** gaat mee als eigen stream over de voice-verbinding, met bij de
+luisteraar een volumeschuif los van de stem. Gevolg: je moet in het gesprek zitten om
+mee te luisteren of mee te sturen. De afweging staat in `docs/OVERDRACHT.md`.
 
 **Meetpunt: gedaan.** 3,1 ms tussen opnemen en tonen, in een debug-build. Dat is ver
 onder alles wat opvalt, dus de encoder hoeft niet naar directe NVENC. Wat de monitor er

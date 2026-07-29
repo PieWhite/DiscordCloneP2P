@@ -62,6 +62,7 @@ pub struct EigenStreamView {
     pub stream_id: u32,
     pub titel: String,
     pub kijkers: usize,
+    pub is_geluid: bool,
 }
 
 /// Een bron die een ander deelt.
@@ -73,6 +74,9 @@ pub struct StreamView {
     pub breedte: u32,
     pub hoogte: u32,
     pub kijken: bool,
+    /// Geluid in plaats van beeld: geen venster, wel een volumeschuif.
+    pub is_geluid: bool,
+    pub volume: f32,
 }
 
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
@@ -101,9 +105,13 @@ pub enum UiCommand {
     Volume(PeerId, f32),
     /// Een scherm of venster gaan delen. Er wordt nog niets opgenomen.
     DeelBron(Bron),
+    /// Het geluid van deze PC meesturen. Vereist dat je in het gesprek zit.
+    DeelBureaubladgeluid,
     StopDelen(u32),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
+    /// Volume van één stream van een peer, los van zijn stem.
+    StreamVolume(PeerId, u32, f32),
 }
 
 pub struct EngineHandle {
@@ -159,6 +167,7 @@ pub fn spawn(
         bronnen: HashMap::new(),
         delers: HashMap::new(),
         kijkers: HashMap::new(),
+        stream_volumes: HashMap::new(),
         fout: None,
         snap_tx,
         voorgrond: voorgrond.clone(),
@@ -197,6 +206,9 @@ struct Engine {
     bronnen: HashMap<u32, Bron>,
     delers: HashMap<u32, DelerHandle>,
     kijkers: HashMap<(PeerId, u32), KijkerHandle>,
+    /// Volume per bron, ook als de voice-sessie even niet draait. Zo blijft een
+    /// zachtgezette stream zacht als je het gesprek verlaat en weer aansluit.
+    stream_volumes: HashMap<(PeerId, u32), f32>,
 
     fout: Option<String>,
     snap_tx: watch::Sender<Arc<Snapshot>>,
@@ -361,8 +373,38 @@ impl Engine {
     }
 
     fn verlaten(&mut self) {
-        if self.voice.take().is_some() {
-            self.meld_voice_status(None);
+        if self.voice.take().is_none() {
+            return;
+        }
+        self.meld_voice_status(None);
+
+        // Bureaubladgeluid loopt over de voice-socket, en die is er nu niet meer.
+        // Zowel wat we deelden als waar we naar luisterden moet daarom weg — anders
+        // blijven de anderen naar een dood adres sturen en denkt de UI dat het werkt.
+        let eigen: Vec<u32> = self
+            .streams
+            .eigen()
+            .iter()
+            .filter(|s| s.kind == StreamKind::DESKTOP_AUDIO)
+            .map(|s| s.id)
+            .collect();
+        for id in eigen {
+            let (cmds, acties) = self.streams.stop_delen(id);
+            self.stuur_alles(cmds);
+            self.voer_uit(acties);
+        }
+
+        let geluid: Vec<(PeerId, u32)> = self
+            .streams
+            .vreemd()
+            .iter()
+            .filter(|s| s.kijken && s.kind == StreamKind::DESKTOP_AUDIO)
+            .map(|s| (s.eigenaar, s.id))
+            .collect();
+        for (eigenaar, id) in geluid {
+            let (cmds, acties) = self.streams.stop_kijken(eigenaar, id);
+            self.stuur_alles(cmds);
+            self.voer_uit(acties);
         }
     }
 
@@ -443,11 +485,60 @@ impl Engine {
         self.stuur_alles(cmds);
     }
 
+    /// Of dit een van onze streams is die geluid draagt in plaats van beeld.
+    ///
+    /// `Actie` zegt dat niet zelf: het is een eigenschap van de stream, niet van de
+    /// beslissing, en die staat al in `streams`.
+    fn is_geluid(&self, stream_id: u32) -> bool {
+        self.streams
+            .eigen()
+            .iter()
+            .any(|s| s.id == stream_id && s.kind == StreamKind::DESKTOP_AUDIO)
+    }
+
+    /// Het geluid van deze PC aankondigen. Net als bij een scherm wordt er nog niets
+    /// opgenomen: dat begint pas als er iemand meeluistert.
+    fn deel_bureaubladgeluid(&mut self) {
+        if self.voice.is_none() {
+            self.fout =
+                Some("neem eerst deel aan het gesprek; bureaubladgeluid gaat daarover mee".into());
+            return;
+        }
+        if self
+            .streams
+            .eigen()
+            .iter()
+            .any(|s| s.kind == StreamKind::DESKTOP_AUDIO)
+        {
+            return; // delen we al
+        }
+        // Geen afmeting: dit is geluid. De ontvanger leidt daar niets uit af — hij
+        // kijkt naar `kind`.
+        let (_, cmds) =
+            self.streams
+                .deel(StreamKind::DESKTOP_AUDIO, "Bureaubladgeluid".into(), 0, 0);
+        self.stuur_alles(cmds);
+    }
+
     /// Voert uit wat `streams` besloten heeft. Elke fout hierin is een fout in het
     /// uitvoeren, niet in de beslissing: de toestand blijft kloppen.
     fn voer_uit(&mut self, acties: Vec<Actie>) {
         for actie in acties {
             match actie {
+                Actie::StartDelen { stream_id, kijkers }
+                | Actie::ZetKijkers { stream_id, kijkers }
+                    if self.is_geluid(stream_id) =>
+                {
+                    // Bureaubladgeluid gaat over de voice-socket mee, dus opnieuw
+                    // aanzetten met een andere lijst luisteraars is hetzelfde als
+                    // starten. De sessie zelf is idempotent.
+                    if let Some(v) = &self.voice {
+                        if let Err(e) = v.deel_bureaublad(stream_id, kijkers) {
+                            tracing::error!(error = %format!("{e:#}"), "bureaubladgeluid delen mislukt");
+                            self.fout = Some(format!("bureaubladgeluid: {e:#}"));
+                        }
+                    }
+                }
                 Actie::StartDelen { stream_id, kijkers } => {
                     if let Err(e) = self.start_deler(stream_id, kijkers) {
                         tracing::error!(error = %format!("{e:#}"), stream = stream_id, "delen starten mislukt");
@@ -460,6 +551,11 @@ impl Engine {
                     }
                 }
                 Actie::StopDelen { stream_id } => {
+                    if self.is_geluid(stream_id) {
+                        if let Some(v) = &self.voice {
+                            v.stop_bureaublad();
+                        }
+                    }
                     self.delers.remove(&stream_id);
                 }
                 Actie::StuurKeyframe { stream_id } => {
@@ -473,10 +569,16 @@ impl Engine {
                     titel,
                     breedte,
                     hoogte,
+                    is_geluid,
                 } => {
-                    if let Err(e) = self.start_kijker(eigenaar, stream_id, titel, breedte, hoogte) {
+                    let uitkomst = if is_geluid {
+                        self.luister_mee(eigenaar, stream_id)
+                    } else {
+                        self.start_kijker(eigenaar, stream_id, titel, breedte, hoogte)
+                    };
+                    if let Err(e) = uitkomst {
                         tracing::error!(error = %format!("{e:#}"), "kijken starten mislukt");
-                        self.fout = Some(format!("stream openen: {e:#}"));
+                        self.fout = Some(format!("{e:#}"));
                         // De beslissing terugdraaien, anders denkt de UI dat we kijken.
                         let (cmds, _) = self.streams.stop_kijken(eigenaar, stream_id);
                         self.stuur_alles(cmds);
@@ -487,9 +589,26 @@ impl Engine {
                     stream_id,
                 } => {
                     self.kijkers.remove(&(eigenaar, stream_id));
+                    if let Some(v) = &self.voice {
+                        v.vergeet_bron((eigenaar, stream_id));
+                    }
                 }
             }
         }
+    }
+
+    /// Intekenen op andermans bureaubladgeluid. Er komt geen venster en geen eigen
+    /// thread aan te pas: het komt binnen op de voice-poort en de mixer die daar al
+    /// draait telt het er gewoon bij op.
+    fn luister_mee(&mut self, eigenaar: PeerId, stream_id: u32) -> Result<()> {
+        let poort = self
+            .voice
+            .as_ref()
+            .map(|v| v.media_port())
+            .context("neem eerst deel aan het gesprek om meegedeeld geluid te horen")?;
+        let cmds = self.streams.kijker_draait(eigenaar, stream_id, poort);
+        self.stuur_alles(cmds);
+        Ok(())
     }
 
     fn start_deler(&mut self, stream_id: u32, kijkers: Vec<SocketAddr>) -> Result<()> {
@@ -622,6 +741,13 @@ impl Engine {
                 }
             }
             UiCommand::DeelBron(bron) => self.deel_bron(bron),
+            UiCommand::DeelBureaubladgeluid => self.deel_bureaubladgeluid(),
+            UiCommand::StreamVolume(peer, id, vol) => {
+                self.stream_volumes.insert((peer, id), vol);
+                if let Some(v) = &self.voice {
+                    v.zet_bron_volume((peer, id), vol);
+                }
+            }
             UiCommand::StopDelen(id) => {
                 let (cmds, acties) = self.streams.stop_delen(id);
                 self.bronnen.remove(&id);
@@ -704,6 +830,7 @@ impl Engine {
                 stream_id: s.id,
                 titel: s.titel.clone(),
                 kijkers: s.kijkers.len(),
+                is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
             })
             .collect();
 
@@ -718,6 +845,12 @@ impl Engine {
                 breedte: s.breedte,
                 hoogte: s.hoogte,
                 kijken: s.kijken,
+                is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                volume: self
+                    .stream_volumes
+                    .get(&(s.eigenaar, s.id))
+                    .copied()
+                    .unwrap_or(1.0),
             })
             .collect();
 

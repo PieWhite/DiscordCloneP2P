@@ -15,6 +15,11 @@ const VERWACHT_VERLIES: i32 = 5;
 /// Ruim boven wat een 20 ms mono-frame ooit oplevert.
 pub const MAX_PAYLOAD: usize = 512;
 
+/// Spelgeluid en muziek zijn geen spraak: Opus' spraakmodel knijpt daar de hoge tonen
+/// uit en laat percussie rammelen. Meer bits en het audio-model lossen dat op, en bij
+/// 1 Gbit kost dat niets.
+const BUREAUBLAD_BITRATE: i32 = 96_000;
+
 pub struct Encoder {
     inner: opus::Encoder,
 }
@@ -24,6 +29,16 @@ impl Encoder {
         let mut inner = opus::Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)
             .context("Opus-encoder aanmaken")?;
         inner.set_bitrate(opus::Bitrate::Bits(BITRATE))?;
+        inner.set_inband_fec(true)?;
+        inner.set_packet_loss_perc(VERWACHT_VERLIES)?;
+        Ok(Self { inner })
+    }
+
+    /// Voor bureaubladgeluid: muziek en spelgeluid in plaats van spraak.
+    pub fn voor_muziek() -> Result<Self> {
+        let mut inner = opus::Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Audio)
+            .context("Opus-encoder aanmaken")?;
+        inner.set_bitrate(opus::Bitrate::Bits(BUREAUBLAD_BITRATE))?;
         inner.set_inband_fec(true)?;
         inner.set_packet_loss_perc(VERWACHT_VERLIES)?;
         Ok(Self { inner })

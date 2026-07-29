@@ -64,23 +64,40 @@ pub struct Niveaus {
     pub per_peer: HashMap<PeerId, f32>,
 }
 
+/// Een geluidsbron: welke peer, en welke stream van hem.
+///
+/// Stream 0 is zijn stem. Deelt hij zijn bureaubladgeluid, dan komt dat binnen op het
+/// id dat hij daaraan gaf. Voor de mixer is dat gewoon een bron erbij — met een eigen
+/// volumeschuif, want spelgeluid en een stem wil je los kunnen regelen.
+pub type Bron = (PeerId, u32);
+
+/// Wat we van ons eigen bureaubladgeluid delen, en met wie.
+#[derive(Debug, Clone)]
+struct Bureaublad {
+    stream_id: u32,
+    doelen: Vec<SocketAddr>,
+}
+
 struct Gedeeld {
     peers: Mutex<Vec<PeerAdres>>,
-    volumes: Mutex<HashMap<PeerId, f32>>,
-    jitters: Mutex<HashMap<PeerId, JitterBuffer>>,
-    niveaus: Mutex<HashMap<PeerId, f32>>,
+    volumes: Mutex<HashMap<Bron, f32>>,
+    jitters: Mutex<HashMap<Bron, JitterBuffer>>,
+    niveaus: Mutex<HashMap<Bron, f32>>,
     mute: AtomicBool,
     deafen: AtomicBool,
     /// `f32` via `to_bits`, zodat de UI hem zonder lock kan uitlezen.
     eigen_niveau: AtomicU32,
     stop: AtomicBool,
+    /// `None` betekent: we delen geen bureaubladgeluid. De opname-thread stopt zichzelf
+    /// zodra dit leeg is, dus er wordt niets opgenomen als niemand luistert.
+    bureaublad: Mutex<Option<Bureaublad>>,
 }
 
 impl Gedeeld {
-    fn volume_van(&self, peer: PeerId) -> f32 {
+    fn volume_van(&self, bron: Bron) -> f32 {
         self.volumes
             .lock()
-            .map(|v| v.get(&peer).copied().unwrap_or(1.0))
+            .map(|v| v.get(&bron).copied().unwrap_or(1.0))
             .unwrap_or(1.0)
     }
 }
@@ -89,6 +106,9 @@ pub struct VoiceHandle {
     gedeeld: Arc<Gedeeld>,
     /// Waar de anderen hun audio naartoe moeten sturen.
     pub media_addr: SocketAddr,
+    /// Om er later een verzendkant voor bureaubladgeluid bij te kunnen zetten.
+    socket: MediaSocket,
+    uitvoer_apparaat: Option<String>,
 }
 
 impl VoiceHandle {
@@ -121,9 +141,16 @@ impl VoiceHandle {
         self.gedeeld.deafen.load(Ordering::Relaxed)
     }
 
+    /// Volume van iemands stem.
     pub fn zet_volume(&self, peer: PeerId, volume: f32) {
+        self.zet_bron_volume((peer, VOICE_STREAM_ID), volume);
+    }
+
+    /// Volume van één bron. Het bureaubladgeluid van een peer staat hiermee los van
+    /// zijn stem: je wilt zijn spel zachter kunnen zetten zonder hem te dempen.
+    pub fn zet_bron_volume(&self, bron: Bron, volume: f32) {
         if let Ok(mut v) = self.gedeeld.volumes.lock() {
-            v.insert(peer, volume.clamp(0.0, 2.0));
+            v.insert(bron, volume.clamp(0.0, 2.0));
         }
     }
 
@@ -134,9 +161,77 @@ impl VoiceHandle {
                 .gedeeld
                 .niveaus
                 .lock()
-                .map(|n| n.clone())
+                .map(|n| {
+                    // De UI toont één balkje per persoon, en dat hoort bij zijn stem.
+                    n.iter()
+                        .filter(|((_, stream), _)| *stream == VOICE_STREAM_ID)
+                        .map(|((peer, _), niveau)| (*peer, *niveau))
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
+    }
+
+    /// Begint het geluid van deze PC mee te sturen op `stream_id`.
+    ///
+    /// Idempotent: staat hij al aan, dan worden alleen de luisteraars bijgewerkt. Een
+    /// lege lijst luisteraars stopt de opname — er wordt niets opgenomen als niemand
+    /// meeluistert.
+    pub fn deel_bureaublad(&self, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
+        let draaide_al = self
+            .gedeeld
+            .bureaublad
+            .lock()
+            .map(|b| b.is_some())
+            .unwrap_or(false);
+
+        if doelen.is_empty() {
+            self.stop_bureaublad();
+            return Ok(());
+        }
+
+        if let Ok(mut b) = self.gedeeld.bureaublad.lock() {
+            *b = Some(Bureaublad { stream_id, doelen });
+        }
+        if !draaide_al {
+            start_bureaublad(
+                self.gedeeld.clone(),
+                self.socket.probeer_clone()?,
+                self.uitvoer_apparaat.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn stop_bureaublad(&self) {
+        if let Ok(mut b) = self.gedeeld.bureaublad.lock() {
+            *b = None;
+        }
+    }
+
+    /// Haalt een bron uit de mix. Zonder dit blijft de jitterbuffer van een stream waar
+    /// niemand meer op ingetekend is eeuwig verliesverberging produceren.
+    pub fn vergeet_bron(&self, bron: Bron) {
+        if let Ok(mut j) = self.gedeeld.jitters.lock() {
+            j.remove(&bron);
+        }
+        if let Ok(mut n) = self.gedeeld.niveaus.lock() {
+            n.remove(&bron);
+        }
+    }
+
+    pub fn deelt_bureaublad(&self) -> bool {
+        self.gedeeld
+            .bureaublad
+            .lock()
+            .map(|b| b.is_some())
+            .unwrap_or(false)
+    }
+
+    /// De poort waarop wij audio verwachten. Hoort in `StreamSubscribe.media_port` als
+    /// we op iemands bureaubladgeluid intekenen.
+    pub fn media_port(&self) -> u16 {
+        self.media_addr.port()
     }
 }
 
@@ -157,6 +252,9 @@ struct Apparaten {
 pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
     let socket = bind_met_geduld(cfg.media_port)?;
     let media_addr = socket.local_addr()?;
+    // Bureaubladgeluid komt van hetzelfde apparaat als waar jij op luistert — dat is
+    // per definitie wat er te horen valt.
+    let uitvoer_naam = cfg.output_device.clone();
 
     let gedeeld = Arc::new(Gedeeld {
         peers: Mutex::new(Vec::new()),
@@ -167,6 +265,7 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
         deafen: AtomicBool::new(false),
         eigen_niveau: AtomicU32::new(0),
         stop: AtomicBool::new(false),
+        bureaublad: Mutex::new(None),
     });
 
     let (opname_tx, opname_rx) = bounded::<Vec<f32>>(32);
@@ -208,6 +307,7 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
     );
 
     let verzender = socket.probeer_clone()?;
+    let bewaard = socket.probeer_clone()?;
     start_opname(gedeeld.clone(), opname_rx, verzender, apparaten.invoer_rate)?;
     start_ontvangst(gedeeld.clone(), socket)?;
     start_mixen(gedeeld.clone(), weergave_tx, apparaten.uitvoer_rate)?;
@@ -215,6 +315,8 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
     Ok(VoiceHandle {
         gedeeld,
         media_addr,
+        socket: bewaard,
+        uitvoer_apparaat: uitvoer_naam,
     })
 }
 
@@ -525,6 +627,134 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Bureaubladgeluid
+// ---------------------------------------------------------------------------
+
+/// Onder dit niveau gaan we ervan uit dat er niets speelt. Laag gezet: een stil stuk in
+/// muziek moet er niet uit geknipt worden, het gaat er alleen om dat een PC waar niets
+/// op draait geen verkeer veroorzaakt.
+const BUREAUBLAD_DREMPEL: f32 = 0.002;
+/// Zo lang blijven we doorsturen nadat het stil werd. Ruim, want anders hoor je bij elk
+/// kort stiltemoment de codec opnieuw inschakelen.
+const BUREAUBLAD_HANGOVER: u32 = 100; // 2 seconden
+
+/// Neemt op wat er uit de luidsprekers komt en stuurt het mee.
+///
+/// # Waarom hier geen eigen WASAPI-code staat
+///
+/// `cpal` doet dit al: bouw je een *invoer*stroom op een *uitvoer*apparaat, dan zet
+/// WASAPI stilzwijgend loopback aan. Dat scheelt een hoop `unsafe` en een tweede
+/// implementatie van dezelfde apparaatlogica.
+fn start_bureaublad(
+    gedeeld: Arc<Gedeeld>,
+    socket: MediaSocket,
+    apparaat: Option<String>,
+) -> Result<()> {
+    std::thread::Builder::new()
+        .name("fitcom-bureaublad".into())
+        .spawn(move || {
+            if let Err(e) = bureaublad_lus(&gedeeld, &socket, apparaat.as_ref()) {
+                tracing::error!(error = %format!("{e:#}"), "bureaubladgeluid gestopt door een fout");
+            }
+            // Wat er ook gebeurde: de staat moet kloppen, anders denkt de UI dat we
+            // nog delen en start er nooit meer een opname.
+            if let Ok(mut b) = gedeeld.bureaublad.lock() {
+                *b = None;
+            }
+        })
+        .context("bureaublad-thread starten")?;
+    Ok(())
+}
+
+fn bureaublad_lus(
+    gedeeld: &Arc<Gedeeld>,
+    socket: &MediaSocket,
+    apparaat: Option<&String>,
+) -> Result<()> {
+    let host = cpal::default_host();
+    let dev = kies_apparaat(host.output_devices()?, apparaat)
+        .or_else(|| host.default_output_device())
+        .context("geen weergaveapparaat om geluid van af te tappen")?;
+    let cfg = dev
+        .default_output_config()
+        .context("weergave-instellingen")?;
+    let rate = cfg.sample_rate();
+    let kanalen = cfg.channels() as usize;
+
+    let (tx, rx) = bounded::<Vec<f32>>(32);
+    // De stroom moet blijven leven op deze thread; laat je hem vallen dan stopt de
+    // opname stil.
+    let _stroom = bouw_invoer(&dev, &cfg, kanalen, tx)?;
+    _stroom.play().context("bureaubladopname starten")?;
+
+    tracing::info!(apparaat = %dev.to_string(), rate, kanalen, "bureaubladgeluid wordt gedeeld");
+
+    let mut resampler = Resampler::new(rate, SAMPLE_RATE);
+    let mut encoder = Encoder::voor_muziek()?;
+    let mut op48: Vec<f32> = Vec::new();
+    let mut pakket = [0u8; MAX_PAYLOAD];
+    let mut seq: u32 = 0;
+    let mut timestamp: u32 = 0;
+    let mut hangover: u32 = 0;
+
+    while !gedeeld.stop.load(Ordering::Relaxed) {
+        let Some(deling) = gedeeld.bureaublad.lock().ok().and_then(|b| b.clone()) else {
+            break; // niemand luistert meer
+        };
+
+        let Ok(blok) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        let mut herbemonsterd = Vec::new();
+        resampler.verwerk(&blok, &mut herbemonsterd);
+        op48.extend(herbemonsterd.iter().map(|s| s * 32768.0));
+
+        while op48.len() >= FRAME_SAMPLES {
+            let frame: Vec<f32> = op48.drain(..FRAME_SAMPLES).collect();
+            timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
+
+            if rms(&frame) / 32768.0 > BUREAUBLAD_DREMPEL {
+                hangover = BUREAUBLAD_HANGOVER;
+            }
+            if hangover == 0 {
+                continue; // stilte kost geen bandbreedte
+            }
+            hangover -= 1;
+
+            let pcm: Vec<i16> = frame
+                .iter()
+                .map(|&s| s.clamp(-32768.0, 32767.0) as i16)
+                .collect();
+            let n = match encoder.encode(&pcm, &mut pakket) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(error = %e, "bureaubladgeluid coderen mislukt");
+                    continue;
+                }
+            };
+
+            seq = seq.wrapping_add(1);
+            let header = MediaHeader {
+                stream_id: deling.stream_id,
+                seq,
+                timestamp,
+                payload_type: PayloadType::OPUS,
+                flags: 0,
+                frag_index: 0,
+            };
+            for doel in &deling.doelen {
+                if let Err(e) = socket.stuur(*doel, &header, &pakket[..n]) {
+                    tracing::debug!(%doel, error = %e, "bureaubladgeluid niet verstuurd");
+                }
+            }
+        }
+    }
+
+    tracing::info!("bureaubladgeluid niet meer gedeeld");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Ontvangen
 // ---------------------------------------------------------------------------
 
@@ -544,8 +774,8 @@ fn start_ontvangst(gedeeld: Arc<Gedeeld>, socket: MediaSocket) -> Result<()> {
                 let Some((van, header, payload)) = ontvangen else {
                     continue;
                 };
-                if header.stream_id != VOICE_STREAM_ID {
-                    continue; // screenshare, komt in een latere fase
+                if header.payload_type != PayloadType::OPUS {
+                    continue; // video; die heeft zijn eigen poort en zijn eigen thread
                 }
 
                 // Alleen van wie in het gesprek zit. Op een open UDP-poort komt
@@ -557,8 +787,11 @@ fn start_ontvangst(gedeeld: Arc<Gedeeld>, socket: MediaSocket) -> Result<()> {
                     .and_then(|p| p.iter().find(|p| p.addr == van).map(|p| p.id));
                 let Some(peer) = afzender else { continue };
 
+                // Elke stream van een peer is een eigen bron met een eigen
+                // jitterbuffer: zijn stem en zijn spelgeluid lopen niet gelijk op en
+                // mogen elkaars volgorde niet in de war schoppen.
                 if let Ok(mut j) = gedeeld.jitters.lock() {
-                    j.entry(peer)
+                    j.entry((peer, header.stream_id))
                         .or_default()
                         .push(header.seq, payload.to_vec());
                 }
@@ -576,7 +809,7 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
     std::thread::Builder::new()
         .name("fitcom-mix".into())
         .spawn(move || {
-            let mut decoders: HashMap<PeerId, Decoder> = HashMap::new();
+            let mut decoders: HashMap<Bron, Decoder> = HashMap::new();
             let mut resampler = Resampler::new(SAMPLE_RATE, uitvoer_rate);
             let mut gemixt = vec![0i16; FRAME_SAMPLES];
 
@@ -589,13 +822,13 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
 
                 // Kort vasthouden: decoderen doen we buiten de lock, anders houdt de
                 // mix-thread de ontvang-thread onnodig op.
-                let frames: Vec<(PeerId, Frame)> = match gedeeld.jitters.lock() {
+                let frames: Vec<(Bron, Frame)> = match gedeeld.jitters.lock() {
                     Ok(mut j) => j.iter_mut().map(|(&id, b)| (id, b.pop())).collect(),
                     Err(_) => Vec::new(),
                 };
 
                 let mut sprekers: Vec<(Vec<i16>, f32)> = Vec::new();
-                let mut niveaus: HashMap<PeerId, f32> = HashMap::new();
+                let mut niveaus: HashMap<Bron, f32> = HashMap::new();
 
                 for (peer, frame) in frames {
                     let decoder = match decoders.entry(peer) {

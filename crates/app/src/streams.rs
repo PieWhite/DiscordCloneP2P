@@ -51,6 +51,9 @@ pub enum Actie {
         titel: String,
         breedte: u32,
         hoogte: u32,
+        /// Geluid in plaats van beeld: geen venster, geen eigen poort — dat komt binnen
+        /// op de voice-poort en gaat de bestaande mixer in.
+        is_geluid: bool,
     },
     /// Sluit het venster.
     StopKijken { eigenaar: PeerId, stream_id: u32 },
@@ -189,6 +192,7 @@ impl Streams {
             titel: s.titel.clone(),
             breedte: s.breedte,
             hoogte: s.hoogte,
+            is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
         }]
     }
 
@@ -657,6 +661,57 @@ mod tests {
         s.bij_bericht(a, ip(), &aankondiging(1));
         assert_eq!(s.wil_kijken(a, 1).len(), 1);
         assert!(s.wil_kijken(a, 1).is_empty(), "we keken al");
+    }
+
+    #[test]
+    fn bureaubladgeluid_is_gemarkeerd_als_geluid() {
+        // De motor moet aan de actie kunnen zien dat er geen venster open hoeft maar
+        // dat het de mixer in gaat. Zonder deze vlag zou hij een decoder opstarten
+        // voor iets wat geen beeld is.
+        let mut s = Streams::new();
+        let a = PeerId::new_random();
+        s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamAnnounce(StreamAnnounce {
+                stream_id: 4,
+                kind: StreamKind::DESKTOP_AUDIO,
+                title: "Bureaubladgeluid".into(),
+                width: 0,
+                height: 0,
+            }),
+        );
+
+        match s.wil_kijken(a, 4).as_slice() {
+            [Actie::StartKijken { is_geluid, .. }] => assert!(*is_geluid),
+            andere => panic!("verwachtte één StartKijken, kreeg {andere:?}"),
+        }
+    }
+
+    #[test]
+    fn geluid_en_beeld_van_dezelfde_peer_staan_los_van_elkaar() {
+        // Je wilt iemands scherm kunnen bekijken zonder zijn spelgeluid, en andersom.
+        let mut s = Streams::new();
+        let a = PeerId::new_random();
+        s.bij_bericht(a, ip(), &aankondiging(1));
+        s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamAnnounce(StreamAnnounce {
+                stream_id: 2,
+                kind: StreamKind::DESKTOP_AUDIO,
+                title: "Bureaubladgeluid".into(),
+                width: 0,
+                height: 0,
+            }),
+        );
+
+        s.wil_kijken(a, 1);
+        assert!(s.vreemd().iter().any(|v| v.id == 1 && v.kijken));
+        assert!(
+            s.vreemd().iter().any(|v| v.id == 2 && !v.kijken),
+            "het geluid hoort niet mee te liften op het beeld"
+        );
     }
 
     #[test]

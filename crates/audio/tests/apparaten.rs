@@ -21,6 +21,47 @@ fn config() -> VoiceConfig {
 
 #[test]
 #[ignore = "vereist een echte geluidskaart"]
+fn bureaubladgeluid_kan_worden_afgetapt() {
+    // De aanname onder desktop-audio: `cpal` zet loopback aan zodra je een invoerstroom
+    // op een uitvoerapparaat bouwt. Klopt dat niet op deze machine, dan valt dit hier
+    // om in plaats van pas als er iemand meeluistert.
+    use fitcom_net::MediaSocket;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let sessie = fitcom_audio::start(config()).expect("voice moet kunnen starten");
+    let luisteraar = MediaSocket::bind(0).expect("luisterpoort");
+    let doel = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        luisteraar.local_addr().unwrap().port(),
+    );
+
+    sessie
+        .deel_bureaublad(7, vec![doel])
+        .expect("bureaubladgeluid moet te delen zijn");
+    assert!(sessie.deelt_bureaublad());
+
+    // Er hoeft geen geluid te spelen: dit bewijst dat de opname draait en de keten
+    // opgezet is. Speelt er wél iets af, dan komen er pakketten binnen.
+    std::thread::sleep(Duration::from_secs(2));
+    let mut buf = [0u8; fitcom_net::MAX_PAKKET];
+    let mut pakketten = 0;
+    for _ in 0..10 {
+        if let Ok(Some((_, header, _))) = luisteraar.ontvang(&mut buf) {
+            assert_eq!(header.stream_id, 7);
+            pakketten += 1;
+        }
+    }
+    println!(
+        "{pakketten} pakketten opgevangen (nul is goed als er niets speelt: stilte hoort geen verkeer te kosten)"
+    );
+
+    sessie.stop_bureaublad();
+    assert!(!sessie.deelt_bureaublad());
+    std::thread::sleep(Duration::from_millis(400));
+}
+
+#[test]
+#[ignore = "vereist een echte geluidskaart"]
 fn sessie_start_en_stopt_netjes() {
     let sessie = fitcom_audio::start(config()).expect("voice moet kunnen starten");
     println!("mediapoort: {}", sessie.media_addr);
