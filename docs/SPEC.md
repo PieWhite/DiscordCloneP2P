@@ -21,8 +21,27 @@ Dat is de belangrijkste niet-functionele eis en wint van kwaliteit waar ze botse
 - Windows only.
 
 **Codecgevolg:** alle drie zijn NVIDIA Turing of nieuwer. AV1 valt af (2080 Super kan
-AV1 niet encoden én niet decoden). **HEVC (H.265)** is de grootste gemene deler voor
-hardware-encode én -decode. H.264 als fallback.
+AV1 niet encoden én niet decoden).
+
+Bij het bouwen van fase 4 bleek de eerdere keuze voor HEVC niet houdbaar en is hij
+omgedraaid naar **H.264 als standaard, HEVC als optie**. Gemeten op de dev-PC:
+
+| | Encoder | Decoder |
+|---|---|---|
+| HEVC | `NVIDIA HEVC Encoder MFT` ✅ | `HEVCVideoExtension` — Store-uitbreiding, **niet standaard aanwezig** |
+| H.264 | `NVIDIA H.264 Encoder MFT` ✅ | `Microsoft H264 Video Decoder MFT` — zit altijd in Windows ✅ |
+
+Encoden kan met beide; het probleem zit aan de ontvangstkant. Zonder de HEVC Video
+Extensions kan een peer een HEVC-stream simpelweg niet decoderen, en dat is een
+onvoorspelbare afhankelijkheid op de PC's van de anderen.
+
+De reden om HEVC te willen was betere kwaliteit per bit — maar bij 1 Gbit symmetrisch
+zijn bits gratis. H.264 op ~25 Mbit voor 1080p60 is visueel uitstekend. Een codec die
+misschien niet werkt op de PC van je vriend is een veel groter probleem dan een
+bitrate die niemand merkt.
+
+HEVC blijft instelbaar (`codec = "hevc"` in de config) voor wie weet dat beide kanten
+de uitbreiding hebben.
 
 ## In scope
 1. P2P-netwerklaag over het tailnet, geen signaling-server.

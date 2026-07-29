@@ -1,0 +1,362 @@
+//! Schermopname via Windows.Graphics.Capture.
+//!
+//! Beelden blijven op de GPU: de capture-API levert een D3D11-textuur, die we naar
+//! onze eigen textuur kopiëren en rechtstreeks aan de encoder geven. Er komt geen
+//! enkel frame in het werkgeheugen langs, en dat is de reden dat dit naast een
+//! draaiende game kan zonder dat je het merkt.
+//!
+//! # Waarom `CreateFreeThreaded`
+//!
+//! De gewone `Create` verlangt een DispatcherQueue op de aanroepende thread — een
+//! WinRT-constructie die bij een gewone Rust-thread niet bestaat. De vrije variant
+//! levert frames op zijn eigen thread af en past daarmee bij hoe de rest van de
+//! media-code is opgezet.
+
+use crate::d3d::D3dContext;
+use anyhow::{bail, Context, Result};
+use crossbeam_channel::{bounded, Receiver};
+use windows::core::{Interface, BOOL};
+use windows::Foundation::TypedEventHandler;
+use windows::Graphics::Capture::{
+    Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
+};
+use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::Graphics::SizeInt32;
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+};
+use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
+use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
+    GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+};
+
+/// Twee buffers is genoeg: we halen elk frame meteen op en kopiëren het weg. Meer
+/// buffers betekent alleen dat er oudere beelden blijven liggen.
+const POOL_BUFFERS: i32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BronSoort {
+    Monitor,
+    Venster,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bron {
+    pub naam: String,
+    pub soort: BronSoort,
+    /// `HMONITOR` of `HWND`, afhankelijk van de soort.
+    pub handle: isize,
+}
+
+/// Of dit Windows schermopname überhaupt toestaat. Op Windows 11 altijd; we vragen het
+/// omdat een nette melding beter is dan een onbegrijpelijke fout verderop.
+pub fn ondersteund() -> bool {
+    GraphicsCaptureSession::IsSupported().unwrap_or(false)
+}
+
+pub fn beschikbare_bronnen() -> Result<Vec<Bron>> {
+    let mut uit = monitoren()?;
+    uit.extend(vensters()?);
+    Ok(uit)
+}
+
+fn monitoren() -> Result<Vec<Bron>> {
+    let mut gevonden: Vec<Bron> = Vec::new();
+
+    unsafe extern "system" fn per_monitor(
+        mon: HMONITOR,
+        _hdc: HDC,
+        _rect: *mut RECT,
+        data: LPARAM,
+    ) -> BOOL {
+        // SAFETY: `data` is de `&mut Vec<Bron>` die we hieronder meegeven, en blijft
+        // geldig voor de duur van de enumeratie.
+        let lijst = unsafe { &mut *(data.0 as *mut Vec<Bron>) };
+
+        let mut info = MONITORINFOEXW {
+            monitorInfo: windows::Win32::Graphics::Gdi::MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // SAFETY: `info.cbSize` is correct gezet, zoals de API vereist.
+        let ok = unsafe { GetMonitorInfoW(mon, &mut info.monitorInfo) }.as_bool();
+
+        let breedte = info.monitorInfo.rcMonitor.right - info.monitorInfo.rcMonitor.left;
+        let hoogte = info.monitorInfo.rcMonitor.bottom - info.monitorInfo.rcMonitor.top;
+        let naam = if ok {
+            format!("Scherm {}×{}", breedte, hoogte)
+        } else {
+            "Scherm".to_string()
+        };
+
+        lijst.push(Bron {
+            naam: if info.monitorInfo.dwFlags & 1 != 0 {
+                format!("{naam} (hoofdscherm)")
+            } else {
+                naam
+            },
+            soort: BronSoort::Monitor,
+            handle: mon.0 as isize,
+        });
+        BOOL(1)
+    }
+
+    // SAFETY: de callback hierboven verwacht precies dit type achter `LPARAM`.
+    unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(per_monitor),
+            LPARAM(&mut gevonden as *mut _ as isize),
+        )
+        .ok()
+        .context("schermen opsommen")?;
+    }
+    Ok(gevonden)
+}
+
+fn vensters() -> Result<Vec<Bron>> {
+    let mut gevonden: Vec<Bron> = Vec::new();
+
+    unsafe extern "system" fn per_venster(hwnd: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: zie `per_monitor`.
+        let lijst = unsafe { &mut *(data.0 as *mut Vec<Bron>) };
+
+        // SAFETY: `hwnd` komt van de enumeratie en is dus geldig.
+        unsafe {
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            // Werkbalkvensters en dergelijke wil niemand delen.
+            if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+                return BOOL(1);
+            }
+            let lengte = GetWindowTextLengthW(hwnd);
+            if lengte <= 0 {
+                return BOOL(1);
+            }
+            let mut buf = vec![0u16; lengte as usize + 1];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            if n <= 0 {
+                return BOOL(1);
+            }
+            lijst.push(Bron {
+                naam: String::from_utf16_lossy(&buf[..n as usize]),
+                soort: BronSoort::Venster,
+                handle: hwnd.0 as isize,
+            });
+        }
+        BOOL(1)
+    }
+
+    // SAFETY: zie `monitoren`.
+    unsafe {
+        EnumWindows(Some(per_venster), LPARAM(&mut gevonden as *mut _ as isize))
+            .context("vensters opsommen")?;
+    }
+    Ok(gevonden)
+}
+
+pub struct Capture {
+    d3d: D3dContext,
+    _item: GraphicsCaptureItem,
+    pool: Direct3D11CaptureFramePool,
+    session: GraphicsCaptureSession,
+    /// Onze eigen textuur; de capture-API hergebruikt de zijne zodra we het frame sluiten.
+    doel: ID3D11Texture2D,
+    afmeting: (u32, u32),
+    signaal: Receiver<()>,
+}
+
+// SAFETY: alle WinRT-objecten hierin zijn agile (free-threaded) en het D3D11-apparaat
+// staat op multithread-protected. De struct wordt bovendien maar door één thread
+// tegelijk gebruikt: de capture-thread.
+unsafe impl Send for Capture {}
+
+impl Capture {
+    pub fn start(d3d: &D3dContext, bron: &Bron) -> Result<Self> {
+        if !ondersteund() {
+            bail!("dit Windows staat schermopname niet toe");
+        }
+
+        let interop: IGraphicsCaptureItemInterop =
+            windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+                .context("capture-interop ophalen")?;
+
+        // SAFETY: de handle hoort bij de opgegeven soort; beide komen uit onze eigen
+        // enumeratie hierboven.
+        let item: GraphicsCaptureItem = unsafe {
+            match bron.soort {
+                BronSoort::Monitor => interop
+                    .CreateForMonitor(HMONITOR(bron.handle as *mut _))
+                    .context("scherm openen voor opname")?,
+                BronSoort::Venster => interop
+                    .CreateForWindow(HWND(bron.handle as *mut _))
+                    .context("venster openen voor opname")?,
+            }
+        };
+
+        let grootte = item.Size().context("afmetingen opvragen")?;
+        let afmeting = (grootte.Width.max(1) as u32, grootte.Height.max(1) as u32);
+
+        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+            &d3d.winrt_device,
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            POOL_BUFFERS,
+            grootte,
+        )
+        .context("framepool aanmaken")?;
+
+        let (tx, signaal) = bounded(1);
+        pool.FrameArrived(&TypedEventHandler::new(move |_, _| {
+            // Vol betekent dat we het vorige signaal nog niet verwerkt hebben; dan is
+            // er niets bij te vertellen.
+            let _ = tx.try_send(());
+            Ok(())
+        }))
+        .context("frame-gebeurtenis koppelen")?;
+
+        let session = pool.CreateCaptureSession(&item).context("opnamesessie")?;
+        session
+            .SetIsCursorCaptureEnabled(true)
+            .context("cursor aanzetten")?;
+
+        // De gele opnamerand kan sinds Windows 11 uit. Lukt het niet, dan is dat
+        // cosmetisch en geen reden om niet te delen.
+        if let Err(e) = session.SetIsBorderRequired(false) {
+            tracing::debug!(error = %e, "opnamerand blijft zichtbaar");
+        }
+
+        session.StartCapture().context("opname starten")?;
+        let doel = d3d.maak_textuur(afmeting.0, afmeting.1)?;
+
+        tracing::info!(bron = %bron.naam, breedte = afmeting.0, hoogte = afmeting.1, "opname gestart");
+
+        Ok(Self {
+            d3d: d3d.clone(),
+            _item: item,
+            pool,
+            session,
+            doel,
+            afmeting,
+            signaal,
+        })
+    }
+
+    pub fn afmeting(&self) -> (u32, u32) {
+        self.afmeting
+    }
+
+    /// Wacht op het volgende beeld en levert onze eigen textuur op.
+    ///
+    /// `None` betekent dat er binnen de tijd niets kwam. Dat is normaal: een venster
+    /// dat niet verandert levert geen frames, en dan is er ook niets te versturen.
+    pub fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<ID3D11Texture2D> {
+        self.signaal.recv_timeout(timeout).ok()?;
+
+        let frame = self.pool.TryGetNextFrame().ok()?;
+        let grootte = frame.ContentSize().ok()?;
+        let nieuw = (grootte.Width.max(1) as u32, grootte.Height.max(1) as u32);
+
+        if nieuw != self.afmeting {
+            // Resolutie gewijzigd of venster geschaald. Alles opnieuw opzetten; een
+            // frame overslaan is niet erg, doorgaan met de verkeerde maat wel.
+            tracing::info!(van = ?self.afmeting, naar = ?nieuw, "bron van afmeting veranderd");
+            if let Err(e) = self.herbouw(nieuw, grootte) {
+                tracing::error!(error = %format!("{e:#}"), "opname niet kunnen aanpassen");
+            }
+            let _ = frame.Close();
+            return None;
+        }
+
+        let surface = frame.Surface().ok()?;
+        let toegang: IDirect3DDxgiInterfaceAccess = surface.cast().ok()?;
+        // SAFETY: het oppervlak van een capture-frame is altijd een ID3D11Texture2D.
+        let bron: ID3D11Texture2D = unsafe { toegang.GetInterface().ok()? };
+
+        // Overzetten naar onze eigen textuur: zodra we het frame sluiten mag de
+        // capture-API zijn buffer hergebruiken voor het volgende beeld.
+        // SAFETY: beide texturen bestaan, hebben hetzelfde formaat en dezelfde maat.
+        unsafe { self.d3d.context.CopyResource(&self.doel, &bron) };
+        let _ = frame.Close();
+
+        Some(self.doel.clone())
+    }
+
+    fn herbouw(&mut self, nieuw: (u32, u32), grootte: SizeInt32) -> Result<()> {
+        self.pool
+            .Recreate(
+                &self.d3d.winrt_device,
+                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                POOL_BUFFERS,
+                grootte,
+            )
+            .context("framepool opnieuw opzetten")?;
+        self.doel = self.d3d.maak_textuur(nieuw.0, nieuw.1)?;
+        self.afmeting = nieuw;
+        Ok(())
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let _ = self.session.Close();
+        let _ = self.pool.Close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    #[ignore = "vereist een echt scherm"]
+    fn bronnen_zijn_op_te_sommen() {
+        let bronnen = beschikbare_bronnen().expect("bronnen");
+        let schermen = bronnen
+            .iter()
+            .filter(|b| b.soort == BronSoort::Monitor)
+            .count();
+        println!("{} bronnen, waarvan {schermen} schermen", bronnen.len());
+        for b in bronnen.iter().take(15) {
+            println!("  {:?} {}", b.soort, b.naam);
+        }
+        assert!(schermen >= 1, "er moet minstens één scherm zijn");
+    }
+
+    #[test]
+    #[ignore = "vereist een echt scherm"]
+    fn scherm_levert_beelden() {
+        let d3d = D3dContext::new().expect("D3D11");
+        let scherm = beschikbare_bronnen()
+            .expect("bronnen")
+            .into_iter()
+            .find(|b| b.soort == BronSoort::Monitor)
+            .expect("scherm");
+
+        let mut cap = Capture::start(&d3d, &scherm).expect("opname starten");
+        let (b, h) = cap.afmeting();
+        println!("opname {b}×{h}");
+        assert!(b >= 640 && h >= 480, "onwaarschijnlijke afmeting");
+
+        // Een stilstaand bureaublad levert weinig frames; een paar seconden geduld.
+        let mut gezien = 0;
+        for _ in 0..30 {
+            if cap.volgende_frame(Duration::from_millis(200)).is_some() {
+                gezien += 1;
+            }
+            if gezien >= 2 {
+                break;
+            }
+        }
+        assert!(gezien >= 1, "er kwam geen enkel beeld binnen");
+        println!("{gezien} frames ontvangen");
+    }
+}

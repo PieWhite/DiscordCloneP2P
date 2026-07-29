@@ -29,8 +29,13 @@ Rust + egui. Windows only.
 
 ## Codec en hardware
 Alle drie de peers hebben NVIDIA Turing of nieuwer, maar de RTX 2080 Super kan AV1
-**niet encoden en niet decoden**. Daarom is HEVC de codec, met H.264 als fallback.
-Stel nooit AV1 voor zonder dat die machine vervangen is.
+**niet encoden en niet decoden**. Stel nooit AV1 voor zonder dat die machine vervangen is.
+
+**H.264 is de standaardcodec, niet HEVC.** Encoden kan met beide, maar HEVC *decoderen*
+loopt op Windows via de HEVC Video Extensions uit de Store, en die zit er niet standaard
+op. De H.264-decoder zit altijd in Windows. Bij 1 Gbit is de bitrate-winst van HEVC
+irrelevant; een codec die misschien niet werkt bij je vriend is dat niet.
+Zie `docs/SPEC.md` voor de gemeten onderbouwing.
 
 ## Bouwvereisten
 Naast Rust + MSVC is `cmake` nodig: libopus wordt vanuit broncode meegebouwd. Op deze
