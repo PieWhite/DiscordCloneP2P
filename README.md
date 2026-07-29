@@ -4,8 +4,9 @@ Servervrij alternatief voor Discord voor een kleine vaste groep. Draait over een
 Tailscale-tailnet, zonder signaling-server, zonder TURN, zonder accounts, zonder cloud.
 Alle peers zijn gelijkwaardig — er is geen host.
 
-**Status:** fase 3 af — netwerklaag, tekstchat en voice chat werken. Screenshare volgt.
-Zie [ROADMAP.md](ROADMAP.md).
+**Status:** netwerklaag, tekstchat en voice chat zijn af. Screenshare is half af:
+opnemen en coderen werken, tonen nog niet. Zie [ROADMAP.md](ROADMAP.md) en
+[docs/OVERDRACHT.md](docs/OVERDRACHT.md).
 
 ## Wat je nodig hebt
 
@@ -142,3 +143,5 @@ Meer detail in de log: start met `FITCOM_LOG=debug`.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — protocol, synchronisatie, opbouw
 - [ROADMAP.md](ROADMAP.md) — fasering
 - [TODO.md](TODO.md) — wat bewust nog niet gebouwd is, waaronder file sharing
+- [docs/OVERDRACHT.md](docs/OVERDRACHT.md) — stand van zaken, gemaakte keuzes, valkuilen
+- [docs/TESTPLAN.md](docs/TESTPLAN.md) — wat er met echte machines getest moet worden

@@ -35,12 +35,17 @@ Of het *klinkt* moet met een tweede machine beoordeeld worden — dat kan geen t
 Geen echo-onderdrukking, conform de afspraak dat iedereen een headset gebruikt. Dat
 scheelde een C++-bouwafhankelijkheid (WebRTC APM).
 
-## Fase 4 — Screenshare, eerste versie
+## Fase 4 — Screenshare, eerste versie 🟡 deels
 WGC-capture van één monitor, HEVC-encode via Media Foundation, UDP-fragmentatie,
 decode, D3D11-render in een pop-out venster, subscribe-on-demand, desktop-audio
 als aparte stream met eigen volume.
-**Meetpunt:** glass-to-glass latency meten. Valt die tegen, dan de encoder-trait
-omzetten naar directe NVENC voordat we door gaan.
+**Af:** fragmentatie, D3D11-context, WGC-capture en de Media Foundation-encoder,
+elk geverifieerd op de echte GPU.
+**Nog niet af:** decoder, weergavevenster, streambeheer en desktop-audio.
+Zie `docs/OVERDRACHT.md` voor de bouwvolgorde en de aandachtspunten per stap.
+
+**Meetpunt:** glass-to-glass latency meten. Valt die tegen, dan de encoder omzetten
+naar directe NVENC; die zit al achter een smalle API, dus dat raakt de rest niet.
 **Klaar als:** peer B ziet peer A's scherm op 1080p60, tekst is scherp leesbaar, en
 peer A merkt geen framedrops in een draaiende game.
 
