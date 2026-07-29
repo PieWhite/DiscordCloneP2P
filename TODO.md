@@ -23,9 +23,16 @@ voortgangs-UI, en een keuze waar bestanden landen.
 - Chat: reacties, replies, afbeeldingen plakken. Worden nieuwe `OpKind`-varianten.
 - Meerdere chatkanalen.
 - Push-to-talk met globale hotkey. Voorzien in het ontwerp, niet gebouwd.
-- 4:4:4-chroma-modus voor extra scherpe tekst in screenshare (fase 5).
-- Grid-weergave van meerdere streams in het hoofdvenster (fase 5).
 - Directe NVENC in plaats van Media Foundation, als de latencymeting in fase 4 daarom vraagt.
+
+## Afgewezen, niet alleen uitgesteld
+- **4:4:4-chroma voor scherpere tekst.** Encoderen kan op Turing (H.264 en HEVC), maar
+  geen enkele Turing-GPU — ook de RTX 2080 Super niet — kan H.264- of HEVC-4:4:4
+  hardwarematig *decoderen* (NVIDIA's eigen supportmatrix zet dat op "nee" voor de hele
+  generatie). Encoderen zonder dat iemand het kan terugzien is nutteloos. Dit is geen
+  Store-uitbreiding-probleem zoals bij HEVC-4:2:0-decode: er is geen hardwarepad, punt.
+  Alleen heroverwegen als er een GPU-generatie bijkomt die dit wel kan. Zie
+  `docs/OVERDRACHT.md`.
 
 ## Beveiliging
 - QUIC gebruikt nu self-signed certs die niet geverifieerd worden; authenticatie gebeurt

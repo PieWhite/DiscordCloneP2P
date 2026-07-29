@@ -71,15 +71,19 @@ de uitbreiding hebben.
 
 ### Screenshare
 - Capture: **Windows.Graphics.Capture** (monitor én venster, cursor-toggle, rand uitschakelbaar).
-- Codec: **HEVC 4:2:0 8-bit**, 1080p60, ~25 Mbit default. H.264 fallback.
-  4:4:4 (scherpere tekst) is een latere optionele toggle — alle drie ondersteunen het,
-  maar het is een minder betreden codepad, dus niet in v1.
+- Codec: **H.264 4:2:0 8-bit** default, 1080p60, ~25 Mbit, in de UI aan te passen.
+  HEVC staat aan als optie maar hangt op Windows af van een Store-uitbreiding om te
+  decoderen; zie `docs/OVERDRACHT.md`.
+  4:4:4 (scherpere tekst) is **geen haalbare uitbreiding, niet alleen uitgesteld**: geen
+  enkele Turing-GPU — ook de RTX 2080 Super niet — kan H.264- of HEVC-4:4:4
+  hardwarematig decoderen. Zie `docs/OVERDRACHT.md` en `TODO.md`.
 - Fan-out: **subscribe-on-demand**. De deler kondigt een bron aan; encoden start pas
   als minstens één peer kijkt. Eén encoder-sessie, dezelfde encoded stream naar alle kijkers.
 - Alle drie mogen tegelijk delen; meerdere bronnen per persoon toegestaan.
-- Weergave: **pop-out venster per stream** (eigen D3D11 swapchain), maximaliseerbaar.
-  Grid-in-hoofdvenster komt in fase 5. Met één 1080p-monitor per persoon is een
-  maximaliseerbaar los venster de betere UX.
+- Weergave: **pop-out venster per stream** (eigen D3D11 swapchain), maximaliseerbaar,
+  plús een overzichtstrook met verkleinde live beelden in het hoofdvenster (fase 5) zodat
+  je niet tussen losse vensters hoeft te zoeken. Met één 1080p-monitor per persoon is een
+  maximaliseerbaar los venster voor het echte kijken de betere UX.
 - Bitrate vast met simpele loss/RTT-feedback. Geen volwaardige congestion control.
 - **Desktop-audio** gaat mee als aparte stream met eigen volumeslider per luisteraar.
 

@@ -62,10 +62,24 @@ bouwen. Beeldvullend zit op F11. Beide staan onderbouwd in `docs/OVERDRACHT.md`.
 peer A merkt geen framedrops in een draaiende game. *Dat laatste kan alleen met een
 tweede machine; zie `docs/TESTPLAN.md`.*
 
-## Fase 5 — Screenshare uitbreiding
-Venster-capture, meerdere bronnen tegelijk delen, meerdere inkomende streams tegelijk
-bekijken, grid-weergave in het hoofdvenster, kwaliteitsinstellingen in de UI,
-optionele 4:4:4-modus voor extra scherpe tekst.
+## Fase 5 — Screenshare uitbreiding ✅
+Venster-capture, meerdere bronnen tegelijk delen en meerdere inkomende streams tegelijk
+bekijken bleken al in fase 4 meegebouwd — de architectuur (`BronSoort::Monitor | Venster`,
+`Streams` met `Vec<EigenStream>`/`Vec<VreemdeStream>`) was daar al op ingericht en
+TESTPLAN 4.7/4.8 dekt het al. Wat er in fase 5 nog bij kwam:
+
+- **Kwaliteitsinstellingen in de UI.** Codec, fps en bitrate zijn nu in de app zelf
+  aan te passen ("video-instellingen" in de statusbalk) in plaats van alleen via
+  `config.toml`. Lopende deelsessies herstarten meteen met de nieuwe instellingen.
+- **Grid-weergave in het hoofdvenster.** Een overzichtstrook boven de chat toont een
+  levend, verkleind beeld van elke stream die je bekijkt, zodat je niet tussen losse
+  kijkvensters hoeft te zoeken zodra er meerdere tegelijk open staan. Blijft leeg
+  zolang er niets bekeken wordt.
+
+**Geschrapt: optionele 4:4:4-modus.** Onderzocht en afgewezen, niet uitgesteld: geen
+enkele Turing-GPU — ook de RTX 2080 Super niet — kan H.264- of HEVC-4:4:4 hardwarematig
+*decoderen*. Encoderen zou wel kunnen, maar dan kan niemand het terugzien. Zie
+`docs/OVERDRACHT.md` en `TODO.md`.
 
 ## Fase 6 — Backlog
 Zie `TODO.md`. Niet nu bouwen.

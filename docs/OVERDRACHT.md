@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-29, na fase 4 deel 2.
+Laatst bijgewerkt: 2026-07-29, na fase 5.
 
 ---
 
@@ -16,6 +16,16 @@ Laatst bijgewerkt: 2026-07-29, na fase 4 deel 2.
 | 2 — Tekstchat | ✅ af, nog niet met een echte peer getest | 19 unit/integratietests, 3 lokale instanties |
 | 3 — Voice | ✅ af, nog niet met een echte peer getest | ketentests + rooktest op echte geluidskaart |
 | 4 — Screenshare | ✅ af, nog niet met een echte peer getest | volledige keten op echte GPU, 55 fps op 1080p |
+| 5 — Screenshare uitbreiding | ✅ af, nog niet met een echte peer getest | ketentest + motortest blijven groen na de wijziging |
+
+**Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
+meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
+TESTPLAN 4.7/4.8. Er kwamen twee dingen bij: een instellingenscherm voor codec/fps/bitrate
+in de UI (`ZetVideoInstellingen`, herstart lopende delers meteen), en een overzichtstrook
+boven de chat met een levend verkleind beeld per bekeken stream (`Miniatuur`, elke 500 ms
+via een gerichte GPU-naar-CPU-downscale op het al gedecodeerde beeld —
+`D3dContext::lees_bgra_miniatuur`, niet het eigenlijke weergavepad). De geplande optionele
+4:4:4-modus is geschrapt, zie de omgegooide beslissingen hieronder.
 
 **Beeld werkt van begin tot eind**: een bron aankondigen, intekenen, opnemen, coderen,
 versturen, samenstellen, decoderen en tonen. Gemeten op deze machine: 1080p op 55-56
@@ -107,6 +117,19 @@ draaien — wat in `crates/video/tests/keten.rs` het geval is.
 
 **Tussen twee machines zegt dat getal niets**: die klokken lopen niet gelijk. Daarom
 staat het nergens in de UI.
+
+### 8. Geen 4:4:4-modus (fase 5)
+De SPEC en ROADMAP noemden 4:4:4 als latere optionele toggle "voor scherpere tekst",
+met de aanname dat alle drie de peers het zouden ondersteunen. Uitgezocht vóór er iets
+gebouwd werd, net als bij de HEVC-beslissing in fase 4: NVIDIA's eigen GPU-supportmatrix
+zet H.264-4:4:4- én HEVC-4:4:4-*decode* op "nee" voor de hele Turing-generatie, dus ook
+voor de RTX 2080 Super. Encoderen naar 4:4:4 kan wél (`eAVEncH264VProfile_444` bestaat
+als gedocumenteerd Codec-API-profiel), maar zonder dat iemand het kan terugzien is dat
+zinloos. Anders dan bij HEVC-decode (die hangt aan een ontbrekende Store-uitbreiding,
+dus is in theorie op te lossen) zit hier geen hardwarepad achter — geen enkele
+software-oplossing daarvoor die niet op zichzelf al een probleem zou zijn
+(CPU-belasting naast een game, of een GPU→CPU→GPU-omweg). Zie `TODO.md` voor waar dit
+staat als "afgewezen, niet uitgesteld".
 
 ---
 
@@ -216,6 +239,19 @@ cargo test -p fitcom-video --test keten     -- --ignored --nocapture   # de beel
 cargo test -p fitcom      --test stream_deling -- --ignored --nocapture # via de motor
 ```
 
+### Miniaturen voor de overzichtstrook (fase 5)
+`kijker.rs` stuurt elke 500 ms een `KijkerEvent::Miniatuur` met een verkleind BGRA-beeld,
+afgeleid van het net getoonde frame via `D3dContext::lees_bgra_miniatuur` (gerichte
+GPU→CPU-downscale, geen volledige framekopie). De motor bewaart de laatste per
+`(PeerId, stream_id)` in `Engine::miniaturen` en publiceert hem mee in de `Snapshot`. De
+UI cachet zelf een `egui::TextureHandle` per stream en vergelijkt op de `Arc`-pointer van
+de data, niet op de inhoud — zo wordt een ongewijzigde miniatuur niet elke frame opnieuw
+naar de GPU geüpload.
+
+**Dit raakt het echte weergavepad niet.** De swapchain van het kijkvenster blijft het
+gedecodeerde beeld rechtstreeks tonen; de miniatuur is een aftakking ernaast, niet een
+omweg ervoor.
+
 ---
 
 ## Hoe desktop-audio in elkaar zit
@@ -251,7 +287,7 @@ Verdere keuzes:
 
 ## Wat nog nooit met een echte peer getest is
 
-Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2, 3 en 4 niet.** Zie
+Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2, 3, 4 en 5 niet.** Zie
 `docs/TESTPLAN.md` voor de testgevallen die daarvoor uitgevoerd moeten worden.
 
 Fase 4 is op één machine wel volledig doorlopen, inclusief de UDP-weg over loopback en
@@ -267,3 +303,6 @@ andere instantie net afspeelde.
 **Niet geverifieerd: de knoppen zelf.** De motor is via zijn commando's getest, maar op
 "Scherm delen…" en "bekijken" is nooit echt geklikt — in deze omgeving kan een script
 geen invoer naar het bureaublad sturen. Dat is dus het eerste om met de hand te doen.
+Hetzelfde geldt voor fase 5: het video-instellingenscherm en de overzichtstrook zijn
+alleen gecontroleerd op compileren, clippy en de bestaande ketentest/motortest (die
+blijven groen na de wijziging) — niet op hoe ze er in het echt uitzien.

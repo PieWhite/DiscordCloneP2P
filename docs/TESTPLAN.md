@@ -161,6 +161,34 @@ kijkvenster mag niet vastlopen; het beeld bevriest en dat is genoeg.
 
 ---
 
+## Fase 5 — Screenshare uitbreiding
+
+Venster-capture, meerdere bronnen tegelijk delen en meerdere streams tegelijk bekijken
+zaten al in fase 4 en zijn daar getest (4.7, 4.8). Dit zijn alleen de twee dingen die in
+fase 5 zijn toegevoegd.
+
+**5.1 Video-instellingen aanpassen**
+Open "video-instellingen" in de statusbalk, zet de bitrate flink lager, klik toepassen
+terwijl je al aan het delen bent. Bij de kijker moet het beeld merkbaar minder scherp
+worden zonder dat de stream opnieuw opgezet hoeft te worden aan zijn kant. *Verandert er
+niets, dan herstart `herstart_lopende_delers` de deler niet echt.*
+
+**5.2 HEVC-waarschuwing**
+Zet de codec op HEVC in het instellingenscherm. Er moet een waarschuwing verschijnen dat
+niet iedereen dit kan decoderen. Deel een scherm; bij de peer met de RTX 2080 Super moet
+kijken **mislukken** met een foutmelding, niet een bevroren of grauw beeld.
+
+**5.3 Overzichtstrook**
+Bekijk twee streams tegelijk (van dezelfde of verschillende peers). Boven de chat moet
+een strook verschijnen met een levend, klein beeld van allebei, met de titel eronder.
+Sluit een van de twee kijkvensters → zijn tegel verdwijnt uit de strook. Sluit de laatste
+→ de hele strook verdwijnt.
+**5.4** Niemand bekijkt iets → de overzichtstrook neemt geen ruimte in. *Dit is dezelfde
+eigenschap als 4.5, maar dan voor de strook: hij hoort niet te bestaan als er niets te
+tonen is.*
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of
