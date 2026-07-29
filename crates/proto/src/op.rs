@@ -11,7 +11,7 @@
 //! peer. Zou hij hem laten vallen, dan convergeert de mesh niet meer zodra er
 //! versieverschil is. Decoderen naar `OpKind` gebeurt pas bij het renderen.
 
-use crate::{OpId, PeerId};
+use crate::{Channel, OpId, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -19,7 +19,12 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Op {
     pub author: PeerId,
-    /// Per auteur monotoon en **dicht**: 1, 2, 3, ... zonder gaten.
+    /// Bepaalt wie deze op ooit mag zien. Staat, net als `author` en `seq`, altijd open
+    /// leesbaar naast de opake `payload` — de gossip moet immers kunnen beslissen wie hem
+    /// doorkrijgt zonder de soort te hoeven begrijpen.
+    #[serde(default)]
+    pub channel: Channel,
+    /// Per (auteur, kanaal) monotoon en **dicht**: 1, 2, 3, ... zonder gaten.
     pub seq: u64,
     /// Voor totale ordening tussen auteurs.
     pub lamport: u64,
@@ -34,7 +39,7 @@ pub struct Op {
 
 impl Op {
     pub fn id(&self) -> OpId {
-        OpId::new(self.author, self.seq)
+        OpId::new(self.author, self.channel, self.seq)
     }
 
     /// Weergavevolgorde. `author` breekt de gelijkstand zodat alle peers dezelfde
@@ -43,8 +48,10 @@ impl Op {
         (self.lamport, self.author)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         author: PeerId,
+        channel: Channel,
         seq: u64,
         lamport: u64,
         wall_clock: i64,
@@ -52,6 +59,7 @@ impl Op {
     ) -> crate::Result<Self> {
         Ok(Self {
             author,
+            channel,
             seq,
             lamport,
             wall_clock,
@@ -152,23 +160,48 @@ impl LamportClock {
     }
 }
 
-/// `{auteur -> hoogste seq die ik heb}`.
-///
-/// Dit werkt alléén omdat `seq` per auteur dicht is. Zodra er gaten in kunnen zitten
-/// is één getal per auteur niet meer genoeg en is dit hele mechanisme stuk.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "Vec<(PeerId, u64)>", into = "Vec<(PeerId, u64)>")]
-pub struct VersionVector(BTreeMap<PeerId, u64>);
+/// Eén regel van een `VersionVector` op de draad. Een benoemde struct in plaats van een
+/// rauwe tuple: msgpack codeert een Rust-tuple altijd als vaste-lengte array, dus een
+/// toekomstige extra veld zou — anders dan bij elke andere struct in dit protocol — geen
+/// `#[serde(default)]` kunnen krijgen en een oudere peer zou de hele vector niet meer
+/// kunnen decoderen. Met benoemde velden (als map, net als `Op`/`OpId`/`Hello`) kan dat
+/// straks wél.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct VvEntry {
+    author: PeerId,
+    channel: Channel,
+    seq: u64,
+}
 
-impl From<Vec<(PeerId, u64)>> for VersionVector {
-    fn from(v: Vec<(PeerId, u64)>) -> Self {
-        Self(v.into_iter().collect())
+/// `{(auteur, kanaal) -> hoogste seq die ik heb}`.
+///
+/// Dit werkt alléén omdat `seq` per (auteur, kanaal) dicht is. Zodra er gaten in kunnen
+/// zitten is één getal per sleutel niet meer genoeg en is dit hele mechanisme stuk. Zie
+/// de moduledoc van `fitcom_store` voor waarom kanaal hier expliciet bij hoort en niet
+/// per auteur alleen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Vec<VvEntry>", into = "Vec<VvEntry>")]
+pub struct VersionVector(BTreeMap<(PeerId, Channel), u64>);
+
+impl From<Vec<VvEntry>> for VersionVector {
+    fn from(v: Vec<VvEntry>) -> Self {
+        Self(
+            v.into_iter()
+                .map(|e| ((e.author, e.channel), e.seq))
+                .collect(),
+        )
     }
 }
 
-impl From<VersionVector> for Vec<(PeerId, u64)> {
+impl From<VersionVector> for Vec<VvEntry> {
     fn from(v: VersionVector) -> Self {
-        v.0.into_iter().collect()
+        v.0.into_iter()
+            .map(|((author, channel), seq)| VvEntry {
+                author,
+                channel,
+                seq,
+            })
+            .collect()
     }
 }
 
@@ -177,35 +210,52 @@ impl VersionVector {
         Self::default()
     }
 
-    /// Hoogste seq die we van deze auteur hebben. 0 = niets.
-    pub fn get(&self, author: PeerId) -> u64 {
-        self.0.get(&author).copied().unwrap_or(0)
+    /// Hoogste seq die we van deze auteur in dit kanaal hebben. 0 = niets.
+    pub fn get(&self, author: PeerId, channel: Channel) -> u64 {
+        self.0.get(&(author, channel)).copied().unwrap_or(0)
     }
 
     /// Alleen ophogen. Een op die we al hadden verandert hier niets — dat is de
     /// idempotentie waar de hele sync op leunt.
-    pub fn observe(&mut self, author: PeerId, seq: u64) {
-        let e = self.0.entry(author).or_insert(0);
+    pub fn observe(&mut self, author: PeerId, channel: Channel, seq: u64) {
+        let e = self.0.entry((author, channel)).or_insert(0);
         *e = (*e).max(seq);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (PeerId, u64)> + '_ {
-        self.0.iter().map(|(&p, &s)| (p, s))
+    pub fn iter(&self) -> impl Iterator<Item = (PeerId, Channel, u64)> + '_ {
+        self.0.iter().map(|(&(p, c), &s)| (p, c, s))
     }
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Alleen de sleutels die `viewer` ooit mag zien: het algemene kanaal, een DM-kanaal
+    /// gericht aan `viewer`, en (voor het geval `viewer` eigen data kwijtraakte) alles
+    /// waarvan `viewer` zelf de auteur is. Gebruikt vóór we iets van deze vector naar
+    /// `viewer` sturen of ermee vergelijken wat hij nog mist — zonder dit zou een DM
+    /// tussen twee andere peers gewoon meegossipt worden naar wie het niet aangaat.
+    pub fn visible_to(&self, viewer: PeerId) -> VersionVector {
+        VersionVector(
+            self.0
+                .iter()
+                .filter(|((author, channel), _)| {
+                    channel.is_general() || *author == viewer || channel.dm_peer() == Some(viewer)
+                })
+                .map(|(&k, &v)| (k, v))
+                .collect(),
+        )
+    }
+
     /// Welke seq-bereiken heeft `other` nog niet, die ik wel heb?
-    /// Levert `(auteur, van_seq, tot_seq)` inclusief aan beide kanten.
+    /// Levert `(auteur, kanaal, van_seq, tot_seq)` inclusief aan beide kanten.
     ///
     /// Dit is de kern van de inhaalslag na offline zijn: één ronde, geen onderhandeling.
-    pub fn ranges_missing_in(&self, other: &VersionVector) -> Vec<(PeerId, u64, u64)> {
+    pub fn ranges_missing_in(&self, other: &VersionVector) -> Vec<(PeerId, Channel, u64, u64)> {
         self.iter()
-            .filter_map(|(author, mine)| {
-                let theirs = other.get(author);
-                (mine > theirs).then_some((author, theirs + 1, mine))
+            .filter_map(|(author, channel, mine)| {
+                let theirs = other.get(author, channel);
+                (mine > theirs).then_some((author, channel, theirs + 1, mine))
             })
             .collect()
     }
@@ -226,11 +276,11 @@ mod tests {
         let kinds = [
             OpKind::Post { body: "hoi".into() },
             OpKind::Edit {
-                target: OpId::new(peer(1), 7),
+                target: OpId::new(peer(1), Channel::GENERAL, 7),
                 body: "aangepast".into(),
             },
             OpKind::Delete {
-                target: OpId::new(peer(2), 3),
+                target: OpId::new(peer(2), Channel::GENERAL, 3),
             },
             OpKind::SetNick {
                 name: "Rick".into(),
@@ -242,7 +292,7 @@ mod tests {
             },
         ];
         for kind in kinds {
-            let op = Op::new(peer(1), 1, 1, 0, &kind).unwrap();
+            let op = Op::new(peer(1), Channel::GENERAL, 1, 1, 0, &kind).unwrap();
             assert_eq!(op.kind().unwrap(), Some(kind));
         }
     }
@@ -253,6 +303,7 @@ mod tests {
         // doorgeven aan de derde peer, ook zonder hem te begrijpen.
         let op = Op {
             author: peer(1),
+            channel: Channel::GENERAL,
             seq: 1,
             lamport: 1,
             wall_clock: 0,
@@ -284,48 +335,96 @@ mod tests {
     #[test]
     fn version_vector_observeert_alleen_omhoog() {
         let mut vv = VersionVector::new();
-        vv.observe(peer(1), 5);
-        vv.observe(peer(1), 3); // oude op nogmaals ontvangen
-        assert_eq!(vv.get(peer(1)), 5);
-        assert_eq!(vv.get(peer(2)), 0);
+        vv.observe(peer(1), Channel::GENERAL, 5);
+        vv.observe(peer(1), Channel::GENERAL, 3); // oude op nogmaals ontvangen
+        assert_eq!(vv.get(peer(1), Channel::GENERAL), 5);
+        assert_eq!(vv.get(peer(2), Channel::GENERAL), 0);
+    }
+
+    #[test]
+    fn dm_en_algemeen_tellen_apart_ook_voor_dezelfde_auteur() {
+        let mut vv = VersionVector::new();
+        vv.observe(peer(1), Channel::GENERAL, 5);
+        vv.observe(peer(1), Channel::dm(peer(2)), 2);
+        assert_eq!(vv.get(peer(1), Channel::GENERAL), 5);
+        assert_eq!(vv.get(peer(1), Channel::dm(peer(2))), 2);
     }
 
     #[test]
     fn ontbrekende_bereiken_na_lang_offline() {
         // A was online en maakte 100 ops; B stond uit na 10. C heeft niets van A.
         let mut a = VersionVector::new();
-        a.observe(peer(1), 100);
-        a.observe(peer(3), 4);
+        a.observe(peer(1), Channel::GENERAL, 100);
+        a.observe(peer(3), Channel::GENERAL, 4);
 
         let mut b = VersionVector::new();
-        b.observe(peer(1), 10);
-        b.observe(peer(3), 4);
+        b.observe(peer(1), Channel::GENERAL, 10);
+        b.observe(peer(3), Channel::GENERAL, 4);
 
-        assert_eq!(a.ranges_missing_in(&b), vec![(peer(1), 11, 100)]);
+        assert_eq!(
+            a.ranges_missing_in(&b),
+            vec![(peer(1), Channel::GENERAL, 11, 100)]
+        );
 
         let leeg = VersionVector::new();
         let mut r = a.ranges_missing_in(&leeg);
         r.sort();
-        assert_eq!(r, vec![(peer(1), 1, 100), (peer(3), 1, 4)]);
+        assert_eq!(
+            r,
+            vec![
+                (peer(1), Channel::GENERAL, 1, 100),
+                (peer(3), Channel::GENERAL, 1, 4),
+            ]
+        );
     }
 
     #[test]
     fn gelijke_vectoren_vragen_niets_op() {
         let mut a = VersionVector::new();
-        a.observe(peer(1), 7);
+        a.observe(peer(1), Channel::GENERAL, 7);
         assert!(a.ranges_missing_in(&a.clone()).is_empty());
     }
 
     #[test]
     fn version_vector_overleeft_de_draad() {
         let mut vv = VersionVector::new();
-        vv.observe(peer(1), 9);
-        vv.observe(peer(2), 4);
+        vv.observe(peer(1), Channel::GENERAL, 9);
+        vv.observe(peer(2), Channel::dm(peer(1)), 4);
         let msg = crate::ControlMsg::SyncRequest(crate::control::SyncRequest { have: vv.clone() });
         let bytes = msg.encode().unwrap();
         match crate::ControlMsg::decode(&bytes).unwrap().unwrap() {
             crate::ControlMsg::SyncRequest(r) => assert_eq!(r.have, vv),
             other => panic!("verkeerde variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn visible_to_laat_algemeen_kanaal_altijd_door() {
+        let mut vv = VersionVector::new();
+        vv.observe(peer(1), Channel::GENERAL, 5);
+        let gefilterd = vv.visible_to(peer(9));
+        assert_eq!(gefilterd.get(peer(1), Channel::GENERAL), 5);
+    }
+
+    #[test]
+    fn visible_to_laat_dm_alleen_aan_de_geadresseerde_zien() {
+        let mut vv = VersionVector::new();
+        // Peer 1 z'n DM aan peer 2.
+        vv.observe(peer(1), Channel::dm(peer(2)), 3);
+
+        assert_eq!(vv.visible_to(peer(2)).get(peer(1), Channel::dm(peer(2))), 3);
+        assert!(
+            vv.visible_to(peer(3)).is_empty(),
+            "peer 3 mag deze DM niet zien"
+        );
+    }
+
+    #[test]
+    fn visible_to_laat_eigen_auteurschap_altijd_terug_naar_de_auteur() {
+        // Zodat een peer die eigen data kwijtraakte zijn eigen DM's kan terugkrijgen van
+        // de ander in het gesprek.
+        let mut vv = VersionVector::new();
+        vv.observe(peer(1), Channel::dm(peer(2)), 3);
+        assert_eq!(vv.visible_to(peer(1)).get(peer(1), Channel::dm(peer(2))), 3);
     }
 }

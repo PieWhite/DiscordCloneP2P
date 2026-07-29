@@ -91,11 +91,38 @@ impl Files {
 
     /// Een `FileRequest` van een ander binnengekomen. Levert het antwoord dat terug moet,
     /// plus — als we het bestand nog hebben — de opdracht om de upload te starten.
+    ///
+    /// Is dit bestand aangeboden op een DM-kanaal, dan mag alleen de geadresseerde het
+    /// krijgen. Onder normale omstandigheden komt een aanvraag van iemand anders hier
+    /// nooit binnen — de sync laat de `FileMeta`-op zelf al niet bij hem terecht komen —
+    /// maar dit is de plek waar we het ook zonder dat vertrouwen zouden afdwingen. Het
+    /// antwoord is bewust hetzelfde als "niet meer beschikbaar": een afwijzing die zich
+    /// onderscheidt van "bestaat niet" zou juist bevestigen dát het bestaat.
     pub fn verzoek_ontvangen(
         &self,
         van: PeerId,
         req: &FileRequest,
     ) -> (MeshCommand, Option<StartUpload>) {
+        if let Some(geadresseerde) = req.file.channel.dm_peer() {
+            if geadresseerde != van {
+                tracing::warn!(
+                    ?van,
+                    file = ?req.file,
+                    "verzoek om een DM-bestand van iemand anders dan de geadresseerde genegeerd"
+                );
+                return (
+                    MeshCommand::Send {
+                        to: van,
+                        msg: ControlMsg::FileResponse(FileResponse {
+                            file: req.file,
+                            outcome: FileOutcome::NOT_AVAILABLE,
+                        }),
+                    },
+                    None,
+                );
+            }
+        }
+
         match self.aangeboden.get(&req.file) {
             Some(pad) => (
                 MeshCommand::Send {
@@ -141,6 +168,7 @@ impl Files {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fitcom_proto::Channel;
 
     fn peer(n: u8) -> PeerId {
         let mut b = [0u8; 16];
@@ -149,9 +177,14 @@ mod tests {
     }
 
     fn entry(author: PeerId) -> FileEntry {
+        entry_in(Channel::GENERAL, author)
+    }
+
+    fn entry_in(channel: Channel, author: PeerId) -> FileEntry {
         FileEntry {
-            id: OpId::new(author, 1),
+            id: OpId::new(author, channel, 1),
             author,
+            channel,
             name: "test.bin".into(),
             size: 1000,
             hash: [0u8; 32],
@@ -188,7 +221,7 @@ mod tests {
         let f = Files::new();
         let van = peer(2);
         let req = FileRequest {
-            file: OpId::new(peer(1), 1),
+            file: OpId::new(peer(1), Channel::GENERAL, 1),
             have_bytes: 0,
         };
         let (cmd, actie) = f.verzoek_ontvangen(van, &req);
@@ -208,7 +241,7 @@ mod tests {
     #[test]
     fn verzoek_voor_een_bestand_dat_we_aanbieden_start_de_upload_vanaf_het_hervatpunt() {
         let mut f = Files::new();
-        let file = OpId::new(peer(1), 3);
+        let file = OpId::new(peer(1), Channel::GENERAL, 3);
         let pad = PathBuf::from("C:/data/vakantiefotos.zip");
         f.biedt_aan(file, pad.clone());
 
@@ -234,6 +267,53 @@ mod tests {
         assert_eq!(actie.file, file);
         assert_eq!(actie.pad, pad);
         assert_eq!(actie.vanaf, 250);
+    }
+
+    #[test]
+    fn dm_bestand_wordt_geweigerd_aan_iemand_anders_dan_de_geadresseerde() {
+        let mut f = Files::new();
+        let geadresseerde = peer(2);
+        let file = OpId::new(peer(1), Channel::dm(geadresseerde), 1);
+        f.biedt_aan(file, PathBuf::from("C:/data/prive.zip"));
+
+        let indringer = peer(3);
+        let req = FileRequest {
+            file,
+            have_bytes: 0,
+        };
+        let (cmd, actie) = f.verzoek_ontvangen(indringer, &req);
+        assert!(actie.is_none(), "geen upload naar wie het niet aangaat");
+        match cmd {
+            MeshCommand::Send {
+                to,
+                msg: ControlMsg::FileResponse(r),
+            } => {
+                assert_eq!(to, indringer);
+                assert_eq!(
+                    r.outcome,
+                    FileOutcome::NOT_AVAILABLE,
+                    "zelfde antwoord als 'bestaat niet' — anders bevestig je dat het bestaat"
+                );
+            }
+            other => panic!("verkeerd commando: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dm_bestand_wordt_wel_geleverd_aan_de_geadresseerde() {
+        let mut f = Files::new();
+        let geadresseerde = peer(2);
+        let file = OpId::new(peer(1), Channel::dm(geadresseerde), 1);
+        let pad = PathBuf::from("C:/data/prive.zip");
+        f.biedt_aan(file, pad.clone());
+
+        let req = FileRequest {
+            file,
+            have_bytes: 0,
+        };
+        let (_, actie) = f.verzoek_ontvangen(geadresseerde, &req);
+        let actie = actie.expect("de geadresseerde moet de upload wel krijgen");
+        assert_eq!(actie.pad, pad);
     }
 
     #[test]

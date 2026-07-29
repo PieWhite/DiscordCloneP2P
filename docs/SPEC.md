@@ -50,11 +50,13 @@ de uitbreiding hebben.
 4. Meerdere bronnen tegelijk delen (monitor + vensters) en meerdere streams tegelijk bekijken.
 5. Tekstchat met volledige geschiedenis-inhaal na offline zijn.
 6. Bestanden delen tussen de peers, met hervatten na onderbreking en hash-verificatie.
+7. Directe berichten (DM's) naast het algemene kanaal: een gesprek tussen twee peers dat
+   de derde nooit te zien krijgt. Zie `docs/ARCHITECTURE.md`, sectie "Kanalen", voor het
+   ontwerp en de trade-off die daarbij hoort.
 
 ## Buiten scope (backlog, zie `TODO.md`)
 - Remote input control (Moonlight-stijl).
 - Reacties, replies, afbeeldingen plakken in chat.
-- Meer dan één chatkanaal.
 
 ## Vastgelegde beslissingen
 

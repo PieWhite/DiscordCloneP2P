@@ -9,7 +9,7 @@
 use fitcom::config::{Config, PeerConfig, VideoConfig};
 use fitcom::engine::{self, EngineHandle, Snapshot, UiCommand};
 use fitcom_net::{MeshConfig, PeerTarget};
-use fitcom_proto::{OpId, PeerId};
+use fitcom_proto::{Channel, OpId, PeerId};
 use fitcom_store::Store;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,7 +123,7 @@ async fn aanbieden_en_downloaden_via_de_motor() {
     std::fs::write(&bron, &inhoud).unwrap();
 
     a.commands
-        .send(UiCommand::BiedBestandAan(bron))
+        .send(UiCommand::BiedBestandAan(bron, Channel::GENERAL))
         .await
         .unwrap();
 
@@ -182,7 +182,7 @@ async fn downloaden_van_een_ingetrokken_bestand_geeft_een_nette_fout() {
     let bron = dir.join("weer-weg.bin");
     std::fs::write(&bron, testinhoud(1_000)).unwrap();
     a.commands
-        .send(UiCommand::BiedBestandAan(bron.clone()))
+        .send(UiCommand::BiedBestandAan(bron.clone(), Channel::GENERAL))
         .await
         .unwrap();
     let snap = wacht(&b, "aanbieding gezien", |s| !s.files.is_empty()).await;

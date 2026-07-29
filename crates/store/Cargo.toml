@@ -10,3 +10,8 @@ anyhow = "1.0.104"
 fitcom-proto = { version = "0.1.0", path = "../proto" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+# Voor de migratietest: die zet een schema-v1-database met de hand in elkaar, met de
+# ruwe tabelvorm van vóór de kanalen-uitbreiding.
+rusqlite = { version = "0.40.1", features = ["bundled"] }

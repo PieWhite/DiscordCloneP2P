@@ -5,12 +5,12 @@
 //! geen state in die verloren gaat als het venster even niet tekent.
 
 use crate::config::VideoConfig;
-use crate::engine::{self, EngineHandle, PeerView, Snapshot, UiCommand};
+use crate::engine::{self, EngineHandle, FileView, PeerView, Snapshot, UiCommand};
 use crate::files::DownloadStatus;
 use crate::tray;
 use eframe::egui;
 use fitcom_net::PeerStatus;
-use fitcom_proto::{OpId, PeerId};
+use fitcom_proto::{Channel, OpId, PeerId};
 use fitcom_video::{Bron, BronSoort, Miniatuur};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -38,6 +38,9 @@ pub struct App {
     invoer: String,
     bewerkt: Option<OpId>,
     vorig_aantal: usize,
+    /// Het algemene kanaal, of een DM — bepaalt wat de chat- en bestandenpanelen tonen
+    /// en waar een nieuw bericht naartoe gaat.
+    actief_kanaal: Channel,
     naar_tray: bool,
     /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
     /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
@@ -84,6 +87,7 @@ impl App {
             invoer: String::new(),
             bewerkt: None,
             vorig_aantal: 0,
+            actief_kanaal: Channel::GENERAL,
             naar_tray,
             bronkeuze: None,
             instellingen: None,
@@ -106,7 +110,7 @@ impl App {
         }
         match self.bewerkt.take() {
             Some(doel) => self.stuur(UiCommand::Bewerk(doel, tekst)),
-            None => self.stuur(UiCommand::Plaats(tekst)),
+            None => self.stuur(UiCommand::Plaats(tekst, self.actief_kanaal)),
         }
         self.invoer.clear();
     }
@@ -118,6 +122,35 @@ impl App {
             .get(&peer)
             .cloned()
             .unwrap_or_else(|| peer.to_string()[..8].to_string())
+    }
+
+    /// Of een bericht of bestand bij het actief bekeken kanaal hoort.
+    ///
+    /// Voor het algemene kanaal is dat een gewone gelijkheid. Voor een DM ligt het
+    /// subtieler: `Channel::dm(x)` betekent "de auteur DM'de naar x", dus *mijn* eigen
+    /// berichten aan X dragen `Dm(X)`, maar X's antwoorden aan mij dragen `Dm(mij)` — niet
+    /// `Dm(X)`. Een DM-gesprek met X bestaat dus uit twee verschillende kanaalwaarden, één
+    /// per gespreksdeelnemer. Simpelweg vergelijken met `self.actief_kanaal` (wat altijd
+    /// `Dm(X)` is) laat daardoor alleen je eigen kant van het gesprek zien en nooit de
+    /// antwoorden van de ander.
+    fn hoort_bij_actief_kanaal(&self, kanaal: Channel, auteur: PeerId) -> bool {
+        hoort_bij_kanaal(self.actief_kanaal, self.mij, kanaal, auteur)
+    }
+
+    /// Wisselt van kanaal. Een half getypt bericht of een lopende bewerking hoort niet
+    /// per ongeluk in het verkeerde gesprek terecht te komen, dus die vervallen hierbij.
+    fn wissel_kanaal(&mut self, kanaal: Channel) {
+        if self.actief_kanaal == kanaal {
+            return;
+        }
+        self.actief_kanaal = kanaal;
+        self.invoer.clear();
+        self.bewerkt = None;
+        if let Some(peer) = kanaal.dm_peer() {
+            self.stuur(UiCommand::GelezenDm(peer));
+        } else {
+            self.stuur(UiCommand::Gelezen);
+        }
     }
 
     /// Levert `true` als er deze frame niets meer getekend hoeft te worden.
@@ -162,8 +195,17 @@ impl eframe::App for App {
         // De motor gebruikt dit om te bepalen of er een Windows-melding moet komen.
         let voorgrond = ctx.input(|i| i.focused);
         self.engine.voorgrond.store(voorgrond, Ordering::Relaxed);
-        if voorgrond && self.snap.ongelezen > 0 {
-            self.stuur(UiCommand::Gelezen);
+        if voorgrond {
+            // Alleen het kanaal dat je daadwerkelijk bekijkt telt als gelezen: zit je
+            // in een DM, dan mag dat het algemene kanaal niet stilletjes wegstrepen,
+            // en andersom.
+            match self.actief_kanaal.dm_peer() {
+                None if self.snap.ongelezen > 0 => self.stuur(UiCommand::Gelezen),
+                Some(p) if self.snap.ongelezen_dm.get(&p).copied().unwrap_or(0) > 0 => {
+                    self.stuur(UiCommand::GelezenDm(p));
+                }
+                _ => {}
+            }
         }
 
         self.deelnemers_paneel(ctx);
@@ -182,6 +224,7 @@ impl App {
         let mut voice_cmd: Option<UiCommand> = None;
         let mut stream_cmd: Option<UiCommand> = None;
         let mut bronnen_openen = false;
+        let mut kanaal_wissel: Option<Channel> = None;
 
         egui::SidePanel::left("deelnemers")
             .resizable(false)
@@ -190,6 +233,21 @@ impl App {
                 ui.add_space(8.0);
                 ui.heading("Deelnemers");
                 ui.add_space(8.0);
+
+                let algemeen_label = if self.snap.ongelezen > 0 {
+                    format!("# Algemeen ({})", self.snap.ongelezen)
+                } else {
+                    "# Algemeen".to_string()
+                };
+                if ui
+                    .selectable_label(self.actief_kanaal.is_general(), algemeen_label)
+                    .clicked()
+                {
+                    kanaal_wissel = Some(Channel::GENERAL);
+                }
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
 
                 let eigen = self
                     .snap
@@ -233,6 +291,21 @@ impl App {
                         .cloned()
                         .unwrap_or_else(|| p.label.clone());
                     peer_row(ui, p, &naam);
+
+                    if let Some(id) = p.peer_id {
+                        let ongelezen = self.snap.ongelezen_dm.get(&id).copied().unwrap_or(0);
+                        let label = if ongelezen > 0 {
+                            format!("\u{1F4AC} DM ({ongelezen})")
+                        } else {
+                            "\u{1F4AC} DM".to_string()
+                        };
+                        if ui
+                            .selectable_label(self.actief_kanaal.dm_peer() == Some(id), label)
+                            .clicked()
+                        {
+                            kanaal_wissel = Some(Channel::dm(id));
+                        }
+                    }
 
                     if in_gesprek && p.in_voice {
                         niveaubalk(ui, p.niveau);
@@ -326,6 +399,9 @@ impl App {
         if bronnen_openen {
             self.open_bronkeuze();
         }
+        if let Some(kanaal) = kanaal_wissel {
+            self.wissel_kanaal(kanaal);
+        }
     }
 
     /// Wat wij delen, plus de knop om er iets bij te doen.
@@ -418,9 +494,20 @@ impl App {
             .show(ctx, |ui| {
                 ui.add_space(8.0);
                 ui.heading("Bestanden");
+                ui.small(match self.actief_kanaal.dm_peer() {
+                    None => "algemeen".to_string(),
+                    Some(p) => format!("DM met {}", self.naam_van(p)),
+                });
                 ui.add_space(8.0);
 
-                if self.snap.files.is_empty() {
+                let getoond: Vec<&FileView> = self
+                    .snap
+                    .files
+                    .iter()
+                    .filter(|f| self.hoort_bij_actief_kanaal(f.channel, f.author))
+                    .collect();
+
+                if getoond.is_empty() {
                     ui.weak("Nog niets aangeboden.");
                     ui.add_space(8.0);
                 }
@@ -428,7 +515,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(ui.available_height() - 40.0)
                     .show(ui, |ui| {
-                        for f in &self.snap.files {
+                        for f in getoond {
                             ui.label(egui::RichText::new(&f.name).strong());
                             ui.horizontal(|ui| {
                                 ui.small(grootte_tekst(f.size));
@@ -510,7 +597,7 @@ impl App {
             // Blokkeert kort op de native dialoog — normaal voor een bestandskeuze en
             // raakt de motor niet: die draait op zijn eigen tokio-runtime.
             if let Some(pad) = rfd::FileDialog::new().pick_file() {
-                self.stuur(UiCommand::BiedBestandAan(pad));
+                self.stuur(UiCommand::BiedBestandAan(pad, self.actief_kanaal));
             }
         }
     }
@@ -906,16 +993,35 @@ impl App {
             let mut te_bewerken: Option<(OpId, String)> = None;
             let mut te_verwijderen: Option<OpId> = None;
 
+            ui.horizontal(|ui| match self.actief_kanaal.dm_peer() {
+                None => {
+                    ui.label(egui::RichText::new("# Algemeen").strong());
+                }
+                Some(p) => {
+                    ui.label(egui::RichText::new(format!("DM met {}", self.naam_van(p))).strong());
+                    ui.weak("alleen jij en deze peer zien dit gesprek");
+                }
+            });
+            ui.separator();
+
+            let berichten: Vec<_> = self
+                .snap
+                .timeline
+                .messages
+                .iter()
+                .filter(|m| self.hoort_bij_actief_kanaal(m.channel, m.author))
+                .collect();
+
             // Alleen naar beneden springen als er echt iets bij is gekomen; anders kun
             // je niet terugscrollen in de geschiedenis terwijl de RTT blijft tikken.
-            let gegroeid = self.snap.timeline.messages.len() != self.vorig_aantal;
-            self.vorig_aantal = self.snap.timeline.messages.len();
+            let gegroeid = berichten.len() != self.vorig_aantal;
+            self.vorig_aantal = berichten.len();
 
             egui::ScrollArea::vertical()
                 .stick_to_bottom(gegroeid)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if self.snap.timeline.messages.is_empty() {
+                    if berichten.is_empty() {
                         ui.add_space(20.0);
                         ui.vertical_centered(|ui| {
                             ui.weak("Nog geen berichten.");
@@ -926,7 +1032,7 @@ impl App {
                         });
                     }
 
-                    for msg in &self.snap.timeline.messages {
+                    for msg in berichten {
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(self.naam_van(msg.author))
@@ -1118,5 +1224,78 @@ fn niveaubalk(ui: &mut egui::Ui, niveau: f32) {
         let mut gevuld = rect;
         gevuld.set_width(rect.width() * deel);
         schilder.rect_filled(gevuld, 2.0, GROEN);
+    }
+}
+
+/// Of een op met dit `(kanaal, auteur)`-paar hoort bij wat je nu bekijkt (`actief`, vanuit
+/// je eigen standpunt `mij`).
+///
+/// Losstaand van `App` zodat dit zonder een hele `EngineHandle` te testen is. Zie
+/// `App::hoort_bij_actief_kanaal` voor de uitleg van de valkuil die dit voorkomt: een
+/// DM-gesprek met X bestaat uit twee kanaalwaarden (`Dm(X)` voor jouw berichten, `Dm(mij)`
+/// voor die van X), dus simpelweg vergelijken met `actief` (altijd `Dm(X)`) laat de helft
+/// van het gesprek verdwijnen.
+fn hoort_bij_kanaal(actief: Channel, mij: PeerId, kanaal: Channel, auteur: PeerId) -> bool {
+    match actief.dm_peer() {
+        None => kanaal.is_general(),
+        Some(partner) => {
+            (auteur == mij && kanaal == Channel::dm(partner))
+                || (auteur == partner && kanaal == Channel::dm(mij))
+        }
+    }
+}
+
+#[cfg(test)]
+mod kanaal_tests {
+    use super::*;
+
+    fn peer(n: u8) -> PeerId {
+        let mut b = [0u8; 16];
+        b[0] = n;
+        PeerId::from_bytes(b)
+    }
+
+    #[test]
+    fn algemeen_toont_alleen_algemene_berichten() {
+        let (mij, ander) = (peer(1), peer(2));
+        assert!(hoort_bij_kanaal(
+            Channel::GENERAL,
+            mij,
+            Channel::GENERAL,
+            ander
+        ));
+        assert!(!hoort_bij_kanaal(
+            Channel::GENERAL,
+            mij,
+            Channel::dm(mij),
+            ander
+        ));
+    }
+
+    #[test]
+    fn dm_toont_beide_kanten_van_het_gesprek() {
+        // Precies de bug die de reviewer vond: mijn eigen berichten aan X dragen Dm(X),
+        // maar X's antwoorden aan mij dragen Dm(mij), niet Dm(X).
+        let (mij, x) = (peer(1), peer(2));
+        let actief = Channel::dm(x);
+
+        assert!(
+            hoort_bij_kanaal(actief, mij, Channel::dm(x), mij),
+            "mijn eigen bericht aan X moet zichtbaar zijn"
+        );
+        assert!(
+            hoort_bij_kanaal(actief, mij, Channel::dm(mij), x),
+            "X's antwoord aan mij moet zichtbaar zijn"
+        );
+    }
+
+    #[test]
+    fn dm_toont_geen_berichten_uit_een_ander_gesprek() {
+        let (mij, x, derde) = (peer(1), peer(2), peer(3));
+        let actief = Channel::dm(x);
+
+        assert!(!hoort_bij_kanaal(actief, mij, Channel::dm(derde), mij));
+        assert!(!hoort_bij_kanaal(actief, mij, Channel::dm(mij), derde));
+        assert!(!hoort_bij_kanaal(actief, mij, Channel::GENERAL, x));
     }
 }

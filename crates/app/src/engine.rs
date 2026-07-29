@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
-use fitcom_proto::{ControlMsg, OpId, PeerId};
+use fitcom_proto::{Channel, ControlMsg, OpId, PeerId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
 use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle, Miniatuur};
@@ -94,6 +94,9 @@ pub struct StreamView {
 pub struct FileView {
     pub id: OpId,
     pub author: PeerId,
+    /// Algemeen kanaal of een DM — bepaalt of dit bestand in de algemene lijst of in
+    /// een gespreksvenster hoort.
+    pub channel: Channel,
     pub name: String,
     pub size: u64,
     /// Ons eigen aanbod: geen downloadknop nodig, we hebben het al.
@@ -113,15 +116,21 @@ pub struct Snapshot {
     pub video: VideoConfig,
     pub files: Vec<FileView>,
     pub ongelezen: usize,
+    /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
+    /// kanaal) — je kunt het een missen zonder het ander te missen.
+    pub ongelezen_dm: HashMap<PeerId, usize>,
     pub fout: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum UiCommand {
-    Plaats(String),
+    /// Kanaal erbij: het algemene kanaal, of een DM met de gekozen peer.
+    Plaats(String, Channel),
     Bewerk(OpId, String),
     Verwijder(OpId),
     Gelezen,
+    /// Een DM-gesprek is bekeken; telt niet mee voor `Snapshot::ongelezen_dm`.
+    GelezenDm(PeerId),
     FoutWeg,
     VoiceDeelnemen,
     VoiceVerlaten,
@@ -141,9 +150,10 @@ pub enum UiCommand {
     /// meteen mee — die worden herstart met de nieuwe instellingen — en voor nieuw
     /// gestarte bronnen vanzelf, want die lezen `cfg.video` bij het starten.
     ZetVideoInstellingen(VideoConfig),
-    /// Een lokaal bestand kiezen en aanbieden aan de anderen. Hashen gebeurt op de
-    /// motor: bij een groot bestand kan dat te lang duren om de UI op te laten wachten.
-    BiedBestandAan(PathBuf),
+    /// Een lokaal bestand kiezen en aanbieden aan de anderen (of aan één DM-partner).
+    /// Hashen gebeurt op de motor: bij een groot bestand kan dat te lang duren om de UI
+    /// op te laten wachten.
+    BiedBestandAan(PathBuf, Channel),
     /// Downloaden, of hervatten na een eerdere onderbreking.
     DownloadBestand(OpId),
 }
@@ -286,6 +296,7 @@ enum FileEvent {
         naam: String,
         grootte: u64,
         hash: [u8; 32],
+        channel: Channel,
     },
     Voortgang {
         file: OpId,
@@ -838,8 +849,8 @@ impl Engine {
 
     fn op_ui_command(&mut self, cmd: UiCommand) {
         match cmd {
-            UiCommand::Plaats(tekst) => {
-                let r = self.chat.plaats_bericht(&tekst);
+            UiCommand::Plaats(tekst, channel) => {
+                let r = self.chat.plaats_bericht(&tekst, channel);
                 self.verwerk(r);
             }
             UiCommand::Bewerk(doel, tekst) => {
@@ -851,6 +862,7 @@ impl Engine {
                 self.verwerk(r);
             }
             UiCommand::Gelezen => self.chat.markeer_gelezen(),
+            UiCommand::GelezenDm(peer) => self.chat.markeer_dm_gelezen(peer),
             UiCommand::FoutWeg => self.fout = None,
             UiCommand::VoiceDeelnemen => self.deelnemen(),
             UiCommand::VoiceVerlaten => self.verlaten(),
@@ -903,9 +915,9 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
-            UiCommand::BiedBestandAan(pad) => {
+            UiCommand::BiedBestandAan(pad, channel) => {
                 let tx = self.file_tx.clone();
-                tokio::spawn(hash_en_bied_aan(pad, tx));
+                tokio::spawn(hash_en_bied_aan(pad, channel, tx));
             }
             UiCommand::DownloadBestand(file) => self.download_bestand(file),
         }
@@ -960,7 +972,8 @@ impl Engine {
                 naam,
                 grootte,
                 hash,
-            } => match self.chat.deel_bestand(&naam, grootte, hash) {
+                channel,
+            } => match self.chat.deel_bestand(&naam, grootte, hash, channel) {
                 Ok((id, cmds)) => {
                     self.files.biedt_aan(id, pad);
                     self.stuur_alles(cmds);
@@ -1082,6 +1095,7 @@ impl Engine {
             .map(|f| FileView {
                 id: f.id,
                 author: f.author,
+                channel: f.channel,
                 name: f.name.clone(),
                 size: f.size,
                 is_mine: f.author == me,
@@ -1098,6 +1112,7 @@ impl Engine {
             video: self.cfg.video.clone(),
             files,
             ongelezen: self.chat.ongelezen,
+            ongelezen_dm: self.chat.ongelezen_dm().clone(),
             fout: self.fout.clone(),
         }));
     }
@@ -1121,10 +1136,17 @@ pub fn deelbare_bronnen() -> Result<Vec<Bron>> {
 // ---------------------------------------------------------------------------
 
 /// De naam van het deelbestand (`.part`) op schijf tijdens het downloaden. Op basis
-/// van `(author, seq)` in plaats van de leesbare naam: twee aanbiedingen met dezelfde
-/// bestandsnaam van verschillende peers mogen elkaar niet overschrijven.
+/// van `(author, channel, seq)` in plaats van de leesbare naam: twee aanbiedingen met
+/// dezelfde bestandsnaam van verschillende peers mogen elkaar niet overschrijven. Het
+/// kanaal moet erbij sinds `seq` per (auteur, kanaal) telt in plaats van per auteur
+/// alleen — zonder dat zou een algemeen bestand en een DM-bestand van dezelfde auteur
+/// met toevallig dezelfde `seq` op dezelfde tijdelijke naam uitkomen.
 fn deelbestand_naam(entry: &FileEntry) -> String {
-    format!("{}-{}.part", entry.author.0.simple(), entry.id.seq)
+    let kanaal = match entry.channel.dm_peer() {
+        Some(p) => format!("dm-{}", p.0.simple()),
+        None => "algemeen".to_string(),
+    };
+    format!("{}-{kanaal}-{}.part", entry.author.0.simple(), entry.id.seq)
 }
 
 /// De naam waaronder het bestand definitief landt. Voegt `" (2)"` etc. toe als de naam
@@ -1154,7 +1176,7 @@ fn unieke_bestandsnaam(dir: &Path, naam: &str) -> PathBuf {
 /// Leest een lokaal bestand, hasht het, en meldt het resultaat terug zodat de motor het
 /// als `FileMeta`-op kan vastleggen. Op een losse taak: bij een groot bestand kan dit
 /// seconden duren, en dat mag de UI niet blokkeren.
-async fn hash_en_bied_aan(pad: PathBuf, events: mpsc::Sender<FileEvent>) {
+async fn hash_en_bied_aan(pad: PathBuf, channel: Channel, events: mpsc::Sender<FileEvent>) {
     let naam = pad
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -1177,6 +1199,7 @@ async fn hash_en_bied_aan(pad: PathBuf, events: mpsc::Sender<FileEvent>) {
                     naam,
                     grootte,
                     hash,
+                    channel,
                 })
                 .await;
         }

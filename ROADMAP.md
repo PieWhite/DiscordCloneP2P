@@ -110,3 +110,166 @@ iets download, en downloaden levert byte-voor-byte hetzelfde bestand op als het 
 (`crates/app/tests/file_deling.rs`, geen GPU nodig). Wat alleen met een tweede machine te
 controleren is: hoe een overdracht zich gedraagt bij echt pakketverlies en een normale
 netwerkonderbreking. Zie `docs/TESTPLAN.md`.
+
+## Kanalen (DM's) — na fase 6 toegevoegd ✅
+Was in `TODO.md` afgeboekt als backlog ("meer dan één chatkanaal"), maar alsnog
+opgepakt: directe berichten tussen twee peers, naast het bestaande algemene kanaal.
+
+- **`Op`/`OpId` kregen een `channel`-veld** (algemeen, of een DM met een specifieke
+  peer). `seq` telt voortaan per **(auteur, kanaal)** in plaats van per auteur alleen —
+  zie `docs/ARCHITECTURE.md`, sectie "Kanalen", voor waarom dat geen keuze maar een
+  noodzaak is.
+- **Een DM gaat nooit via een derde peer.** Het algemene kanaal profiteert van
+  doorsturen bij gedeeltelijke connectiviteit; een DM bewust niet, want er is geen
+  encryptie en een derde peer zou de inhoud anders kunnen lezen als hij hem doorgaf.
+  Bewuste trade-off, afgestemd met de gebruiker.
+- **Bestanden kunnen ook privé** aan één peer aangeboden worden — hetzelfde
+  `channel`-veld op `FileMeta`, met een aanbieder die een download door iemand anders
+  dan de geadresseerde weigert.
+- **UI:** elke peer heeft een DM-knop met ongelezen-badge, los van de algemene
+  ongelezen-teller. Bestanden- en berichtenpaneel tonen het actieve kanaal.
+
+**Klaar als:** een DM tussen twee peers komt aan bij de geadresseerde en nooit bij de
+derde, ook niet na doorstuurpogingen — bevestigd met een test door de echte mesh heen met
+alle drie de peers volledig verbonden (`crates/app/tests/chat_sync.rs`), plus
+kanaal-scoping op store-niveau (`crates/store/tests/convergentie.rs`).
+
+---
+
+## Geplande fasen (nog te doen)
+
+Op 2026-07-30 met Rick doorgesproken en in fases gezet. Volgorde is de uitvoeringsvolgorde;
+elke fase is los op te leveren en te testen zoals de fases hiervoor. Twee open vragen zijn
+al beantwoord vóór het plannen: auto-update (fase 11) haalt de nieuwe versie automatisch op
+maar past hem pas toe ná bevestiging, en YouTube-links (fase 8) krijgen geen voorvertoning
+via een externe API — zie `TODO.md`, sectie "Afgewezen".
+
+### Fase 7 — Tags, notificaties, niet storen, gebruikersnaam
+Alles rond wie wanneer een melding krijgt, en je eigen identiteit aanpasbaar maken.
+
+- **`@username`-tags**: autocomplete in de chatbox op basis van de bestaande peerlijst
+  (typen van `@` opent een gefilterde lijst, Tab/Enter vult aan). Een bericht met een
+  geldige tag naar jezelf wordt in de chat gemarkeerd/gehighlight.
+- **Windows-melding alleen bij een tag naar jezelf**, niet meer bij elk bericht, en alleen
+  als het venster geminimaliseerd/verborgen is — dat mechanisme (tray leest zijn eigen
+  events, los van de UI) staat er al, dit is een filter erbovenop.
+- **Geen melding voor ingehaalde geschiedenis.** Een tag in een bericht dat binnenkomt
+  tijdens het inhalen van gemiste geschiedenis (je was zelf net offline) mag geen melding
+  geven — alleen een tag in een bericht dat binnenkomt terwijl je al verbonden/online was
+  telt. Dit onderscheid (live broadcast vs. inhaalsync) bestaat al impliciet in hoe sync
+  werkt; hier moet een moment "initiële sync met deze peer is klaar" expliciet gemarkeerd
+  worden zodat de meldingslaag weet wat "live" is.
+- **Niet-storenmodus**: een schakelaar (net als mute/deafen) die alle Windows-meldingen
+  onderdrukt, ook een directe tag naar jezelf.
+- **Gebruikersnaam wijzigen via de UI.** `OpKind::SetNick` bestaat al in `crates/proto` en
+  wordt al verwerkt in `crates/app/src/chat.rs` — er is alleen nog geen UI-ingang om er zelf
+  een te versturen. Toevoegen: een veld in de instellingen dat een `SetNick`-op broadcast;
+  de naam verandert dan overal waar een auteur getoond wordt, bij alle peers.
+
+**Klaar als:** een tag naar jezelf highlight in de chat, geeft een Windows-melding alleen
+als het venster verborgen is én het bericht live binnenkwam, blijft stil in niet-storenmodus,
+en een naamswijziging bij de ene peer verschijnt bij de andere twee zonder herstart.
+
+### Fase 8 — Chat verrijking: bestanden inline, plakken, links
+Bestanden en afbeeldingen horen in de conversatie te zitten, niet in een los paneel.
+
+- **Slepen-en-neerzetten**: een bestand vanaf Windows naar de chatbox slepen start dezelfde
+  aanbiedflow als de bestaande bestandsdialoog (`hash_en_bied_aan` in `engine.rs`) — alleen
+  een nieuwe invoerweg, geen nieuwe logica.
+- **Bestanden inline in de chat, geen apart paneel meer.** Een aangeboden bestand
+  (`FileEntry`) verschijnt als een berichtkaart op zijn eigen plek in de tijdlijn: naam,
+  grootte, voortgangsbalk tijdens downloaden, downloadknop als het nog niet binnen is. Het
+  losse `bestanden_paneel` in `ui.rs` vervalt; DM-bestanden blijven wel scopen op hun kanaal,
+  zoals nu.
+- **Ctrl+V afbeelding plakken**: een afbeelding op het klembord in de chatbox plakken stuurt
+  hem meteen als bijlage, via dezelfde bestand-aanbiedflow als hierboven (met een
+  miniatuurweergave in plaats van een generieke bestandskaart).
+- **YouTube-links blijven kale links.** Rick heeft de externe-API-uitzondering afgewezen
+  (zie `TODO.md`) — geen thumbnail, titel of kanaalnaam, gewoon een klikbare tekstlink zoals
+  nu al het geval is.
+
+**Klaar als:** een gesleept of geplakt bestand verschijnt als bericht in de tijdlijn met
+voortgang en downloadknop, en er is geen apart bestandenpaneel meer in de UI.
+
+### Fase 9 — DM: meerdere kanalen per peer met een eigen titel
+Eén DM met een peer moet meerdere losse, benoembare gesprekken kunnen bevatten
+(bijv. "algemeen" en "project X"), die wel allemaal bij diezelfde peer horen.
+
+- **Protocolwijziging, additief**: `Channel::Dm(PeerId)` krijgt een sub-kanaal-identifier
+  (en titel) erbij, net zoals `seq` recent van "per auteur" naar "per (auteur, kanaal)"
+  moest — hier wordt het "per (auteur, peer, sub-kanaal)". Zie `docs/ARCHITECTURE.md`,
+  sectie "Kanalen", voor het patroon dat hier hergebruikt wordt.
+- **UI**: binnen een DM een nieuw sub-kanaal aanmaken, hernoemen en wisselen; berichten en
+  bestanden blijven per sub-kanaal gescheiden, net als nu tussen algemeen en een DM.
+- Dit moet, net als bij de vorige kanalen-uitbreiding, langs de `protocol-reviewer`-agent
+  vóór het committen — dit soort wijzigingen in `crates/proto`/`crates/store` is precies
+  waar eerder een reken- en een schema-fout binnenslopen (zie `docs/OVERDRACHT.md`,
+  beslissing 10 en de bugs eronder).
+
+**Klaar als:** twee peers meerdere los van elkaar gesynchroniseerde, benoemde
+sub-gesprekken kunnen voeren binnen dezelfde DM, bevestigd met een test op store-niveau
+zoals de bestaande kanaal-scoping-tests.
+
+### Fase 10 — Beeld en geluid: resoluties, bitrate, gecombineerd delen
+- **Resolutieondersteuning 2560×1440 en 3440×1440 (ultrawide).** SPEC ging uit van
+  1080p@60Hz per persoon; de dev-PC heeft in de praktijk al een 1440p-hoofdscherm (zie
+  "Valkuilen" in `docs/OVERDRACHT.md`). Uitzoeken en wegnemen van elke plek die stilzwijgend
+  1920×1080 aanneemt: video-instellingen-UI, encoder/decoder-init, kijkvenster-formaat,
+  miniaturen-downscale. WGC capture zelf is al resolutie-onafhankelijk.
+- **Bitrate-standaarden herzien**: 12 Mbit/s als standaard voor 1080p@60fps (nu ~25 Mbit/s).
+  Dit gaat over de vastgelegde onderbouwing in SPEC.md heen ("bij 1 Gbit zijn bits gratis"),
+  maar niet omdat die redenering fout was voor de lokale tailnet-verbinding — het probleem
+  zit bij een peer met een minder goede eigen internetverbinding. Rick heeft gemeten dat de
+  ~25 Mbit-stream bij zo'n peer lag veroorzaakte in de audio van **degene die streamt**
+  (niet bij de kijker zelf), en dat die lag wegviel bij 12 Mbit zonder merkbaar
+  kwaliteitsverlies. Dus geen esthetische keuze maar een gemeten regressie op precies de
+  eis die bovenaan SPEC.md staat ("geen merkbare impact op een draaiende game/voice
+  daarnaast"). SPEC.md moet bij het bouwen van deze fase een nieuwe passage krijgen die dit
+  vastlegt — anders leest een latere sessie de oude "bits zijn gratis"-redenering en denkt
+  dat 12 Mbit een vergissing is. Voor 1440p@60fps en 3440×1440@60fps geldt dezelfde
+  waarschuwing: niet zomaar omhoog schalen naar "wat gebruikelijk is voor die resolutie"
+  zonder opnieuw te meten bij een peer met een matige verbinding — het mechanisme achter de
+  lag (waarschijnlijk audio die achter dezelfde verbinding/CPU wacht als de videostream) is
+  nog niet uitgezocht, alleen het symptoom is bevestigd.
+- **Geluid delen ingebouwd bij scherm delen.** Geen losse aan/uit-knop meer: desktop-audio
+  start automatisch zodra je een monitor/venster deelt en stopt automatisch zodra je stopt.
+  Blijft technisch een aparte stream met eigen volumeschuif bij de luisteraar, zoals nu.
+  - **Eigen stem niet laten terugkomen.** Als de gedeelde desktop-audio de eigen
+    voice-chat-weergave van de app zou meecapturen, hoort een peer zijn eigen stem
+    vertraagd terug via jouw gedeelde geluid. Windows heeft sinds versie 2004 een
+    proces-specifieke loopback-capture die een proces juist kán *uitsluiten*; of die
+    exclude-modus op alle drie de machines beschikbaar is, is nog niet uitgezocht — dit is
+    een onderzoekspunt (`media-research`-agent) vóór er iets gebouwd wordt, geen aanname.
+- **Bugfix, los van de rest oppakbaar**: specifiek stoppen met audio delen laat de andere
+  partij nu nog gewoon geluid horen. Vermoedelijk mist het stop-pad een
+  unsubscribe/teardown-stap specifiek voor `StreamKind::DESKTOP_AUDIO`, terwijl het
+  video-stoppad dat al wel goed doet. Kleinste, meest losstaande item in deze fase — kan
+  het eerst.
+
+**Klaar als:** beide nieuwe resoluties scherp en zonder framedrops getoond worden, de
+nieuwe bitrate-defaults in SPEC.md staan met hun onderbouwing, scherm delen automatisch
+geluid meeneemt zonder een eigen knop, stoppen met delen ook echt stil is bij de
+ontvanger, en een peer zijn eigen stem niet hoort terugkomen via gedeeld bureaubladgeluid.
+
+### Fase 11 — Automatische updates tussen peers
+- **Versievergelijking bij de handshake**: naast de bestaande `protocol_version` een
+  app-versie (semver) uitwisselen zodat een peer kan zien dat een ander een nieuwere build
+  heeft.
+- **Automatisch ophalen, pas toepassen na bevestiging** — dit is expliciet met Rick
+  afgestemd (zie boven): zodra een nieuwere versie bij een peer gezien wordt, wordt de
+  nieuwe exe op de achtergrond gedownload via het bestaande bestandsdelingsmechanisme
+  (punt-naar-punt, hervatbaar, BLAKE3-geverifieerd — vrijwel hergebruik van fase 6). Pas als
+  hij volledig binnen en geverifieerd is, vraagt de app: "Peer X heeft versie Y, nu
+  bijwerken en herstarten?". Alleen bij bevestiging wordt hij toegepast.
+- **Toepassen**: een exe kan zichzelf niet overschrijven terwijl hij draait op Windows. Een
+  klein los updater-proces wacht tot de hoofd-app afgesloten is, vervangt de exe en start
+  hem opnieuw op.
+- **Vertrouwensgrens verschuift.** Dit is de eerste functie waarbij "een peer vertrouwen"
+  betekent "code van een peer uitvoeren", niet alleen zijn chat/bestanden lezen. Dat past
+  binnen de bestaande aanname (tailnet + UUID-allowlist is de beveiligingsgrens, zie
+  `TODO.md`, sectie "Beveiliging"), maar is wel een principieel andere stap dan de fases
+  hiervoor — expliciet benoemd zodat dat niet stilzwijgend gebeurt.
+
+**Klaar als:** een peer met een oudere versie krijgt de nieuwe automatisch aangeboden zodra
+hij weer online komt, ziet een duidelijke bevestigingsvraag, en draait na akkoord de nieuwe
+versie zonder dat iemand handmatig een zip hoeft uit te pakken.

@@ -4,13 +4,17 @@
 //! geen willekeur. Daardoor is het gedrag bij door elkaar aankomende ops en gelijktijdige
 //! bewerkingen exact te testen.
 
-use fitcom_proto::{Op, OpId, OpKind, PeerId};
+use fitcom_proto::{Channel, Op, OpId, OpKind, PeerId};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub id: OpId,
     pub author: PeerId,
+    /// Gelijk aan `id.channel` — welk gesprek dit bericht bij hoort: het algemene
+    /// kanaal, of een DM. Los veld voor het gemak van de UI, die anders overal
+    /// `msg.id.channel` zou moeten schrijven.
+    pub channel: Channel,
     pub body: String,
     /// Millis sinds epoch, van de klok van de auteur. Alleen voor weergave.
     pub created_at: i64,
@@ -25,6 +29,9 @@ pub struct FileEntry {
     /// Wie aanbiedt. Gelijk aan `id.author` — geen apart veld nodig, precies zoals
     /// `Edit`/`Delete` hun eigenaarschap ook via `op.author` regelen.
     pub author: PeerId,
+    /// Gelijk aan `id.channel`. Zichtbaarheid van de bytes zelf wordt hierop
+    /// gehandhaafd in `crates/app/src/files.rs`.
+    pub channel: Channel,
     pub name: String,
     pub size: u64,
     pub hash: [u8; 32],
@@ -74,6 +81,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                     Message {
                         id: op.id(),
                         author: op.author,
+                        channel: op.channel,
                         body,
                         created_at: op.wall_clock,
                         edited: false,
@@ -86,10 +94,17 @@ pub fn build(ops: &[Op]) -> Timeline {
                 if target.author != op.author {
                     continue;
                 }
+                // En alleen binnen hetzelfde kanaal als het origineel: zonder deze regel
+                // zou een edit-op die zelf op het algemene kanaal staat (en dus breed
+                // gesynchroniseerd wordt) de tekst van een DM-bericht kunnen wijzigen —
+                // en die nieuwe tekst zou dan alsnog breed lekken.
+                if target.channel != op.channel {
+                    continue;
+                }
                 record(&mut changes, target, key(op), Change::Edit(body));
             }
             OpKind::Delete { target } => {
-                if target.author != op.author {
+                if target.author != op.author || target.channel != op.channel {
                     continue;
                 }
                 record(&mut changes, target, key(op), Change::Delete);
@@ -107,6 +122,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                 files.push(FileEntry {
                     id: op.id(),
                     author: op.author,
+                    channel: op.channel,
                     name,
                     size,
                     hash,
@@ -163,7 +179,11 @@ mod tests {
     }
 
     fn op(author: PeerId, seq: u64, lamport: u64, kind: OpKind) -> Op {
-        Op::new(author, seq, lamport, 0, &kind).unwrap()
+        op_in(Channel::GENERAL, author, seq, lamport, kind)
+    }
+
+    fn op_in(channel: Channel, author: PeerId, seq: u64, lamport: u64, kind: OpKind) -> Op {
+        Op::new(author, channel, seq, lamport, 0, &kind).unwrap()
     }
 
     #[test]
@@ -317,7 +337,7 @@ mod tests {
             2,
             2,
             OpKind::Edit {
-                target: OpId::new(peer(1), 1),
+                target: OpId::new(peer(1), Channel::GENERAL, 1),
                 body: "zweeft".into(),
             },
         );
@@ -336,6 +356,7 @@ mod tests {
         );
         let toekomstig = Op {
             author: peer(2),
+            channel: Channel::GENERAL,
             seq: 1,
             lamport: 2,
             wall_clock: 0,
@@ -362,9 +383,69 @@ mod tests {
         assert_eq!(t.files.len(), 1);
         assert_eq!(t.files[0].id, aanbod.id());
         assert_eq!(t.files[0].author, peer(1));
+        assert_eq!(t.files[0].channel, Channel::GENERAL);
         assert_eq!(t.files[0].name, "vakantiefotos.zip");
         assert_eq!(t.files[0].size, 42);
         assert_eq!(t.files[0].hash, [0x11; 32]);
+    }
+
+    #[test]
+    fn dm_bericht_draagt_zijn_kanaal() {
+        let dm = op_in(
+            Channel::dm(peer(2)),
+            peer(1),
+            1,
+            1,
+            OpKind::Post {
+                body: "onder ons".into(),
+            },
+        );
+        let t = build(&[dm]);
+        assert_eq!(t.messages[0].channel, Channel::dm(peer(2)));
+    }
+
+    #[test]
+    fn dm_bestand_draagt_zijn_kanaal() {
+        let aanbod = op_in(
+            Channel::dm(peer(2)),
+            peer(1),
+            1,
+            1,
+            OpKind::FileMeta {
+                name: "prive.zip".into(),
+                size: 10,
+                hash: [0x22; 32],
+            },
+        );
+        let t = build(&[aanbod]);
+        assert_eq!(t.files[0].channel, Channel::dm(peer(2)));
+    }
+
+    #[test]
+    fn edit_in_een_ander_kanaal_dan_het_origineel_wordt_genegeerd() {
+        // Zou een edit-op op het algemene kanaal (dus breed gesynchroniseerd) een
+        // DM-bericht kunnen wijzigen, dan lekt de nieuwe tekst alsnog breed mee.
+        let post = op_in(
+            Channel::dm(peer(2)),
+            peer(1),
+            1,
+            1,
+            OpKind::Post {
+                body: "origineel".into(),
+            },
+        );
+        let edit = op(
+            peer(1),
+            1,
+            2,
+            OpKind::Edit {
+                target: post.id(),
+                body: "aangepast via het verkeerde kanaal".into(),
+            },
+        );
+        let t = build(&[post, edit]);
+        assert_eq!(t.messages[0].body, "origineel");
+        assert!(!t.messages[0].edited);
     }
 
     #[test]

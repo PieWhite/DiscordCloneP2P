@@ -6,7 +6,7 @@
 
 use fitcom_net::{spawn, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget};
 use fitcom_proto::control::OpBroadcast;
-use fitcom_proto::{ControlMsg, Op, OpKind, PeerId};
+use fitcom_proto::{Channel, ControlMsg, Op, OpKind, PeerId};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -126,6 +126,7 @@ async fn twee_peers_vinden_elkaar_en_wisselen_berichten_uit() {
 
     let op = Op::new(
         ida,
+        Channel::GENERAL,
         1,
         1,
         0,

@@ -7,7 +7,7 @@
 
 use fitcom::chat::Chat;
 use fitcom_net::{MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget};
-use fitcom_proto::PeerId;
+use fitcom_proto::{Channel, PeerId};
 use fitcom_store::Store;
 use std::time::{Duration, Instant};
 
@@ -32,18 +32,21 @@ async fn free_port() -> u16 {
     panic!("geen vrije poort gevonden");
 }
 
-fn config(me: PeerId, naam: &str, eigen: u16, ander: u16) -> MeshConfig {
+fn config_multi(me: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> MeshConfig {
     MeshConfig {
         me,
         display_name: naam.to_string(),
         control_port: eigen,
         media_port: 0,
-        targets: vec![PeerTarget {
-            address: "127.0.0.1".to_string(),
-            label: naam.to_string(),
-            known_id: None,
-            control_port: ander,
-        }],
+        targets: anderen
+            .iter()
+            .map(|&ander| PeerTarget {
+                address: "127.0.0.1".to_string(),
+                label: naam.to_string(),
+                known_id: None,
+                control_port: ander,
+            })
+            .collect(),
     }
 }
 
@@ -56,8 +59,12 @@ struct Peer {
 
 impl Peer {
     fn nieuw(id: PeerId, naam: &str, eigen: u16, ander: u16) -> Self {
+        Self::nieuw_multi(id, naam, eigen, &[ander])
+    }
+
+    fn nieuw_multi(id: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> Self {
         Self {
-            mesh: fitcom_net::spawn(config(id, naam, eigen, ander)).unwrap(),
+            mesh: fitcom_net::spawn(config_multi(id, naam, eigen, anderen)).unwrap(),
             chat: Chat::new(Store::open_in_memory(id).unwrap()).unwrap(),
             verbonden: Vec::new(),
         }
@@ -107,12 +114,29 @@ impl Peer {
     }
 
     fn zeg(&mut self, tekst: &str) {
-        let cmds = self.chat.plaats_bericht(tekst).unwrap();
+        let cmds = self.chat.plaats_bericht(tekst, Channel::GENERAL).unwrap();
+        self.stuur(cmds);
+        self.chat.refresh();
+    }
+
+    fn dm(&mut self, aan: PeerId, tekst: &str) {
+        let cmds = self.chat.plaats_bericht(tekst, Channel::dm(aan)).unwrap();
         self.stuur(cmds);
         self.chat.refresh();
     }
 
     fn berichten(&mut self) -> Vec<String> {
+        self.chat.refresh();
+        self.chat
+            .timeline()
+            .messages
+            .iter()
+            .filter(|m| m.channel.is_general())
+            .map(|m| m.body.clone())
+            .collect()
+    }
+
+    fn alle_berichten(&mut self) -> Vec<String> {
         self.chat.refresh();
         self.chat
             .timeline()
@@ -254,4 +278,64 @@ async fn bewerken_en_verwijderen_komen_ook_over() {
     .await;
 
     assert_eq!(a.berichten(), ["typfout"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dm_komt_aan_bij_de_geadresseerde_en_nooit_bij_de_derde_peer() {
+    // De kern van de kanalen-uitbreiding, door de echte mesh heen: alle drie de peers
+    // zijn volledig met elkaar verbonden (net als in productie), A stuurt B een DM, en C
+    // — die zowel A als B rechtstreeks kan bereiken en dus in theorie zou kunnen
+    // doorsturen — mag daar nooit iets van zien.
+    let ports = [free_port().await, free_port().await, free_port().await];
+    let ids: Vec<PeerId> = (0..3).map(|_| PeerId::new_random()).collect();
+
+    let mut a = Peer::nieuw_multi(ids[0], "A", ports[0], &[ports[1], ports[2]]);
+    let mut b = Peer::nieuw_multi(ids[1], "B", ports[1], &[ports[0], ports[2]]);
+    let mut c = Peer::nieuw_multi(ids[2], "C", ports[2], &[ports[0], ports[1]]);
+
+    tot(&mut [&mut a, &mut b, &mut c], "volledige mesh", 25, |p| {
+        p.iter().all(|peer| peer.verbonden.len() == 2)
+    })
+    .await;
+
+    a.dm(ids[1], "dit is alleen voor jou, B");
+    a.zeg("dit is voor iedereen");
+
+    tot(
+        &mut [&mut a, &mut b, &mut c],
+        "B ziet de DM, C ziet alleen het algemene bericht",
+        20,
+        |p| p[1].alle_berichten().len() == 2 && p[2].berichten() == ["dit is voor iedereen"],
+    )
+    .await;
+
+    assert_eq!(
+        b.alle_berichten(),
+        ["dit is alleen voor jou, B", "dit is voor iedereen"]
+    );
+
+    // Nog een paar pompslagen: geeft de doorstuurlus alle kans om de DM alsnog bij C
+    // te krijgen, mocht de kanaal-filtering daar een gat laten.
+    for _ in 0..40 {
+        a.pomp();
+        b.pomp();
+        c.pomp();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        c.alle_berichten(),
+        ["dit is voor iedereen"],
+        "C mag de DM tussen A en B nooit ontvangen, ook niet via doorsturen"
+    );
+
+    // En de eerdere DM mag het algemene kanaal niet blokkeren: C moet ook een tweede
+    // algemeen bericht van A gewoon krijgen.
+    a.zeg("nog een algemeen bericht");
+    tot(
+        &mut [&mut a, &mut c],
+        "C ziet het tweede bericht",
+        20,
+        |p| p[1].berichten() == ["dit is voor iedereen", "nog een algemeen bericht"],
+    )
+    .await;
 }

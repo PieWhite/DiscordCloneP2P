@@ -8,7 +8,7 @@
 //! store naar de andere verplaatst. Daardoor kunnen we uitval, partities en willekeurige
 //! aankomstvolgorde afdwingen in plaats van erop te hopen.
 
-use fitcom_proto::{Op, OpKind, PeerId};
+use fitcom_proto::{Channel, Op, OpKind, PeerId};
 use fitcom_store::{Store, SYNC_BATCH};
 
 fn peer(n: u8) -> PeerId {
@@ -22,7 +22,8 @@ fn store(n: u8) -> Store {
 }
 
 fn post(s: &mut Store, tekst: &str) -> Op {
-    s.append_local(&fitcom_store::post(tekst), 0).unwrap()
+    s.append_local(Channel::GENERAL, &fitcom_store::post(tekst), 0)
+        .unwrap()
 }
 
 /// Eenrichtingsverkeer: alles wat `from` heeft en `to` mist.
@@ -126,6 +127,7 @@ fn drie_peers_convergeren_bij_willekeurige_volgorde_en_partities() {
                 if let Some(doel) = eigen.last() {
                     stores[wie]
                         .append_local(
+                            Channel::GENERAL,
                             &OpKind::Edit {
                                 target: doel.id(),
                                 body: format!("bewerkt in ronde {ronde}"),
@@ -197,17 +199,23 @@ fn version_vector_liegt_niet_bij_een_gat() {
 
     b.apply_remote(&ops[2]).unwrap();
     assert_eq!(
-        b.version_vector().unwrap().get(peer(1)),
+        b.version_vector().unwrap().get(peer(1), Channel::GENERAL),
         0,
         "met een gat mag de version vector niets claimen"
     );
 
     b.apply_remote(&ops[0]).unwrap();
-    assert_eq!(b.version_vector().unwrap().get(peer(1)), 1);
+    assert_eq!(
+        b.version_vector().unwrap().get(peer(1), Channel::GENERAL),
+        1
+    );
 
     // Het gat wordt gedicht: de reeks moet in één keer doorschuiven naar 3.
     b.apply_remote(&ops[1]).unwrap();
-    assert_eq!(b.version_vector().unwrap().get(peer(1)), 3);
+    assert_eq!(
+        b.version_vector().unwrap().get(peer(1), Channel::GENERAL),
+        3
+    );
     assert_eq!(bodies(&b), ["een", "twee", "drie"]);
 }
 
@@ -269,7 +277,10 @@ fn geschiedenis_overleeft_een_herstart() {
     {
         let s = Store::open(&pad, peer(1)).unwrap();
         assert_eq!(bodies(&s), ["blijft staan", "dit ook"]);
-        assert_eq!(s.version_vector().unwrap().get(peer(1)), 2);
+        assert_eq!(
+            s.version_vector().unwrap().get(peer(1), Channel::GENERAL),
+            2
+        );
     }
     // En na herstart loopt de nummering gewoon door in plaats van opnieuw te beginnen.
     {
@@ -285,6 +296,162 @@ fn geschiedenis_overleeft_een_herstart() {
 }
 
 #[test]
+fn database_van_voor_de_kanalen_uitbreiding_wordt_gemigreerd_niet_geweigerd() {
+    // Dit is geen hypothetisch geval: een echte, met de hand opgebouwde database liep
+    // hier precies op vast toen schema 2 voor het eerst uitkwam. Bestaande chatgeschiedenis
+    // mag niet stuklopen op een interne schema-wijziging.
+    use fitcom_proto::OpKind;
+
+    let dir = std::env::temp_dir().join(format!("fitcom-migratietest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pad = dir.join("chat.sqlite");
+
+    // Precies de v1-tabelvorm van vóór de kanalen-uitbreiding: geen `channel`-kolom,
+    // primary key alleen op (author, seq) resp. author.
+    {
+        let conn = rusqlite::Connection::open(&pad).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE ops (
+                author     BLOB    NOT NULL,
+                seq        INTEGER NOT NULL,
+                lamport    INTEGER NOT NULL,
+                wall_clock INTEGER NOT NULL,
+                kind       INTEGER NOT NULL,
+                payload    BLOB    NOT NULL,
+                PRIMARY KEY (author, seq)
+            ) WITHOUT ROWID;
+            CREATE TABLE authors (
+                author     BLOB    PRIMARY KEY,
+                contiguous INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+            "#,
+        )
+        .unwrap();
+
+        let auteur = peer(1);
+        let kind = OpKind::Post {
+            body: "van voor de migratie".into(),
+        };
+        let payload = kind.encode_payload().unwrap();
+        conn.execute(
+            "INSERT INTO ops (author, seq, lamport, wall_clock, kind, payload)
+             VALUES (?1, 1, 1, 0, ?2, ?3)",
+            rusqlite::params![auteur.as_bytes().to_vec(), kind.tag() as i64, payload],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO authors (author, contiguous) VALUES (?1, 1)",
+            rusqlite::params![auteur.as_bytes().to_vec()],
+        )
+        .unwrap();
+    }
+
+    // Openen via de echte `Store` moet dit migreren, niet weigeren.
+    let mut s = Store::open(&pad, peer(1)).unwrap();
+    assert_eq!(bodies(&s), ["van voor de migratie"]);
+    assert_eq!(
+        s.version_vector().unwrap().get(peer(1), Channel::GENERAL),
+        1,
+        "gemigreerde ops moeten op het algemene kanaal terechtkomen"
+    );
+
+    // En de nummering loopt door in plaats van opnieuw te beginnen.
+    let nieuw = post(&mut s, "na de migratie");
+    assert_eq!(nieuw.seq, 2, "seq moet doorlopen, niet opnieuw beginnen");
+    assert_eq!(bodies(&s), ["van voor de migratie", "na de migratie"]);
+
+    // En heropenen na de migratie werkt gewoon door (schema_version staat nu op 2).
+    drop(s);
+    let s2 = Store::open(&pad, peer(1)).unwrap();
+    assert_eq!(bodies(&s2), ["van voor de migratie", "na de migratie"]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Eenrichtingsverkeer zoals `push`, maar kanaal-bewust: alleen wat `to` ooit mag zien.
+/// Dit is wat de mesh-laag straks gebruikt in plaats van `push`/`ops_missing_in`.
+fn push_for(from: &Store, to_id: PeerId, to: &mut Store) {
+    for _ in 0..1000 {
+        let batch = from
+            .ops_missing_in_for(to_id, &to.version_vector().unwrap(), SYNC_BATCH)
+            .unwrap();
+        if batch.is_empty() {
+            return;
+        }
+        to.apply_remote_batch(&batch).unwrap();
+    }
+    panic!("sync komt niet tot rust");
+}
+
+fn dm(s: &mut Store, aan: PeerId, tekst: &str) -> Op {
+    s.append_local(Channel::dm(aan), &fitcom_store::post(tekst), 0)
+        .unwrap()
+}
+
+#[test]
+fn dm_bereikt_de_geadresseerde_maar_niet_een_derde_peer() {
+    let mut a = store(1);
+    let mut b = store(2);
+    let mut c = store(3);
+
+    dm(&mut a, peer(2), "dit is alleen voor jou");
+    post(&mut a, "dit is voor iedereen");
+
+    push_for(&a, peer(2), &mut b);
+    push_for(&a, peer(3), &mut c);
+
+    assert_eq!(
+        bodies(&b),
+        ["dit is alleen voor jou", "dit is voor iedereen"]
+    );
+    assert_eq!(
+        bodies(&c),
+        ["dit is voor iedereen"],
+        "C mag de DM tussen A en B nooit ontvangen"
+    );
+}
+
+#[test]
+fn een_dm_blokkeert_daarna_het_algemene_kanaal_niet_voor_een_buitenstaander() {
+    // De kern van de kanaal-scoping: als seq per auteur (in plaats van per
+    // auteur+kanaal) zou lopen, zou C hier een permanent gat oplopen op de DM-seq en
+    // nooit meer verder komen dan dat gat — ook niet voor latere algemene berichten.
+    let mut a = store(1);
+    let mut c = store(3);
+
+    post(&mut a, "voor iedereen, nummer 1");
+    dm(&mut a, peer(2), "stiekem tussendoor");
+    post(&mut a, "voor iedereen, nummer 2");
+
+    push_for(&a, peer(3), &mut c);
+
+    assert_eq!(
+        bodies(&c),
+        ["voor iedereen, nummer 1", "voor iedereen, nummer 2"],
+        "C mag de latere algemene berichten niet mislopen door de DM ertussenin"
+    );
+}
+
+#[test]
+fn dm_convergeert_ook_na_offline_zijn_van_de_geadresseerde() {
+    let mut a = store(1);
+    let mut b = store(2);
+
+    dm(&mut a, peer(2), "ben je daar?");
+    assert!(bodies(&b).is_empty());
+
+    push_for(&a, peer(2), &mut b);
+    assert_eq!(bodies(&b), ["ben je daar?"]);
+}
+
+#[test]
 fn bewerken_werkt_ook_als_de_ontvanger_het_bericht_later_krijgt() {
     let mut a = store(1);
     let mut b = store(2);
@@ -292,6 +459,7 @@ fn bewerken_werkt_ook_als_de_ontvanger_het_bericht_later_krijgt() {
     let origineel = post(&mut a, "eerste poging");
     let bewerking = a
         .append_local(
+            Channel::GENERAL,
             &OpKind::Edit {
                 target: origineel.id(),
                 body: "verbeterd".into(),

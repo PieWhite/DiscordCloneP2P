@@ -14,8 +14,9 @@
 use anyhow::Result;
 use fitcom_net::MeshCommand;
 use fitcom_proto::control::{OpBroadcast, SyncRequest, SyncResponse};
-use fitcom_proto::{ControlMsg, Op, OpId, OpKind, PeerId, VersionVector};
+use fitcom_proto::{Channel, ControlMsg, Op, OpId, OpKind, PeerId, VersionVector};
 use fitcom_store::{Store, Timeline, SYNC_BATCH};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,8 +33,13 @@ pub struct Chat {
     laatste_hersync: Instant,
     /// Wordt gezet zodra de timeline niet meer klopt met de oplog.
     vuil: bool,
-    /// Aantal nieuwe berichten van anderen sinds de laatste keer dat de gebruiker keek.
+    /// Aantal nieuwe berichten van anderen sinds de laatste keer dat de gebruiker keek,
+    /// op het algemene kanaal.
     pub ongelezen: usize,
+    /// Zelfde, maar per DM-gesprek — sleutel is de gesprekspartner. Los van `ongelezen`
+    /// omdat je een DM kunt missen terwijl je wel naar het algemene kanaal kijkt, en
+    /// andersom.
+    ongelezen_dm: HashMap<PeerId, usize>,
 }
 
 impl Chat {
@@ -45,7 +51,16 @@ impl Chat {
             laatste_hersync: Instant::now(),
             vuil: false,
             ongelezen: 0,
+            ongelezen_dm: HashMap::new(),
         })
+    }
+
+    pub fn ongelezen_dm(&self) -> &HashMap<PeerId, usize> {
+        &self.ongelezen_dm
+    }
+
+    pub fn markeer_dm_gelezen(&mut self, met: PeerId) {
+        self.ongelezen_dm.remove(&met);
     }
 
     pub fn me(&self) -> PeerId {
@@ -85,30 +100,41 @@ impl Chat {
 
     // -- uitgaand ----------------------------------------------------------
 
-    pub fn plaats_bericht(&mut self, tekst: &str) -> Result<Vec<MeshCommand>> {
-        self.eigen_op(fitcom_store::post(tekst.trim()))
+    pub fn plaats_bericht(&mut self, tekst: &str, channel: Channel) -> Result<Vec<MeshCommand>> {
+        self.eigen_op(channel, fitcom_store::post(tekst.trim()))
     }
 
+    /// Kanaal komt van `doel.channel`: een bewerking hoort per definitie in hetzelfde
+    /// kanaal als het bericht dat hij bewerkt, anders zou de store hem straks negeren
+    /// (zie `fitcom_store::timeline`) en in het DM-geval zou het origineel ook nog eens
+    /// verkeerd geadresseerd worden.
     pub fn bewerk_bericht(&mut self, doel: OpId, tekst: &str) -> Result<Vec<MeshCommand>> {
-        self.eigen_op(OpKind::Edit {
-            target: doel,
-            body: tekst.trim().to_string(),
-        })
+        self.eigen_op(
+            doel.channel,
+            OpKind::Edit {
+                target: doel,
+                body: tekst.trim().to_string(),
+            },
+        )
     }
 
     pub fn verwijder_bericht(&mut self, doel: OpId) -> Result<Vec<MeshCommand>> {
-        self.eigen_op(OpKind::Delete { target: doel })
+        self.eigen_op(doel.channel, OpKind::Delete { target: doel })
     }
 
     /// Legt de eigen weergavenaam vast in de oplog, zodat de anderen hem ook zien.
-    /// Doet niets als de naam al klopt — anders groeit de log bij elke start.
+    /// Doet niets als de naam al klopt — anders groeit de log bij elke start. Altijd op
+    /// het algemene kanaal: een weergavenaam is identiteit, geen gespreksinhoud.
     pub fn zet_naam(&mut self, naam: &str) -> Result<Vec<MeshCommand>> {
         if self.timeline.nicknames.get(&self.me()).map(String::as_str) == Some(naam) {
             return Ok(Vec::new());
         }
-        self.eigen_op(OpKind::SetNick {
-            name: naam.to_string(),
-        })
+        self.eigen_op(
+            Channel::GENERAL,
+            OpKind::SetNick {
+                name: naam.to_string(),
+            },
+        )
     }
 
     /// Legt een bestandsaanbod vast in de oplog, precies zoals een bericht — dat is het
@@ -119,25 +145,23 @@ impl Chat {
         naam: &str,
         grootte: u64,
         hash: [u8; 32],
+        channel: Channel,
     ) -> Result<(OpId, Vec<MeshCommand>)> {
         let kind = fitcom_store::offer_file(naam, grootte, hash);
-        let op = self.store.append_local(&kind, fitcom_store::now_millis())?;
+        let op = self
+            .store
+            .append_local(channel, &kind, fitcom_store::now_millis())?;
         self.vuil = true;
         let id = op.id();
-        Ok((
-            id,
-            vec![MeshCommand::Broadcast(ControlMsg::OpBroadcast(
-                OpBroadcast { op },
-            ))],
-        ))
+        Ok((id, vec![stuur_op(op)]))
     }
 
-    fn eigen_op(&mut self, kind: OpKind) -> Result<Vec<MeshCommand>> {
-        let op = self.store.append_local(&kind, fitcom_store::now_millis())?;
+    fn eigen_op(&mut self, channel: Channel, kind: OpKind) -> Result<Vec<MeshCommand>> {
+        let op = self
+            .store
+            .append_local(channel, &kind, fitcom_store::now_millis())?;
         self.vuil = true;
-        Ok(vec![MeshCommand::Broadcast(ControlMsg::OpBroadcast(
-            OpBroadcast { op },
-        ))])
+        Ok(vec![stuur_op(op)])
     }
 
     // -- inkomend ----------------------------------------------------------
@@ -156,11 +180,14 @@ impl Chat {
         verbonden.iter().map(|&p| self.sync_verzoek(p)).collect()
     }
 
+    /// `have` is beperkt tot wat `peer` ooit mag zien (algemeen + zijn eigen DM's met
+    /// ons): zonder die beperking zou de vector zelf al metadata lekken over met wie we
+    /// nog meer DM's hebben.
     fn sync_verzoek(&self, peer: PeerId) -> Result<MeshCommand> {
         Ok(MeshCommand::Send {
             to: peer,
             msg: ControlMsg::SyncRequest(SyncRequest {
-                have: self.store.version_vector()?,
+                have: self.store.version_vector_for(peer)?,
             }),
         })
     }
@@ -176,20 +203,20 @@ impl Chat {
         }
     }
 
-    /// Stuurt in stukken alles wat de ander mist.
+    /// Stuurt in stukken alles wat de ander mist — alleen wat hij ooit mag zien.
     fn beantwoord_sync(&self, naar: PeerId, mut hun: VersionVector) -> Result<Vec<MeshCommand>> {
         let mut uit = Vec::new();
 
         loop {
-            let batch = self.store.ops_missing_in(&hun, SYNC_BATCH)?;
+            let batch = self.store.ops_missing_in_for(naar, &hun, SYNC_BATCH)?;
             if batch.is_empty() {
                 break;
             }
             // Bijhouden wat we al gestuurd hebben, zodat de volgende ronde verder gaat.
             for op in &batch {
-                hun.observe(op.author, op.seq);
+                hun.observe(op.author, op.channel, op.seq);
             }
-            let is_last = !self.store.has_more_for(&hun)?;
+            let is_last = !self.store.has_more_for_viewer(naar, &hun)?;
             uit.push(MeshCommand::Send {
                 to: naar,
                 msg: ControlMsg::SyncResponse(SyncResponse {
@@ -220,7 +247,7 @@ impl Chat {
         Ok(uit)
     }
 
-    /// Slaat ontvangen ops op en stuurt door wat nieuw was.
+    /// Slaat ontvangen ops op en stuurt door wat nieuw was — alleen het algemene kanaal.
     fn neem_over(&mut self, van: PeerId, ops: &[Op]) -> Result<Vec<MeshCommand>> {
         if ops.is_empty() {
             return Ok(Vec::new());
@@ -240,18 +267,38 @@ impl Chat {
         }
 
         self.vuil = true;
-        self.ongelezen += nieuw
-            .iter()
-            .filter(|o| matches!(o.kind(), Ok(Some(OpKind::Post { .. }))))
-            .count();
+        for op in &nieuw {
+            if !matches!(op.kind(), Ok(Some(OpKind::Post { .. }))) {
+                continue;
+            }
+            match op.channel.dm_peer() {
+                None => self.ongelezen += 1,
+                Some(_) => *self.ongelezen_dm.entry(op.author).or_insert(0) += 1,
+            }
+        }
 
         tracing::debug!(peer = ?van, aantal = nieuw.len(), "nieuwe ops opgeslagen");
 
-        // Doorsturen naar de rest. Broadcast gaat ook terug naar `van`, wat overbodig
-        // maar onschadelijk is: die herkent zijn eigen ops als bekend en stopt daar.
+        // Doorsturen naar de rest — maar uitsluitend het algemene kanaal. Een DM is al
+        // bij zijn enige geoorloofde ontvanger; die verder doorgeven aan een derde peer
+        // zou precies de lekpreventie ondermijnen waar kanalen voor bestaan. Dit dekt
+        // zowel een `OpBroadcast` als ops die net via een `SyncResponse` binnenkwamen.
         Ok(nieuw
             .into_iter()
+            .filter(|op| op.channel.is_general())
             .map(|op| MeshCommand::Broadcast(ControlMsg::OpBroadcast(OpBroadcast { op })))
             .collect())
+    }
+}
+
+/// Route een net aangemaakte op naar wie hem mag zien: breed voor het algemene kanaal,
+/// uitsluitend naar de geadresseerde voor een DM.
+fn stuur_op(op: Op) -> MeshCommand {
+    match op.channel.dm_peer() {
+        Some(naar) => MeshCommand::Send {
+            to: naar,
+            msg: ControlMsg::OpBroadcast(OpBroadcast { op }),
+        },
+        None => MeshCommand::Broadcast(ControlMsg::OpBroadcast(OpBroadcast { op })),
     }
 }

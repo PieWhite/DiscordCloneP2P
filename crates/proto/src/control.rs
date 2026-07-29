@@ -280,6 +280,7 @@ pub struct FileResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Channel;
 
     #[test]
     fn roundtrip_behoudt_inhoud() {
@@ -312,11 +313,11 @@ mod tests {
             ControlMsg::StreamUnsubscribe(StreamUnsubscribe { stream_id: 0 }),
             ControlMsg::RequestKeyframe(RequestKeyframe { stream_id: 0 }),
             ControlMsg::FileRequest(FileRequest {
-                file: OpId::new(PeerId::new_random(), 1),
+                file: OpId::new(PeerId::new_random(), Channel::GENERAL, 1),
                 have_bytes: 0,
             }),
             ControlMsg::FileResponse(FileResponse {
-                file: OpId::new(PeerId::new_random(), 1),
+                file: OpId::new(PeerId::new_random(), Channel::GENERAL, 1),
                 outcome: FileOutcome::READY,
             }),
         ];
@@ -356,7 +357,7 @@ mod tests {
         let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
         serde::Serialize::serialize(
             &OudeFileRequest {
-                file: OpId::new(PeerId::new_random(), 3),
+                file: OpId::new(PeerId::new_random(), Channel::GENERAL, 3),
             },
             &mut ser,
         )
@@ -370,7 +371,7 @@ mod tests {
 
     #[test]
     fn file_response_roundtrip_behoudt_de_uitkomst() {
-        let file = OpId::new(PeerId::new_random(), 7);
+        let file = OpId::new(PeerId::new_random(), Channel::GENERAL, 7);
         for outcome in [FileOutcome::READY, FileOutcome::NOT_AVAILABLE] {
             let msg = ControlMsg::FileResponse(FileResponse { file, outcome });
             let bytes = msg.encode().unwrap();
@@ -400,7 +401,7 @@ mod tests {
         // Zelfde reden als bij StreamKind: een toekomstige derde uitkomst (bijvoorbeeld
         // "Denied" voor een quotafunctie) mag de hele FileResponse niet laten mislukken.
         let msg = ControlMsg::FileResponse(FileResponse {
-            file: OpId::new(PeerId::new_random(), 1),
+            file: OpId::new(PeerId::new_random(), Channel::GENERAL, 1),
             outcome: FileOutcome(200),
         });
         let bytes = msg.encode().unwrap();

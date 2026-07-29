@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-29, na fase 6.
+Laatst bijgewerkt: 2026-07-30, na kanalen (DM's) bovenop fase 6.
 
 ---
 
@@ -18,6 +18,7 @@ Laatst bijgewerkt: 2026-07-29, na fase 6.
 | 4 — Screenshare | ✅ af, nog niet met een echte peer getest | volledige keten op echte GPU, 55 fps op 1080p |
 | 5 — Screenshare uitbreiding | ✅ af, nog niet met een echte peer getest | ketentest + motortest blijven groen na de wijziging |
 | 6 — Bestandsdeling | ✅ af, nog niet met een echte peer getest | `crates/app/tests/file_deling.rs`: volledige overdracht + hash door de echte motor heen, geen GPU nodig |
+| Kanalen (DM's), na fase 6 | ✅ af, nog niet met een echte peer getest | `crates/app/tests/chat_sync.rs` (drie peers, volledige mesh, echte QUIC) + `crates/store/tests/convergentie.rs` (kanaal-scoping op store-niveau) |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -166,6 +167,40 @@ enum, zodat een latere derde uitkomst een oudere peer niet laat struikelen over 
 `FileResponse`. Zie `docs/ARCHITECTURE.md` (sectie "Bestandsdeling") voor het volledige
 ontwerp.
 
+### 10. DM's krijgen geen doorstuurhulp via een derde peer (kanalen, na fase 6)
+TODO.md boekte "meerdere chatkanalen" af als bewust uitgesteld. Op verzoek van Rick
+alsnog opgepakt, maar pas na een expliciet gesprek over één ontwerpkeuze: profiteert een
+DM van dezelfde doorstuur-/hersync-robuustheid als het algemene kanaal (punt 3 onder
+"Drie wegen waarlangs een op zich verspreidt" in `docs/ARCHITECTURE.md`)?
+
+Antwoord: nee, bewust niet. Er is geen encryptie van de opinhoud — alleen QUIC-transport
+en het tailnet als vertrouwensgrens. Zou een derde peer een DM tussen twee anderen ooit
+doorsturen, dan kán hij de inhoud gewoon lezen. Dat conflicteert direct met wat een DM
+belooft. DM's synchroniseren daarom uitsluitend rechtstreeks tussen de twee betrokkenen;
+in een normale full-mesh (alle drie online) merk je daar niets van, en alleen bij
+gedeeltelijke connectiviteit tussen precies de twee DM-partners mis je het vangnet dat
+het algemene kanaal wel heeft.
+
+Technische consequentie, geen keuze: `seq` moest van "per auteur" naar "per (auteur,
+kanaal)" — anders loopt een buitenstaander een permanent gat op bij een DM die hij nooit
+mag ontvangen, en blokkeert dat gat zijn hele reeks voor die auteur, óók voor latere
+algemene berichten. Zie `docs/ARCHITECTURE.md`, sectie "Kanalen", voor de volledige
+redenering en `crates/store/tests/convergentie.rs::een_dm_blokkeert_daarna_het_algemene_kanaal_niet_voor_een_buitenstaander`
+voor de test die dit vastlegt.
+
+**`PROTOCOL_VERSION` ging van 1 naar 2.** Eerste versie liet dit ongemoeid in de aanname
+dat de wijziging additief was, maar dat bleek niet zo: `VersionVector` codeerde zijn
+regels als rauwe tuples, en msgpack codeert een tuple altijd als vaste-lengte array —
+een 2-tuple en een 3-tuple zijn dus niet over en weer decodeerbaar, in tegenstelling tot
+elke andere struct in dit protocol (die als map gecodeerd worden en dus wél
+`#[serde(default)]` kunnen gebruiken). Zonder versiebump zou een oude en een nieuwe peer
+elkaars `SyncRequest` stilzwijgend niet meer kunnen lezen — geen crash, gewoon een
+warn-regel in het log en een chat die nooit meer synchroniseert. Gefixt door (a) de
+versie op te hogen, zodat de bestaande `VersionMismatch`-afhandeling dit nu netjes meldt,
+en (b) de tuple sowieso te vervangen door een benoemde struct (`VvEntry`), zodat een
+volgende uitbreiding hier niet opnieuw tegenaan loopt. Gevonden door de
+`protocol-reviewer`-agent, niet door een test — zie hieronder.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -210,6 +245,34 @@ crasht. Schrijft nu direct.
 **Testhelper deelde poorten dubbel uit (fase 2/3).** Parallelle tests binnen één binary
 kregen soms hetzelfde poortnummer van het besturingssysteem. Gaf ongeveer één op de vijf
 runs een onverklaarbare fout. De helper onthoudt nu wat hij uitgedeeld heeft.
+
+**DM-venster toonde nooit het antwoord van de ander (kanalen, na fase 6).** Niet door een
+test gevonden, maar door de `protocol-reviewer`-agent vóór het committen. `Channel::dm(x)`
+betekent "de auteur DM'de naar x" — mijn eigen berichten aan X dragen dus `Dm(X)`, maar
+X's antwoorden aan mij dragen `Dm(mij)`, niet `Dm(X)`. De UI filterde het DM-venster met
+een simpele `channel == actief_kanaal`-vergelijking, die alleen mijn eigen kant van het
+gesprek matchte. Het gesprek en het bestandenpaneel toonden dus permanent maar de helft.
+Dit was een weergavefout, geen sync- of opslagfout: de op kwam gewoon goed binnen. Gefixt
+met een predicate die beide kanaalwaarden van een gesprek herkent
+(`crates/app/src/ui.rs::hoort_bij_kanaal`), nu met een eigen test
+(`ui.rs::kanaal_tests::dm_toont_beide_kanten_van_het_gesprek`).
+
+**`chat.sqlite`-schemabump weigerde Ricks échte database (kanalen, na fase 6).** De
+`SCHEMA_VERSION`-bump (1→2, voor de `channel`-kolom op `ops`/`authors`) ging ervan uit dat
+er nog geen echte database bestond om rekening mee te houden. Fout: er stond al 56 ops
+aan echte chatgeschiedenis in `%APPDATA%\FitCommunication\data\chat.sqlite`, met een
+echte, ingevulde `config.toml` (twee tailnet-peers). De app weigerde na de bump te
+starten met "database is van schema-versie 1, deze app verwacht 2" — geen crash, maar
+ook geen migratie, dus effectief ontoegankelijke data. Gevonden doordat de app bij Rick
+niet meer opstartte, niet door een test (er was geen test die een écht bestaande
+database met inhoud simuleerde). Gefixt met een echte migratie
+(`Store::migreer_v1_naar_v2`): hernoemt de oude tabellen, zet ze over naar de nieuwe vorm
+met `channel` overal op het algemene kanaal (dat was het enige dat vóór deze uitbreiding
+bestond), en verhoogt `schema_version` — allemaal in één transactie, zodat een mislukte
+poging de oude database intact laat. Getest tegen een met de hand opgezette v1-database
+(`crates/store/tests/convergentie.rs::database_van_voor_de_kanalen_uitbreiding_wordt_gemigreerd_niet_geweigerd`)
+én tegen Ricks eigen bestand (met een backup ervan gemaakt vóórdat de nieuwe build erop
+losging).
 
 ---
 
@@ -362,10 +425,59 @@ bestand (vaste, instelbare map in plaats van een keuze per keer).
 
 ---
 
+## Hoe kanalen (DM's) in elkaar zitten
+
+```
+crates/proto/src/ids.rs      Channel — algemeen of Dm(PeerId), getagd (u8, Option<PeerId>)
+crates/proto/src/ids.rs      OpId, Op — kregen een channel-veld
+crates/proto/src/op.rs       VersionVector — nu BTreeMap<(PeerId, Channel), u64> + visible_to()
+crates/store/src/lib.rs      ops/authors-tabellen op (author, channel, seq); version_vector_for /
+                             ops_missing_in_for passen visible_to() toe vóór er iets naar een
+                             specifieke peer gaat
+crates/store/src/timeline.rs Message/FileEntry dragen channel; Edit/Delete matchen nu ook
+                             target.channel == op.channel
+crates/app/src/chat.rs       stuur_op() routeert een DM naar alleen de geadresseerde; doorsturen
+                             filtert op op.channel.is_general()
+crates/app/src/files.rs      verzoek_ontvangen() weigert een DM-bestand aan iemand anders dan
+                             de geadresseerde
+crates/app/src/ui.rs         actief_kanaal + DM-knop per peer met ongelezen-badge
+```
+
+**De kern staat in `docs/ARCHITECTURE.md`, sectie "Kanalen"**, inclusief waarom `seq` per
+(auteur, kanaal) moest gaan tellen en waarom een DM bewust geen doorstuurhulp van een
+derde peer krijgt (zie ook beslissing 10 hierboven).
+
+**Wat hier het meest kon misgaan, en dus getest is:**
+- Dat een DM een derde peer nooit bereikt, óók niet via het bestaande
+  doorstuurmechanisme, terwijl alle drie de peers volledig met elkaar verbonden zijn —
+  `crates/app/tests/chat_sync.rs::dm_komt_aan_bij_de_geadresseerde_en_nooit_bij_de_derde_peer`.
+  Dit draait door de echte mesh met echte QUIC-verbindingen over loopback, niet alleen
+  op store-niveau.
+- Dat een DM tussenin de aaneengesloten reeks van het algemene kanaal niet blokkeert voor
+  een buitenstaander — `crates/store/tests/convergentie.rs::een_dm_blokkeert_daarna_het_algemene_kanaal_niet_voor_een_buitenstaander`.
+- Dat een `Edit`/`Delete` een DM-bericht niet via het algemene kanaal kan overschrijven —
+  `crates/store/src/timeline.rs::edit_in_een_ander_kanaal_dan_het_origineel_wordt_genegeerd`.
+- Dat een aanvraag voor een DM-bestand door iemand anders dan de geadresseerde wordt
+  geweigerd — `crates/app/src/files.rs::dm_bestand_wordt_geweigerd_aan_iemand_anders_dan_de_geadresseerde`.
+
+**Bewust niet gedaan:** groepskanalen (meer dan twee, maar niet iedereen) — `Channel` is
+al zo getagd dat dat later als nieuwe waarde bij kan zonder protocolbreuk, zie `TODO.md`.
+
+---
+
 ## Wat nog nooit met een echte peer getest is
 
-Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 t/m 6 niet.** Zie
-`docs/TESTPLAN.md` voor de testgevallen die daarvoor uitgevoerd moeten worden.
+Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 t/m 6, en kanalen erna,
+niet.** Zie `docs/TESTPLAN.md` voor de testgevallen die daarvoor uitgevoerd moeten worden.
+
+Van kanalen (DM's) is de volledige keten — DM versturen, alleen bij de geadresseerde
+aankomen, nooit bij de derde peer, ook niet via doorsturen — al bevestigd met drie echte
+motoren over loopback-QUIC in volledige mesh (`crates/app/tests/chat_sync.rs`). Wat een
+tweede en derde machine daaraan toevoegen: of de DM-knop, het kanaal-wisselen en de
+ongelezen-badges in de UI in het echt doen wat ze beloven (net als bij screenshare en
+bestandsdeling kon dat hier niet met de hand getest worden), en of een DM tussen twee
+peers die elkaar tijdelijk niet rechtstreeks kunnen bereiken zich gedraagt zoals bedoeld
+— gewoon wachten tot ze weer rechtstreeks verbinden, niet via de derde peer.
 
 Van fase 6 is de volledige keten — aanbieden, syncen, aanvragen, streamen, hervatten,
 hashen — al bevestigd via `crates/app/tests/file_deling.rs` met twee echte motoren over

@@ -241,6 +241,52 @@ in de UI daadwerkelijk die map opent.
 
 ---
 
+## Kanalen (DM's)
+
+De volledige keten — DM versturen, alleen bij de geadresseerde aankomen, nooit bij de
+derde peer ook niet via doorsturen — is al bevestigd met drie echte motoren over
+loopback-QUIC in volledige mesh (`crates/app/tests/chat_sync.rs`). Wat een tweede en
+derde machine daaraan toevoegen: of de knoppen in het echt doen wat ze beloven, en het
+geval waarin twee DM-partners elkaar niet rechtstreeks kunnen bereiken.
+
+**K.1 DM komt aan, alleen bij de geadresseerde**
+Klik bij je vriend op de DM-knop naast jouw naam en stuur iets. Bij jou moet het
+verschijnen zodra je op jouw beurt de DM-knop naast zijn naam opent. Bij de derde peer
+mag het **nergens** verschijnen — niet in het algemene kanaal, niet in een DM-venster met
+iemand anders. *Dit is de kern van deze uitbreiding: zie je het bericht toch bij de
+derde, dan lekt er iets in de kanaal-filtering.*
+
+**K.2 Ongelezen-badge**
+Laat je vriend je een DM sturen terwijl je in het algemene kanaal zit. Er moet een apart
+getal op zijn DM-knop verschijnen, los van de teller op "# Algemeen". Open de DM → de
+badge verdwijnt, het algemene kanaal blijft ongemoeid (en andersom).
+
+**K.3 Bewerken en verwijderen in een DM**
+Bewerk en verwijder een eigen DM-bericht. Moet bij de ander bijwerken, precies als in het
+algemene kanaal. Bij zijn berichten mag jij die knoppen niet zien.
+
+**K.4 Bestand delen in een DM**
+Open een DM-venster en klik "Bestand delen…" daarbinnen. Het bestand moet alleen in dát
+DM-venster verschijnen bij de geadresseerde — niet in het algemene bestandenpaneel, en
+niet bij de derde peer. Download het bij de geadresseerde: moet identiek aankomen, net
+als bij fase 6.
+
+**K.5 Geschiedenis-inhaal geldt ook voor DM's**
+Stuur een vriend een DM terwijl hij offline is. Laat hem opstarten: de DM moet er staan
+zodra jullie weer verbinden, zonder dat iemand iets doet.
+
+**K.6 DM tussen twee peers die elkaar niet rechtstreeks bereiken**
+Lastigste geval, alleen te proberen als je de mesh handmatig kunt opbreken (bijvoorbeeld
+met een firewallregel tussen twee van de drie machines): als A en B geen directe
+verbinding hebben maar allebei wel met C, dan mag een DM tussen A en B **niet** via C
+aankomen — hij moet gewoon wachten tot A en B elkaar weer rechtstreeks kunnen bereiken.
+*Dit is de bewuste trade-off uit `docs/ARCHITECTURE.md` (sectie "Kanalen"): een DM
+profiteert niet van de doorstuurhulp die het algemene kanaal wel heeft. Komt de DM tóch
+via C aan, dan is de kanaal-filtering in het doorstuurpad kapot — dat zou C in staat
+stellen de inhoud te lezen, en dat is precies wat dit ontwerp voorkomt.*
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

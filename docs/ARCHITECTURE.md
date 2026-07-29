@@ -172,14 +172,15 @@ van één peer delen bovendien één klok, zodat hun tijdstempels vergelijkbaar 
 
 ## Chat-synchronisatie
 
-Op-based CRDT met per-auteur dichte sequentienummers. Geen vector clocks nodig voor
-convergentie — de version vector volstaat omdat alleen de auteur zelf zijn eigen
+Op-based CRDT met per-(auteur, kanaal) dichte sequentienummers. Geen vector clocks nodig
+voor convergentie — de version vector volstaat omdat alleen de auteur zelf zijn eigen
 ops nummert, dus er zitten nooit gaten in.
 
 ```rust
 struct Op {
     author: Uuid,        // wie de op maakte
-    seq: u64,            // per auteur monotoon, 1..N, geen gaten
+    channel: Channel,    // algemeen, of een DM — zie "Kanalen" hieronder
+    seq: u64,            // per (auteur, kanaal) monotoon, 1..N, geen gaten
     lamport: u64,        // voor totale ordening tussen auteurs
     wall_clock: i64,     // alleen voor weergave, nooit voor correctheid
     kind: OpKind,
@@ -195,13 +196,14 @@ enum OpKind {
 }
 ```
 
-- `OpId = (author, seq)` is globaal uniek. Opslag is idempotent: dezelfde op tweemaal
-  toepassen is een no-op. Dat is de hele conflictafhandeling.
+- `OpId = (author, channel, seq)` is globaal uniek. Opslag is idempotent: dezelfde op
+  tweemaal toepassen is een no-op. Dat is de hele conflictafhandeling.
 - **Weergavevolgorde** is `(lamport, author)`. Lamport wordt bij elke ontvangen op
   bijgewerkt naar `max(local, remote) + 1`.
 - `Edit`/`Delete` zijn last-writer-wins op `target`, gewonnen door de hoogste
   `(lamport, author)`. Renderen vouwt ze over de `Post` heen.
-- **Version vector** = `{author → hoogste *aaneengesloten* seq}`, niet `max_seq`.
+- **Version vector** = `{(author, channel) → hoogste *aaneengesloten* seq}`, niet
+  `max_seq`.
 
   Ops worden dicht genummerd, maar komen niet per se in die volgorde binnen: we kunnen
   bij B de ops 6-10 van auteur A ophalen terwijl A zelf al 11 broadcast. Landt die 11
@@ -213,12 +215,15 @@ enum OpKind {
   anders erft de ontvanger ons gat zonder het te weten.
 
   Sync bij (her)verbinding:
-  1. Beide kanten sturen `SyncRequest { have }`.
+  1. Beide kanten sturen `SyncRequest { have }`, beperkt tot wat de ontvanger ooit mag
+     zien — zie "Kanalen" hieronder.
   2. Elke kant stuurt terug wat de ander mist: alle ops waarvan
-     `seq > peer.have[author]`, voor elke auteur.
+     `seq > peer.have[(author, channel)]`, voor elke (auteur, kanaal)-paar dat de
+     ontvanger mag zien.
   3. Klaar. Convergentie in één ronde, ook na maanden offline.
 ### Drie wegen waarlangs een op zich verspreidt
-1. **Broadcast** bij het plaatsen — het normale geval waarin iedereen online is.
+1. **Broadcast** bij het plaatsen — het normale geval waarin iedereen online is. Voor een
+   DM-op is dit geen breed broadcast maar een `Send` naar uitsluitend de geadresseerde.
 2. **Inhaalslag bij (her)verbinding** — dekt de peer die weg was.
 3. **Doorsturen plus periodieke hersync** — dekt gedeeltelijke connectiviteit: A en C
    kunnen elkaar niet bereiken, B beiden wel. Ontvangen ops die nieuw voor ons waren
@@ -226,32 +231,127 @@ enum OpKind {
    sturen we elke 30s ongevraagd onze version vector rond. Dat kost enkele tientallen
    bytes en herstelt elke toestand die 1 en 2 gemist zouden hebben.
 
-Een op is nooit verloren zolang één peer hem heeft.
+   **Uitzondering: een DM-op wordt nooit doorgestuurd, punt 3 slaat er niet op.** Zie
+   "Kanalen" hieronder voor waarom.
+
+Een algemene op is nooit verloren zolang één peer hem heeft. Voor een DM geldt dat
+alleen voor de twee betrokkenen zelf — zie hieronder.
 
 ### Weergaveregels
 - Sorteren op `(lamport, author)`. `wall_clock` mag nooit meedoen: de klokken van de
   drie PC's lopen uiteen en dan zou de volgorde per peer verschillen.
-- `Edit`/`Delete` tellen alleen als `op.author == target.author`. Zonder die regel kan
-  iedereen andermans tekst herschrijven, en in een append-only log is dat niet terug
-  te draaien.
+- `Edit`/`Delete` tellen alleen als `op.author == target.author` **én**
+  `op.channel == target.channel`. Zonder de auteurscheck kan iedereen andermans tekst
+  herschrijven; zonder de kanaalcheck zou een edit-op op het algemene kanaal (dus breed
+  gesynchroniseerd) de tekst van een DM-bericht kunnen overschrijven en zo alsnog laten
+  lekken. Beide zijn in een append-only log niet terug te draaien.
 - Per bericht wint de `Edit`/`Delete` met de hoogste `(lamport, author)`.
 
 ### SQLite-schema
 ```sql
 CREATE TABLE ops (
   author     BLOB    NOT NULL,     -- 16-byte uuid
+  channel    BLOB    NOT NULL,     -- 17 bytes: 1 tag-byte + 16-byte peer (nullen indien afwezig)
   seq        INTEGER NOT NULL,
   lamport    INTEGER NOT NULL,
   wall_clock INTEGER NOT NULL,
   kind       INTEGER NOT NULL,
   payload    BLOB    NOT NULL,     -- MessagePack van de kind-specifieke velden
-  PRIMARY KEY (author, seq)
+  PRIMARY KEY (author, channel, seq)
 ) WITHOUT ROWID;
 CREATE INDEX ops_order ON ops(lamport, author);
 
 CREATE TABLE peers (peer_id BLOB PRIMARY KEY, display_name TEXT, address TEXT, last_seen INTEGER);
 CREATE TABLE meta  (key TEXT PRIMARY KEY, value BLOB);  -- eigen uuid, lamport, schema-versie
 ```
+
+## Kanalen
+
+Naast het algemene kanaal (iedereen ziet alles) bestaat een direct bericht (DM): een
+gesprek tussen de auteur van een op en precies één andere peer, die de rest van de mesh
+nooit te zien krijgt.
+
+```rust
+struct Channel {
+    tag: u8,             // 0 = algemeen, 1 = DM — als (tag, peer) op de draad, net als
+    peer: Option<Uuid>,  // StreamKind/FileOutcome, zodat een later kanaalsoort geen
+}                        // decodeerfout geeft bij een peer die hem nog niet kent
+```
+
+`Channel::dm(other)` betekent: dit is een bericht tussen `op.author` en `other`. Een
+gesprek tussen A en B bestaat dus uit twee onafhankelijke opstromen — A's eigen
+`(author=A, channel=Dm(B))`-reeks en B's `(author=B, channel=Dm(A))`-reeks — precies
+dezelfde opzet als bij het algemene kanaal, alleen niet gegeneraliseerd naar alle peers.
+
+### Protocolversie: 1 → 2
+
+`VersionVector` en de bestandsoverdracht-header (`crates/net/src/filestream.rs`) veranderden
+allebei van vorm om het kanaal mee te dragen, op een manier die een oudere peer niet
+zomaar kan negeren — anders dan een nieuw `OpKind` of een nieuw `#[serde(default)]`-veld
+op een bestaande struct. Een peer zonder kanaalbegrip kan een per-(auteur, kanaal)
+version vector fundamenteel niet correct interpreteren (hij zou algemene en DM-entries
+door elkaar halen), en de bestandsheader kreeg 17 bytes extra die een oudere peer niet
+verwacht. Stilzwijgend laten mislukken (zoals bij een onbekende `ControlMsg`-tag) zou hier
+een corrupt gedownload bestand of een chat die nooit meer synchroniseert opleveren, zonder
+duidelijk signaal. Vandaar `PROTOCOL_VERSION` van 1 naar 2: de handshake wijst een peer op
+de oude versie af met de bestaande, nette `VersionMismatch`-status in plaats van dat er
+iets stilletjes fout gaat. Zie `crates/proto/src/lib.rs`.
+
+### Waarom `seq` per (auteur, kanaal) telt, niet per auteur
+
+Dit is geen keuze maar een noodzaak. Zou `seq` blijven lopen per auteur, over alle
+kanalen heen, dan zou een peer die een DM tussen twee anderen nooit mag zien daar een
+**permanent gat** op oplopen: hij mag dat seq-nummer nooit ontvangen, dus zijn
+aaneengesloten reeks voor die auteur stopt voorgoed vlak vóór dat gat — óók voor latere
+*algemene* berichten van diezelfde auteur, want die reeks kan het gat nooit meer dichten.
+Door per (auteur, kanaal) te tellen bestaat dat gat voor een buitenstaander domweg niet:
+hij houdt helemaal geen boekhouding bij voor een kanaal dat hem niet aangaat.
+
+### Zichtbaarheid: `VersionVector::visible_to(viewer)`
+
+Een (auteur, kanaal)-sleutel is zichtbaar voor `viewer` als het algemene kanaal is, of
+`channel == Dm(viewer)`, of `viewer == author` (zodat een peer die eigen data kwijtraakte
+zijn eigen DM's terug kan krijgen van de ander in het gesprek). Dit filter wordt toegepast
+vóórdat er iets van de version vector naar een specifieke peer gaat — zowel wat we zelf
+claimen te hebben (`SyncRequest.have`) als wat we terugsturen (`SyncResponse.ops`) —
+zodat de vector zelf al geen metadata lekt over met wie we nog meer DM's hebben.
+
+### DM's krijgen geen doorstuurhulp via een derde peer
+
+Er is bewust **geen encryptie** van de opinhoud — alleen QUIC-transport en het tailnet
+als vertrouwensgrens, zie `TODO.md`. Zou een derde peer een DM tussen twee anderen ooit
+doorsturen of bufferen (het mechanisme uit punt 3 hierboven, bedoeld voor gedeeltelijke
+connectiviteit), dan zou die derde peer de inhoud gewoon kunnen lezen. Daarom synchroniseren
+DM's uitsluitend rechtstreeks tussen de twee betrokkenen; het doorstuur- en
+periodieke-hersync-mechanisme is expliciet beperkt tot het algemene kanaal
+(`op.channel.is_general()`).
+
+**Trade-off, bewust met de gebruiker afgesproken:** in een normale full-mesh (alle drie
+online) merk je hier niets van. Alleen als twee DM-partners elkaar niet rechtstreeks
+kunnen bereiken — terwijl een derde peer wel een pad naar beide heeft — wacht de DM tot ze
+alsnog rechtstreeks verbinden, in plaats van via die derde peer te lopen. Dat is exact
+hetzelfde "offline is normaal"-gedrag als bij het algemene kanaal, alleen zonder het extra
+vangnet dat daar wél bestaat.
+
+### Bestanden in een DM
+
+`FileMeta` draagt hetzelfde `channel`-veld als elke andere op — een bestand kan dus ook
+privé aan één peer aangeboden worden. Twee gevolgen:
+
+- De aanbieding zelf verspreidt zich (net als bij het algemene kanaal) via de gewone
+  sync, maar dan beperkt tot de geadresseerde — dezelfde zichtbaarheidsregel als hierboven.
+- **De aanbieder controleert bij een `FileRequest` of de aanvrager wel de geadresseerde
+  is.** Onder normale omstandigheden komt een aanvraag van iemand anders hier nooit
+  binnen — de sync laat de `FileMeta`-op immers al niet bij hem terechtkomen — maar dit is
+  de plek waar het ook zonder dat vertrouwen wordt afgedwongen. Het antwoord bij een
+  ongeautoriseerde aanvraag is bewust hetzelfde `FileOutcome::NOT_AVAILABLE` als "bestaat
+  niet": een apart "geweigerd"-antwoord zou juist bevestigen dát het bestand bestaat.
+- De bestandsoverdracht-header in `crates/net/src/filestream.rs` draagt sindsdien ook het
+  kanaal (16-byte peer-uuid + 1-byte tag + 16-byte kanaal-peer + 8-byte seq, 41 bytes in
+  plaats van 24): zonder dat zou een algemeen bestand en een DM-bestand van dezelfde
+  auteur met toevallig dezelfde `seq` niet van elkaar te onderscheiden zijn. Om dezelfde
+  reden draagt de tijdelijke `.part`-bestandsnaam op schijf (`crates/app/src/engine.rs`)
+  het kanaal in zijn naam.
 
 ## Bestandsdeling
 
@@ -302,8 +402,9 @@ chunk: de ontvanger hasht na afloop het **hele** bestand in één keer tegen `Fi
 en verwijdert het bij een mismatch, waarna een volgende poging vanzelf weer bij 0 begint
 omdat het deelbestand er niet meer is.
 
-**De stream zelf begint met een vaste 24-byte header** (16-byte peer-uuid + 8-byte seq,
-dus de `OpId` zelf), handgeschreven zonder msgpack — zie `crates/net/src/filestream.rs`,
+**De stream zelf begint met een vaste 41-byte header** (16-byte peer-uuid + 1-byte
+kanaal-tag + 16-byte kanaal-peer + 8-byte seq, dus de `OpId` zelf inclusief kanaal — zie
+"Kanalen" hierboven), handgeschreven zonder msgpack — zie `crates/net/src/filestream.rs`,
 zelfde stijl als de media-header in `crates/net/src/media.rs`. Die header is nodig omdat
 een peer meerdere bestanden tegelijk kan downloaden van dezelfde aanbieder: zonder iets
 dat de stream aan een overdracht koppelt zou de ontvanger niet weten welk aankomend
