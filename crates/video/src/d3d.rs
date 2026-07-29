@@ -11,11 +11,14 @@ use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 
@@ -107,6 +110,128 @@ impl D3dContext {
                 .context("textuur aanmaken")?;
         }
         tex.context("D3D11 gaf geen textuur terug")
+    }
+
+    /// Een BGRA-textuur met inhoud. `pixels` is `breedte * hoogte * 4` bytes.
+    ///
+    /// Alleen nodig om iets bekends de keten in te sturen; het echte beeld komt van de
+    /// schermopname en die vult zijn eigen textuur.
+    pub fn maak_textuur_met(
+        &self,
+        breedte: u32,
+        hoogte: u32,
+        pixels: &[u8],
+    ) -> Result<ID3D11Texture2D> {
+        let nodig = (breedte as usize) * (hoogte as usize) * 4;
+        if pixels.len() != nodig {
+            anyhow::bail!("{} bytes aangeleverd, {nodig} verwacht", pixels.len());
+        }
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: breedte,
+            Height: hoogte,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let data = D3D11_SUBRESOURCE_DATA {
+            pSysMem: pixels.as_ptr() as *const _,
+            SysMemPitch: breedte * 4,
+            SysMemSlicePitch: 0,
+        };
+        let mut tex = None;
+        // SAFETY: `data` wijst naar `pixels`, dat lang genoeg blijft leven, en de
+        // afmetingen kloppen met de controle hierboven.
+        unsafe {
+            self.device
+                .CreateTexture2D(&desc, Some(&data), Some(&mut tex))
+                .context("textuur met inhoud aanmaken")?;
+        }
+        tex.context("D3D11 gaf geen textuur terug")
+    }
+
+    /// Een NV12-textuur waar een decoder die in het werkgeheugen werkt zijn beeld in
+    /// kwijt kan. Hardware-decoders leveren hun eigen textuur en hebben dit niet nodig.
+    pub fn maak_nv12_textuur(&self, breedte: u32, hoogte: u32) -> Result<ID3D11Texture2D> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: breedte,
+            // NV12 heeft halve chroma-resolutie, dus beide maten moeten even zijn.
+            Height: hoogte,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut tex = None;
+        // SAFETY: zie `maak_textuur`.
+        unsafe {
+            self.device
+                .CreateTexture2D(&desc, None, Some(&mut tex))
+                .context("NV12-textuur aanmaken")?;
+        }
+        tex.context("D3D11 gaf geen textuur terug")
+    }
+
+    /// Haalt een BGRA-textuur terug naar het werkgeheugen, met de rijen aaneengesloten.
+    ///
+    /// Dit is een trage weg — een GPU-naar-CPU-kopie met een wachtmoment — en hoort
+    /// daarom nergens in het hot path thuis. Het bestaat om te kunnen controleren dat
+    /// er beeld uit de keten komt en dat de kleuren kloppen.
+    pub fn lees_bgra(&self, tex: &ID3D11Texture2D) -> Result<(u32, u32, Vec<u8>)> {
+        let (breedte, hoogte) = afmetingen(tex);
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: breedte,
+            Height: hoogte,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut staging = None;
+        // SAFETY: `desc` is volledig ingevuld; de kopie gaat tussen twee texturen van
+        // gelijke afmeting en formaat.
+        let pixels = unsafe {
+            self.device
+                .CreateTexture2D(&desc, None, Some(&mut staging))
+                .context("uitleestextuur aanmaken")?;
+            let staging = staging.context("D3D11 gaf geen textuur terug")?;
+            self.context.CopyResource(&staging, tex);
+
+            let mut kaart = D3D11_MAPPED_SUBRESOURCE::default();
+            self.context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut kaart))
+                .context("textuur uitlezen")?;
+
+            let mut uit = Vec::with_capacity((breedte * hoogte * 4) as usize);
+            for rij in 0..hoogte {
+                let begin = (kaart.pData as *const u8).add((rij * kaart.RowPitch) as usize);
+                uit.extend_from_slice(std::slice::from_raw_parts(begin, (breedte * 4) as usize));
+            }
+            self.context.Unmap(&staging, 0);
+            uit
+        };
+        Ok((breedte, hoogte, pixels))
     }
 }
 
