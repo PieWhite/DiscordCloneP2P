@@ -13,7 +13,7 @@
 //!   bij kunnen zonder de vorm van het bericht te veranderen.
 
 use crate::op::{Op, VersionVector};
-use crate::PeerId;
+use crate::{OpId, PeerId};
 use serde::{Deserialize, Serialize};
 
 /// Soort gedeelde bron. Als `u8` op de draad zodat een onbekende soort van een nieuwere
@@ -112,7 +112,11 @@ control_messages! {
     34 => StreamStats(StreamStats),
     35 => RequestKeyframe(RequestKeyframe),
 
-    // 40-49: GERESERVEERD voor file transfer. Zie TODO.md. Niet gebruiken voor iets anders.
+    // 40-49: file transfer. De aanbieding zelf is een gewone oplog-op (`OpKind::FileMeta`)
+    // en verspreidt zich dus al gratis mee via de sync; deze twee gaan alleen over het
+    // daadwerkelijk ophalen van de bytes bij de aanbieder. Zie docs/ARCHITECTURE.md.
+    40 => FileRequest(FileRequest),
+    41 => FileResponse(FileResponse),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,6 +227,56 @@ pub struct RequestKeyframe {
     pub stream_id: u32,
 }
 
+/// "Ik wil dit bestand." `file` is de `OpId` van de `FileMeta`-op — die is al globaal
+/// uniek, dus een apart transfer-id erbovenop zou alleen maar een tweede naam voor
+/// hetzelfde ding zijn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileRequest {
+    pub file: OpId,
+    /// Bytes die de aanvrager al op schijf heeft staan van een eerdere, onderbroken
+    /// poging. `0` voor een verse download. Zo hervat een download vanaf waar hij
+    /// stopte in plaats van opnieuw te beginnen.
+    #[serde(default)]
+    pub have_bytes: u64,
+}
+
+/// Als `u8` op de draad, net als `StreamKind`: zo geeft een onbekende uitkomst van een
+/// nieuwere peer geen decodeerfout die de hele `FileResponse` (en daarmee het frame)
+/// laat verdwijnen, maar komt gewoon als "onbekend" door.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FileOutcome(pub u8);
+
+impl FileOutcome {
+    /// Er volgt een eigen (uni-)stream op dezelfde QUIC-verbinding met de bytes vanaf
+    /// `have_bytes`. Niet over de control-stream: dat zou chat en de rest van het
+    /// verkeer laten wachten op een bulkoverdracht.
+    pub const READY: Self = Self(1);
+    /// De aanbieder heeft dit bestand niet meer (bijvoorbeeld verplaatst of verwijderd
+    /// van schijf). Geen fout, gewoon een nette afwijzing.
+    pub const NOT_AVAILABLE: Self = Self(2);
+
+    pub fn is_known(self) -> bool {
+        matches!(self, Self::READY | Self::NOT_AVAILABLE)
+    }
+}
+
+impl std::fmt::Debug for FileOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::READY => write!(f, "Ready"),
+            Self::NOT_AVAILABLE => write!(f, "NotAvailable"),
+            Self(n) => write!(f, "Unknown({n})"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileResponse {
+    pub file: OpId,
+    pub outcome: FileOutcome,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +311,14 @@ mod tests {
             ControlMsg::StreamRevoke(StreamRevoke { stream_id: 0 }),
             ControlMsg::StreamUnsubscribe(StreamUnsubscribe { stream_id: 0 }),
             ControlMsg::RequestKeyframe(RequestKeyframe { stream_id: 0 }),
+            ControlMsg::FileRequest(FileRequest {
+                file: OpId::new(PeerId::new_random(), 1),
+                have_bytes: 0,
+            }),
+            ControlMsg::FileResponse(FileResponse {
+                file: OpId::new(PeerId::new_random(), 1),
+                outcome: FileOutcome::READY,
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -284,6 +346,39 @@ mod tests {
     }
 
     #[test]
+    fn file_request_zonder_have_bytes_valt_terug_op_nul() {
+        // Een verse aanvraag, of een oudere peer die het veld nog niet kende.
+        #[derive(Serialize)]
+        struct OudeFileRequest {
+            file: OpId,
+        }
+        let mut body = 40u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &OudeFileRequest {
+                file: OpId::new(PeerId::new_random(), 3),
+            },
+            &mut ser,
+        )
+        .unwrap();
+
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::FileRequest(r) => assert_eq!(r.have_bytes, 0),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_response_roundtrip_behoudt_de_uitkomst() {
+        let file = OpId::new(PeerId::new_random(), 7);
+        for outcome in [FileOutcome::READY, FileOutcome::NOT_AVAILABLE] {
+            let msg = ControlMsg::FileResponse(FileResponse { file, outcome });
+            let bytes = msg.encode().unwrap();
+            assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+        }
+    }
+
+    #[test]
     fn onbekende_streamkind_decodeert_zonder_fout() {
         let msg = ControlMsg::StreamAnnounce(StreamAnnounce {
             stream_id: 1,
@@ -296,6 +391,22 @@ mod tests {
         let back = ControlMsg::decode(&bytes).unwrap().unwrap();
         match back {
             ControlMsg::StreamAnnounce(a) => assert!(!a.kind.is_known()),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn onbekende_file_outcome_decodeert_zonder_fout() {
+        // Zelfde reden als bij StreamKind: een toekomstige derde uitkomst (bijvoorbeeld
+        // "Denied" voor een quotafunctie) mag de hele FileResponse niet laten mislukken.
+        let msg = ControlMsg::FileResponse(FileResponse {
+            file: OpId::new(PeerId::new_random(), 1),
+            outcome: FileOutcome(200),
+        });
+        let bytes = msg.encode().unwrap();
+        let back = ControlMsg::decode(&bytes).unwrap().unwrap();
+        match back {
+            ControlMsg::FileResponse(r) => assert!(!r.outcome.is_known()),
             other => panic!("verkeerde variant: {other:?}"),
         }
     }

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+blake3 = "1.8.5"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.4", features = ["derive"] }
 directories = "6.0.0"
@@ -18,9 +19,10 @@ fitcom-proto = { version = "0.1.0", path = "../proto" }
 fitcom-store = { version = "0.1.0", path = "../store" }
 fitcom-video = { version = "0.1.0", path = "../video" }
 raw-window-handle = "0.6.2"
+rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 tauri-winrt-notification = "0.8.1"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "macros", "fs", "io-util"] }
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"

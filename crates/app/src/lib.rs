@@ -7,6 +7,7 @@
 pub mod chat;
 pub mod config;
 pub mod engine;
+pub mod files;
 pub mod notify;
 pub mod streams;
 pub mod tray;

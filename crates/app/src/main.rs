@@ -103,6 +103,7 @@ fn main() -> Result<()> {
     let naam = cfg.display_name.clone();
     let poort = cfg.control_port;
     let naar_tray = cfg.minimize_to_tray;
+    let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
 
     if let Err(e) = tray::zet_autostart(cfg.autostart) {
         // Geen reden om de app niet te starten; alleen melden.
@@ -120,6 +121,7 @@ fn main() -> Result<()> {
         naam,
         poort,
         data_dir,
+        downloads_dir,
         naar_tray,
         runtime,
     );

@@ -17,11 +17,27 @@ pub struct Message {
     pub edited: bool,
 }
 
+/// Een aangeboden bestand. `id` is de `OpId` van de `FileMeta`-op zelf — die is al
+/// globaal uniek en dient meteen als overdracht-identificatie in `FileRequest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    pub id: OpId,
+    /// Wie aanbiedt. Gelijk aan `id.author` — geen apart veld nodig, precies zoals
+    /// `Edit`/`Delete` hun eigenaarschap ook via `op.author` regelen.
+    pub author: PeerId,
+    pub name: String,
+    pub size: u64,
+    pub hash: [u8; 32],
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Timeline {
     /// Op weergavevolgorde: `(lamport, author)`.
     pub messages: Vec<Message>,
     pub nicknames: HashMap<PeerId, String>,
+    /// Alle bekende aanbiedingen, op weergavevolgorde. Geen bewerken of intrekken in v1
+    /// — zie `TODO.md`.
+    pub files: Vec<FileEntry>,
 }
 
 /// Sorteersleutel die op alle peers dezelfde uitkomst geeft. `wall_clock` mag hier
@@ -36,6 +52,7 @@ pub fn build(ops: &[Op]) -> Timeline {
     sorted.sort_by_key(|o| key(o));
 
     let mut posts: Vec<(OpId, Message)> = Vec::new();
+    let mut files: Vec<FileEntry> = Vec::new();
 
     // Laatste bewerking of verwijdering per bericht, met de sleutel die won.
     enum Change {
@@ -86,6 +103,15 @@ pub fn build(ops: &[Op]) -> Timeline {
                     }
                 }
             }
+            OpKind::FileMeta { name, size, hash } => {
+                files.push(FileEntry {
+                    id: op.id(),
+                    author: op.author,
+                    name,
+                    size,
+                    hash,
+                });
+            }
         }
     }
 
@@ -122,6 +148,7 @@ pub fn build(ops: &[Op]) -> Timeline {
     Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
+        files,
     }
 }
 
@@ -317,6 +344,27 @@ mod tests {
         };
         let t = build(&[post, toekomstig]);
         assert_eq!(t.messages.len(), 1);
+    }
+
+    #[test]
+    fn aangeboden_bestand_komt_in_de_timeline_met_zijn_eigen_op_id_als_identificatie() {
+        let aanbod = op(
+            peer(1),
+            1,
+            1,
+            OpKind::FileMeta {
+                name: "vakantiefotos.zip".into(),
+                size: 42,
+                hash: [0x11; 32],
+            },
+        );
+        let t = build(std::slice::from_ref(&aanbod));
+        assert_eq!(t.files.len(), 1);
+        assert_eq!(t.files[0].id, aanbod.id());
+        assert_eq!(t.files[0].author, peer(1));
+        assert_eq!(t.files[0].name, "vakantiefotos.zip");
+        assert_eq!(t.files[0].size, 42);
+        assert_eq!(t.files[0].hash, [0x11; 32]);
     }
 
     #[test]

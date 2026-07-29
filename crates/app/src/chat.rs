@@ -111,6 +111,27 @@ impl Chat {
         })
     }
 
+    /// Legt een bestandsaanbod vast in de oplog, precies zoals een bericht — dat is het
+    /// hele punt van de generieke oplog. Levert de `OpId` op die de overdracht zelf
+    /// identificeert, zodat de motor kan onthouden waar het originele bestand staat.
+    pub fn deel_bestand(
+        &mut self,
+        naam: &str,
+        grootte: u64,
+        hash: [u8; 32],
+    ) -> Result<(OpId, Vec<MeshCommand>)> {
+        let kind = fitcom_store::offer_file(naam, grootte, hash);
+        let op = self.store.append_local(&kind, fitcom_store::now_millis())?;
+        self.vuil = true;
+        let id = op.id();
+        Ok((
+            id,
+            vec![MeshCommand::Broadcast(ControlMsg::OpBroadcast(
+                OpBroadcast { op },
+            ))],
+        ))
+    }
+
     fn eigen_op(&mut self, kind: OpKind) -> Result<Vec<MeshCommand>> {
         let op = self.store.append_local(&kind, fitcom_store::now_millis())?;
         self.vuil = true;

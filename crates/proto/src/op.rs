@@ -119,7 +119,11 @@ op_kinds! {
     2 => Edit   { target: OpId, body: String },
     3 => Delete { target: OpId },
     4 => SetNick { name: String },
-    // 10+ GERESERVEERD: React, Reply, FileMeta. Zie TODO.md.
+    // Wie aanbiedt staat niet als apart veld: dat is `op.author`, precies zoals Edit/Delete
+    // hun eigenaarschap ook al via `op.author` regelen in plaats van een los veld dat uit de
+    // pas zou kunnen lopen. Zie docs/ARCHITECTURE.md voor de rest van het ontwerp.
+    10 => FileMeta { name: String, size: u64, hash: [u8; 32] },
+    // 11+ GERESERVEERD: React, Reply. Zie TODO.md.
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 
@@ -230,6 +234,11 @@ mod tests {
             },
             OpKind::SetNick {
                 name: "Rick".into(),
+            },
+            OpKind::FileMeta {
+                name: "vakantiefotos.zip".into(),
+                size: 123_456_789,
+                hash: [0x42; 32],
             },
         ];
         for kind in kinds {

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -92,12 +92,42 @@ pub enum MeshEvent {
         from: PeerId,
         msg: ControlMsg,
     },
+    /// Een nieuwe uni-stream, geopend door de andere kant voor bulkdata (bestandsoverdracht).
+    /// Los van `Message`: dit gaat niet over de control-stream en heeft dus geen `ControlMsg`.
+    IncomingFileStream {
+        from: PeerId,
+        stream: quinn::RecvStream,
+    },
 }
 
-#[derive(Debug)]
 pub enum MeshCommand {
-    Send { to: PeerId, msg: ControlMsg },
+    Send {
+        to: PeerId,
+        msg: ControlMsg,
+    },
     Broadcast(ControlMsg),
+    /// Opent een eigen uni-stream naar `to` voor het versturen van bulkbytes (een
+    /// bestand), naast de control-stream. `None` als die peer niet (meer) verbonden is.
+    OpenUploadStream {
+        to: PeerId,
+        respond: oneshot::Sender<Option<quinn::SendStream>>,
+    },
+}
+
+impl std::fmt::Debug for MeshCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Send { to, msg } => f
+                .debug_struct("Send")
+                .field("to", to)
+                .field("msg", msg)
+                .finish(),
+            Self::Broadcast(msg) => f.debug_tuple("Broadcast").field(msg).finish(),
+            Self::OpenUploadStream { to, .. } => {
+                f.debug_struct("OpenUploadStream").field("to", to).finish()
+            }
+        }
+    }
 }
 
 pub struct MeshHandle {
@@ -165,12 +195,30 @@ struct Established {
 
 enum Internal {
     Command(MeshCommand),
-    Resolved { target: usize, addr: SocketAddr },
-    Connecting { target: usize },
+    Resolved {
+        target: usize,
+        addr: SocketAddr,
+    },
+    Connecting {
+        target: usize,
+    },
     Established(Box<Established>),
-    Rejected { target: usize, status: PeerStatus },
-    Frame { conn_id: u64, msg: ControlMsg },
-    Closed { conn_id: u64, reason: String },
+    Rejected {
+        target: usize,
+        status: PeerStatus,
+    },
+    Frame {
+        conn_id: u64,
+        msg: ControlMsg,
+    },
+    IncomingFileStream {
+        conn_id: u64,
+        stream: quinn::RecvStream,
+    },
+    Closed {
+        conn_id: u64,
+        reason: String,
+    },
     Tick,
 }
 
@@ -349,6 +397,9 @@ impl Actor {
                 Internal::Established(e) => self.on_established(*e).await,
                 Internal::Rejected { target, status } => self.set_status(target, status).await,
                 Internal::Frame { conn_id, msg } => self.on_frame(conn_id, msg).await,
+                Internal::IncomingFileStream { conn_id, stream } => {
+                    self.on_incoming_file_stream(conn_id, stream).await
+                }
                 Internal::Closed { conn_id, reason } => self.on_closed(conn_id, reason).await,
                 Internal::Tick => self.on_tick().await,
             }
@@ -374,7 +425,37 @@ impl Actor {
                     }
                 }
             }
+            MeshCommand::OpenUploadStream { to, respond } => {
+                match self.active.get(&to) {
+                    Some(a) => {
+                        let conn = a.conn.clone();
+                        // Los spawnen: `open_uni` wacht eventueel op flow-control-krediet
+                        // van de andere kant, en de actor mag daar niet op blokkeren.
+                        tokio::spawn(async move {
+                            let stream = conn.open_uni().await.ok();
+                            let _ = respond.send(stream);
+                        });
+                    }
+                    None => {
+                        let _ = respond.send(None);
+                    }
+                }
+            }
         }
+    }
+
+    async fn on_incoming_file_stream(&mut self, conn_id: u64, stream: quinn::RecvStream) {
+        let Some((&from, _)) = self.active.iter().find(|(_, a)| a.conn_id == conn_id) else {
+            tracing::warn!(
+                conn = conn_id,
+                "bestandsstream van onbekende verbinding genegeerd"
+            );
+            return;
+        };
+        let _ = self
+            .events
+            .send(MeshEvent::IncomingFileStream { from, stream })
+            .await;
     }
 
     async fn on_established(&mut self, e: Established) {
@@ -913,9 +994,29 @@ async fn run_session(
         })
     };
 
+    // Bestandsoverdrachten komen binnen als losse uni-streams naast de control-stream,
+    // zodat een groot bestand nooit chat of screenshare-control laat wachten. Deze lus
+    // stopt vanzelf zodra de verbinding dicht gaat: `accept_uni` geeft dan een fout.
+    let file_acceptor = {
+        let int = int.clone();
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            while let Ok(stream) = conn.accept_uni().await {
+                if int
+                    .send(Internal::IncomingFileStream { conn_id, stream })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    };
+
     let reason = conn.closed().await.to_string();
     reader.abort();
     writer.abort();
+    file_acceptor.abort();
 
     let _ = int.send(Internal::Closed { conn_id, reason }).await;
 }

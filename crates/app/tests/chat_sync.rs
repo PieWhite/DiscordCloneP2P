@@ -78,7 +78,9 @@ impl Peer {
                         net_online.push(peer_id);
                     }
                 }
-                MeshEvent::Status { .. } | MeshEvent::LearnedIdentity { .. } => {}
+                MeshEvent::Status { .. }
+                | MeshEvent::LearnedIdentity { .. }
+                | MeshEvent::IncomingFileStream { .. } => {}
                 MeshEvent::Message { from, msg } => {
                     let cmds = self.chat.bij_bericht(from, msg).unwrap();
                     self.stuur(cmds);

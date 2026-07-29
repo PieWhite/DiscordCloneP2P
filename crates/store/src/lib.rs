@@ -22,7 +22,7 @@ use fitcom_proto::{Op, OpKind, PeerId, VersionVector};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-pub use timeline::{Message, Timeline};
+pub use timeline::{FileEntry, Message, Timeline};
 
 // Doorgeven zodat de app niet ook nog een directe afhankelijkheid op `proto` nodig heeft
 // voor de types die overal in de chat-code voorkomen.
@@ -356,4 +356,14 @@ pub fn now_millis() -> i64 {
 /// Kortere schrijfwijze voor de meest voorkomende op.
 pub fn post(body: impl Into<String>) -> OpKind {
     OpKind::Post { body: body.into() }
+}
+
+/// Een bestand aanbieden. De op zelf is de identificatie van de overdracht — zie
+/// `fitcom_store::FileEntry` en `fitcom_proto::control::FileRequest`.
+pub fn offer_file(name: impl Into<String>, size: u64, hash: [u8; 32]) -> OpKind {
+    OpKind::FileMeta {
+        name: name.into(),
+        size,
+        hash,
+    }
 }

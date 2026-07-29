@@ -12,28 +12,34 @@
 //! stilvallen zonder dat er iets misgaat.
 
 use crate::chat::Chat;
-use crate::config::{Config, VideoConfig};
+use crate::config::{self, Config, VideoConfig};
+use crate::files::{DownloadStatus, Files, StartUpload};
 use crate::notify;
 use crate::streams::{Actie, Streams};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
-use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus};
+use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
 use fitcom_proto::{ControlMsg, OpId, PeerId};
-use fitcom_store::{Store, Timeline};
+use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
 use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle, Miniatuur};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Snel genoeg voor een spreekindicatie die niet hakkelt. Een momentopname is goedkoop:
 /// de timeline zit erin als `Arc`, dus publiceren kost geen kopie van de geschiedenis.
 const TIK: Duration = Duration::from_millis(100);
+
+/// Hoe vaak een lopende download zijn voortgang naar de UI duwt. Bij 1 Gbit komen er
+/// per seconde veel te veel gelezen stukjes langs om elk apart te melden.
+const VOORTGANG_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub struct PeerView {
@@ -82,6 +88,20 @@ pub struct StreamView {
     pub miniatuur: Option<Miniatuur>,
 }
 
+/// Een aangeboden bestand zoals de UI het toont: de metadata uit de oplog plus, als wij
+/// er iets mee doen, onze eigen downloadstatus.
+#[derive(Debug, Clone)]
+pub struct FileView {
+    pub id: OpId,
+    pub author: PeerId,
+    pub name: String,
+    pub size: u64,
+    /// Ons eigen aanbod: geen downloadknop nodig, we hebben het al.
+    pub is_mine: bool,
+    /// `None` betekent: nog niet gedownload en niet mee bezig.
+    pub status: Option<DownloadStatus>,
+}
+
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -91,6 +111,7 @@ pub struct Snapshot {
     pub eigen_streams: Vec<EigenStreamView>,
     pub streams: Vec<StreamView>,
     pub video: VideoConfig,
+    pub files: Vec<FileView>,
     pub ongelezen: usize,
     pub fout: Option<String>,
 }
@@ -120,6 +141,11 @@ pub enum UiCommand {
     /// meteen mee — die worden herstart met de nieuwe instellingen — en voor nieuw
     /// gestarte bronnen vanzelf, want die lezen `cfg.video` bij het starten.
     ZetVideoInstellingen(VideoConfig),
+    /// Een lokaal bestand kiezen en aanbieden aan de anderen. Hashen gebeurt op de
+    /// motor: bij een groot bestand kan dat te lang duren om de UI op te laten wachten.
+    BiedBestandAan(PathBuf),
+    /// Downloaden, of hervatten na een eerdere onderbreking.
+    DownloadBestand(OpId),
 }
 
 pub struct EngineHandle {
@@ -140,6 +166,16 @@ pub fn spawn(
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (snap_tx, snap_rx) = watch::channel(Arc::new(Snapshot::default()));
     let voorgrond = Arc::new(AtomicBool::new(true));
+    let (file_tx, file_rx) = mpsc::channel(64);
+
+    // `config_path` staat altijd direct in de datamap (zie `main.rs`), dus dat is ook de
+    // basis voor de standaard downloadmap zolang de gebruiker er niets voor gekozen heeft.
+    let data_dir = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
+    std::fs::create_dir_all(&downloads_dir).context("downloadmap aanmaken")?;
 
     let peers = cfg
         .peers
@@ -177,6 +213,10 @@ pub fn spawn(
         kijkers: HashMap::new(),
         miniaturen: HashMap::new(),
         stream_volumes: HashMap::new(),
+        files: Files::new(),
+        downloads_dir,
+        file_tx,
+        file_rx,
         fout: None,
         snap_tx,
         voorgrond: voorgrond.clone(),
@@ -223,9 +263,41 @@ struct Engine {
     /// zachtgezette stream zacht als je het gesprek verlaat en weer aansluit.
     stream_volumes: HashMap<(PeerId, u32), f32>,
 
+    /// Wie wat aanbiedt en waar onze eigen downloads staan. Neemt de beslissingen;
+    /// het lezen/schrijven/hashen zelf gebeurt in losse tokio-taken hieronder.
+    files: Files,
+    downloads_dir: PathBuf,
+    /// Voor het klonen naar bestandstaken toe; `file_rx` is waar de motor op wacht.
+    file_tx: mpsc::Sender<FileEvent>,
+    file_rx: mpsc::Receiver<FileEvent>,
+
     fout: Option<String>,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
+}
+
+/// Wat een bestandstaak (hashen, uploaden, downloaden) terugmeldt aan de motor. Losse
+/// tokio-taken raken schijf en netwerk aan; de motor zelf blijft daar los van, net als
+/// bij de kijker- en delerthreads van screenshare.
+enum FileEvent {
+    /// Het lokale bestand is gelezen en gehasht; nu kan het als op vastgelegd worden.
+    NieuwAanbod {
+        pad: PathBuf,
+        naam: String,
+        grootte: u64,
+        hash: [u8; 32],
+    },
+    Voortgang {
+        file: OpId,
+        ontvangen: u64,
+    },
+    Voltooid {
+        file: OpId,
+    },
+    Mislukt {
+        file: OpId,
+        bericht: String,
+    },
 }
 
 impl Engine {
@@ -248,6 +320,10 @@ impl Engine {
                 cmd = cmds.recv() => match cmd {
                     Some(cmd) => self.op_ui_command(cmd),
                     None => break,
+                },
+                // `None` kan niet gebeuren zolang de motor zelf `file_tx` vasthoudt.
+                ev = self.file_rx.recv() => if let Some(ev) = ev {
+                    self.op_file_event(ev);
                 },
                 _ = ticker.tick() => {
                     let verbonden: Vec<PeerId> = self.verbonden.keys().copied().collect();
@@ -330,6 +406,12 @@ impl Engine {
                 }
             }
 
+            // Een bulkoverdracht, los van de control-stream. De header in de stream zelf
+            // zegt om welk bestand het gaat; `from` is hier niet nodig om hem te routeren.
+            MeshEvent::IncomingFileStream { from: _, stream } => {
+                self.start_download(stream);
+            }
+
             MeshEvent::Message { from, msg } => match msg {
                 ControlMsg::VoiceJoin(_) => {
                     tracing::info!(peer = ?from, "peer neemt deel aan het gesprek");
@@ -340,6 +422,16 @@ impl Engine {
                     tracing::info!(peer = ?from, "peer verlaat het gesprek");
                     self.peers_in_voice.remove(&from);
                     self.werk_voice_peers_bij();
+                }
+                ControlMsg::FileRequest(req) => {
+                    let (cmd, upload) = self.files.verzoek_ontvangen(from, &req);
+                    self.stuur_alles(vec![cmd]);
+                    if let Some(actie) = upload {
+                        self.start_upload(actie);
+                    }
+                }
+                ControlMsg::FileResponse(resp) => {
+                    self.files.antwoord_ontvangen(&resp);
                 }
                 andere => {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
@@ -811,6 +903,84 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
+            UiCommand::BiedBestandAan(pad) => {
+                let tx = self.file_tx.clone();
+                tokio::spawn(hash_en_bied_aan(pad, tx));
+            }
+            UiCommand::DownloadBestand(file) => self.download_bestand(file),
+        }
+    }
+
+    /// Start (of hervat) een download. Het hervatpunt komt van wat er al op schijf staat
+    /// van een eerdere, onderbroken poging.
+    fn download_bestand(&mut self, file: OpId) {
+        let Some(entry) = self
+            .chat
+            .timeline()
+            .files
+            .iter()
+            .find(|f| f.id == file)
+            .cloned()
+        else {
+            return;
+        };
+        if entry.author == self.chat.me() {
+            return; // ons eigen aanbod; er valt niets te downloaden
+        }
+
+        let deelpad = self.downloads_dir.join(deelbestand_naam(&entry));
+        let bestaand = std::fs::metadata(&deelpad).map(|m| m.len()).unwrap_or(0);
+
+        let cmd = self.files.download_aanvragen(&entry, bestaand);
+        self.stuur_alles(vec![cmd]);
+    }
+
+    fn start_upload(&mut self, actie: StartUpload) {
+        let mesh_commands = self.mesh.commands.clone();
+        tokio::spawn(upload_taak(
+            mesh_commands,
+            actie.naar,
+            actie.file,
+            actie.pad,
+            actie.vanaf,
+        ));
+    }
+
+    fn start_download(&mut self, stream: RecvStream) {
+        let downloads_dir = self.downloads_dir.clone();
+        let timeline = self.chat.timeline_arc();
+        let events = self.file_tx.clone();
+        tokio::spawn(download_taak(stream, downloads_dir, timeline, events));
+    }
+
+    fn op_file_event(&mut self, ev: FileEvent) {
+        match ev {
+            FileEvent::NieuwAanbod {
+                pad,
+                naam,
+                grootte,
+                hash,
+            } => match self.chat.deel_bestand(&naam, grootte, hash) {
+                Ok((id, cmds)) => {
+                    self.files.biedt_aan(id, pad);
+                    self.stuur_alles(cmds);
+                }
+                Err(e) => {
+                    tracing::error!(error = %format!("{e:#}"), "bestand aanbieden mislukt");
+                    self.fout = Some(format!("bestand aanbieden: {e:#}"));
+                }
+            },
+            FileEvent::Voortgang { file, ontvangen } => {
+                self.files.zet_voortgang(file, ontvangen);
+            }
+            FileEvent::Voltooid { file } => {
+                self.files.zet_status(file, DownloadStatus::Voltooid);
+            }
+            FileEvent::Mislukt { file, bericht } => {
+                tracing::warn!(?file, %bericht, "bestandsoverdracht mislukt");
+                self.files
+                    .zet_status(file, DownloadStatus::Mislukt(bericht));
+            }
         }
     }
 
@@ -903,6 +1073,22 @@ impl Engine {
             })
             .collect();
 
+        let me = self.chat.me();
+        let files = self
+            .chat
+            .timeline()
+            .files
+            .iter()
+            .map(|f| FileView {
+                id: f.id,
+                author: f.author,
+                name: f.name.clone(),
+                size: f.size,
+                is_mine: f.author == me,
+                status: self.files.status(f.id).cloned(),
+            })
+            .collect();
+
         let _ = self.snap_tx.send(Arc::new(Snapshot {
             timeline: self.chat.timeline_arc(),
             peers,
@@ -910,6 +1096,7 @@ impl Engine {
             eigen_streams,
             streams,
             video: self.cfg.video.clone(),
+            files,
             ongelezen: self.chat.ongelezen,
             fout: self.fout.clone(),
         }));
@@ -925,4 +1112,257 @@ pub fn audio_apparaten() -> Result<(Vec<String>, Vec<String>)> {
 /// opgevraagd; vensters komen en gaan, dus een eenmalige lijst zou snel verouderen.
 pub fn deelbare_bronnen() -> Result<Vec<Bron>> {
     fitcom_video::beschikbare_bronnen().context("deelbare bronnen opvragen")
+}
+
+// ---------------------------------------------------------------------------
+// Bestandsoverdracht: losse tokio-taken. Puur I/O en hashen, geen beslissingen —
+// die zitten in `files.rs`. Zie `docs/ARCHITECTURE.md` voor waarom de bulkbytes over
+// een eigen QUIC-stream gaan in plaats van over de control-stream.
+// ---------------------------------------------------------------------------
+
+/// De naam van het deelbestand (`.part`) op schijf tijdens het downloaden. Op basis
+/// van `(author, seq)` in plaats van de leesbare naam: twee aanbiedingen met dezelfde
+/// bestandsnaam van verschillende peers mogen elkaar niet overschrijven.
+fn deelbestand_naam(entry: &FileEntry) -> String {
+    format!("{}-{}.part", entry.author.0.simple(), entry.id.seq)
+}
+
+/// De naam waaronder het bestand definitief landt. Voegt `" (2)"` etc. toe als de naam
+/// al bestaat — bijvoorbeeld omdat twee peers hetzelfde bestand aanboden.
+fn unieke_bestandsnaam(dir: &Path, naam: &str) -> PathBuf {
+    let kandidaat = dir.join(naam);
+    if !kandidaat.exists() {
+        return kandidaat;
+    }
+
+    let pad = Path::new(naam);
+    let stam = pad.file_stem().and_then(|s| s.to_str()).unwrap_or(naam);
+    let ext = pad.extension().and_then(|s| s.to_str());
+    for i in 2u32.. {
+        let naam_n = match ext {
+            Some(e) => format!("{stam} ({i}).{e}"),
+            None => format!("{stam} ({i})"),
+        };
+        let kandidaat = dir.join(&naam_n);
+        if !kandidaat.exists() {
+            return kandidaat;
+        }
+    }
+    unreachable!("dir.join blijft nieuwe paden opleveren")
+}
+
+/// Leest een lokaal bestand, hasht het, en meldt het resultaat terug zodat de motor het
+/// als `FileMeta`-op kan vastleggen. Op een losse taak: bij een groot bestand kan dit
+/// seconden duren, en dat mag de UI niet blokkeren.
+async fn hash_en_bied_aan(pad: PathBuf, events: mpsc::Sender<FileEvent>) {
+    let naam = pad
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "bestand".to_string());
+
+    let leespad = pad.clone();
+    let resultaat = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, [u8; 32])> {
+        let mut bestand = std::fs::File::open(&leespad)?;
+        let mut hasher = blake3::Hasher::new();
+        let grootte = std::io::copy(&mut bestand, &mut hasher)?;
+        Ok((grootte, *hasher.finalize().as_bytes()))
+    })
+    .await;
+
+    match resultaat {
+        Ok(Ok((grootte, hash))) => {
+            let _ = events
+                .send(FileEvent::NieuwAanbod {
+                    pad,
+                    naam,
+                    grootte,
+                    hash,
+                })
+                .await;
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, pad = %pad.display(), "bestand lezen voor aanbieden mislukt");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "hash-taak voor aanbieden afgebroken");
+        }
+    }
+}
+
+/// Opent de uploadstream naar de aanvrager en stuurt het bestand vanaf `vanaf`. Fouten
+/// hier zijn alleen voor de logs: de aanvrager ziet gewoon geen bytes komen en kan het
+/// later opnieuw proberen.
+async fn upload_taak(
+    mesh_commands: mpsc::Sender<MeshCommand>,
+    naar: PeerId,
+    file: OpId,
+    pad: PathBuf,
+    vanaf: u64,
+) {
+    // Openen vóór de uploadstream aanvragen: `Files::verzoek_ontvangen` weet alleen dat we
+    // dit bestand ooit hebben aangeboden, niet of het nu nog op schijf staat. Blijkt het
+    // weg (verplaatst, verwijderd), dan corrigeren we hier alsnog naar `NotAvailable` in
+    // plaats van de aanvrager voor altijd op "bezig" te laten staan.
+    let mut bestand = match tokio::fs::File::open(&pad).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, pad = %pad.display(), "bronbestand niet meer te openen");
+            let _ = mesh_commands
+                .send(MeshCommand::Send {
+                    to: naar,
+                    msg: ControlMsg::FileResponse(fitcom_proto::control::FileResponse {
+                        file,
+                        outcome: fitcom_proto::control::FileOutcome::NOT_AVAILABLE,
+                    }),
+                })
+                .await;
+            return;
+        }
+    };
+
+    let (tx, rx) = oneshot::channel();
+    if mesh_commands
+        .send(MeshCommand::OpenUploadStream {
+            to: naar,
+            respond: tx,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let stream = match rx.await {
+        Ok(Some(s)) => s,
+        _ => {
+            tracing::debug!(peer = ?naar, "kon geen uploadstream openen; peer waarschijnlijk weg");
+            return;
+        }
+    };
+
+    if let Err(e) = upload_bytes(stream, file, &mut bestand, vanaf).await {
+        tracing::warn!(error = %format!("{e:#}"), peer = ?naar, "bestandsupload mislukt");
+    }
+}
+
+async fn upload_bytes(
+    mut stream: SendStream,
+    file: OpId,
+    bestand: &mut tokio::fs::File,
+    vanaf: u64,
+) -> Result<()> {
+    fitcom_net::filestream::write_header(&mut stream, file).await?;
+
+    bestand
+        .seek(std::io::SeekFrom::Start(vanaf))
+        .await
+        .context("hervatpunt opzoeken in het bronbestand")?;
+    tokio::io::copy(bestand, &mut stream)
+        .await
+        .context("bytes versturen")?;
+    stream.finish().context("uploadstream afsluiten")?;
+    Ok(())
+}
+
+/// Leest de header van een inkomende bulk-stream, zoekt het bijbehorende bestand op in
+/// de (op het moment van binnenkomst al bekende) timeline, en downloadt het.
+async fn download_taak(
+    mut stream: RecvStream,
+    downloads_dir: PathBuf,
+    timeline: Arc<Timeline>,
+    events: mpsc::Sender<FileEvent>,
+) {
+    let file = match fitcom_net::filestream::read_header(&mut stream).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "header van inkomende bestandsstream onleesbaar");
+            return;
+        }
+    };
+
+    let Some(entry) = timeline.files.iter().find(|f| f.id == file).cloned() else {
+        tracing::warn!(?file, "bestandsstream voor een onbekend bestand genegeerd");
+        return;
+    };
+
+    if let Err(e) = download_bytes(&mut stream, &downloads_dir, &entry, &events).await {
+        let _ = events
+            .send(FileEvent::Mislukt {
+                file: entry.id,
+                bericht: format!("{e:#}"),
+            })
+            .await;
+    }
+}
+
+async fn download_bytes(
+    stream: &mut RecvStream,
+    downloads_dir: &Path,
+    entry: &FileEntry,
+    events: &mpsc::Sender<FileEvent>,
+) -> Result<()> {
+    let deelpad = downloads_dir.join(deelbestand_naam(entry));
+    let mut bestand = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&deelpad)
+        .await
+        .context("deelbestand openen")?;
+    let mut ontvangen = bestand
+        .metadata()
+        .await
+        .context("deelbestand-grootte opvragen")?
+        .len();
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut laatste_update = Instant::now();
+    loop {
+        match stream.read(&mut buf).await.context("bytes ontvangen")? {
+            None => break,
+            Some(n) => {
+                bestand
+                    .write_all(&buf[..n])
+                    .await
+                    .context("bytes wegschrijven")?;
+                ontvangen += n as u64;
+                if laatste_update.elapsed() >= VOORTGANG_INTERVAL {
+                    laatste_update = Instant::now();
+                    let _ = events
+                        .send(FileEvent::Voortgang {
+                            file: entry.id,
+                            ontvangen,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+    bestand.flush().await.context("deelbestand doorschrijven")?;
+    drop(bestand);
+
+    // Eén sequentiële leespas over het net geschreven bestand in plaats van meehashen
+    // tijdens het schrijven: zo hoeft het hervatpunt niet bij te houden wat al eerder
+    // gehasht was, en gaan de netwerkbytes rechtstreeks naar schijf zonder een tweede
+    // kopie in het geheugen.
+    let te_hashen = deelpad.clone();
+    let verwacht = entry.hash;
+    let klopt = tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
+        let mut bestand = std::fs::File::open(&te_hashen)?;
+        let mut hasher = blake3::Hasher::new();
+        std::io::copy(&mut bestand, &mut hasher)?;
+        Ok(*hasher.finalize().as_bytes() == verwacht)
+    })
+    .await
+    .context("hash-taak afgebroken")??;
+
+    if !klopt {
+        let _ = tokio::fs::remove_file(&deelpad).await;
+        anyhow::bail!("hash klopt niet; bestand is corrupt geraakt en is verwijderd");
+    }
+
+    let definitief = unieke_bestandsnaam(downloads_dir, &entry.name);
+    tokio::fs::rename(&deelpad, &definitief)
+        .await
+        .context("bestand hernoemen naar definitieve naam")?;
+    let _ = events.send(FileEvent::Voltooid { file: entry.id }).await;
+    Ok(())
 }

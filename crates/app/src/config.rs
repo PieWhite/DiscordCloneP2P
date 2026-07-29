@@ -51,6 +51,10 @@ pub struct Config {
 
     #[serde(default)]
     pub video: VideoConfig,
+
+    /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_dir: Option<PathBuf>,
 }
 
 /// Instellingen voor screenshare. Staan hier zodat ze te wijzigen zijn zonder opnieuw
@@ -154,6 +158,7 @@ impl Config {
                 },
             ],
             video: VideoConfig::default(),
+            download_dir: None,
         }
     }
 
@@ -230,6 +235,14 @@ pub fn resolve_data_dir(override_dir: Option<PathBuf>) -> Result<PathBuf> {
         .to_path_buf();
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Waar gedownloade bestanden landen. `cfg.download_dir` wint als de gebruiker die
+/// gezet heeft; anders een map naast de rest van de data van deze installatie.
+pub fn resolve_download_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
+    cfg.download_dir
+        .clone()
+        .unwrap_or_else(|| data_dir.join("downloads"))
 }
 
 fn whoami_or(fallback: &str) -> String {

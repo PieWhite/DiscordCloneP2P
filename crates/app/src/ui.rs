@@ -6,6 +6,7 @@
 
 use crate::config::VideoConfig;
 use crate::engine::{self, EngineHandle, PeerView, Snapshot, UiCommand};
+use crate::files::DownloadStatus;
 use crate::tray;
 use eframe::egui;
 use fitcom_net::PeerStatus;
@@ -31,6 +32,7 @@ pub struct App {
     eigen_naam: String,
     control_port: u16,
     data_dir: PathBuf,
+    downloads_dir: PathBuf,
     /// Moet in leven blijven zolang de app draait, anders stopt alles eronder.
     _runtime: tokio::runtime::Runtime,
     invoer: String,
@@ -58,12 +60,14 @@ struct VideoConcept {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         engine: EngineHandle,
         mij: PeerId,
         eigen_naam: String,
         control_port: u16,
         data_dir: PathBuf,
+        downloads_dir: PathBuf,
         naar_tray: bool,
         runtime: tokio::runtime::Runtime,
     ) -> Self {
@@ -75,6 +79,7 @@ impl App {
             eigen_naam,
             control_port,
             data_dir,
+            downloads_dir,
             _runtime: runtime,
             invoer: String::new(),
             bewerkt: None,
@@ -162,6 +167,7 @@ impl eframe::App for App {
         }
 
         self.deelnemers_paneel(ctx);
+        self.bestanden_paneel(ctx);
         self.bronkeuze_venster(ctx);
         self.instellingen_venster(ctx);
         self.statusbalk(ctx);
@@ -398,6 +404,117 @@ impl App {
             .map(|s| s.stream_id)
     }
 
+    /// Wat er is aangeboden — door ons of door een ander — plus downloadknop, voortgang
+    /// of "opnieuw proberen" per bestand. Eigen aanbiedingen komen gratis mee via de
+    /// oplog-sync, dus deze lijst is nooit leger dan wat de anderen ook zien.
+    fn bestanden_paneel(&mut self, ctx: &egui::Context) {
+        let mut cmd: Option<UiCommand> = None;
+        let mut kies_bestand = false;
+        let mut open_downloads = false;
+
+        egui::SidePanel::right("bestanden")
+            .resizable(false)
+            .exact_width(260.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.heading("Bestanden");
+                ui.add_space(8.0);
+
+                if self.snap.files.is_empty() {
+                    ui.weak("Nog niets aangeboden.");
+                    ui.add_space(8.0);
+                }
+
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - 40.0)
+                    .show(ui, |ui| {
+                        for f in &self.snap.files {
+                            ui.label(egui::RichText::new(&f.name).strong());
+                            ui.horizontal(|ui| {
+                                ui.small(grootte_tekst(f.size));
+                                ui.small("·");
+                                ui.small(if f.is_mine {
+                                    "jij".to_string()
+                                } else {
+                                    self.naam_van(f.author)
+                                });
+                            });
+
+                            if f.is_mine {
+                                ui.small(egui::RichText::new("aangeboden door jou").weak());
+                            } else {
+                                match &f.status {
+                                    None => {
+                                        if ui.small_button("downloaden").clicked() {
+                                            cmd = Some(UiCommand::DownloadBestand(f.id));
+                                        }
+                                    }
+                                    Some(DownloadStatus::Bezig { ontvangen, totaal }) => {
+                                        let deel = if *totaal > 0 {
+                                            *ontvangen as f32 / *totaal as f32
+                                        } else {
+                                            0.0
+                                        };
+                                        ui.add(egui::ProgressBar::new(deel).text(format!(
+                                            "{} / {}",
+                                            grootte_tekst(*ontvangen),
+                                            grootte_tekst(*totaal)
+                                        )));
+                                    }
+                                    Some(DownloadStatus::Voltooid) => {
+                                        ui.horizontal(|ui| {
+                                            ui.colored_label(GROEN, "\u{2713} gedownload");
+                                            if ui.small_button("map openen").clicked() {
+                                                open_downloads = true;
+                                            }
+                                        });
+                                    }
+                                    Some(DownloadStatus::Mislukt(bericht)) => {
+                                        ui.small(
+                                            egui::RichText::new(format!("mislukt: {bericht}"))
+                                                .color(ROOD),
+                                        );
+                                        if ui.small_button("opnieuw proberen").clicked() {
+                                            cmd = Some(UiCommand::DownloadBestand(f.id));
+                                        }
+                                    }
+                                }
+                            }
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                        }
+                    });
+
+                ui.add_space(4.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::Button::new("Bestand delen…"),
+                    )
+                    .clicked()
+                {
+                    kies_bestand = true;
+                }
+            });
+
+        if let Some(cmd) = cmd {
+            self.stuur(cmd);
+        }
+        if open_downloads {
+            let _ = std::process::Command::new("explorer")
+                .arg(&self.downloads_dir)
+                .spawn();
+        }
+        if kies_bestand {
+            // Blokkeert kort op de native dialoog — normaal voor een bestandskeuze en
+            // raakt de motor niet: die draait op zijn eigen tokio-runtime.
+            if let Some(pad) = rfd::FileDialog::new().pick_file() {
+                self.stuur(UiCommand::BiedBestandAan(pad));
+            }
+        }
+    }
+
     fn open_bronkeuze(&mut self) {
         match engine::deelbare_bronnen() {
             Ok(b) => self.bronkeuze = Some(b),
@@ -480,11 +597,17 @@ impl App {
             .streams
             .iter()
             .filter(|s| s.kijken && !s.is_geluid)
-            .map(|s| (s.eigenaar, s.stream_id, s.titel.clone(), s.miniatuur.clone()))
+            .map(|s| {
+                (
+                    s.eigenaar,
+                    s.stream_id,
+                    s.titel.clone(),
+                    s.miniatuur.clone(),
+                )
+            })
             .collect();
 
-        let sleutels: HashSet<(PeerId, u32)> =
-            actief.iter().map(|(p, id, ..)| (*p, *id)).collect();
+        let sleutels: HashSet<(PeerId, u32)> = actief.iter().map(|(p, id, ..)| (*p, *id)).collect();
         self.miniatuur_cache.retain(|k, _| sleutels.contains(k));
 
         if actief.is_empty() {
@@ -560,8 +683,10 @@ impl App {
         }
 
         let rgba = bgra_naar_rgba(&m.data);
-        let kleur =
-            egui::ColorImage::from_rgba_unmultiplied([m.breedte as usize, m.hoogte as usize], &rgba);
+        let kleur = egui::ColorImage::from_rgba_unmultiplied(
+            [m.breedte as usize, m.hoogte as usize],
+            &rgba,
+        );
         let naam = format!("miniatuur-{}-{}", sleutel.0, sleutel.1);
         let handle = ctx.load_texture(naam, kleur, egui::TextureOptions::LINEAR);
         let id = handle.id();
@@ -699,9 +824,7 @@ impl App {
                         .suffix(" Mbit/s")
                         .fixed_decimals(0),
                 );
-                ui.small(
-                    "Op een gigabitnetwerk zijn bits gratis; hoger geeft scherpere tekst.",
-                );
+                ui.small("Op een gigabitnetwerk zijn bits gratis; hoger geeft scherpere tekst.");
                 ui.add_space(14.0);
 
                 ui.horizontal(|ui| {
@@ -947,6 +1070,23 @@ fn bgra_naar_rgba(data: &[u8]) -> Vec<u8> {
         pixel.swap(0, 2);
     }
     uit
+}
+
+/// Leesbare bestandsgrootte. Bewust grof (één decimaal): niemand telt hier mee.
+fn grootte_tekst(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 fn tijd(millis: i64) -> String {
