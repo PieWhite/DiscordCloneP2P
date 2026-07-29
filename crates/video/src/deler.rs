@@ -32,6 +32,19 @@ const FRAME_WACHT: Duration = Duration::from_millis(100);
 /// De tijdrekening op de draad voor video, zoals in `docs/ARCHITECTURE.md`.
 const KLOK_HZ: i64 = 90_000;
 
+/// Het nulpunt van de tijdstempels, één keer per proces.
+///
+/// Eén klok voor alle streams van deze peer, niet één per deler. Dat maakt de
+/// tijdstempels onderling vergelijkbaar, en het maakt de latency van de hele keten
+/// meetbaar zodra deler en kijker in hetzelfde proces draaien — zie
+/// `crates/video/tests/keten.rs`. **Tussen twee machines zegt dit niets**: die klokken
+/// lopen niet gelijk, en daar synchroniseren zou een tijdserver vragen die we niet
+/// hebben en niet willen.
+pub fn klok_nulpunt() -> Instant {
+    static NULPUNT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *NULPUNT.get_or_init(Instant::now)
+}
+
 #[derive(Debug, Clone)]
 pub struct DelerConfig {
     pub stream_id: u32,
@@ -129,7 +142,7 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     )?;
 
     let payload_type = cfg.codec.payload_type();
-    let begin = Instant::now();
+    let begin = klok_nulpunt();
     let mut seq: u32 = 0;
 
     while !gedeeld.stop.load(Ordering::Relaxed) {

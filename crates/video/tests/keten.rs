@@ -74,6 +74,15 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
         getoond as f64 / seconden
     );
 
+    // Het meetpunt uit de ROADMAP. Dit is opnemen → coderen → versturen → samenstellen
+    // → decoderen → presenteren; wat de monitor er daarna zelf nog bij optelt zit er
+    // niet in en is met software ook niet te meten. Valt dit tegen, dan is de encoder
+    // omzetten naar directe NVENC de volgende stap — die zit al achter een smalle API.
+    println!(
+        "vertraging van opnemen tot tonen: {:?}",
+        kijker.vertraging()
+    );
+
     assert!(
         getoond > 0,
         "er kwam geen enkel beeld aan; de keten is ergens onderbroken"

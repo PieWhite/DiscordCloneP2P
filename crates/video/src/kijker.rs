@@ -59,6 +59,8 @@ struct Gedeeld {
     stop: AtomicBool,
     beelden: AtomicU64,
     kapot: AtomicU64,
+    /// Tijd tussen opnemen en tonen, in microseconden. Zie [`KijkerHandle::vertraging`].
+    vertraging_us: AtomicU64,
 }
 
 pub struct KijkerHandle {
@@ -76,6 +78,17 @@ impl KijkerHandle {
             self.gedeeld.beelden.load(Ordering::Relaxed),
             self.gedeeld.kapot.load(Ordering::Relaxed),
         )
+    }
+
+    /// Tijd tussen het opnemen van een beeld en het tonen ervan: opnemen, coderen,
+    /// versturen, samenstellen, decoderen, presenteren.
+    ///
+    /// **Alleen geldig als deler en kijker in hetzelfde proces draaien.** De tijdstempel
+    /// op de draad hangt aan de klok van de deler, en tussen twee machines loopt die
+    /// niet gelijk. Dit is dus een meetinstrument voor de ketentest, geen waarde om in
+    /// de UI te zetten.
+    pub fn vertraging(&self) -> Duration {
+        Duration::from_micros(self.gedeeld.vertraging_us.load(Ordering::Relaxed))
     }
 }
 
@@ -97,6 +110,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
         stop: AtomicBool::new(false),
         beelden: AtomicU64::new(0),
         kapot: AtomicU64::new(0),
+        vertraging_us: AtomicU64::new(0),
     });
 
     // Het venster en de decoder moeten leven op de thread die ze bedient, dus we
@@ -222,6 +236,7 @@ fn kijk_lus(
                     break;
                 }
                 gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
+                meet_vertraging(gedeeld, tijd_hns);
             }
             Ok(None) => {}
             Err(e) => {
@@ -233,6 +248,28 @@ fn kijk_lus(
             }
         }
     }
+}
+
+/// Hoe lang dit beeld erover deed van opnemen tot tonen.
+///
+/// Alleen zinnig als de deler dezelfde klok gebruikt als wij — dus in hetzelfde proces.
+/// Tussen twee machines levert dit onzin op, en daarom staat het nergens in de UI.
+fn meet_vertraging(gedeeld: &Arc<Gedeeld>, opgenomen_hns: i64) {
+    let nu_hns = (crate::deler::klok_nulpunt().elapsed().as_nanos() / 100) as i64;
+    let verschil = nu_hns - opgenomen_hns;
+    if verschil <= 0 || verschil > 10 * crate::codec::HNS_PER_SEC {
+        return; // klokken van verschillende machines; niets te meten
+    }
+    // Voortschrijdend gemiddelde: één beeld dat toevallig achterliep zegt niets, het
+    // gaat om waar de keten gemiddeld op uitkomt.
+    let nieuw = (verschil / 10) as u64;
+    let oud = gedeeld.vertraging_us.load(Ordering::Relaxed);
+    let gemiddeld = if oud == 0 {
+        nieuw
+    } else {
+        (oud * 7 + nieuw) / 8
+    };
+    gedeeld.vertraging_us.store(gemiddeld, Ordering::Relaxed);
 }
 
 /// Van de 90 kHz-klok op de draad terug naar de eenheden van Media Foundation.
