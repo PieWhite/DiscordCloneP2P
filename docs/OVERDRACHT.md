@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-29, na fase 5.
+Laatst bijgewerkt: 2026-07-29, na fase 6.
 
 ---
 
@@ -17,6 +17,7 @@ Laatst bijgewerkt: 2026-07-29, na fase 5.
 | 3 — Voice | ✅ af, nog niet met een echte peer getest | ketentests + rooktest op echte geluidskaart |
 | 4 — Screenshare | ✅ af, nog niet met een echte peer getest | volledige keten op echte GPU, 55 fps op 1080p |
 | 5 — Screenshare uitbreiding | ✅ af, nog niet met een echte peer getest | ketentest + motortest blijven groen na de wijziging |
+| 6 — Bestandsdeling | ✅ af, nog niet met een echte peer getest | `crates/app/tests/file_deling.rs`: volledige overdracht + hash door de echte motor heen, geen GPU nodig |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -37,6 +38,16 @@ luisteraar een volumeschuif los van je stem.
 
 Fase 4 is daarmee compleet op wat alleen met een tweede machine te controleren valt.
 Zie `docs/TESTPLAN.md`.
+
+**Fase 6 is het hoofdbacklog-item: bestanden delen.** Aanbieden is een gewone oplog-op
+(`OpKind::FileMeta`) en verspreidt zich dus gratis mee via de bestaande sync, ook naar een
+peer die pas later online komt. Downloaden gaat punt-naar-punt met de aanbieder over een
+**eigen QUIC-uni-stream** naast de control-stream — nooit erover, want dat zou chat en
+screenshare-signalering laten wachten op een bulkoverdracht. Hervatten na onderbreking
+werkt via een hervatpunt dat de aanvrager meestuurt; verificatie is een BLAKE3-hash over
+het hele bestand na afloop, met weggooien-en-opnieuw bij een mismatch. Zie "Hoe
+bestandsdeling in elkaar zit" verderop en `docs/ARCHITECTURE.md` voor het volledige
+ontwerp, inclusief waarom het anders is dan TODO.md's oorspronkelijke schets.
 
 ---
 
@@ -130,6 +141,30 @@ dus is in theorie op te lossen) zit hier geen hardwarepad achter — geen enkele
 software-oplossing daarvoor die niet op zichzelf al een probleem zou zijn
 (CPU-belasting naast een game, of een GPU→CPU→GPU-omweg). Zie `TODO.md` voor waar dit
 staat als "afgewezen, niet uitgesteld".
+
+### 9. Geen FileOffer, geen FileChunkAck, geen los offered_by-veld (fase 6)
+TODO.md schetste `FileOffer`/`FileAccept`/`FileChunkAck` als gereserveerde
+control-berichten en `FileMeta { name, size, hash, offered_by }` als op. Bij het bouwen
+bleken twee van de drie berichten overbodig en het veld redundant:
+
+- **Geen `FileOffer`.** Het aanbod ís de `FileMeta`-op zelf; die synchroniseert al gratis
+  mee via de bestaande version-vector-sync. Een apart broadcast-bericht ernaast zou een
+  tweede, overbodig verspreidingspad zijn.
+- **Geen `FileChunkAck`.** De bytes gaan over een betrouwbare, geordende QUIC-stream
+  (`conn.open_uni()`), niet over UDP zoals media. Er is dus geen pakketverlies om tegen
+  te beschermen, en dus niets om per chunk te bevestigen. Hervatten na onderbreking werkt
+  met één getal (`FileRequest.have_bytes`), niet met chunk-boekhouding.
+- **Geen `offered_by`.** `op.author` van de `FileMeta`-op ís de aanbieder — een apart veld
+  zou alleen kunnen gaan liegen, precies zoals `Edit`/`Delete` hun eigenaarschap ook via
+  `op.author`/`target.author` regelen in plaats van een los veld.
+
+`FileAccept` heet in de code `FileRequest` (dezelfde rol, andere naam) en kreeg een
+antwoord terug (`FileResponse` met `FileOutcome::READY`/`NOT_AVAILABLE`) dat TODO.md niet
+noemde — nodig omdat de aanbieder pas ten tijde van de aanvraag weet of het bronbestand
+nog bestaat. `FileOutcome` is net als `StreamKind` een getagd `u8` in plaats van een kale
+enum, zodat een latere derde uitkomst een oudere peer niet laat struikelen over de hele
+`FileResponse`. Zie `docs/ARCHITECTURE.md` (sectie "Bestandsdeling") voor het volledige
+ontwerp.
 
 ---
 
@@ -285,10 +320,61 @@ Verdere keuzes:
 
 ---
 
+## Hoe bestandsdeling in elkaar zit
+
+```
+crates/proto/src/op.rs           OpKind::FileMeta { name, size, hash } — tag 10
+crates/proto/src/control.rs      FileRequest, FileResponse, FileOutcome — tags 40/41
+crates/net/src/filestream.rs     24-byte header (OpId) vóór de bulkbytes op de uni-stream
+crates/net/src/mesh.rs           OpenUploadStream-commando, IncomingFileStream-event
+crates/store/src/timeline.rs     FileEntry, opgebouwd uit alle FileMeta-ops
+crates/app/src/files.rs          Wie biedt wat aan, wie downloadt wat — pure beslislogica
+crates/app/src/engine.rs         hash_en_bied_aan / upload_taak / download_taak — de I/O
+crates/app/src/ui.rs             bestanden_paneel — lijst, downloadknop, voortgangsbalk
+```
+
+Dezelfde splitsing als bij chat en screenshare: `files.rs` beslist zonder schijf of
+netwerk aan te raken (en is dus met unit-tests te controleren), `engine.rs` voert uit.
+
+**Aanbieden.** De UI opent een native bestandsdialoog (`rfd`), stuurt het gekozen pad naar
+de motor. Die leest en hasht het bestand op een losse tokio-taak (`hash_en_bied_aan`) —
+nooit op de UI-thread, want bij een groot bestand kan hashen seconden duren. Pas als de
+hash er is, wordt de `FileMeta`-op vastgelegd en gebroadcast, exact zoals een chatbericht.
+
+**Downloaden.** De motor onthoudt bij zichzelf welk lokaal pad bij welke `OpId` hoort
+(alleen voor bestanden die *wij* aanbieden — een andere peer die hetzelfde bestand
+aanbiedt heeft zijn eigen entry met zijn eigen pad). Een download begint met een
+`FileRequest` naar de aanbieder; die antwoordt met `FileResponse` en opent, als hij het
+bestand nog heeft, een nieuwe uni-stream waar eerst de 24-byte header overheen gaat en
+dan de bytes zelf, vanaf het opgegeven hervatpunt.
+
+**Waar bestanden landen.** Tijdens het downloaden staat een deelbestand
+(`<auteur-uuid>-<seq>.part`) in de downloadmap; de bestandsnaam draagt bewust niet de
+leesbare naam, want twee peers kunnen hetzelfde bestand met dezelfde naam aanbieden.
+Pas na een geslaagde hash-verificatie wordt het hernoemd naar zijn eigen, leesbare naam
+(met `" (2)"` etc. bij een botsing). Mislukt de hash, dan verdwijnt het deelbestand en telt
+een volgende poging weer vanaf 0 — er wordt niets gedeeltelijk bewaard dat niet
+geverifieerd is.
+
+**Wat expres ontbreekt:** een `FileRevoke`-achtige intrekking (eenmaal aangeboden blijft
+voor altijd in de timeline staan, net als een bericht), en een downloadlocatie-dialoog per
+bestand (vaste, instelbare map in plaats van een keuze per keer).
+
+---
+
 ## Wat nog nooit met een echte peer getest is
 
-Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2, 3, 4 en 5 niet.** Zie
+Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 t/m 6 niet.** Zie
 `docs/TESTPLAN.md` voor de testgevallen die daarvoor uitgevoerd moeten worden.
+
+Van fase 6 is de volledige keten — aanbieden, syncen, aanvragen, streamen, hervatten,
+hashen — al bevestigd via `crates/app/tests/file_deling.rs` met twee echte motoren over
+loopback-QUIC, inclusief het geval waarin het bronbestand tussen aanbieden en downloaden
+van schijf verdwijnt. Wat een tweede machine daaraan toevoegt: een echt netwerk met echt
+pakketverlies tijdens een lopende overdracht (wordt dat netjes gemeld in plaats van
+oneindig "bezig" te blijven staan?), en of de bestandsdialoog en downloadknoppen in het
+echt doen wat ze beloven — net als bij screenshare kon dat hier niet met de hand getest
+worden.
 
 Fase 4 is op één machine wel volledig doorlopen, inclusief de UDP-weg over loopback en
 de motor met echte QUIC-verbindingen. Wat een tweede machine daaraan toevoegt: een echt

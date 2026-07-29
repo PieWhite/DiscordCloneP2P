@@ -2,22 +2,6 @@
 
 Bewust niet in v1. De architectuur moet deze items kunnen opnemen zonder herontwerp.
 
-## File sharing tussen de drie peers — hoofdbacklog-item
-Expliciet uitgesteld, expliciet voorzien in het ontwerp.
-
-**Aanhaakpunten die al bestaan:**
-- `ControlMsg` heeft gereserveerde varianten `FileOffer` / `FileAccept` / `FileChunkAck`
-  (zie `docs/ARCHITECTURE.md`). Toevoegen aan het eind van de enum breekt niets.
-- QUIC ondersteunt meerdere onafhankelijke streams per verbinding. Bulk file-bytes gaan
-  over een eigen stream en blokkeren chat of control dus niet. Dit is precies de reden
-  dat we QUIC gekozen hebben in plaats van één TCP-socket.
-- De oplog is generiek, niet chat-specifiek. Filemetadata wordt een nieuwe `OpKind`
-  (`FileMeta { name, size, hash, offered_by }`) en synchroniseert dan gratis mee via
-  hetzelfde version-vector-mechanisme. Geen schema-migratie nodig.
-
-**Wat er dan nog moet gebeuren:** resume na onderbreking, hash-verificatie,
-voortgangs-UI, en een keuze waar bestanden landen.
-
 ## Overig
 - Remote input control (muis/toetsenbord overnemen, Moonlight-stijl).
 - Chat: reacties, replies, afbeeldingen plakken. Worden nieuwe `OpKind`-varianten.

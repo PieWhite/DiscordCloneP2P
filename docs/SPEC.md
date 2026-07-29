@@ -49,9 +49,9 @@ de uitbreiding hebben.
 3. Screenshare 1080p60, hardware-encoded, lage latency.
 4. Meerdere bronnen tegelijk delen (monitor + vensters) en meerdere streams tegelijk bekijken.
 5. Tekstchat met volledige geschiedenis-inhaal na offline zijn.
+6. Bestanden delen tussen de peers, met hervatten na onderbreking en hash-verificatie.
 
 ## Buiten scope (backlog, zie `TODO.md`)
-- File sharing — architectuur moet dit zonder herontwerp kunnen opnemen.
 - Remote input control (Moonlight-stijl).
 - Reacties, replies, afbeeldingen plakken in chat.
 - Meer dan één chatkanaal.
@@ -105,6 +105,20 @@ de uitbreiding hebben.
   dat bestand toch al voor de peer-adressen.
 - Generieke append-only oplog, niet chat-specifiek, zodat nicknames/settings/file-metadata
   later over hetzelfde sync-mechanisme kunnen.
+
+### Bestandsdeling
+- Aanbieden is een gewone oplog-op (`OpKind::FileMeta`), niet chat-specifiek: hetzelfde
+  version-vector-mechanisme als tekstchat, dus ook een aanbod terugvinden na lang offline
+  zijn kost geen aparte inhaalslag.
+- Downloaden is **punt-naar-punt** met de aanbieder, over een eigen QUIC-stream naast de
+  control-stream — een bestand mag chat of screenshare-signalering nooit laten wachten.
+- Hervatten na onderbreking: de aanvrager meldt hoeveel hij al heeft, de aanbieder seekt
+  zijn bronbestand daarnaartoe. Geen chunk-niveau bevestiging nodig — de stream zelf is al
+  betrouwbaar en geordend.
+- Verificatie: BLAKE3-hash over het hele bestand na afloop. Klopt hij niet, dan wordt het
+  weggegooid; een volgende poging begint vanzelf weer bij 0.
+- Bestanden landen in een vaste, instelbare downloadmap. Geen locatiedialoog per download.
+- Zie `docs/ARCHITECTURE.md` (sectie "Bestandsdeling") voor het volledige ontwerp.
 
 ### Opslag en distributie
 - Portable: SQLite + config naast de exe, fallback `%APPDATA%`.

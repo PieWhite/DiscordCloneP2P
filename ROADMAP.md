@@ -81,5 +81,32 @@ enkele Turing-GPU — ook de RTX 2080 Super niet — kan H.264- of HEVC-4:4:4 ha
 *decoderen*. Encoderen zou wel kunnen, maar dan kan niemand het terugzien. Zie
 `docs/OVERDRACHT.md` en `TODO.md`.
 
-## Fase 6 — Backlog
-Zie `TODO.md`. Niet nu bouwen.
+## Fase 6 — Bestandsdeling ✅
+Het hoofdbacklog-item uit `TODO.md`: bestanden delen tussen de peers.
+
+- **Aanbieden is een gewone oplog-op** (`OpKind::FileMeta`), dus dat verspreidt zich
+  gratis mee via de bestaande sync — ook naar een peer die pas veel later online komt.
+  Geen apart `FileOffer`-bericht nodig.
+- **Downloaden is punt-naar-punt** met de aanbieder, over een eigen QUIC-uni-stream naast
+  de control-stream (`FileRequest`/`FileResponse`, tags 40/41). Een groot bestand kan zo
+  nooit chat of screenshare-signalering laten wachten.
+- **Hervatten na onderbreking:** de aanvrager meldt hoeveel bytes hij al heeft
+  (`have_bytes`), de aanbieder seekt zijn bronbestand daarnaartoe.
+- **Hash-verificatie** met BLAKE3 over het hele bestand na afloop; bij een mismatch wordt
+  het weggegooid en begint een volgende poging vanzelf weer bij 0.
+- **Voortgangs-UI** in een nieuw bestandenpaneel, met downloadknop, voortgangsbalk en
+  "opnieuw proberen" bij een mislukte overdracht.
+- Bestanden landen in een vaste, instelbare downloadmap (`download_dir` in
+  `config.toml`, standaard `<datamap>/downloads`).
+
+**Anders dan TODO.md's oorspronkelijke schets:** geen `FileOffer`/`FileChunkAck` en geen
+los `offered_by`-veld — zie `docs/ARCHITECTURE.md` (sectie "Bestandsdeling") voor de
+onderbouwing. Geen downloadlocatie-dialoog per download; dat is een vaste config-map,
+net als de andere instellingen die nog geen eigen scherm hebben.
+
+**Klaar als:** een aangeboden bestand verschijnt bij de andere peers zonder dat iemand
+iets download, en downloaden levert byte-voor-byte hetzelfde bestand op als het origineel
+— bevestigd met een geautomatiseerde test door de echte motor heen
+(`crates/app/tests/file_deling.rs`, geen GPU nodig). Wat alleen met een tweede machine te
+controleren is: hoe een overdracht zich gedraagt bij echt pakketverlies en een normale
+netwerkonderbreking. Zie `docs/TESTPLAN.md`.

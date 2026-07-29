@@ -189,6 +189,58 @@ tonen is.*
 
 ---
 
+## Fase 6 — Bestandsdeling
+
+De volledige keten — aanbieden, syncen, aanvragen, streamen, hervatten, hashen — is al
+bevestigd met een geautomatiseerde test door de echte motor heen, over loopback-QUIC
+(`crates/app/tests/file_deling.rs`, geen GPU nodig, draait gewoon mee met `cargo test`).
+Wat een tweede machine daaraan toevoegt: een echt netwerk met echt pakketverlies, en of de
+bestandsdialoog en downloadknoppen in het echt doen wat ze beloven.
+
+**6.1 Aanbieden komt aan zonder dat iemand downloadt**
+Klik "Bestand delen…", kies een bestand. Bij je vriend moet het meteen in het
+bestandenpaneel verschijnen, met de juiste naam en grootte, zonder dat hij iets doet.
+*Dit is de kern van fase 6: het aanbod is een gewone oplog-op en moet zich dus precies zo
+gedragen als een chatbericht.*
+
+**6.2 Downloaden levert een identiek bestand op**
+Download het aangeboden bestand. Vergelijk het resultaat met het origineel (grootte,
+en bij twijfel een checksum met de hand). *Klopt de hash niet, dan had de test in
+`file_deling.rs` dat op deze machine ook al moeten laten zien — meld dat als een
+regressie, niet als iets dat alleen "in het echt" fout gaat.*
+
+**6.3 Groot bestand tijdens een gesprek en/of screenshare**
+Deel iets van een paar honderd MB tot een paar GB terwijl je in gesprek bent of je scherm
+deelt. Spraak en beeld mogen geen hapering vertonen. *De bulkbytes gaan over een eigen
+QUIC-stream naast de control-stream — precies om dit te voorkomen. Merk je toch hapering,
+dan is dat een aanwijzing dat er ergens alsnog gedeeld verkeer optreedt.*
+
+**6.4 Hervatten na een onderbreking**
+Start een download van een groter bestand, sluit tijdens de overdracht bij je vriend de
+app af (of trek de netwerkkabel eruit). Herstart hem en klik nogmaals downloaden (of
+"opnieuw proberen" als de status al op mislukt staat). De overdracht moet verdergaan
+vanaf ongeveer waar hij was, niet vanaf 0. *Bevestig dit ook door te kijken of het
+tussentijdse `.part`-bestand in de downloadmap groter is dan 0 bytes vlak na de
+onderbreking.*
+
+**6.5 Aanbieder heeft het bestand niet meer**
+Bied een bestand aan, verwijder of verplaats het daarna van schijf bij de aanbieder, en
+probeer het dan bij de andere kant te downloaden. Moet netjes mislukken met een duidelijke
+status ("mislukt: ...") en een knop om het later opnieuw te proberen — geen hang op
+"bezig" die nooit meer verandert.
+
+**6.6 Twee bestanden tegelijk van dezelfde aanbieder**
+Bied twee verschillende bestanden aan en download ze allebei tegelijk. Beide moeten
+correct en compleet aankomen zonder dat de bytes door elkaar raken. *Dit test de header
+op de uni-stream die de twee overdrachten uit elkaar houdt.*
+
+**6.7 Downloadmap**
+Controleer dat het gedownloade bestand terechtkomt in de map die `config.toml`'s
+`download_dir` aangeeft (of `<datamap>/downloads` als die leeg is), en dat "map openen"
+in de UI daadwerkelijk die map opent.
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

@@ -135,8 +135,9 @@ enum ControlMsg {
     StreamUnsubscribe{ stream_id: u32 },
     StreamStats      { stream_id: u32, loss_pct: f32, rtt_ms: u32 },
 
-    // GERESERVEERD — nog niet implementeren, zie TODO.md
-    // FileOffer { .. }, FileAccept { .. }, FileChunkAck { .. },
+    // file transfer — zie "Bestandsdeling" hieronder
+    FileRequest  { file: OpId, have_bytes: u64 },
+    FileResponse { file: OpId, outcome: FileOutcome },
 }
 ```
 
@@ -189,7 +190,8 @@ enum OpKind {
     Edit   { target: OpId, body: String },
     Delete { target: OpId },
     SetNick{ name: String },
-    // later: React, Reply, FileMeta — nieuwe varianten, geen migratie
+    FileMeta{ name: String, size: u64, hash: [u8; 32] },
+    // later: React, Reply — nieuwe varianten, geen migratie
 }
 ```
 
@@ -251,6 +253,81 @@ CREATE TABLE peers (peer_id BLOB PRIMARY KEY, display_name TEXT, address TEXT, l
 CREATE TABLE meta  (key TEXT PRIMARY KEY, value BLOB);  -- eigen uuid, lamport, schema-versie
 ```
 
+## Bestandsdeling
+
+Twee lagen, met een harde knip ertussen: **aanbieden** is een gewone oplog-op en gaat
+gratis mee via de sync hierboven; **downloaden** is punt-naar-punt met de aanbieder en
+gaat over een eigen QUIC-stream, nooit over de control-stream.
+
+### Aanbieden = een op
+
+`OpKind::FileMeta { name, size, hash }` is qua sync niets bijzonders — hij synchroniseert
+mee zoals elke andere op, ook naar een peer die pas veel later online komt. Er is dus
+geen apart `FileOffer`-bericht: dat zou alleen een tweede, overbodig verspreidingspad
+naast de oplog zijn.
+
+De op draagt geen `offered_by`-veld. `op.author` is de aanbieder, precies zoals
+`Edit`/`Delete` hun eigenaarschap ook via `op.author`/`target.author` regelen in plaats
+van een los veld dat uit de pas zou kunnen lopen. `hash` is een 32-byte BLAKE3-digest.
+
+Er is geen `OpKind` om een aanbod in te trekken: eenmaal aangeboden blijft het voor
+altijd in de timeline staan, net als een bericht. Wil de aanbieder niet meer serveren
+(bestand verplaatst of verwijderd), dan komt dat pas aan het licht bij een download­poging
+— zie hieronder.
+
+### Downloaden = punt-naar-punt over een eigen stream
+
+`OpId` van de `FileMeta`-op is meteen de identificatie van de overdracht; een apart
+transfer-id zou alleen een tweede naam voor hetzelfde ding zijn.
+
+```rust
+FileRequest  { file: OpId, have_bytes: u64 }   // aanvrager → aanbieder
+FileResponse { file: OpId, outcome: FileOutcome }  // aanbieder → aanvrager
+```
+
+`FileOutcome` is, net als `StreamKind`, een `u8` op de draad in plaats van een kale enum:
+een toekomstige derde uitkomst mag de hele `FileResponse` niet laten mislukken bij een
+peer die hem nog niet kent.
+
+Er is bewust geen `FileChunkAck`. De bytes zelf gaan over een **betrouwbare, geordende**
+QUIC-stream (`conn.open_uni()` naast de bestaande control-stream), dus er valt niets te
+bevestigen — anders dan bij media over UDP is hier geen pakketverlies om tegen te
+beschermen. Wat `FileChunkAck` bij een UDP-aanpak had moeten oplossen, lost QUIC's eigen
+transport al op.
+
+**Hervatten na onderbreking:** de aanvrager stuurt in `FileRequest.have_bytes` hoeveel
+bytes hij al op schijf heeft van een eerdere, afgebroken poging. De aanbieder seekt zijn
+bronbestand naar dat punt voordat hij begint te streamen. Er is geen verificatie per
+chunk: de ontvanger hasht na afloop het **hele** bestand in één keer tegen `FileMeta.hash`
+en verwijdert het bij een mismatch, waarna een volgende poging vanzelf weer bij 0 begint
+omdat het deelbestand er niet meer is.
+
+**De stream zelf begint met een vaste 24-byte header** (16-byte peer-uuid + 8-byte seq,
+dus de `OpId` zelf), handgeschreven zonder msgpack — zie `crates/net/src/filestream.rs`,
+zelfde stijl als de media-header in `crates/net/src/media.rs`. Die header is nodig omdat
+een peer meerdere bestanden tegelijk kan downloaden van dezelfde aanbieder: zonder iets
+dat de stream aan een overdracht koppelt zou de ontvanger niet weten welk aankomend
+uni-stream bij welke download hoort.
+
+**Waarom een eigen stream en niet de control-stream:** de control-stream is één
+betrouwbare, geordende byte-pipe die *alle* `ControlMsg`'s multiplext — chat-sync,
+screenshare-signalering, noem maar op. Een bestand van een paar honderd megabyte daar
+doorheen sturen zou al het andere verkeer op die stream laten wachten tot de laatste byte
+binnen is. Dit is precies de reden dat `quinn`/QUIC gekozen is in plaats van één
+TCP-socket (zie de techstack-tabel): meerdere onafhankelijke streams per verbinding, geen
+head-of-line blocking tussen berichttypes.
+
+### Wat hier niet zit
+
+- **Geen chunk-niveau voortgang van de aanbieder naar de aanvrager.** De aanvrager kent
+  zijn eigen voortgang al doordat hij de bytes zelf ontvangt; er is niets dat de
+  aanbieder daarover apart zou moeten melden.
+- **Geen kanaal- of quotabeperking.** `FileOutcome` heeft alleen `Ready` en
+  `NotAvailable`. Een derde uitkomst (bijvoorbeeld "geweigerd") kan later als nieuwe
+  waarde bij, en komt bij een oudere peer gewoon als "onbekend" binnen — zie boven.
+- **Geen downloadlocatie-dialoog.** Bestanden landen in een vaste map (config
+  `download_dir`, standaard `<datamap>/downloads`); zie `crates/app/src/config.rs`.
+
 ## Verbindingsbeheer
 - Bij start verbindt elke peer met alle geconfigureerde adressen.
 - Falende verbindingen: exponentiële backoff, 1s → 30s cap, oneindig doorproberen.
@@ -304,12 +381,12 @@ Wie op dezelfde poort opnieuw wil starten — config herladen bijvoorbeeld — m
 crates/
   proto/     ControlMsg, Op, media-header, version vector — geen I/O, puur en testbaar
   store/     rusqlite, oplog, timeline-opbouw, sync-berekening
-  net/       quinn mesh, reconnect, UDP media-sockets
+  net/       quinn mesh, reconnect, UDP media-sockets, uni-streams voor bestandsbytes
   audio/     capture, opus, jitterbuffer, mix, ns/vad
   video/     WGC capture, MF encoder en decoder, kleuromzetting, D3D11 render-venster,
              deler- en kijker-thread
-  app/       lib + binary: eframe UI, config, chat-plumbing, streambeheer, tray,
-             notificaties
+  app/       lib + binary: eframe UI, config, chat-plumbing, streambeheer,
+             bestandsdeling, tray, notificaties
 ```
 `proto` en `store` hebben geen Windows- of hardware-afhankelijkheden en zijn daarom
 volledig unit-testbaar. Daar zit de subtiele logica, dus daar zitten de tests.
