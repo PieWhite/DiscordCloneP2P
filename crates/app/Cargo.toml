@@ -16,6 +16,7 @@ fitcom-audio = { version = "0.1.0", path = "../audio" }
 fitcom-net = { version = "0.1.0", path = "../net" }
 fitcom-proto = { version = "0.1.0", path = "../proto" }
 fitcom-store = { version = "0.1.0", path = "../store" }
+fitcom-video = { version = "0.1.0", path = "../video" }
 raw-window-handle = "0.6.2"
 serde = { version = "1.0.229", features = ["derive"] }
 tauri-winrt-notification = "0.8.1"

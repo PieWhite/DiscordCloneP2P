@@ -4,11 +4,12 @@
 //! Er wordt hier geen enkele beslissing genomen over netwerk of opslag, en er staat
 //! geen state in die verloren gaat als het venster even niet tekent.
 
-use crate::engine::{EngineHandle, PeerView, Snapshot, UiCommand};
+use crate::engine::{self, EngineHandle, PeerView, Snapshot, UiCommand};
 use crate::tray;
 use eframe::egui;
 use fitcom_net::PeerStatus;
 use fitcom_proto::{OpId, PeerId};
+use fitcom_video::{Bron, BronSoort};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -34,6 +35,9 @@ pub struct App {
     bewerkt: Option<OpId>,
     vorig_aantal: usize,
     naar_tray: bool,
+    /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
+    /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
+    bronkeuze: Option<Vec<Bron>>,
 }
 
 impl App {
@@ -59,6 +63,7 @@ impl App {
             bewerkt: None,
             vorig_aantal: 0,
             naar_tray,
+            bronkeuze: None,
         }
     }
 
@@ -138,6 +143,7 @@ impl eframe::App for App {
         }
 
         self.deelnemers_paneel(ctx);
+        self.bronkeuze_venster(ctx);
         self.statusbalk(ctx);
         self.chat_paneel(ctx);
     }
@@ -147,6 +153,8 @@ impl App {
     fn deelnemers_paneel(&mut self, ctx: &egui::Context) {
         let mut volume_wijziging: Option<(PeerId, f32)> = None;
         let mut voice_cmd: Option<UiCommand> = None;
+        let mut stream_cmd: Option<UiCommand> = None;
+        let mut bronnen_openen = false;
 
         egui::SidePanel::left("deelnemers")
             .resizable(false)
@@ -215,6 +223,25 @@ impl App {
                             }
                         }
                     }
+
+                    // Wat deze peer deelt, direct onder zijn naam: daar zoek je het.
+                    if let Some(id) = p.peer_id {
+                        for s in self.snap.streams.iter().filter(|s| s.eigenaar == id) {
+                            ui.horizontal(|ui| {
+                                ui.small("\u{1F5B5}");
+                                ui.small(&s.titel)
+                                    .on_hover_text(format!("{}×{}", s.breedte, s.hoogte));
+                            });
+                            let knop = if s.kijken { "sluiten" } else { "bekijken" };
+                            if ui.small_button(knop).clicked() {
+                                stream_cmd = Some(if s.kijken {
+                                    UiCommand::StopKijken(id, s.stream_id)
+                                } else {
+                                    UiCommand::Kijken(id, s.stream_id)
+                                });
+                            }
+                        }
+                    }
                     ui.add_space(6.0);
                 }
 
@@ -222,6 +249,13 @@ impl App {
                 ui.separator();
                 ui.add_space(8.0);
                 voice_cmd = self.voice_bediening(ui);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                let (cmd, openen) = self.deel_bediening(ui);
+                stream_cmd = stream_cmd.take().or(cmd);
+                bronnen_openen = openen;
             });
 
         if let Some((id, vol)) = volume_wijziging {
@@ -229,6 +263,125 @@ impl App {
         }
         if let Some(cmd) = voice_cmd {
             self.stuur(cmd);
+        }
+        if let Some(cmd) = stream_cmd {
+            self.stuur(cmd);
+        }
+        if bronnen_openen {
+            self.open_bronkeuze();
+        }
+    }
+
+    /// Wat wij delen, plus de knop om er iets bij te doen.
+    ///
+    /// Levert het commando en "open het keuzemenu" terug in plaats van ze meteen uit
+    /// te voeren: binnen de paneelsluiting is `self` al onveranderlijk geleend.
+    fn deel_bediening(&self, ui: &mut egui::Ui) -> (Option<UiCommand>, bool) {
+        let mut cmd = None;
+        ui.label(egui::RichText::new("Scherm delen").strong());
+        ui.add_space(4.0);
+
+        for s in &self.snap.eigen_streams {
+            ui.horizontal(|ui| {
+                // Delen kost pas iets zodra er iemand kijkt, en dat is precies wat je
+                // hier wilt kunnen zien als er een game draait.
+                let kleur = if s.kijkers > 0 {
+                    GROEN
+                } else {
+                    egui::Color32::GRAY
+                };
+                ui.colored_label(kleur, "\u{25CF}");
+                ui.small(&s.titel);
+            });
+            ui.horizontal(|ui| {
+                ui.small(match s.kijkers {
+                    0 => "niemand kijkt".to_string(),
+                    1 => "1 kijker".to_string(),
+                    n => format!("{n} kijkers"),
+                });
+                if ui.small_button("stoppen").clicked() {
+                    cmd = Some(UiCommand::StopDelen(s.stream_id));
+                }
+            });
+            ui.add_space(4.0);
+        }
+
+        let label = if self.snap.eigen_streams.is_empty() {
+            "Scherm delen…"
+        } else {
+            "Nog een bron delen…"
+        };
+        let openen = ui
+            .add_sized([ui.available_width(), 26.0], egui::Button::new(label))
+            .clicked();
+        (cmd, openen)
+    }
+
+    fn open_bronkeuze(&mut self) {
+        match engine::deelbare_bronnen() {
+            Ok(b) => self.bronkeuze = Some(b),
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), "bronnen opvragen mislukt");
+                self.bronkeuze = Some(Vec::new());
+            }
+        }
+    }
+
+    fn bronkeuze_venster(&mut self, ctx: &egui::Context) {
+        let Some(bronnen) = self.bronkeuze.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut gekozen: Option<Bron> = None;
+
+        egui::Window::new("Wat wil je delen?")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                if bronnen.is_empty() {
+                    ui.label("Geen bronnen gevonden.");
+                    return;
+                }
+                ui.small("Er wordt pas opgenomen zodra iemand daadwerkelijk kijkt.");
+                ui.add_space(6.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for soort in [BronSoort::Monitor, BronSoort::Venster] {
+                            let lijst: Vec<&Bron> =
+                                bronnen.iter().filter(|b| b.soort == soort).collect();
+                            if lijst.is_empty() {
+                                continue;
+                            }
+                            ui.label(egui::RichText::new(match soort {
+                                BronSoort::Monitor => "Schermen",
+                                BronSoort::Venster => "Vensters",
+                            }))
+                            .highlight();
+                            for b in lijst {
+                                if ui
+                                    .add_sized(
+                                        [ui.available_width(), 24.0],
+                                        egui::Button::new(&b.naam),
+                                    )
+                                    .clicked()
+                                {
+                                    gekozen = Some(b.clone());
+                                }
+                            }
+                            ui.add_space(8.0);
+                        }
+                    });
+            });
+
+        if let Some(bron) = gekozen {
+            self.stuur(UiCommand::DeelBron(bron));
+            self.bronkeuze = None;
+        } else if !open {
+            self.bronkeuze = None;
         }
     }
 

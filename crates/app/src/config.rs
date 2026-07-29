@@ -48,6 +48,50 @@ pub struct Config {
     /// De andere peers. Geen limiet van 3 — de code is bewust N-agnostisch.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+
+    #[serde(default)]
+    pub video: VideoConfig,
+}
+
+/// Instellingen voor screenshare. Staan hier zodat ze te wijzigen zijn zonder opnieuw
+/// te bouwen; de standaardwaarden horen voor iedereen te kloppen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoConfig {
+    /// `h264` of `hevc`. **Laat dit op h264 staan** tenzij je zeker weet dat álle
+    /// peers HEVC kunnen decoderen; dat loopt op Windows via een Store-uitbreiding
+    /// die er niet standaard op zit. Zie `docs/SPEC.md`.
+    #[serde(default = "default_codec")]
+    pub codec: String,
+
+    #[serde(default = "default_fps")]
+    pub fps: u32,
+
+    /// Bits per seconde. Op een gigabitnetwerk zijn bits gratis; hoger geeft scherpere
+    /// tekst en dat is waar het bij een gedeeld scherm om gaat.
+    #[serde(default = "default_bitrate")]
+    pub bitrate: u32,
+}
+
+impl Default for VideoConfig {
+    fn default() -> Self {
+        Self {
+            codec: default_codec(),
+            fps: default_fps(),
+            bitrate: default_bitrate(),
+        }
+    }
+}
+
+fn default_codec() -> String {
+    "h264".into()
+}
+
+fn default_fps() -> u32 {
+    60
+}
+
+fn default_bitrate() -> u32 {
+    25_000_000
 }
 
 fn waar() -> bool {
@@ -109,6 +153,7 @@ impl Config {
                     control_port: DEFAULT_CONTROL_PORT,
                 },
             ],
+            video: VideoConfig::default(),
         }
     }
 

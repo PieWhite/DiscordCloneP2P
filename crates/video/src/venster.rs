@@ -32,8 +32,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Graphics::Dxgi::{
     IDXGIDevice, IDXGIFactory2, IDXGIFactory5, IDXGISwapChain1, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
     DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_STRETCH,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-    DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -160,9 +160,15 @@ impl Venster {
 
     /// Zet één beeld op het scherm.
     ///
-    /// De textuur moet dezelfde afmeting hebben als waarmee het venster geopend is;
-    /// verandert de stream van formaat, dan hoort er een nieuw venster te komen.
+    /// Wijkt de afmeting af van waarmee het venster geopend is — de deler kondigde iets
+    /// anders aan dan zijn encoder uiteindelijk levert, of hij wisselde van resolutie —
+    /// dan past de swapchain zich aan. Het venster zelf blijft staan waar het staat.
     pub fn toon(&mut self, beeld: &ID3D11Texture2D) -> Result<()> {
+        let maat = crate::d3d::afmetingen(beeld);
+        if maat != self.afmeting {
+            self.pas_maat_aan(maat)?;
+        }
+
         // SAFETY: de backbuffer hoort bij deze swapchain en heeft hetzelfde formaat en
         // dezelfde maat als het beeld.
         unsafe {
@@ -183,6 +189,36 @@ impl Venster {
                 .ok()
                 .context("beeld tonen")?;
         }
+        Ok(())
+    }
+
+    fn pas_maat_aan(&mut self, (breedte, hoogte): (u32, u32)) -> Result<()> {
+        tracing::info!(van = ?self.afmeting, naar = ?(breedte, hoogte), "stream van maat veranderd");
+
+        // SAFETY: er staat geen enkele verwijzing naar een backbuffer meer open —
+        // `toon` haalt hem op en laat hem in dezelfde aanroep weer los.
+        unsafe {
+            self.swapchain
+                .ResizeBuffers(
+                    2,
+                    breedte,
+                    hoogte,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    if self.tearing {
+                        DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+                    } else {
+                        DXGI_SWAP_CHAIN_FLAG(0)
+                    },
+                )
+                .context("swapchain aanpassen")?;
+
+            // De beeldverhouding die het venster bewaakt klopt nu niet meer.
+            let ptr = GetWindowLongPtrW(self.hwnd, GWLP_USERDATA) as *mut Staat;
+            if !ptr.is_null() {
+                (*ptr).verhouding = breedte as f32 / hoogte.max(1) as f32;
+            }
+        }
+        self.afmeting = (breedte, hoogte);
         Ok(())
     }
 }

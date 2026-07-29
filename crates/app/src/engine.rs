@@ -14,12 +14,15 @@
 use crate::chat::Chat;
 use crate::config::Config;
 use crate::notify;
+use crate::streams::{Actie, Streams};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus};
-use fitcom_proto::control::{VoiceJoin, VoiceLeave};
+use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
 use fitcom_proto::{ControlMsg, OpId, PeerId};
 use fitcom_store::{Store, Timeline};
+use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
+use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -53,12 +56,33 @@ pub struct VoiceView {
     pub eigen_niveau: f32,
 }
 
+/// Een bron die wij delen, zoals de UI hem toont.
+#[derive(Debug, Clone)]
+pub struct EigenStreamView {
+    pub stream_id: u32,
+    pub titel: String,
+    pub kijkers: usize,
+}
+
+/// Een bron die een ander deelt.
+#[derive(Debug, Clone)]
+pub struct StreamView {
+    pub eigenaar: PeerId,
+    pub stream_id: u32,
+    pub titel: String,
+    pub breedte: u32,
+    pub hoogte: u32,
+    pub kijken: bool,
+}
+
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub timeline: Arc<Timeline>,
     pub peers: Vec<PeerView>,
     pub voice: VoiceView,
+    pub eigen_streams: Vec<EigenStreamView>,
+    pub streams: Vec<StreamView>,
     pub ongelezen: usize,
     pub fout: Option<String>,
 }
@@ -75,6 +99,11 @@ pub enum UiCommand {
     Mute(bool),
     Deafen(bool),
     Volume(PeerId, f32),
+    /// Een scherm of venster gaan delen. Er wordt nog niets opgenomen.
+    DeelBron(Bron),
+    StopDelen(u32),
+    Kijken(PeerId, u32),
+    StopKijken(PeerId, u32),
 }
 
 pub struct EngineHandle {
@@ -125,6 +154,11 @@ pub fn spawn(
         verbonden: HashMap::new(),
         voice: None,
         peers_in_voice: HashSet::new(),
+        streams: Streams::new(),
+        d3d: None,
+        bronnen: HashMap::new(),
+        delers: HashMap::new(),
+        kijkers: HashMap::new(),
         fout: None,
         snap_tx,
         voorgrond: voorgrond.clone(),
@@ -151,6 +185,19 @@ struct Engine {
     /// Peers die gemeld hebben dat ze in het gesprek zitten. Los van of wij meedoen:
     /// je wilt kunnen zien wie er praat voordat je zelf aansluit.
     peers_in_voice: HashSet<PeerId>,
+
+    /// Wie deelt wat en wie kijkt waarnaar. Neemt alle beslissingen; hieronder staat
+    /// alleen het uitvoeren ervan.
+    streams: Streams,
+    /// Pas aangemaakt bij het eerste gebruik: op een machine die nooit deelt of kijkt
+    /// hoeft er geen D3D11-apparaat te bestaan.
+    d3d: Option<D3dContext>,
+    /// De bron per eigen stream. Nodig omdat we de opname pas starten bij de eerste
+    /// kijker, en dan moeten weten wát we ook alweer aankondigden.
+    bronnen: HashMap<u32, Bron>,
+    delers: HashMap<u32, DelerHandle>,
+    kijkers: HashMap<(PeerId, u32), KijkerHandle>,
+
     fout: Option<String>,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
@@ -181,6 +228,7 @@ impl Engine {
                     let verbonden: Vec<PeerId> = self.verbonden.keys().copied().collect();
                     let r = self.chat.tick(&verbonden);
                     self.verwerk(r);
+                    self.lees_kijkers();
                 }
             }
 
@@ -214,13 +262,17 @@ impl Engine {
                             p.label = display_name.clone();
                         }
                         if !was_online {
-                            let r = self.chat.bij_verbinding(*peer_id);
+                            let id = *peer_id;
+                            let r = self.chat.bij_verbinding(id);
                             self.verwerk(r);
                             // Zit ik al in het gesprek, dan moet deze peer dat weten;
-                            // hij heeft mijn eerdere melding gemist.
+                            // hij heeft mijn eerdere melding gemist. Hetzelfde geldt
+                            // voor wat ik deel.
                             if self.voice.is_some() {
-                                self.meld_voice_status(Some(*peer_id));
+                                self.meld_voice_status(Some(id));
                             }
+                            let cmds = self.streams.bij_verbinding(id);
+                            self.stuur_alles(cmds);
                         }
                     }
                     _ => {
@@ -229,6 +281,8 @@ impl Engine {
                             // Weg is weg: uit het gesprek halen, anders blijven we
                             // audio naar een dood adres sturen.
                             self.peers_in_voice.remove(&id);
+                            let acties = self.streams.bij_verbreking(id);
+                            self.voer_uit(acties);
                         }
                     }
                 }
@@ -263,6 +317,14 @@ impl Engine {
                     self.werk_voice_peers_bij();
                 }
                 andere => {
+                    // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
+                    // van hem is ongemoeid, en andersom net zo.
+                    if let Some(ip) = self.verbonden.get(&from).map(|a| a.ip()) {
+                        let (cmds, acties) = self.streams.bij_bericht(from, ip, &andere);
+                        self.stuur_alles(cmds);
+                        self.voer_uit(acties);
+                    }
+
                     let voor = self.chat.ongelezen;
                     let r = self.chat.bij_bericht(from, andere);
                     self.verwerk(r);
@@ -339,6 +401,188 @@ impl Engine {
         voice.zet_peers(doelen);
     }
 
+    // -- screenshare -------------------------------------------------------
+
+    /// Het D3D11-apparaat, aangemaakt bij het eerste gebruik. Deelt en kijkt hetzelfde
+    /// apparaat, zodat een textuur nergens tussen apparaten hoeft te reizen.
+    fn d3d(&mut self) -> Result<D3dContext> {
+        if let Some(d) = &self.d3d {
+            return Ok(d.clone());
+        }
+        let d = D3dContext::new().context("grafische kaart openen")?;
+        self.d3d = Some(d.clone());
+        Ok(d)
+    }
+
+    fn codec(&self) -> Codec {
+        Codec::van_naam(&self.cfg.video.codec).unwrap_or_else(|| {
+            tracing::warn!(gekozen = %self.cfg.video.codec, "onbekende codec in de config; h264 gebruikt");
+            Codec::H264
+        })
+    }
+
+    /// Een bron aankondigen. Er wordt nog niets opgenomen — dat is het hele punt.
+    fn deel_bron(&mut self, bron: Bron) {
+        let afmeting = match fitcom_video::capture::afmeting_van(&bron) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), "bron niet te openen");
+                self.fout = Some(format!("bron niet te openen: {e:#}"));
+                return;
+            }
+        };
+
+        let kind = match bron.soort {
+            BronSoort::Monitor => StreamKind::MONITOR,
+            BronSoort::Venster => StreamKind::WINDOW,
+        };
+        let (id, cmds) = self
+            .streams
+            .deel(kind, bron.naam.clone(), afmeting.0, afmeting.1);
+        self.bronnen.insert(id, bron);
+        self.stuur_alles(cmds);
+    }
+
+    /// Voert uit wat `streams` besloten heeft. Elke fout hierin is een fout in het
+    /// uitvoeren, niet in de beslissing: de toestand blijft kloppen.
+    fn voer_uit(&mut self, acties: Vec<Actie>) {
+        for actie in acties {
+            match actie {
+                Actie::StartDelen { stream_id, kijkers } => {
+                    if let Err(e) = self.start_deler(stream_id, kijkers) {
+                        tracing::error!(error = %format!("{e:#}"), stream = stream_id, "delen starten mislukt");
+                        self.fout = Some(format!("scherm delen: {e:#}"));
+                    }
+                }
+                Actie::ZetKijkers { stream_id, kijkers } => {
+                    if let Some(d) = self.delers.get(&stream_id) {
+                        d.zet_kijkers(kijkers);
+                    }
+                }
+                Actie::StopDelen { stream_id } => {
+                    self.delers.remove(&stream_id);
+                }
+                Actie::StuurKeyframe { stream_id } => {
+                    if let Some(d) = self.delers.get(&stream_id) {
+                        d.vraag_keyframe();
+                    }
+                }
+                Actie::StartKijken {
+                    eigenaar,
+                    stream_id,
+                    titel,
+                    breedte,
+                    hoogte,
+                } => {
+                    if let Err(e) = self.start_kijker(eigenaar, stream_id, titel, breedte, hoogte) {
+                        tracing::error!(error = %format!("{e:#}"), "kijken starten mislukt");
+                        self.fout = Some(format!("stream openen: {e:#}"));
+                        // De beslissing terugdraaien, anders denkt de UI dat we kijken.
+                        let (cmds, _) = self.streams.stop_kijken(eigenaar, stream_id);
+                        self.stuur_alles(cmds);
+                    }
+                }
+                Actie::StopKijken {
+                    eigenaar,
+                    stream_id,
+                } => {
+                    self.kijkers.remove(&(eigenaar, stream_id));
+                }
+            }
+        }
+    }
+
+    fn start_deler(&mut self, stream_id: u32, kijkers: Vec<SocketAddr>) -> Result<()> {
+        let bron = self
+            .bronnen
+            .get(&stream_id)
+            .cloned()
+            .context("bron van deze stream is verdwenen")?;
+        let d3d = self.d3d()?;
+        let handle = fitcom_video::deel(
+            &d3d,
+            DelerConfig {
+                stream_id,
+                bron,
+                codec: self.codec(),
+                fps: self.cfg.video.fps,
+                bitrate: self.cfg.video.bitrate,
+            },
+            kijkers,
+        )?;
+        self.delers.insert(stream_id, handle);
+        Ok(())
+    }
+
+    fn start_kijker(
+        &mut self,
+        eigenaar: PeerId,
+        stream_id: u32,
+        titel: String,
+        breedte: u32,
+        hoogte: u32,
+    ) -> Result<()> {
+        let ip = self
+            .verbonden
+            .get(&eigenaar)
+            .map(|a| a.ip())
+            .context("die peer is niet verbonden")?;
+        let d3d = self.d3d()?;
+        let naam = self
+            .peers
+            .iter()
+            .find(|p| p.peer_id == Some(eigenaar))
+            .map(|p| p.label.clone())
+            .unwrap_or_else(|| "peer".into());
+
+        let handle = fitcom_video::kijk(
+            &d3d,
+            KijkerConfig {
+                stream_id,
+                titel: format!("{naam} — {titel}"),
+                breedte,
+                hoogte,
+                codec: self.codec(),
+                afzender: ip,
+            },
+        )?;
+
+        // Nu pas intekenen: in het abonnement staat de poort van dit venster, en die
+        // bestaat pas als het venster er is.
+        let cmds = self
+            .streams
+            .kijker_draait(eigenaar, stream_id, handle.poort);
+        self.stuur_alles(cmds);
+        self.kijkers.insert((eigenaar, stream_id), handle);
+        Ok(())
+    }
+
+    /// Haalt op wat de kijkvensters te melden hebben: gesloten vensters en verzoeken
+    /// om een keyframe. Gebeurt op de tik, want de motor mag hier niet op wachten.
+    fn lees_kijkers(&mut self) {
+        let mut gesloten = Vec::new();
+        let mut keyframes = Vec::new();
+
+        for (&(eigenaar, stream_id), kijker) in &self.kijkers {
+            while let Ok(ev) = kijker.events.try_recv() {
+                match ev {
+                    KijkerEvent::Gesloten => gesloten.push((eigenaar, stream_id)),
+                    KijkerEvent::KeyframeNodig => keyframes.push((eigenaar, stream_id)),
+                }
+            }
+        }
+
+        for (eigenaar, stream_id) in keyframes {
+            let cmds = self.streams.vraag_keyframe(eigenaar, stream_id);
+            self.stuur_alles(cmds);
+        }
+        for (eigenaar, stream_id) in gesloten {
+            let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
+            self.stuur_alles(cmds);
+            self.voer_uit(acties);
+        }
+    }
+
     // -- UI ----------------------------------------------------------------
 
     fn op_ui_command(&mut self, cmd: UiCommand) {
@@ -377,6 +621,30 @@ impl Engine {
                     p.volume = vol;
                 }
             }
+            UiCommand::DeelBron(bron) => self.deel_bron(bron),
+            UiCommand::StopDelen(id) => {
+                let (cmds, acties) = self.streams.stop_delen(id);
+                self.bronnen.remove(&id);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+            UiCommand::Kijken(eigenaar, id) => {
+                let acties = self.streams.wil_kijken(eigenaar, id);
+                self.voer_uit(acties);
+            }
+            UiCommand::StopKijken(eigenaar, id) => {
+                let (cmds, acties) = self.streams.stop_kijken(eigenaar, id);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+        }
+    }
+
+    fn stuur_alles(&mut self, cmds: Vec<MeshCommand>) {
+        for cmd in cmds {
+            if let Err(e) = self.mesh.commands.try_send(cmd) {
+                tracing::warn!(error = %e, "netwerkcommando niet verstuurd");
+            }
         }
     }
 
@@ -402,13 +670,7 @@ impl Engine {
 
     fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {
         match r {
-            Ok(cmds) => {
-                for cmd in cmds {
-                    if let Err(e) = self.mesh.commands.try_send(cmd) {
-                        tracing::warn!(error = %e, "netwerkcommando niet verstuurd");
-                    }
-                }
-            }
+            Ok(cmds) => self.stuur_alles(cmds),
             Err(e) => {
                 tracing::error!(error = %format!("{e:#}"), "chat-actie mislukt");
                 self.fout = Some(format!("{e:#}"));
@@ -434,10 +696,37 @@ impl Engine {
             eigen_niveau: niveaus.eigen,
         };
 
+        let eigen_streams = self
+            .streams
+            .eigen()
+            .iter()
+            .map(|s| EigenStreamView {
+                stream_id: s.id,
+                titel: s.titel.clone(),
+                kijkers: s.kijkers.len(),
+            })
+            .collect();
+
+        let streams = self
+            .streams
+            .vreemd()
+            .iter()
+            .map(|s| StreamView {
+                eigenaar: s.eigenaar,
+                stream_id: s.id,
+                titel: s.titel.clone(),
+                breedte: s.breedte,
+                hoogte: s.hoogte,
+                kijken: s.kijken,
+            })
+            .collect();
+
         let _ = self.snap_tx.send(Arc::new(Snapshot {
             timeline: self.chat.timeline_arc(),
             peers,
             voice,
+            eigen_streams,
+            streams,
             ongelezen: self.chat.ongelezen,
             fout: self.fout.clone(),
         }));
@@ -447,4 +736,10 @@ impl Engine {
 /// Namen van de beschikbare apparaten, voor het instellingenscherm.
 pub fn audio_apparaten() -> Result<(Vec<String>, Vec<String>)> {
     fitcom_audio::session::apparaatnamen().context("geluidsapparaten opvragen")
+}
+
+/// Schermen en vensters die te delen zijn. Wordt bij het openen van het keuzemenu
+/// opgevraagd; vensters komen en gaan, dus een eenmalige lijst zou snel verouderen.
+pub fn deelbare_bronnen() -> Result<Vec<Bron>> {
+    fitcom_video::beschikbare_bronnen().context("deelbare bronnen opvragen")
 }

@@ -91,6 +91,16 @@ pub struct EncoderConfig {
     pub bitrate: u32,
 }
 
+/// Eén gecodeerd beeld zoals het de encoder verlaat.
+#[derive(Debug, Clone)]
+pub struct Pakket {
+    /// Tijd van de encoder in 100-nanoseconden-eenheden. Hoort ongewijzigd door naar
+    /// de tijdstempel op de draad: daaraan herkent de ontvanger één beeld.
+    pub tijd_hns: i64,
+    pub keyframe: bool,
+    pub data: Vec<u8>,
+}
+
 pub struct Encoder {
     transform: IMFTransform,
     events: IMFMediaEventGenerator,
@@ -207,7 +217,7 @@ impl Encoder {
 
     /// Codeert één beeld. Levert nul of meer pakketten op: de encoder loopt een frame
     /// of twee achter, dus de eerste aanroepen kunnen leeg blijven.
-    pub fn encode(&mut self, tex: &ID3D11Texture2D, tijd_hns: i64) -> Result<Vec<Vec<u8>>> {
+    pub fn encode(&mut self, tex: &ID3D11Texture2D, tijd_hns: i64) -> Result<Vec<Pakket>> {
         // SAFETY: `tex` blijft geldig zolang de aanroeper hem vasthoudt, en dat is
         // langer dan deze functie duurt.
         let sample = unsafe {
@@ -251,7 +261,7 @@ impl Encoder {
         Ok(uit)
     }
 
-    fn verwerk_event(&mut self, event: &IMFMediaEvent, uit: &mut Vec<Vec<u8>>) -> Result<()> {
+    fn verwerk_event(&mut self, event: &IMFMediaEvent, uit: &mut Vec<Pakket>) -> Result<()> {
         // SAFETY: het event komt net uit de wachtrij.
         let soort = unsafe { event.GetType()? };
         if soort == METransformNeedInput.0 as u32 {
@@ -279,7 +289,7 @@ impl Encoder {
         }
     }
 
-    fn haal_uitvoer(&self) -> Result<Option<Vec<u8>>> {
+    fn haal_uitvoer(&self) -> Result<Option<Pakket>> {
         let mut buffers = [MFT_OUTPUT_DATA_BUFFER::default()];
         let mut status = 0u32;
 
@@ -292,22 +302,33 @@ impl Encoder {
             }
         }
 
+        let _ = buffers[0].pEvents.take();
         let Some(sample) = buffers[0].pSample.take() else {
             return Ok(None);
         };
 
         // SAFETY: het sample komt net uit de encoder en bevat één samenhangende buffer.
-        let data = unsafe {
+        let pakket = unsafe {
             let buffer = sample.ConvertToContiguousBuffer()?;
             let mut ptr = std::ptr::null_mut();
             let mut lengte = 0u32;
             buffer.Lock(&mut ptr, None, Some(&mut lengte))?;
             let data = std::slice::from_raw_parts(ptr, lengte as usize).to_vec();
             let _ = buffer.Unlock();
-            data
+
+            Pakket {
+                // De tijd van de encoder, niet "nu": alle pakketten van één beeld
+                // moeten dezelfde tijdstempel dragen, want daaraan herkent de
+                // ontvanger welke fragmenten bij elkaar horen.
+                tijd_hns: sample.GetSampleTime().unwrap_or(0),
+                // Zonder deze vlag weet de ontvanger niet vanaf welk beeld hij weer
+                // kan aanhaken na verlies.
+                keyframe: sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0,
+                data,
+            }
         };
 
-        Ok((!data.is_empty()).then_some(data))
+        Ok((!pakket.data.is_empty()).then_some(pakket))
     }
 }
 
@@ -830,15 +851,25 @@ mod tests {
 
         let mut totaal = 0usize;
         let mut pakketten = 0usize;
+        let mut keyframes = 0usize;
+        let mut tijden = Vec::new();
         for i in 0..30 {
             let tijd = i as i64 * (HNS_PER_SEC / 60);
             for p in enc.encode(&tex, tijd).expect("encoderen") {
-                totaal += p.len();
+                totaal += p.data.len();
                 pakketten += 1;
+                keyframes += usize::from(p.keyframe);
+                tijden.push(p.tijd_hns);
             }
         }
-        println!("{pakketten} pakketten, {totaal} bytes uit 30 beelden");
+        println!("{pakketten} pakketten, {totaal} bytes, {keyframes} keyframes");
         assert!(pakketten > 0, "encoder leverde helemaal niets op");
+        assert!(keyframes > 0, "zonder keyframe kan niemand aanhaken");
+        // Zonder oplopende tijdstempels ziet de ontvanger alle fragmenten als één beeld.
+        assert!(
+            tijden.windows(2).all(|w| w[1] > w[0]),
+            "tijdstempels lopen niet op: {tijden:?}"
+        );
     }
 
     /// Een effen vlak van één kleur. Effen omdat de codec dat vrijwel verliesloos
@@ -878,7 +909,10 @@ mod tests {
         for i in 0..30 {
             let tijd = i as i64 * (HNS_PER_SEC / 60);
             for pakket in enc.encode(&bron, tijd).expect("encoderen") {
-                if let Some(t) = dec.decode(&pakket, tijd).expect("decoderen") {
+                if let Some(t) = dec
+                    .decode(&pakket.data, pakket.tijd_hns)
+                    .expect("decoderen")
+                {
                     beeld = Some(t);
                 }
             }
@@ -943,7 +977,11 @@ mod tests {
         for i in 0..120 {
             let tijd = i as i64 * (HNS_PER_SEC / 60);
             for pakket in enc.encode(&bron, tijd).expect("encoderen") {
-                if dec.decode(&pakket, tijd).expect("decoderen").is_some() {
+                if dec
+                    .decode(&pakket.data, pakket.tijd_hns)
+                    .expect("decoderen")
+                    .is_some()
+                {
                     beelden += 1;
                 }
             }

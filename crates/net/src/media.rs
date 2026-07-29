@@ -37,6 +37,17 @@ impl MediaSocket {
         Ok(self.sock.local_addr()?)
     }
 
+    /// Hoe lang [`MediaSocket::ontvang`] blijft wachten voordat hij `None` teruggeeft.
+    ///
+    /// Video wil hier korter zitten dan audio: die thread bedient ook een venster, en
+    /// een venster dat pas na 200 ms op een muisklik reageert voelt kapot.
+    pub fn zet_timeout(&self, timeout: Duration) -> Result<()> {
+        self.sock
+            .set_read_timeout(Some(timeout))
+            .context("leestimeout instellen")?;
+        Ok(())
+    }
+
     /// Kloont de socket zodat verzenden en ontvangen op eigen threads kunnen draaien.
     pub fn probeer_clone(&self) -> Result<Self> {
         Ok(Self {

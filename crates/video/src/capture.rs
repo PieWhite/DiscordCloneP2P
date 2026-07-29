@@ -163,6 +163,29 @@ fn vensters() -> Result<Vec<Bron>> {
     Ok(gevonden)
 }
 
+/// Afmeting van een bron zonder er opname op te starten.
+///
+/// Nodig omdat we een gedeelde bron aankondigen — mét afmeting — voordat er iemand
+/// naar kijkt, en tot dat moment mag er geen enkel frame opgenomen worden.
+pub fn afmeting_van(bron: &Bron) -> Result<(u32, u32)> {
+    let interop: IGraphicsCaptureItemInterop =
+        windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+            .context("capture-interop ophalen")?;
+    // SAFETY: de handle hoort bij de opgegeven soort; beide komen uit onze enumeratie.
+    let item: GraphicsCaptureItem = unsafe {
+        match bron.soort {
+            BronSoort::Monitor => interop
+                .CreateForMonitor(HMONITOR(bron.handle as *mut _))
+                .context("scherm openen")?,
+            BronSoort::Venster => interop
+                .CreateForWindow(HWND(bron.handle as *mut _))
+                .context("venster openen")?,
+        }
+    };
+    let grootte = item.Size().context("afmetingen opvragen")?;
+    Ok((grootte.Width.max(1) as u32, grootte.Height.max(1) as u32))
+}
+
 pub struct Capture {
     d3d: D3dContext,
     _item: GraphicsCaptureItem,

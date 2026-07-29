@@ -1635,6 +1635,7 @@ dependencies = [
  "fitcom-net",
  "fitcom-proto",
  "fitcom-store",
+ "fitcom-video",
  "raw-window-handle",
  "serde",
  "tauri-winrt-notification",
