@@ -38,8 +38,8 @@ sowieso de betere UX. Grid-in-hoofdvenster is fase 5.
 ## Processtructuur
 
 ```
-main thread            eframe/egui  — chat, ledenlijst, instellingen
-tokio runtime          quinn control-mesh, UDP media-sockets, reconnect-loop
+main thread            eframe/egui  — pure weergave van een momentopname
+tokio runtime          motor (oplog + mesh), quinn control-mesh, UDP media-sockets
 capture thread(s)      WGC → D3D11 texture → encoder → UDP  (één per gedeelde bron)
 render thread(s)       UDP → decoder → D3D11 swapchain      (één per bekeken stream)
 audio capture thread   WASAPI → nnnoiseless → VAD → Opus → UDP
@@ -47,6 +47,15 @@ audio render thread    UDP → jitterbuffer → Opus decode → mix → WASAPI
 ```
 
 Alle threads praten met de UI via kanalen. Geen gedeelde locks op het hot path.
+
+### De UI mag stilvallen
+egui tekent geen frames zolang het venster verborgen of geminimaliseerd is. Alles wat
+door moet lopen terwijl je niet kijkt — synchronisatie, herverbinden, meldingen — hoort
+daarom níét in `update()`. De motor (`app/src/engine.rs`) bezit de mesh en de oplog en
+draait op de tokio-runtime; de UI leest een `watch`-momentopname en stuurt commando's
+terug. Om dezelfde reden leest de tray-thread zijn eigen gebeurtenissen: zou de
+tray-klik in de UI worden afgehandeld, dan kon je een verborgen venster nooit meer
+terughalen.
 
 ## Wire-protocol
 

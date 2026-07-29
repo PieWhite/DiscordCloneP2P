@@ -6,4 +6,7 @@
 
 pub mod chat;
 pub mod config;
+pub mod engine;
+pub mod notify;
+pub mod tray;
 pub mod ui;

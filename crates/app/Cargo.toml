@@ -15,10 +15,14 @@ egui = "0.32.3"
 fitcom-net = { version = "0.1.0", path = "../net" }
 fitcom-proto = { version = "0.1.0", path = "../proto" }
 fitcom-store = { version = "0.1.0", path = "../store" }
+raw-window-handle = "0.6.2"
 serde = { version = "1.0.229", features = ["derive"] }
+tauri-winrt-notification = "0.8.1"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tray-icon = "0.24.2"
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Media", "Win32_System_Diagnostics_Debug", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }

@@ -27,9 +27,23 @@ pub struct Config {
     #[serde(default = "default_media_port")]
     pub media_port: u16,
 
+    /// Sluitknop verbergt naar de tray in plaats van af te sluiten. De app blijft dan
+    /// synchroniseren en melden terwijl je iets anders doet.
+    #[serde(default = "waar")]
+    pub minimize_to_tray: bool,
+
+    /// Meestarten met Windows. Staat standaard uit; wordt bij elke start toegepast,
+    /// dus je zet hem hier aan of uit en herstart de app.
+    #[serde(default)]
+    pub autostart: bool,
+
     /// De andere peers. Geen limiet van 3 — de code is bewust N-agnostisch.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+}
+
+fn waar() -> bool {
+    true
 }
 
 fn default_control_port() -> u16 {
@@ -69,6 +83,8 @@ impl Config {
             display_name: whoami_or("gebruiker"),
             control_port: DEFAULT_CONTROL_PORT,
             media_port: DEFAULT_MEDIA_PORT,
+            minimize_to_tray: true,
+            autostart: false,
             peers: vec![
                 PeerConfig {
                     address: "100.64.0.2".into(),

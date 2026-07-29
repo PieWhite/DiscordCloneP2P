@@ -77,7 +77,9 @@ hardware-encode én -decode. H.264 als fallback.
 - Reacties/replies/afbeeldingen zijn later nieuwe op-kinds — geen migratie nodig.
 - Alles voor altijd bewaren.
 - Windows toast + geluid bij achtergrond, tray-icoon, minimaliseren naar tray.
-  Autostart met Windows als optioneel vinkje, standaard uit.
+  Autostart met Windows staat standaard uit. Het is een regel in `config.toml` geworden
+  in plaats van een vinkje in de UI: er is nog geen instellingenscherm, en je bewerkt
+  dat bestand toch al voor de peer-adressen.
 - Generieke append-only oplog, niet chat-specifiek, zodat nicknames/settings/file-metadata
   later over hetzelfde sync-mechanisme kunnen.
 

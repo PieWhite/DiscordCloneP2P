@@ -6,7 +6,7 @@
 // direct zichtbaar zijn tijdens ontwikkelen.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use fitcom::{chat, config, ui};
+use fitcom::{config, engine, tray, ui};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -89,20 +89,31 @@ fn main() -> Result<()> {
         .context("chat-database openen")?;
     tracing::info!(ops = store.op_count().unwrap_or(0), "oplog geladen");
 
-    let mut chat = chat::Chat::new(store).context("chat opzetten")?;
+    // De motor draait op de tokio-runtime, niet op de UI-thread: chat en synchronisatie
+    // moeten doorlopen terwijl het venster geminimaliseerd is of naar de tray staat.
+    let naam = cfg.display_name.clone();
+    let poort = cfg.control_port;
+    let naar_tray = cfg.minimize_to_tray;
 
-    // Naam vastleggen in de oplog zodat de anderen hem ook zien. Doet niets als hij
-    // al klopt, dus dit laat de log niet groeien bij elke start.
-    match chat.zet_naam(&cfg.display_name) {
-        Ok(cmds) => {
-            for cmd in cmds {
-                let _ = mesh.commands.try_send(cmd);
-            }
-        }
-        Err(e) => tracing::warn!(error = %format!("{e:#}"), "naam vastleggen mislukt"),
+    if let Err(e) = tray::zet_autostart(cfg.autostart) {
+        // Geen reden om de app niet te starten; alleen melden.
+        tracing::warn!(error = %format!("{e:#}"), "autostart instellen mislukt");
     }
 
-    let app = ui::App::new(cfg, identity, config_path, data_dir, mesh, chat, runtime);
+    let engine = {
+        let _enter = runtime.enter();
+        engine::spawn(mesh, store, cfg, config_path).context("motor starten")?
+    };
+
+    let app = ui::App::new(
+        engine,
+        identity.peer_id,
+        naam,
+        poort,
+        data_dir,
+        naar_tray,
+        runtime,
+    );
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -115,7 +126,25 @@ fn main() -> Result<()> {
     eframe::run_native(
         "FitCommunication",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(move |cc| {
+            // Het venster onthouden zodat de tray-thread het kan tonen en verbergen
+            // ook wanneer egui niet tekent.
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            match cc.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(w)) => tray::onthoud_venster(w.hwnd.get()),
+                _ => {
+                    tracing::warn!("venster-handle niet gevonden; tray kan het venster niet tonen")
+                }
+            }
+
+            // Het icoon moet in leven blijven, anders verdwijnt het meteen uit de tray.
+            match tray::start() {
+                Ok(t) => std::mem::forget(t),
+                Err(e) => tracing::warn!(error = %format!("{e:#}"), "tray-icoon starten mislukt"),
+            }
+
+            Ok(Box::new(app))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("venster starten: {e}"))
 }

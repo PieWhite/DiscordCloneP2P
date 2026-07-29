@@ -1,201 +1,133 @@
 //! De UI. Bewust functioneel gehouden — styling volgt in een latere fase.
 //!
-//! De UI-thread doet geen netwerkwerk, geen database-werk op de achtergrond en houdt
-//! geen locks vast. Alles komt binnen via `MeshEvent` en gaat eruit via `MeshCommand`.
+//! Puur een weergave: leest een momentopname van de motor en stuurt commando's terug.
+//! Er wordt hier geen enkele beslissing genomen over netwerk of opslag, en er staat
+//! geen state in die verloren gaat als het venster even niet tekent.
 
-use crate::chat::Chat;
-use crate::config::{Config, Identity};
+use crate::engine::{EngineHandle, PeerView, Snapshot, UiCommand};
+use crate::tray;
 use eframe::egui;
-use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus};
+use fitcom_net::PeerStatus;
 use fitcom_proto::{OpId, PeerId};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
-/// 4 fps als er niets gebeurt. Genoeg om statuswijzigingen direct te tonen, en
+/// 4 fps als er niets gebeurt. Genoeg om wijzigingen direct te tonen, en
 /// verwaarloosbaar qua CPU — de app moet in rust vrijwel niets doen.
 const IDLE_REPAINT: Duration = Duration::from_millis(250);
 
 pub struct App {
-    cfg: Config,
-    identity: Identity,
-    config_path: PathBuf,
+    engine: EngineHandle,
+    snap: Arc<Snapshot>,
+    mij: PeerId,
+    eigen_naam: String,
+    control_port: u16,
     data_dir: PathBuf,
-    mesh: MeshHandle,
-    chat: Chat,
-    /// Moet in leven blijven zolang de app draait, anders stopt de netwerklaag.
+    /// Moet in leven blijven zolang de app draait, anders stopt alles eronder.
     _runtime: tokio::runtime::Runtime,
-    rows: Vec<PeerRow>,
-    verbonden: Vec<PeerId>,
     invoer: String,
     bewerkt: Option<OpId>,
-    scroll_naar_beneden: bool,
-    fout: Option<String>,
-}
-
-struct PeerRow {
-    label: String,
-    address: String,
-    peer_id: Option<PeerId>,
-    status: PeerStatus,
+    vorig_aantal: usize,
+    naar_tray: bool,
 }
 
 impl App {
     pub fn new(
-        cfg: Config,
-        identity: Identity,
-        config_path: PathBuf,
+        engine: EngineHandle,
+        mij: PeerId,
+        eigen_naam: String,
+        control_port: u16,
         data_dir: PathBuf,
-        mesh: MeshHandle,
-        chat: Chat,
+        naar_tray: bool,
         runtime: tokio::runtime::Runtime,
     ) -> Self {
-        let rows = cfg
-            .peers
-            .iter()
-            .map(|p| PeerRow {
-                label: if p.label.is_empty() {
-                    p.address.clone()
-                } else {
-                    p.label.clone()
-                },
-                address: p.address.clone(),
-                peer_id: p.known_id,
-                status: PeerStatus::Offline {
-                    reason: "nog niet verbonden".into(),
-                },
-            })
-            .collect();
-
+        let snap = engine.snapshot.borrow().clone();
         Self {
-            cfg,
-            identity,
-            config_path,
+            engine,
+            snap,
+            mij,
+            eigen_naam,
+            control_port,
             data_dir,
-            mesh,
-            chat,
             _runtime: runtime,
-            rows,
-            verbonden: Vec::new(),
             invoer: String::new(),
             bewerkt: None,
-            scroll_naar_beneden: true,
-            fout: None,
+            vorig_aantal: 0,
+            naar_tray,
         }
     }
 
-    fn verstuur(&mut self, cmds: Vec<MeshCommand>) {
-        for cmd in cmds {
-            if let Err(e) = self.mesh.commands.try_send(cmd) {
-                tracing::warn!(error = %e, "commando niet verstuurd");
-            }
+    fn stuur(&self, cmd: UiCommand) {
+        if let Err(e) = self.engine.commands.try_send(cmd) {
+            tracing::warn!(error = %e, "commando niet doorgegeven aan de motor");
         }
     }
 
-    fn meld(&mut self, r: anyhow::Result<Vec<MeshCommand>>) {
-        match r {
-            Ok(cmds) => self.verstuur(cmds),
-            Err(e) => {
-                tracing::error!(error = %format!("{e:#}"), "chat-actie mislukt");
-                self.fout = Some(format!("{e:#}"));
-            }
-        }
-    }
-
-    fn drain_events(&mut self) {
-        let mut acties = Vec::new();
-
-        while let Ok(event) = self.mesh.events.try_recv() {
-            match event {
-                MeshEvent::Status { target, status } => {
-                    let net_online = matches!(status, PeerStatus::Online { .. })
-                        && !matches!(
-                            self.rows.get(target).map(|r| &r.status),
-                            Some(PeerStatus::Online { .. })
-                        );
-
-                    if let PeerStatus::Online { peer_id, .. } = &status {
-                        if !self.verbonden.contains(peer_id) {
-                            self.verbonden.push(*peer_id);
-                        }
-                        if net_online {
-                            acties.push(*peer_id);
-                        }
-                    } else if let Some(id) = self.rows.get(target).and_then(|r| r.peer_id) {
-                        self.verbonden.retain(|p| *p != id);
-                    }
-
-                    if let Some(row) = self.rows.get_mut(target) {
-                        if let PeerStatus::Online {
-                            peer_id,
-                            display_name,
-                            ..
-                        } = &status
-                        {
-                            row.peer_id = Some(*peer_id);
-                            row.label = display_name.clone();
-                        }
-                        row.status = status;
-                    }
-                }
-                MeshEvent::LearnedIdentity { target, peer_id } => {
-                    if let Some(p) = self.cfg.peers.get_mut(target) {
-                        p.known_id = Some(peer_id);
-                        if let Err(e) = self.cfg.save(&self.config_path) {
-                            self.fout = Some(format!("config opslaan: {e:#}"));
-                        }
-                    }
-                }
-                MeshEvent::Message { from, msg } => {
-                    let r = self.chat.bij_bericht(from, msg);
-                    self.meld(r);
-                }
-            }
-        }
-
-        // Een net verbonden peer vraagt om een inhaalslag.
-        for peer in acties {
-            let r = self.chat.bij_verbinding(peer);
-            self.meld(r);
-        }
-
-        let verbonden = self.verbonden.clone();
-        let r = self.chat.tick(&verbonden);
-        self.meld(r);
-
-        if self.chat.refresh() {
-            self.scroll_naar_beneden = true;
-        }
-    }
-
-    fn versturen_klaar(&mut self) {
+    fn versturen(&mut self) {
         let tekst = self.invoer.trim().to_string();
         if tekst.is_empty() {
             self.invoer.clear();
             self.bewerkt = None;
             return;
         }
-
-        let r = match self.bewerkt.take() {
-            Some(doel) => self.chat.bewerk_bericht(doel, &tekst),
-            None => self.chat.plaats_bericht(&tekst),
-        };
-        self.meld(r);
-
+        match self.bewerkt.take() {
+            Some(doel) => self.stuur(UiCommand::Bewerk(doel, tekst)),
+            None => self.stuur(UiCommand::Plaats(tekst)),
+        }
         self.invoer.clear();
-        self.chat.refresh();
-        self.scroll_naar_beneden = true;
+    }
+
+    fn naam_van(&self, peer: PeerId) -> String {
+        self.snap
+            .timeline
+            .nicknames
+            .get(&peer)
+            .cloned()
+            .unwrap_or_else(|| peer.to_string()[..8].to_string())
+    }
+
+    /// Levert `true` als er deze frame niets meer getekend hoeft te worden.
+    ///
+    /// De sluitknop verbergt naar de tray in plaats van af te sluiten: de motor loopt
+    /// door, dus je blijft berichten ontvangen en een melding krijgen terwijl je iets
+    /// anders doet. Echt afsluiten gaat via het tray-menu.
+    fn afsluiten_of_verbergen(&mut self, ctx: &egui::Context) -> bool {
+        if tray::wil_afsluiten() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return true;
+        }
+
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if !self.naar_tray {
+                return false; // gewoon afsluiten
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            // De motor moet weten dat we niet meer kijken, anders blijven meldingen uit.
+            self.engine.voorgrond.store(false, Ordering::Relaxed);
+            tray::verberg_venster();
+            return true;
+        }
+
+        false
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.drain_events();
+        self.snap = self.engine.snapshot.borrow_and_update().clone();
         ctx.request_repaint_after(IDLE_REPAINT);
 
-        // Kijkt de gebruiker ernaar, dan is het gelezen. De teller is straks ook de
-        // trigger voor de toast-notificatie als het venster níét op de voorgrond staat.
-        if ctx.input(|i| i.focused) {
-            self.chat.markeer_gelezen();
+        if self.afsluiten_of_verbergen(ctx) {
+            return;
+        }
+
+        // De motor gebruikt dit om te bepalen of er een Windows-melding moet komen.
+        let voorgrond = ctx.input(|i| i.focused);
+        self.engine.voorgrond.store(voorgrond, Ordering::Relaxed);
+        if voorgrond && self.snap.ongelezen > 0 {
+            self.stuur(UiCommand::Gelezen);
         }
 
         self.deelnemers_paneel(ctx);
@@ -214,20 +146,20 @@ impl App {
                 ui.heading("Deelnemers");
                 ui.add_space(8.0);
 
-                let eigen_naam = self
-                    .chat
-                    .timeline()
+                let eigen = self
+                    .snap
+                    .timeline
                     .nicknames
-                    .get(&self.chat.me())
+                    .get(&self.mij)
                     .cloned()
-                    .unwrap_or_else(|| self.cfg.display_name.clone());
+                    .unwrap_or_else(|| self.eigen_naam.clone());
 
                 ui.horizontal(|ui| {
                     ui.colored_label(GROEN, "\u{25CF}");
                     ui.label(
-                        egui::RichText::new(eigen_naam)
+                        egui::RichText::new(eigen)
                             .strong()
-                            .color(kleur_van(self.identity.peer_id)),
+                            .color(kleur_van(self.mij)),
                     );
                     ui.weak("(jij)");
                 });
@@ -235,36 +167,33 @@ impl App {
                 ui.separator();
                 ui.add_space(4.0);
 
-                if self.rows.is_empty() {
+                if self.snap.peers.is_empty() {
                     ui.weak("Nog geen peers ingesteld.");
                     ui.small("Zet de tailnet-adressen van de anderen in config.toml.");
                 }
 
-                for row in &self.rows {
-                    let naam = row
+                for p in &self.snap.peers {
+                    let naam = p
                         .peer_id
-                        .and_then(|id| self.chat.timeline().nicknames.get(&id))
+                        .and_then(|id| self.snap.timeline.nicknames.get(&id))
                         .cloned()
-                        .unwrap_or_else(|| row.label.clone());
-                    peer_row(ui, row, &naam);
+                        .unwrap_or_else(|| p.label.clone());
+                    peer_row(ui, p, &naam);
                     ui.add_space(6.0);
                 }
             });
     }
 
     fn statusbalk(&mut self, ctx: &egui::Context) {
+        let mut fout_weg = false;
+
         egui::TopBottomPanel::bottom("statusbalk").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.small(format!("id {}", &self.identity.peer_id.to_string()[..8]));
+                ui.small(format!("id {}", &self.mij.to_string()[..8]));
                 ui.separator();
-                ui.small(format!("poort {}", self.cfg.control_port));
+                ui.small(format!("poort {}", self.control_port));
                 ui.separator();
-                ui.small(format!("{} berichten", self.chat.timeline().messages.len()));
-                if self.chat.ongelezen > 0 {
-                    ui.small(
-                        egui::RichText::new(format!("{} nieuw", self.chat.ongelezen)).color(GROEN),
-                    );
-                }
+                ui.small(format!("{} berichten", self.snap.timeline.messages.len()));
                 ui.separator();
                 if ui
                     .small_button("map openen")
@@ -275,7 +204,7 @@ impl App {
                         .arg(&self.data_dir)
                         .spawn();
                 }
-                if let Some(err) = self.fout.clone() {
+                if let Some(err) = &self.snap.fout {
                     ui.separator();
                     if ui
                         .add(egui::Label::new(
@@ -284,11 +213,15 @@ impl App {
                         .on_hover_text("klik om te verbergen")
                         .clicked()
                     {
-                        self.fout = None;
+                        fout_weg = true;
                     }
                 }
             });
         });
+
+        if fout_weg {
+            self.stuur(UiCommand::FoutWeg);
+        }
     }
 
     fn chat_paneel(&mut self, ctx: &egui::Context) {
@@ -315,7 +248,7 @@ impl App {
                     } else {
                         "versturen"
                     };
-                    let breedte = ui.available_width() - 90.0;
+                    let breedte = (ui.available_width() - 90.0).max(80.0);
 
                     let veld = ui.add_sized(
                         [breedte, 24.0],
@@ -335,7 +268,7 @@ impl App {
                                 self.invoer.truncate(p);
                             }
                         }
-                        self.versturen_klaar();
+                        self.versturen();
                         veld.request_focus();
                     }
                 });
@@ -346,11 +279,16 @@ impl App {
             let mut te_bewerken: Option<(OpId, String)> = None;
             let mut te_verwijderen: Option<OpId> = None;
 
+            // Alleen naar beneden springen als er echt iets bij is gekomen; anders kun
+            // je niet terugscrollen in de geschiedenis terwijl de RTT blijft tikken.
+            let gegroeid = self.snap.timeline.messages.len() != self.vorig_aantal;
+            self.vorig_aantal = self.snap.timeline.messages.len();
+
             egui::ScrollArea::vertical()
-                .stick_to_bottom(self.scroll_naar_beneden)
+                .stick_to_bottom(gegroeid)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if self.chat.timeline().messages.is_empty() {
+                    if self.snap.timeline.messages.is_empty() {
                         ui.add_space(20.0);
                         ui.vertical_centered(|ui| {
                             ui.weak("Nog geen berichten.");
@@ -361,18 +299,10 @@ impl App {
                         });
                     }
 
-                    let mij = self.chat.me();
-                    let nicks = self.chat.timeline().nicknames.clone();
-
-                    for msg in &self.chat.timeline().messages {
-                        let naam = nicks
-                            .get(&msg.author)
-                            .cloned()
-                            .unwrap_or_else(|| korte_id(msg.author));
-
+                    for msg in &self.snap.timeline.messages {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(naam)
+                                egui::RichText::new(self.naam_van(msg.author))
                                     .strong()
                                     .color(kleur_van(msg.author)),
                             );
@@ -381,7 +311,7 @@ impl App {
                                 ui.small(egui::RichText::new("(bewerkt)").weak());
                             }
 
-                            if msg.author == mij {
+                            if msg.author == self.mij {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -406,9 +336,7 @@ impl App {
                 self.invoer = body;
             }
             if let Some(id) = te_verwijderen {
-                let r = self.chat.verwijder_bericht(id);
-                self.meld(r);
-                self.chat.refresh();
+                self.stuur(UiCommand::Verwijder(id));
             }
         });
     }
@@ -439,13 +367,13 @@ fn toon_tekst(ui: &mut egui::Ui, body: &str) {
     }
 }
 
-fn peer_row(ui: &mut egui::Ui, row: &PeerRow, naam: &str) {
-    let (color, text) = describe(&row.status);
+fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str) {
+    let (color, text) = describe(&p.status);
 
     ui.horizontal(|ui| {
         ui.colored_label(color, "\u{25CF}");
         ui.vertical(|ui| {
-            let naam_kleur = row
+            let naam_kleur = p
                 .peer_id
                 .map(kleur_van)
                 .unwrap_or(ui.visuals().text_color());
@@ -454,7 +382,7 @@ fn peer_row(ui: &mut egui::Ui, row: &PeerRow, naam: &str) {
         });
     })
     .response
-    .on_hover_text(&row.address);
+    .on_hover_text(&p.address);
 }
 
 const GROEN: egui::Color32 = egui::Color32::from_rgb(80, 200, 120);
@@ -480,11 +408,11 @@ fn describe(status: &PeerStatus) -> (egui::Color32, String) {
 /// Stabiele kleur per peer, zodat je in de chat aan de kleur ziet wie wat zei.
 fn kleur_van(peer: PeerId) -> egui::Color32 {
     let b = peer.as_bytes();
-    let tint = u16::from(b[0]) << 8 | u16::from(b[1]);
-    let hoek = f32::from(tint) / 65535.0;
+    let tint = (u16::from(b[0]) << 8) | u16::from(b[1]);
+    let hoek = f32::from(tint) / 65535.0 * 360.0;
     // Vaste verzadiging en helderheid: elke peer krijgt een goed leesbare kleur,
     // ook in een donker thema.
-    let (r, g, bl) = hsv_naar_rgb(hoek * 360.0, 0.55, 0.95);
+    let (r, g, bl) = hsv_naar_rgb(hoek, 0.55, 0.95);
     egui::Color32::from_rgb(r, g, bl)
 }
 
@@ -505,10 +433,6 @@ fn hsv_naar_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
         ((g + m) * 255.0) as u8,
         ((b + m) * 255.0) as u8,
     )
-}
-
-fn korte_id(peer: PeerId) -> String {
-    peer.to_string()[..8].to_string()
 }
 
 fn tijd(millis: i64) -> String {

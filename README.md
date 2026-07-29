@@ -4,7 +4,9 @@ Servervrij alternatief voor Discord voor een kleine vaste groep. Draait over een
 Tailscale-tailnet, zonder signaling-server, zonder TURN, zonder accounts, zonder cloud.
 Alle peers zijn gelijkwaardig — er is geen host.
 
-**Status:** fase 1 af (netwerklaag). Chat, voice en screenshare volgen. Zie [ROADMAP.md](ROADMAP.md).
+**Status:** fase 2 af — netwerklaag en tekstchat werken, inclusief het inhalen van
+berichten die je gemist hebt terwijl je offline was. Voice en screenshare volgen.
+Zie [ROADMAP.md](ROADMAP.md).
 
 ## Wat je nodig hebt
 
@@ -27,9 +29,11 @@ Alle peers zijn gelijkwaardig — er is geen host.
 `config.toml`:
 
 ```toml
-display_name = "Rick"       # hoe de anderen jou zien
-control_port = 41650
-media_port   = 41651
+display_name     = "Rick"    # hoe de anderen jou zien
+control_port     = 41650
+media_port       = 41651
+minimize_to_tray = true      # sluitknop verbergt naar de tray in plaats van af te sluiten
+autostart        = false     # meestarten met Windows
 
 [[peers]]
 address = "vriend-pc"        # MagicDNS-naam of tailnet-IP zoals 100.64.0.2
@@ -56,7 +60,25 @@ meestal bij de eerste start.
 |---|---|
 | `config.toml` | Door jou te bewerken. Mag je kopiëren tussen machines. |
 | `identity.toml` | Door de app gegenereerd. **Niet kopiëren** — twee peers met dezelfde identiteit breken de chat-synchronisatie. |
+| `chat.sqlite` | De volledige chatgeschiedenis. Weggooien wist je geschiedenis, maar de anderen vullen hem bij de eerstvolgende verbinding weer aan. |
 | `logs/fitcom.<datum>.log` | Dit bestand is wat je nodig hebt als iets niet werkt. |
+
+## Chat
+
+Berichten komen aan zodra de ander online is. Was iemand weg, dan haalt hij bij de
+eerstvolgende verbinding vanzelf op wat hij gemist heeft — je hoeft daar niets voor te
+doen en het maakt niet uit hoe lang hij weg was. Zolang één peer een bericht heeft, komt
+het uiteindelijk bij iedereen.
+
+- **Enter** verstuurt, **shift+enter** maakt een nieuwe regel.
+- Tekst tussen ` ``` ` wordt als codeblok getoond.
+- Je eigen berichten kun je bewerken en verwijderen; die van anderen niet.
+
+Staat de app niet op de voorgrond, dan krijg je een Windows-melding met een geluidje.
+Met `minimize_to_tray = true` (standaard) verbergt de sluitknop het venster naar de tray
+in plaats van af te sluiten: de app blijft dan synchroniseren en melden terwijl je gamet.
+Dubbelklik op het tray-icoon om terug te komen, of gebruik het rechtermuismenu om echt
+af te sluiten.
 
 ## Zelf bouwen
 
