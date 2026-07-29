@@ -12,7 +12,7 @@
 //! stilvallen zonder dat er iets misgaat.
 
 use crate::chat::Chat;
-use crate::config::Config;
+use crate::config::{Config, VideoConfig};
 use crate::notify;
 use crate::streams::{Actie, Streams};
 use anyhow::{Context, Result};
@@ -87,6 +87,7 @@ pub struct Snapshot {
     pub voice: VoiceView,
     pub eigen_streams: Vec<EigenStreamView>,
     pub streams: Vec<StreamView>,
+    pub video: VideoConfig,
     pub ongelezen: usize,
     pub fout: Option<String>,
 }
@@ -112,6 +113,10 @@ pub enum UiCommand {
     StopKijken(PeerId, u32),
     /// Volume van één stream van een peer, los van zijn stem.
     StreamVolume(PeerId, u32, f32),
+    /// Codec, framerate en bitrate voor screenshare. Geldt voor delers die al lopen
+    /// meteen mee — die worden herstart met de nieuwe instellingen — en voor nieuw
+    /// gestarte bronnen vanzelf, want die lezen `cfg.video` bij het starten.
+    ZetVideoInstellingen(VideoConfig),
 }
 
 pub struct EngineHandle {
@@ -633,6 +638,28 @@ impl Engine {
         Ok(())
     }
 
+    /// Herstart elke lopende deler met de huidige `cfg.video`. Wordt aangeroepen na een
+    /// instellingenwijziging: zonder dit zou een nieuwe bitrate of codec pas gaan gelden
+    /// bij de volgende keer delen, en dat is niet wat "instellingen aanpassen" belooft.
+    ///
+    /// Bureaubladgeluid draait niet via `delers` maar via de voice-sessie, en heeft geen
+    /// codec-instelling — die blijft dus vanzelf buiten schot.
+    fn herstart_lopende_delers(&mut self) {
+        let actief: Vec<(u32, Vec<SocketAddr>)> = self
+            .streams
+            .eigen()
+            .iter()
+            .filter(|s| self.delers.contains_key(&s.id))
+            .map(|s| (s.id, s.kijkers.values().copied().collect()))
+            .collect();
+        for (id, kijkers) in actief {
+            if let Err(e) = self.start_deler(id, kijkers) {
+                tracing::error!(error = %format!("{e:#}"), stream = id, "deler herstarten na instellingenwijziging mislukt");
+                self.fout = Some(format!("scherm delen: {e:#}"));
+            }
+        }
+    }
+
     fn start_kijker(
         &mut self,
         eigenaar: PeerId,
@@ -748,6 +775,14 @@ impl Engine {
                     v.zet_bron_volume((peer, id), vol);
                 }
             }
+            UiCommand::ZetVideoInstellingen(video) => {
+                self.cfg.video = video;
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    tracing::warn!(error = %format!("{e:#}"), "video-instellingen niet opgeslagen");
+                    self.fout = Some(format!("instellingen opslaan: {e:#}"));
+                }
+                self.herstart_lopende_delers();
+            }
             UiCommand::StopDelen(id) => {
                 let (cmds, acties) = self.streams.stop_delen(id);
                 self.bronnen.remove(&id);
@@ -860,6 +895,7 @@ impl Engine {
             voice,
             eigen_streams,
             streams,
+            video: self.cfg.video.clone(),
             ongelezen: self.chat.ongelezen,
             fout: self.fout.clone(),
         }));

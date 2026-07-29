@@ -4,6 +4,7 @@
 //! Er wordt hier geen enkele beslissing genomen over netwerk of opslag, en er staat
 //! geen state in die verloren gaat als het venster even niet tekent.
 
+use crate::config::VideoConfig;
 use crate::engine::{self, EngineHandle, PeerView, Snapshot, UiCommand};
 use crate::tray;
 use eframe::egui;
@@ -38,6 +39,17 @@ pub struct App {
     /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
     /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
     bronkeuze: Option<Vec<Bron>>,
+    /// `Some` zolang het instellingenscherm open staat. Een kopie om in te bewerken,
+    /// zodat "annuleren" niets hoeft terug te draaien.
+    instellingen: Option<VideoConcept>,
+}
+
+/// Bewerkbare kopie van de video-instellingen. Bitrate in Mbit/s voor de schuif —
+/// niemand denkt in bits per seconde.
+struct VideoConcept {
+    codec: String,
+    fps: u32,
+    bitrate_mbit: f32,
 }
 
 impl App {
@@ -64,6 +76,7 @@ impl App {
             vorig_aantal: 0,
             naar_tray,
             bronkeuze: None,
+            instellingen: None,
         }
     }
 
@@ -144,6 +157,7 @@ impl eframe::App for App {
 
         self.deelnemers_paneel(ctx);
         self.bronkeuze_venster(ctx);
+        self.instellingen_venster(ctx);
         self.statusbalk(ctx);
         self.chat_paneel(ctx);
     }
@@ -482,6 +496,7 @@ impl App {
 
     fn statusbalk(&mut self, ctx: &egui::Context) {
         let mut fout_weg = false;
+        let mut instellingen_openen = false;
 
         egui::TopBottomPanel::bottom("statusbalk").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -500,6 +515,10 @@ impl App {
                         .arg(&self.data_dir)
                         .spawn();
                 }
+                ui.separator();
+                if ui.small_button("video-instellingen").clicked() {
+                    instellingen_openen = true;
+                }
                 if let Some(err) = &self.snap.fout {
                     ui.separator();
                     if ui
@@ -517,6 +536,85 @@ impl App {
 
         if fout_weg {
             self.stuur(UiCommand::FoutWeg);
+        }
+        if instellingen_openen {
+            self.instellingen = Some(VideoConcept {
+                codec: self.snap.video.codec.clone(),
+                fps: self.snap.video.fps,
+                bitrate_mbit: self.snap.video.bitrate as f32 / 1_000_000.0,
+            });
+        }
+    }
+
+    /// Codec, framerate en bitrate voor screenshare. Bewerkt een kopie, zodat
+    /// "annuleren" niets hoeft terug te draaien — pas "toepassen" stuurt iets naar de
+    /// motor. Lopende deelsessies herstarten daar meteen mee; zie `engine.rs`.
+    fn instellingen_venster(&mut self, ctx: &egui::Context) {
+        let Some(concept) = &mut self.instellingen else {
+            return;
+        };
+        let mut open = true;
+        let mut toepassen = false;
+        let mut annuleren = false;
+
+        egui::Window::new("Video-instellingen")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(340.0)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("Codec").strong());
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut concept.codec, "h264".to_string(), "H.264");
+                    ui.selectable_value(&mut concept.codec, "hevc".to_string(), "HEVC");
+                });
+                if concept.codec == "hevc" {
+                    ui.small(
+                        "HEVC decoderen loopt op Windows via een Store-uitbreiding die er niet \
+                         standaard op zit. Zet dit alleen aan als je zeker weet dat alle peers \
+                         hem kunnen decoderen.",
+                    );
+                } else {
+                    ui.small("Aanbevolen: zit altijd in Windows, bij iedereen.");
+                }
+                ui.add_space(10.0);
+
+                ui.label(egui::RichText::new("Beelden per seconde").strong());
+                ui.add(egui::Slider::new(&mut concept.fps, 15..=60));
+                ui.add_space(10.0);
+
+                ui.label(egui::RichText::new("Bitrate").strong());
+                ui.add(
+                    egui::Slider::new(&mut concept.bitrate_mbit, 2.0..=50.0)
+                        .suffix(" Mbit/s")
+                        .fixed_decimals(0),
+                );
+                ui.small(
+                    "Op een gigabitnetwerk zijn bits gratis; hoger geeft scherpere tekst.",
+                );
+                ui.add_space(14.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Toepassen").clicked() {
+                        toepassen = true;
+                    }
+                    if ui.button("Annuleren").clicked() {
+                        annuleren = true;
+                    }
+                });
+                ui.add_space(4.0);
+                ui.small("Geldt voor lopende en nieuw gestarte deelsessies.");
+            });
+
+        if toepassen {
+            let concept = self.instellingen.take().unwrap();
+            self.stuur(UiCommand::ZetVideoInstellingen(VideoConfig {
+                codec: concept.codec,
+                fps: concept.fps,
+                bitrate: (concept.bitrate_mbit * 1_000_000.0).round() as u32,
+            }));
+        } else if annuleren || !open {
+            self.instellingen = None;
         }
     }
 
