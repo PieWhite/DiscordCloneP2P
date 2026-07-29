@@ -32,12 +32,22 @@ Alle drie de peers hebben NVIDIA Turing of nieuwer, maar de RTX 2080 Super kan A
 **niet encoden en niet decoden**. Daarom is HEVC de codec, met H.264 als fallback.
 Stel nooit AV1 voor zonder dat die machine vervangen is.
 
+## Bouwvereisten
+Naast Rust + MSVC is `cmake` nodig: libopus wordt vanuit broncode meegebouwd. Op deze
+machine staat hij portable in `%USERPROFILE%\tools\cmake-4.4.0-windows-x86_64\bin`,
+toegevoegd aan het gebruikers-PATH.
+
+`.cargo/config.toml` zet `CMAKE_POLICY_VERSION_MINIMUM=3.5`: de libopus die met
+`audiopus_sys` meekomt is uit 2021 en zijn CMakeLists vraagt om een minimumversie die
+CMake 4 niet meer zonder meer accepteert.
+
 ## Commando's
 ```
 cargo build                          # debug build
 cargo run -p fitcom                  # app starten
 cargo run -p fitcom -- --data-dir X  # extra instantie met eigen config/poort/data
-cargo test                           # alles; proto + net tests zijn de belangrijke
+cargo test                           # alles; proto, store en audio zijn de belangrijke
+cargo test -p fitcom-audio --test apparaten -- --ignored   # echte geluidskaart
 cargo clippy --all-targets           # voor een commit
 cargo fmt --all
 .\scripts\run-peers.ps1 -Count 3     # 3 lokale instanties, volledige mesh

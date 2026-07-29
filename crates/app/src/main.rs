@@ -50,6 +50,15 @@ fn main() -> Result<()> {
         "configuratie geladen"
     );
 
+    // De namen exact zoals ze in `config.toml` moeten komen te staan. Zonder dit moet
+    // je gokken hoe Windows jouw headset noemt.
+    match engine::audio_apparaten() {
+        Ok((invoer, uitvoer)) => {
+            tracing::info!(microfoons = ?invoer, weergave = ?uitvoer, "geluidsapparaten");
+        }
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "geluidsapparaten niet op te vragen"),
+    }
+
     // eframe wil de hoofdthread. Tokio krijgt daarom een eigen runtime op
     // achtergrondthreads; de UI praat er via kanalen mee, nooit via locks.
     let runtime = tokio::runtime::Builder::new_multi_thread()

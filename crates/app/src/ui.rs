@@ -17,6 +17,9 @@ use std::time::Duration;
 /// 4 fps als er niets gebeurt. Genoeg om wijzigingen direct te tonen, en
 /// verwaarloosbaar qua CPU — de app moet in rust vrijwel niets doen.
 const IDLE_REPAINT: Duration = Duration::from_millis(250);
+/// Tijdens een gesprek vaker: een spreekindicatie die vier keer per seconde bijwerkt
+/// oogt traag. Dit kost pas iets als er daadwerkelijk gepraat wordt.
+const VOICE_REPAINT: Duration = Duration::from_millis(80);
 
 pub struct App {
     engine: EngineHandle,
@@ -117,7 +120,11 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.snap = self.engine.snapshot.borrow_and_update().clone();
-        ctx.request_repaint_after(IDLE_REPAINT);
+        ctx.request_repaint_after(if self.snap.voice.actief {
+            VOICE_REPAINT
+        } else {
+            IDLE_REPAINT
+        });
 
         if self.afsluiten_of_verbergen(ctx) {
             return;
@@ -138,6 +145,9 @@ impl eframe::App for App {
 
 impl App {
     fn deelnemers_paneel(&mut self, ctx: &egui::Context) {
+        let mut volume_wijziging: Option<(PeerId, f32)> = None;
+        let mut voice_cmd: Option<UiCommand> = None;
+
         egui::SidePanel::left("deelnemers")
             .resizable(false)
             .exact_width(240.0)
@@ -163,6 +173,14 @@ impl App {
                     );
                     ui.weak("(jij)");
                 });
+                if self.snap.voice.actief {
+                    let niveau = if self.snap.voice.muted {
+                        0.0
+                    } else {
+                        self.snap.voice.eigen_niveau
+                    };
+                    niveaubalk(ui, niveau);
+                }
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -172,6 +190,7 @@ impl App {
                     ui.small("Zet de tailnet-adressen van de anderen in config.toml.");
                 }
 
+                let in_gesprek = self.snap.voice.actief;
                 for p in &self.snap.peers {
                     let naam = p
                         .peer_id
@@ -179,9 +198,73 @@ impl App {
                         .cloned()
                         .unwrap_or_else(|| p.label.clone());
                     peer_row(ui, p, &naam);
+
+                    if in_gesprek && p.in_voice {
+                        niveaubalk(ui, p.niveau);
+                        if let Some(id) = p.peer_id {
+                            let mut vol = p.volume;
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut vol, 0.0..=2.0)
+                                        .show_value(false)
+                                        .text("volume"),
+                                )
+                                .changed()
+                            {
+                                volume_wijziging = Some((id, vol));
+                            }
+                        }
+                    }
                     ui.add_space(6.0);
                 }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+                voice_cmd = self.voice_bediening(ui);
             });
+
+        if let Some((id, vol)) = volume_wijziging {
+            self.stuur(UiCommand::Volume(id, vol));
+        }
+        if let Some(cmd) = voice_cmd {
+            self.stuur(cmd);
+        }
+    }
+
+    /// Levert het commando dat de gebruiker aanklikte terug in plaats van het meteen
+    /// te versturen: binnen de paneelsluiting is `self` al onveranderlijk geleend.
+    fn voice_bediening(&self, ui: &mut egui::Ui) -> Option<UiCommand> {
+        let v = &self.snap.voice;
+
+        if !v.actief {
+            if self.snap.peers.iter().any(|p| p.in_voice) {
+                ui.small(egui::RichText::new("er is een gesprek bezig").color(GROEN));
+                ui.add_space(2.0);
+            }
+            return ui
+                .add_sized([ui.available_width(), 28.0], egui::Button::new("Deelnemen"))
+                .clicked()
+                .then_some(UiCommand::VoiceDeelnemen);
+        }
+
+        let mut cmd = None;
+        ui.horizontal(|ui| {
+            if ui.selectable_label(v.muted, "mute").clicked() {
+                cmd = Some(UiCommand::Mute(!v.muted));
+            }
+            if ui.selectable_label(v.deafened, "deafen").clicked() {
+                cmd = Some(UiCommand::Deafen(!v.deafened));
+            }
+        });
+        ui.add_space(4.0);
+        if ui
+            .add_sized([ui.available_width(), 24.0], egui::Button::new("Verlaten"))
+            .clicked()
+        {
+            cmd = Some(UiCommand::VoiceVerlaten);
+        }
+        cmd
     }
 
     fn statusbalk(&mut self, ctx: &egui::Context) {
@@ -440,5 +523,29 @@ fn tijd(millis: i64) -> String {
     match Local.timestamp_millis_opt(millis).single() {
         Some(t) => t.format("%H:%M").to_string(),
         None => String::new(),
+    }
+}
+
+/// Smalle balk die meebeweegt met hoe hard iemand praat.
+///
+/// Logaritmisch geschaald: spraak zit qua energie laag ten opzichte van het maximum,
+/// en lineair zou de balk nauwelijks bewegen.
+fn niveaubalk(ui: &mut egui::Ui, niveau: f32) {
+    let deel = if niveau <= 0.0005 {
+        0.0
+    } else {
+        ((niveau.log10() * 20.0 + 60.0) / 60.0).clamp(0.0, 1.0)
+    };
+
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().min(200.0), 4.0),
+        egui::Sense::hover(),
+    );
+    let schilder = ui.painter();
+    schilder.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    if deel > 0.0 {
+        let mut gevuld = rect;
+        gevuld.set_width(rect.width() * deel);
+        schilder.rect_filled(gevuld, 2.0, GROEN);
     }
 }

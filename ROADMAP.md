@@ -24,12 +24,16 @@ tokio-runtime, niet in `update()` van de UI. egui tekent niet als het venster ve
 of geminimaliseerd is, en dan zou de synchronisatie stilvallen op precies het moment dat
 je een melding zou willen krijgen. De UI is nu een pure weergave van een momentopname.
 
-## Fase 3 — Voice
-WASAPI-capture, `nnnoiseless` noise suppression + VAD, Opus, UDP-transport,
-jitterbuffer, lokale mix van meerdere sprekers, per-deelnemer volume, mute/deafen,
+## Fase 3 — Voice ✅
+WASAPI-capture via `cpal`, `nnnoiseless` ruisonderdrukking + VAD, Opus over UDP,
+adaptieve jitterbuffer per spreker, lokale mix, per-deelnemer volume, mute/deafen,
 expliciet join/leave.
-**Klaar als:** twee peers voeren een gesprek zonder hoorbare vertraging of drop-outs;
-CPU-verbruik blijft laag; app in rust (niet in voice) doet vrijwel niets.
+**Klaar:** de keten van coderen tot decoderen is getest inclusief pakketverlies en
+herordening; de apparaatlaag is met een rooktest op echte hardware gecontroleerd.
+Of het *klinkt* moet met een tweede machine beoordeeld worden — dat kan geen test.
+
+Geen echo-onderdrukking, conform de afspraak dat iedereen een headset gebruikt. Dat
+scheelde een C++-bouwafhankelijkheid (WebRTC APM).
 
 ## Fase 4 — Screenshare, eerste versie
 WGC-capture van één monitor, HEVC-encode via Media Foundation, UDP-fragmentatie,

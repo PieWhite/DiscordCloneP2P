@@ -16,6 +16,7 @@ use fitcom_net::MeshCommand;
 use fitcom_proto::control::{OpBroadcast, SyncRequest, SyncResponse};
 use fitcom_proto::{ControlMsg, Op, OpId, OpKind, PeerId, VersionVector};
 use fitcom_store::{Store, Timeline, SYNC_BATCH};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Hoe vaak we ongevraagd onze version vector langs de verbonden peers sturen.
@@ -25,7 +26,9 @@ const HERSYNC_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct Chat {
     store: Store,
-    timeline: Timeline,
+    /// Als `Arc` zodat de motor hem elke honderd milliseconde kan publiceren zonder
+    /// de hele geschiedenis te kopiëren.
+    timeline: Arc<Timeline>,
     laatste_hersync: Instant,
     /// Wordt gezet zodra de timeline niet meer klopt met de oplog.
     vuil: bool,
@@ -35,7 +38,7 @@ pub struct Chat {
 
 impl Chat {
     pub fn new(store: Store) -> Result<Self> {
-        let timeline = store.timeline()?;
+        let timeline = Arc::new(store.timeline()?);
         Ok(Self {
             store,
             timeline,
@@ -53,6 +56,10 @@ impl Chat {
         &self.timeline
     }
 
+    pub fn timeline_arc(&self) -> Arc<Timeline> {
+        self.timeline.clone()
+    }
+
     /// Bouwt de timeline opnieuw als er iets veranderd is. Levert `true` bij een
     /// daadwerkelijke wijziging, zodat de UI weet dat hij naar beneden moet scrollen.
     pub fn refresh(&mut self) -> bool {
@@ -62,7 +69,7 @@ impl Chat {
         self.vuil = false;
         match self.store.timeline() {
             Ok(t) => {
-                self.timeline = t;
+                self.timeline = Arc::new(t);
                 true
             }
             Err(e) => {

@@ -58,7 +58,9 @@ pub enum PeerStatus {
     Online {
         peer_id: PeerId,
         display_name: String,
-        media_port: u16,
+        /// Waar de audio- en videopakketten van deze peer heen moeten: zijn IP met de
+        /// mediapoort die hij in de handshake opgaf.
+        media_addr: SocketAddr,
         rtt_ms: u32,
     },
     /// De peer draait een andere protocolversie. Geen crash, wel onbruikbaar tot
@@ -303,7 +305,7 @@ struct Active {
     conn_id: u64,
     target: Option<usize>,
     display_name: String,
-    media_port: u16,
+    media_addr: SocketAddr,
     conn: quinn::Connection,
     out: mpsc::Sender<ControlMsg>,
 }
@@ -471,10 +473,11 @@ impl Actor {
         self.targets[target].bound = Some(e.conn_id);
         let _ = self.targets[target].connected.send(true);
 
+        let media_addr = SocketAddr::new(e.remote.ip(), e.media_port);
         let status = PeerStatus::Online {
             peer_id: e.peer_id,
             display_name: e.display_name.clone(),
-            media_port: e.media_port,
+            media_addr,
             rtt_ms: e.conn.rtt().as_millis() as u32,
         };
 
@@ -484,7 +487,7 @@ impl Actor {
                 conn_id: e.conn_id,
                 target: Some(target),
                 display_name: e.display_name,
-                media_port: e.media_port,
+                media_addr,
                 conn: e.conn,
                 out: e.out,
             },
@@ -592,7 +595,7 @@ impl Actor {
                         PeerStatus::Online {
                             peer_id: *peer_id,
                             display_name: a.display_name.clone(),
-                            media_port: a.media_port,
+                            media_addr: a.media_addr,
                             rtt_ms: a.conn.rtt().as_millis() as u32,
                         },
                     )

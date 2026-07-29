@@ -37,6 +37,14 @@ pub struct Config {
     #[serde(default)]
     pub autostart: bool,
 
+    /// Naam van de microfoon zoals Windows hem toont. Leeg = standaardapparaat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_device: Option<String>,
+
+    /// Naam van de koptelefoon of luidsprekers. Leeg = standaardapparaat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_device: Option<String>,
+
     /// De andere peers. Geen limiet van 3 — de code is bewust N-agnostisch.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
@@ -85,6 +93,8 @@ impl Config {
             media_port: DEFAULT_MEDIA_PORT,
             minimize_to_tray: true,
             autostart: false,
+            input_device: None,
+            output_device: None,
             peers: vec![
                 PeerConfig {
                     address: "100.64.0.2".into(),

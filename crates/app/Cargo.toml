@@ -12,6 +12,7 @@ clap = { version = "4.6.4", features = ["derive"] }
 directories = "6.0.0"
 eframe = "0.32.3"
 egui = "0.32.3"
+fitcom-audio = { version = "0.1.0", path = "../audio" }
 fitcom-net = { version = "0.1.0", path = "../net" }
 fitcom-proto = { version = "0.1.0", path = "../proto" }
 fitcom-store = { version = "0.1.0", path = "../store" }

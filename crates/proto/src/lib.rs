@@ -11,7 +11,7 @@ pub mod op;
 
 pub use control::{ControlMsg, StreamKind};
 pub use ids::{OpId, PeerId};
-pub use media::{MediaHeader, PayloadType, MEDIA_HEADER_LEN};
+pub use media::{MediaHeader, PayloadType, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN, VOICE_STREAM_ID};
 pub use op::{Op, OpKind, VersionVector};
 
 /// Verhoog dit alleen bij een breuk die niet met `#[serde(default)]` of het negeren

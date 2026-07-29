@@ -4,7 +4,9 @@
 //! deze crate gaat alleen over verbindingen opzetten, in stand houden en herstellen.
 
 pub mod framing;
+pub mod media;
 pub mod mesh;
 mod tls;
 
+pub use media::{MediaSocket, MAX_PAKKET};
 pub use mesh::{spawn, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget};

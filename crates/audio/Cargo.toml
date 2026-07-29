@@ -1,0 +1,16 @@
+[package]
+name = "fitcom-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+cpal = "0.18.1"
+crossbeam-channel = "0.5.16"
+fitcom-net = { version = "0.1.0", path = "../net" }
+fitcom-proto = { version = "0.1.0", path = "../proto" }
+nnnoiseless = "0.5.2"
+opus = "0.3.1"
+tracing = "0.1.44"

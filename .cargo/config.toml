@@ -1,0 +1,8 @@
+# libopus wordt meegeleverd door `audiopus_sys` en dateert uit 2021; zijn CMakeLists
+# vraagt om een `cmake_minimum_required` die CMake 4 niet meer accepteert. Dit is de
+# officiële ontsnappingsklep daarvoor en raakt verder niets — libopus is de enige
+# afhankelijkheid in dit project die cmake gebruikt.
+#
+# Kan weg zodra er een nieuwere Opus-binding is die moderne CMake-policies hanteert.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

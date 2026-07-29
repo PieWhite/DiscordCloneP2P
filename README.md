@@ -4,8 +4,7 @@ Servervrij alternatief voor Discord voor een kleine vaste groep. Draait over een
 Tailscale-tailnet, zonder signaling-server, zonder TURN, zonder accounts, zonder cloud.
 Alle peers zijn gelijkwaardig — er is geen host.
 
-**Status:** fase 2 af — netwerklaag en tekstchat werken, inclusief het inhalen van
-berichten die je gemist hebt terwijl je offline was. Voice en screenshare volgen.
+**Status:** fase 3 af — netwerklaag, tekstchat en voice chat werken. Screenshare volgt.
 Zie [ROADMAP.md](ROADMAP.md).
 
 ## Wat je nodig hebt
@@ -13,7 +12,8 @@ Zie [ROADMAP.md](ROADMAP.md).
 - Windows 11
 - [Tailscale](https://tailscale.com/), geïnstalleerd en ingelogd op elke PC, met alle
   PC's in hetzelfde tailnet
-- Om zelf te bouwen: Rust (stable) met de MSVC-toolchain
+- Om zelf te bouwen: Rust (stable) met de MSVC-toolchain, en `cmake` op je PATH
+  (libopus wordt vanuit broncode meegebouwd)
 
 ## Installeren op een PC
 
@@ -34,6 +34,11 @@ control_port     = 41650
 media_port       = 41651
 minimize_to_tray = true      # sluitknop verbergt naar de tray in plaats van af te sluiten
 autostart        = false     # meestarten met Windows
+
+# Weglaten = het standaardapparaat van Windows. De naam moet exact overeenkomen met
+# wat Windows toont; de app schrijft de beschikbare namen bij het starten in de log.
+# input_device  = "Microfoon (BlackShark V3 Pro - Chat)"
+# output_device = "Luidsprekers (BlackShark V3 Pro - Chat)"
 
 [[peers]]
 address = "vriend-pc"        # MagicDNS-naam of tailnet-IP zoals 100.64.0.2
@@ -62,6 +67,26 @@ meestal bij de eerste start.
 | `identity.toml` | Door de app gegenereerd. **Niet kopiëren** — twee peers met dezelfde identiteit breken de chat-synchronisatie. |
 | `chat.sqlite` | De volledige chatgeschiedenis. Weggooien wist je geschiedenis, maar de anderen vullen hem bij de eerstvolgende verbinding weer aan. |
 | `logs/fitcom.<datum>.log` | Dit bestand is wat je nodig hebt als iets niet werkt. |
+
+## Voice
+
+Klik links onderin op **Deelnemen**. Je hoort en spreekt dan met iedereen die ook
+deelneemt; er is geen server die mixt, iedereen stuurt rechtstreeks naar iedereen.
+Zie je "er is een gesprek bezig", dan zit er al iemand te wachten.
+
+- **Open mic:** er wordt alleen verstuurd als je daadwerkelijk praat. Ben je stil, dan
+  gaat er niets over de lijn en doet de app vrijwel niets.
+- **Ruisonderdrukking** staat altijd aan.
+- **Mute** zet je microfoon uit, **deafen** zet ook je microfoon uit — als jij niemand
+  hoort, hoort niemand jou.
+- Het volume per persoon stel je in met de schuif onder zijn naam.
+
+Er zit geen echo-onderdrukking in: dat kan omdat jullie alle drie een headset gebruiken.
+Speel je het geluid via luidsprekers af, dan horen de anderen zichzelf terug.
+
+**Zet je microfoon en koptelefoon in Windows op 48000 Hz.** Staat er iets anders, dan
+moet de app herbemonsteren en dat kost onnodig kwaliteit. De app waarschuwt hierover
+in de log.
 
 ## Chat
 
@@ -105,6 +130,8 @@ Geef elke instantie een eigen `--data-dir` en zet in elke `config.toml` een ande
 | `offline · peer reageert niet` | De ander draait de app niet, of de firewall blokkeert. |
 | `offline · <adres> opzoeken` | De naam is niet op te lossen. Staat MagicDNS aan? Draait Tailscale? |
 | `versie X vs Y` | De twee PC's draaien verschillende versies. Kopieer dezelfde exe naar beide. |
+| `microfoon of weergave: ...` | Het apparaat uit `config.toml` bestaat niet of is in gebruik. Haal de regel weg om het standaardapparaat te nemen. |
+| Je hoort niemand | Zit de ander ook in het gesprek? Staat deafen aan? Klopt `media_port` en laat de firewall UDP door? |
 | `andere identiteit dan verwacht` | Achter dit adres zit een andere installatie dan eerder. Klopt dat (nieuwe PC, `identity.toml` weg)? Haal dan `known_id` uit `config.toml`. |
 
 Meer detail in de log: start met `FITCOM_LOG=debug`.

@@ -17,7 +17,7 @@ Hoe we bouwen. Requirements staan in `SPEC.md`.
 | Schermcapture | `windows` crate → Windows.Graphics.Capture + D3D11 | Microsofts eigen binding; monitor én venster; blijft op de GPU |
 | Video encode/decode | Media Foundation Transform via `windows` crate, achter een trait | Geen NVIDIA SDK of CUDA nodig; vendor-agnostisch; D3D11-textuur als input |
 | Audio I/O | `cpal` (WASAPI); losse WASAPI-loopback via `windows` crate voor desktop-audio | |
-| Audio codec | Opus (`audiopus`) | |
+| Audio codec | Opus (`opus` crate) | Vereist `cmake` om libopus mee te bouwen; alleen bij het bouwen, niet bij de gebruiker |
 | Noise suppression | `nnnoiseless` | Pure Rust, geen C++ build-dependency |
 
 ### Encoder achter een trait
@@ -56,6 +56,38 @@ draait op de tokio-runtime; de UI leest een `watch`-momentopname en stuurt comma
 terug. Om dezelfde reden leest de tray-thread zijn eigen gebeurtenissen: zou de
 tray-klik in de UI worden afgehandeld, dan kon je een verborgen venster nooit meer
 terughalen.
+
+## Voice
+
+```text
+microfoon ─► cpal-callback ─► opname-thread ──► UDP naar alle deelnemers
+                              (herbemonsteren, ruisonderdrukking, VAD, Opus)
+
+UDP ─► ontvang-thread ─► jitterbuffer per spreker ─► mix-thread ─► cpal-callback ─► koptelefoon
+```
+
+- 48 kHz mono, 20 ms frames, Opus op 32 kbit/s met inband-FEC.
+- **De cpal-callbacks doen niets dan samples in of uit een kanaal schuiven.** Ze draaien
+  op threads van de geluidsdriver; wat daar te lang duurt is een hoorbare klik.
+- **De mix-thread laat zich aandrijven door de geluidskaart**, niet door een timer: hij
+  maakt pas een frame bij als de weergavebuffer ruimte heeft. Op een timer zou hij
+  onvermijdelijk uit de pas lopen met de kaart en dan loopt de buffer vol of leeg.
+- **Er wordt alleen verstuurd als de VAD spraak ziet**, met 500 ms hangover zodat het
+  eind van woorden niet wordt afgekapt. Stil betekent geen verkeer en geen CPU.
+- **Geen echo-onderdrukking.** Dat mag omdat iedereen een headset draagt; het scheelt
+  een C++-bouwafhankelijkheid (WebRTC APM). Zie `SPEC.md`.
+- Mixen gebeurt in `i32` en klemt daarna naar `i16`. Optellen in `i16` klapt om bij drie
+  harde sprekers, en dat klinkt als een explosie in plaats van als hard geluid.
+
+### Jitterbuffer
+Telt frames, geen milliseconden — de geluidskaart *is* de klok. Daardoor is het gedrag
+bij verlies en herordening exact te testen zonder te wachten.
+
+Hij groeit snel bij problemen en krimpt langzaam bij rust. Andersom zou hij bij elke hik
+terugvallen en opnieuw moeten opbouwen, wat je hoort als herhaalde onderbrekingen in
+plaats van eenmalig wat extra vertraging. Loopt hij ver vol — de zender staat voor, of we
+hebben gehaperd — dan gooit hij het oudste weg: één hapering is beter dan een halve
+seconde vertraging die nooit meer weggaat.
 
 ## Wire-protocol
 
