@@ -119,23 +119,40 @@ vastlopen of blijven kraken; hij verdwijnt gewoon uit het gesprek.
 
 ---
 
-## Fase 4 — Screenshare (nog niet af)
+## Fase 4 — Screenshare
 
-Deze kunnen nog niet: capture en encoder werken, maar decoder, weergavevenster en
-streambeheer moeten nog gebouwd worden. Voor de volledigheid vast de gevallen die er
-straks toe doen:
+Beeld werkt van begin tot eind. Op één machine is bevestigd: 1080p op 55-56 beelden per
+seconde, geen enkel beeld onderweg kwijt, scherp leesbare tekst, en 3,1 ms tussen
+opnemen en tonen in een debug-build. Wat een tweede machine daaraan toevoegt is een echt
+netwerk, een andere GPU, en een oordeel over hoe het voelt.
+
+Desktop-audio (4.9) is nog niet gebouwd — dat is het laatste wat in deze fase openstaat.
 
 **4.1** Deel je scherm; hij ziet het. Cursor is zichtbaar.
 **4.2** Tekst en code zijn scherp leesbaar, geen wazige randen om gekleurde letters.
+*Zijn ze grauw of juist te contrastrijk, dan staat het kleurbereik verkeerd; zie
+`crates/video/src/kleur.rs`.*
 **4.3** Glass-to-glass vertraging: zwaai met een venster en kijk hoeveel je achterloopt.
+*Lokaal gemeten zit er 3 ms tussen opnemen en tonen, dus alles wat je hier merkt komt van
+het netwerk of van de monitor zelf.*
 **4.4** Delen tijdens gamen mag je framerate niet merkbaar raken.
-**4.5** Niemand kijkt → geen CPU/GPU-verbruik en geen netwerkverkeer.
-**4.6** Kijker sluit het venster en opent het opnieuw → beeld komt binnen een seconde terug.
+**4.5** Niemand kijkt → geen CPU/GPU-verbruik en geen netwerkverkeer. *Kondig een bron
+aan en laat hem staan zonder dat iemand op "bekijken" klikt. In de deelnemerslijst staat
+dan "niemand kijkt" met een grijze stip. Zie je toch verkeer of GPU-gebruik, dan is de
+belangrijkste eigenschap van deze fase stuk.*
+**4.6** Kijker sluit het venster en opent het opnieuw → beeld komt binnen een seconde
+terug. *Bij het opnieuw openen wordt er om een keyframe gevraagd; blijft het venster
+zwart, dan komt dat verzoek niet aan of wordt het niet gehonoreerd.*
 **4.7** Venster delen in plaats van scherm; alleen dat venster is zichtbaar.
 **4.8** Twee mensen delen tegelijk; beide beelden zijn te zien.
 **4.9** Desktop-audio komt mee en is los in volume te regelen van de stemmen.
 **4.10** Bij de peer met de RTX 2080 Super: werkt decoderen daar ook? *Dit is de machine
 die de codeckeuze bepaalde.*
+**4.11** F11 of dubbelklik in het kijkvenster → beeldvullend, Escape of F11 → terug. Dit
+mag geen resolutiewissel geven; draait er een game op datzelfde scherm, dan moet die
+gewoon doorlopen.
+**4.12** Deler valt weg terwijl er gekeken wordt (app afsluiten of kabel eruit). Het
+kijkvenster mag niet vastlopen; het beeld bevriest en dat is genoeg.
 
 ---
 

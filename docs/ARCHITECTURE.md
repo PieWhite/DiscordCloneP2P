@@ -30,10 +30,29 @@ glass-to-glass latency tegenvalt, wisselen we naar **directe NVENC** (via
 ### Waarom video in een apart venster
 `eframe` rendert via wgpu (DX12). Een gedecodeerde D3D11-textuur daarin krijgen vereist
 shared-handle-interop op `wgpu-hal`-niveau — onveilig, fragiel, en niet nodig.
-In plaats daarvan: elke stream krijgt een eigen borderless Win32-venster met eigen
-D3D11 swapchain, op een eigen thread met eigen message pump. Volledig geïsoleerd van
-de UI-thread, optimale videopad, en een maximaliseerbaar venster is op één 1080p-monitor
-sowieso de betere UX. Grid-in-hoofdvenster is fase 5.
+In plaats daarvan: elke stream krijgt een eigen Win32-venster met eigen D3D11 swapchain,
+op een eigen thread met eigen message pump. Volledig geïsoleerd van de UI-thread,
+optimale videopad, en een maximaliseerbaar venster is op één 1080p-monitor sowieso de
+betere UX. Grid-in-hoofdvenster is fase 5.
+
+Het venster houdt zijn gewone rand: zonder rand valt hij niet te verplaatsen, te
+vergroten of te sluiten zonder eigen hit-testing, en dat is nergens voor nodig.
+Beeldvullend zit op F11 en dubbelklik, zonder modeswitch — er kan een game op datzelfde
+scherm draaien. De swapchain houdt de afmeting van de stream en DXGI schaalt bij het
+presenteren; het venster bewaakt zelf de beeldverhouding.
+
+### Waarom elke kijker een eigen UDP-poort bindt
+Video kan niet over de voice-poort: die is bezet zodra je in een gesprek zit. De kijker
+bindt daarom per stream zijn eigen poort en zet die in `StreamSubscribe.media_port`.
+Daardoor is er niets te demultiplexen — één socket, één stream, één thread, één venster —
+en botsen video en voice nergens.
+
+### NV12 naar BGRA
+De decoder levert NV12, een swapchain wil BGRA. Die omzetting gaat via
+`ID3D11VideoProcessor`: vaste-functie-hardware die elke GPU hiervoor heeft. Het
+kleurbereik komt uit het onderhandelde uitvoertype van de decoder en niet uit een
+aanname — fout gezet levert geen fout op maar een verwassen beeld, en dat zie je zelf
+niet omdat je alleen je eigen scherm kent.
 
 ## Processtructuur
 
@@ -144,6 +163,11 @@ Videoframes worden gefragmenteerd op ~1200 byte payload (onder Tailscale's MTU).
 Een frame is compleet als alle fragmenten 0..n binnen zijn met bit1 gezet op de laatste.
 Incomplete frames worden gedropt; bij verlies van een keyframe vraagt de ontvanger via
 control om een nieuwe IDR.
+
+De `timestamp` van een videopakket komt uit het sample van de encoder, niet uit "nu" op
+het moment van versturen. Fragmenten horen bij elkaar dóórdat ze dezelfde tijdstempel
+dragen, dus die moet per beeld gelijk zijn en tussen beelden verschillen. Alle streams
+van één peer delen bovendien één klok, zodat hun tijdstempels vergelijkbaar zijn.
 
 ## Chat-synchronisatie
 
@@ -282,8 +306,10 @@ crates/
   store/     rusqlite, oplog, timeline-opbouw, sync-berekening
   net/       quinn mesh, reconnect, UDP media-sockets
   audio/     capture, opus, jitterbuffer, mix, ns/vad
-  video/     WGC capture, encoder-trait, MF impl, decoder, D3D11 render-venster
-  app/       lib + binary: eframe UI, config, chat-plumbing, tray, notificaties
+  video/     WGC capture, MF encoder en decoder, kleuromzetting, D3D11 render-venster,
+             deler- en kijker-thread
+  app/       lib + binary: eframe UI, config, chat-plumbing, streambeheer, tray,
+             notificaties
 ```
 `proto` en `store` hebben geen Windows- of hardware-afhankelijkheden en zijn daarom
 volledig unit-testbaar. Daar zit de subtiele logica, dus daar zitten de tests.

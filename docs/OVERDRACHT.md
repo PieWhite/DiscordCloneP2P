@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-29, na fase 4 deel 1.
+Laatst bijgewerkt: 2026-07-29, na fase 4 deel 2.
 
 ---
 
@@ -15,9 +15,15 @@ Laatst bijgewerkt: 2026-07-29, na fase 4 deel 1.
 | 1 — Netwerklaag | ✅ af | **echt getest tussen twee PC's over Tailscale** |
 | 2 — Tekstchat | ✅ af, nog niet met een echte peer getest | 19 unit/integratietests, 3 lokale instanties |
 | 3 — Voice | ✅ af, nog niet met een echte peer getest | ketentests + rooktest op echte geluidskaart |
-| 4 — Screenshare | 🟡 **deels**: capture en encoder werken, de rest niet | tests op echte GPU |
+| 4 — Screenshare | 🟡 **beeld af, desktop-audio niet** | volledige keten op echte GPU, 55 fps op 1080p |
 
-Wat nog open staat in fase 4 staat onderaan onder "Wat er nog moet".
+**Beeld werkt van begin tot eind**: een bron aankondigen, intekenen, opnemen, coderen,
+versturen, samenstellen, decoderen en tonen. Gemeten op deze machine: 1080p op 55-56
+beelden per seconde, nul beelden onderweg kwijt, 3,1 ms tussen opnemen en tonen in een
+debug-build.
+
+Wat nog open staat is **desktop-audio**; dat staat onderaan met de ontwerpkeuze die er
+nog gemaakt moet worden.
 
 ---
 
@@ -28,8 +34,10 @@ crates/proto/   Wire-protocol. Puur, geen I/O. ControlMsg, Op, VersionVector, me
 crates/store/   SQLite-oplog, timeline-opbouw, sync-berekening. Puur, geen Windows.
 crates/net/     QUIC-mesh (async, tokio) + MediaSocket voor UDP (blokkerend, geen tokio).
 crates/audio/   Voice: jitterbuffer, mixer, Opus, cpal-sessie.
-crates/video/   Screenshare: fragmentatie, D3D11, WGC-capture, MF-encoder.
-crates/app/     lib + binary. engine.rs is de motor; ui.rs is een pure weergave.
+crates/video/   Screenshare: fragmentatie, D3D11, WGC-capture, MF-encoder en -decoder,
+                kleuromzetting, weergavevenster, deler- en kijker-thread.
+crates/app/     lib + binary. engine.rs is de motor; streams.rs beslist over
+                screenshare; ui.rs is een pure weergave.
 ```
 
 De belangrijkste structurele regel: **`proto` en `store` bevatten geen Windows- of
@@ -73,6 +81,30 @@ kon je een verborgen venster nooit meer terughalen.
 Conform de afspraak dat iedereen een headset draagt. Dat scheelde WebRTC APM, een
 C++-bouwafhankelijkheid. Gebruikt iemand luidsprekers, dan horen de anderen zichzelf.
 
+### 5. Het kijkvenster heeft wél een rand (fase 4)
+De ARCHITECTURE zei "borderless". Dat is in de praktijk de verkeerde keuze: een venster
+zonder rand kun je niet verplaatsen, niet vergroten en niet sluiten zonder dat je dat
+allemaal zelf nabouwt met hit-testing. Wat er bedoeld werd — geen chroom *over* het
+beeld, geen egui eromheen, een eigen swapchain — geldt onverkort.
+
+Beeldvullend zit op F11 en dubbelklik, en dán is hij randloos. Zonder modeswitch, want
+er kan een game op datzelfde scherm draaien.
+
+### 6. Elke kijker bindt zijn eigen UDP-poort (fase 4)
+Video kan niet over de voice-poort: die is bezet zodra je in een gesprek zit. De kijker
+bindt daarom per stream een eigen poort en zet die in zijn `StreamSubscribe` — precies
+waar dat veld voor bedoeld was. Gevolg: geen demultiplexen, geen gedeelde socket, en één
+thread per bekeken stream die zijn eigen socket, decoder en venster bezit.
+
+### 7. Eén tijdklok per proces in plaats van per deler (fase 4)
+De tijdstempels op de draad hingen eerst aan een klok per deel-thread. Nu aan één klok
+per proces. Dat maakt de tijdstempels van al je streams onderling vergelijkbaar, en het
+maakt de vertraging van de hele keten meetbaar zodra deler en kijker in hetzelfde proces
+draaien — wat in `crates/video/tests/keten.rs` het geval is.
+
+**Tussen twee machines zegt dat getal niets**: die klokken lopen niet gelijk. Daarom
+staat het nergens in de UI.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -102,6 +134,13 @@ de buffer te verkleinen. Op de audio-thread is dat geen hapering maar een crash.
 via gebeurtenissen wanneer ze invoer willen. Mijn lus wachtte daar alleen de eerste keer
 blokkerend op en polste daarna; alle volgende `NeedInput`-gebeurtenissen werden gemist.
 Nu: blokkerend wachten tot hij om invoer vraagt, daarna alleen polsen naar uitvoer.
+
+**Tijdstempel per pakket in plaats van per beeld (fase 4).** De encoder leverde eerst
+kale bytes op, en de deler zette er "nu" als tijdstempel op. Fragmenten van hetzelfde
+beeld horen bij elkaar doordat ze dezelfde tijdstempel dragen, dus dat werkte alleen
+zolang alle fragmenten in dezelfde milliseconde de deur uit gingen. De encoder levert nu
+de tijd van het sample zelf, plus of het een keyframe is — dat laatste heeft de ontvanger
+nodig om te weten waar hij kan aanhaken.
 
 **Logbestand bleef leeg (fase 2).** `tracing_appender::non_blocking` buffert tot het
 proces netjes eindigt — precies verkeerd voor het bestand dat je opvraagt als er iets
@@ -133,59 +172,97 @@ runs een onverklaarbare fout. De helper onthoudt nu wat hij uitgedeeld heeft.
 - **De dev-PC heeft twee monitoren** (2560×1440 hoofdscherm + 1920×1080), terwijl de
   SPEC uitgaat van één 1080p-scherm per persoon. Multi-monitor is dus relevanter dan
   gedacht.
+- **De H.264-decoder van Windows gebruikt DXVA.** `Microsoft H264 Video Decoder MFT` is
+  formeel een software-MFT, maar zodra je hem ons D3D11-apparaat geeft levert hij zijn
+  beelden als GPU-textuur. De keten raakt het werkgeheugen dus nergens. Het pad voor een
+  decoder die dat níét doet zit er wel in (`Decoder::op_gpu` meldt welk pad actief is),
+  maar is op deze machine nooit uitgevoerd en dus ongetest.
+- **De vensterlijst bevat rommel.** `EnumWindows` levert ook onzichtbare hulpvensters op;
+  er wordt al gefilterd op zichtbaarheid, titel en `WS_EX_TOOLWINDOW`, maar er blijven
+  dubbelingen in staan (twee keer "Mail", twee keer "Instellingen"). Cosmetisch.
 
 ---
 
-## Wat er nog moet in fase 4
+## Hoe screenshare in elkaar zit
 
-De volgorde hieronder is ook de aanbevolen bouwvolgorde: elke stap is los te verifiëren.
+```
+crates/app/src/streams.rs   Wie deelt wat en wie kijkt waarnaar. Pure toestandslogica,
+                            raakt geen GPU, scherm of socket aan. Levert `Actie`s op.
+crates/app/src/engine.rs    Voert die `Actie`s uit: threads starten en stoppen.
+crates/video/src/deler.rs   opnemen → coderen → fragmenteren → UDP  (één per bron)
+crates/video/src/kijker.rs  UDP → samenstellen → decoderen → venster (één per stream)
+crates/video/src/venster.rs Win32-venster met eigen swapchain
+crates/video/src/kleur.rs   NV12 → BGRA via ID3D11VideoProcessor
+```
 
-### 1. Decoder (`crates/video/src/codec.rs`)
-Spiegelbeeld van `Encoder`. Aandachtspunten:
-- Zoeken met `zoek_transform_met(false, ...)` en **alle** vlaggen, niet alleen
-  `HARDWARE` — de H.264-decoder van Windows is geen hardware-MFT.
-- Software-MFT's zijn synchroon: dan geen gebeurtenislus maar gewoon `ProcessInput`
-  gevolgd door `ProcessOutput` tot `MF_E_TRANSFORM_NEED_MORE_INPUT`. Controleer met
-  `MFT_ENUM_FLAG_ASYNCMFT` welke van de twee je hebt en ondersteun beide.
-- Uitvoer is NV12. Voor weergave moet dat naar BGRA: `ID3D11VideoProcessor`
-  (`VideoProcessorBlt`) doet dat op de GPU.
-- **Verificatie:** roundtrip-test. Encodeer een textuur met bekende inhoud, decodeer,
-  controleer afmetingen en dat er beeld uitkomt. Dat kan zonder iets te zien.
+De splitsing tussen `streams.rs` en `engine.rs` is dezelfde als bij de chat en om
+dezelfde reden: de beslissingen zijn zonder hardware te testen, het uitvoeren niet.
+Vijftien tests in `streams.rs` dekken de gevallen die met de hand niet betrouwbaar te
+vinden zijn — de tweede kijker mag de encoder niet opnieuw starten, de laatste die
+weggaat moet hem stoppen, een peer die wegvalt telt als weggaan, opnieuw aankondigen bij
+een herverbinding mag een open venster niet dichtgooien.
 
-### 2. Weergavevenster (`crates/video/src/venster.rs`)
-Borderless Win32-venster met eigen DXGI-swapchain, op een eigen thread met eigen message
-pump. Zie `docs/ARCHITECTURE.md` → "Waarom video in een apart venster": eframe rendert via
-wgpu/DX12 en een D3D11-textuur daarin krijgen vereist fragiele `wgpu-hal`-interop.
-Alleen visueel te verifiëren.
+**De regel die alles bij elkaar houdt: er wordt pas opgenomen en gecodeerd als er iemand
+kijkt.** Een aangekondigde bron kost niets — geen capture, geen encoder, geen verkeer.
+Dat is waarom je een scherm gedeeld kunt laten staan terwijl je gamet, en het is het
+eerste wat je moet controleren als je hier iets verandert.
 
-### 3. Streambeheer (`crates/app/src/engine.rs`)
-De protocolberichten bestaan al en zijn ongebruikt: `StreamAnnounce`, `StreamRevoke`,
-`StreamSubscribe`, `StreamUnsubscribe`, `StreamStats`, `RequestKeyframe`.
+Twee tests dekken de rest:
+```
+cargo test -p fitcom-video --test keten     -- --ignored --nocapture   # de beeldketen
+cargo test -p fitcom      --test stream_deling -- --ignored --nocapture # via de motor
+```
 
-- Deler kondigt een bron aan met `StreamAnnounce`.
-- **Encoden start pas bij de eerste `StreamSubscribe`** en stopt bij de laatste
-  `StreamUnsubscribe`. Dat is de reden dat dit niets kost als niemand kijkt.
-- Bij `RequestKeyframe` → `Encoder::vraag_keyframe()` (bestaat al).
-- De ontvanger vraagt een keyframe zodra `Reassembler::incompleet` oploopt.
-- `stream_id` 0 is voice; screenshare krijgt 1 en hoger, toegekend door de deler.
+---
 
-Dit deel is grotendeels toestandslogica en dus **testbaar zonder GPU** — trek het uit
-elkaar zoals bij de chat: beslissingen in een pure module, plumbing in de motor.
+## Wat er nog moet in fase 4: desktop-audio
 
-### 4. Desktop-audio
-WASAPI-loopback opnemen (`cpal` kan dit mogelijk niet; dan rechtstreeks via de `windows`
-crate met `AUDCLNT_STREAMFLAGS_LOOPBACK`). Verder identiek aan de bestaande voice-keten:
-Opus, eigen `stream_id`, bij de ontvanger een eigen volumeschuif los van de stemmen.
-De mixer in `crates/audio/src/mix.rs` kan dit al aan — het is gewoon een extra bron.
+Het laatste onderdeel. `cpal` 0.18 kan dit gewoon: bouw een **invoer**stroom op een
+**uitvoer**apparaat, dan zet WASAPI stilzwijgend loopback aan. Er is dus geen eigen
+WASAPI-code nodig, wat de oude aantekening hier wel vermoedde.
 
-### 5. Meetpunt latency
-Uit de ROADMAP: meet glass-to-glass. Valt het tegen, dan de encoder omzetten naar
-directe NVENC. De `Encoder` is daarvoor al een afzonderlijke module met een smalle API
-(`new` + `encode` + `vraag_keyframe`), dus dat raakt de rest niet.
+Verder is het de bestaande voice-keten: 48 kHz mono, Opus, eigen `stream_id`, bij de
+ontvanger een extra bron in de mixer met een eigen volumeschuif. Geen VAD en geen
+ruisonderdrukking — dat is muziek en spelgeluid, geen spraak, en een VAD zou er stukken
+uit knippen. Wel een stiltedrempel met ruime hangover, anders kost stilte bandbreedte.
+
+### De keuze die nog gemaakt moet worden
+
+Waar komt het geluid binnen? Twee wegen, en ze sluiten elkaar uit:
+
+**A. Over de voice-poort, als extra bron in de bestaande mixer.**
+De ontvanger heeft al een uitvoerapparaat open zodra hij in het gesprek zit, en
+`mix.rs` telt gewoon een bron extra op. De sleutel van `jitters`, `volumes` en `niveaus`
+moet dan van `PeerId` naar `(PeerId, stream_id)`. Klein en overzichtelijk.
+Nadeel: **je moet in het gesprek zitten om meegedeeld geluid te horen.**
+
+**B. Een eigen poort per stream, zoals video.**
+Consequent met screenshare en werkt zonder gesprek. Nadeel: de ontvangende kant heeft
+dan een tweede weergavepad nodig, los van de voice-sessie, met eigen apparaatkeuze en
+eigen mix. Dat is een flink stuk dubbel werk voor iets wat je in de praktijk altijd
+tijdens een gesprek gebruikt.
+
+**Aanbeveling: A**, met de aankondiging en het intekenen wél via `Streams`
+(`StreamKind::DESKTOP_AUDIO` bestaat al in het protocol). De intekenaar zet dan zijn
+*voice*-poort in `StreamSubscribe.media_port`. Zo blijft "kost niets als niemand
+luistert" overeind, wordt de mixer hergebruikt, en is de enige beperking dat je in het
+gesprek moet zitten — wat je toch al bent.
+
+Let op bij het uitvoeren: `Actie::StartDelen` zegt nu niet welke *soort* stream het is.
+De motor kan dat opzoeken met `self.streams.eigen()`, of `Actie` krijgt er een veld bij.
 
 ---
 
 ## Wat nog nooit met een echte peer getest is
 
-Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 en 3 niet.** Zie
+Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2, 3 en 4 niet.** Zie
 `docs/TESTPLAN.md` voor de testgevallen die daarvoor uitgevoerd moeten worden.
+
+Fase 4 is op één machine wel volledig doorlopen, inclusief de UDP-weg over loopback en
+de motor met echte QUIC-verbindingen. Wat een tweede machine daaraan toevoegt: een echt
+netwerk met echt pakketverlies, een andere GPU (de RTX 2080 Super is de machine die de
+codeckeuze bepaalde), en een oordeel over hoe het voelt.
+
+**Niet geverifieerd: de knoppen zelf.** De motor is via zijn commando's getest, maar op
+"Scherm delen…" en "bekijken" is nooit echt geklikt — in deze omgeving kan een script
+geen invoer naar het bureaublad sturen. Dat is dus het eerste om met de hand te doen.

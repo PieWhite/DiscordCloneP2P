@@ -35,19 +35,31 @@ Of het *klinkt* moet met een tweede machine beoordeeld worden — dat kan geen t
 Geen echo-onderdrukking, conform de afspraak dat iedereen een headset gebruikt. Dat
 scheelde een C++-bouwafhankelijkheid (WebRTC APM).
 
-## Fase 4 — Screenshare, eerste versie 🟡 deels
-WGC-capture van één monitor, HEVC-encode via Media Foundation, UDP-fragmentatie,
+## Fase 4 — Screenshare, eerste versie 🟡 beeld af
+WGC-capture van één monitor, H.264-encode via Media Foundation, UDP-fragmentatie,
 decode, D3D11-render in een pop-out venster, subscribe-on-demand, desktop-audio
 als aparte stream met eigen volume.
-**Af:** fragmentatie, D3D11-context, WGC-capture en de Media Foundation-encoder,
-elk geverifieerd op de echte GPU.
-**Nog niet af:** decoder, weergavevenster, streambeheer en desktop-audio.
-Zie `docs/OVERDRACHT.md` voor de bouwvolgorde en de aandachtspunten per stap.
 
-**Meetpunt:** glass-to-glass latency meten. Valt die tegen, dan de encoder omzetten
-naar directe NVENC; die zit al achter een smalle API, dus dat raakt de rest niet.
+**Af:** de hele beeldketen. Aankondigen, intekenen, opnemen, coderen, versturen,
+samenstellen, decoderen, tonen — plus het streambeheer eromheen en de knoppen in de UI.
+Op deze machine gemeten: 1080p op 55-56 beelden per seconde, geen enkel beeld onderweg
+kwijt, scherp leesbare tekst.
+
+**Nog niet af:** desktop-audio. Zie `docs/OVERDRACHT.md` voor de ontwerpkeuze die
+daarvoor nog gemaakt moet worden.
+
+**Meetpunt: gedaan.** 3,1 ms tussen opnemen en tonen, in een debug-build. Dat is ver
+onder alles wat opvalt, dus de encoder hoeft niet naar directe NVENC. Wat de monitor er
+zelf nog bij optelt zit daar niet in en is met software ook niet te meten.
+
+Anders dan gepland: **H.264 in plaats van HEVC** (decoderen van HEVC hangt op Windows aan
+een Store-uitbreiding die er niet standaard op zit), en het kijkvenster heeft **wel een
+rand** — een randloos venster kun je niet verplaatsen of sluiten zonder dat zelf na te
+bouwen. Beeldvullend zit op F11. Beide staan onderbouwd in `docs/OVERDRACHT.md`.
+
 **Klaar als:** peer B ziet peer A's scherm op 1080p60, tekst is scherp leesbaar, en
-peer A merkt geen framedrops in een draaiende game.
+peer A merkt geen framedrops in een draaiende game. *Dat laatste kan alleen met een
+tweede machine; zie `docs/TESTPLAN.md`.*
 
 ## Fase 5 — Screenshare uitbreiding
 Venster-capture, meerdere bronnen tegelijk delen, meerdere inkomende streams tegelijk
