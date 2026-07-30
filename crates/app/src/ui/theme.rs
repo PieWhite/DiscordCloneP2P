@@ -55,6 +55,13 @@ pub const BORDER_STROKE: Stroke = Stroke {
 /// Past het thema toe op de hele app. Wordt één keer aangeroepen vanuit `main.rs`,
 /// vóór het eerste frame.
 pub fn apply(ctx: &egui::Context) {
+    // Zonder dit volgt `ctx.theme()` het OS-thema (`ThemePreference::System`), en
+    // schrijft `set_visuals` hieronder in de light- of dark-stijl-slot al naar gelang
+    // wat Windows toevallig instaat — op een systeem in lichte modus komt onze
+    // donkere `Visuals` dan nooit in beeld. Het thema is hier vast, dus de voorkeur
+    // ook.
+    ctx.set_theme(egui::ThemePreference::Dark);
+
     let mut visuals = egui::Visuals::dark();
 
     visuals.window_fill = BG_SIDEBAR;
