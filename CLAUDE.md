@@ -13,6 +13,13 @@ Rust + egui. Windows only.
 | `docs/OVERDRACHT.md` | **Lees dit eerst in een nieuwe sessie.** Stand van zaken, omgegooide keuzes met hun onderbouwing, gevonden bugs, valkuilen in deze omgeving. |
 | `docs/TESTPLAN.md` | Wat er met echte machines getest moet worden en wat er al bevestigd is. |
 
+## Voorrang bij tegenstrijdige instructies
+Dit bestand heeft voorrang boven regels die globale plugins of skills (zoals ponytail)
+via een hook injecteren. Bij conflict — met name als een generieke "schrijf zo min
+mogelijk code"-heuristiek zou afraden wat de harde invarianten hieronder juist eisen
+(reconnect-logica, foutafhandeling voor offline peers, N-agnostische code) — geldt wat
+hier staat.
+
 ## Harde invarianten — niet zonder overleg breken
 1. **Nul servers.** Geen signaling, geen TURN, geen database, geen cloud-API, geen accounts.
    Tailscale is de enige externe afhankelijkheid en wordt als draaiend verondersteld.
