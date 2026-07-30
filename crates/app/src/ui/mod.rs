@@ -5,14 +5,14 @@
 //! geen state in die verloren gaat als het venster even niet tekent.
 
 pub mod theme;
+pub mod widgets;
 
 use crate::config::VideoConfig;
-use crate::engine::{self, EngineHandle, FileView, PeerView, Snapshot, UiCommand};
+use crate::engine::{self, EngineHandle, FileView, Snapshot, UiCommand};
 use crate::files::{hash_bestandsnaam, is_afbeelding, DownloadStatus};
 use crate::tags;
 use crate::tray;
 use eframe::egui;
-use fitcom_net::PeerStatus;
 use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use fitcom_store::Message;
 use fitcom_video::{Bron, BronSoort, Miniatuur};
@@ -395,24 +395,41 @@ impl App {
                     .cloned()
                     .unwrap_or_else(|| self.eigen_naam.clone());
 
+                let eigen_kleur = widgets::kleur_van(self.mij);
+                let status_kleur = if self.snap.niet_storen {
+                    theme::STATUS_DND
+                } else {
+                    theme::STATUS_ONLINE
+                };
                 ui.horizontal(|ui| {
-                    ui.colored_label(GROEN, "\u{25CF}");
-                    ui.label(
-                        egui::RichText::new(&eigen)
-                            .strong()
-                            .color(kleur_van(self.mij)),
+                    let avatar =
+                        widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 32.0);
+                    widgets::status_badge(
+                        ui.painter(),
+                        avatar.rect,
+                        status_kleur,
+                        theme::BG_SIDEBAR,
                     );
-                    ui.weak("(jij)");
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&eigen).strong().color(eigen_kleur));
+                        ui.small(
+                            egui::RichText::new(if self.snap.niet_storen {
+                                "Niet storen"
+                            } else {
+                                "Online"
+                            })
+                            .color(status_kleur),
+                        );
+                    });
                 });
                 ui.horizontal(|ui| {
                     if ui.small_button("naam wijzigen").clicked() {
                         self.profiel = Some(eigen.clone());
                     }
-                    if ui
-                        .selectable_label(self.snap.niet_storen, "\u{1F515} niet storen")
-                        .clicked()
-                    {
-                        niet_storen_wijziging = Some(!self.snap.niet_storen);
+                    ui.small("niet storen");
+                    let mut niet_storen = self.snap.niet_storen;
+                    if widgets::toggle_switch(ui, &mut niet_storen).changed() {
+                        niet_storen_wijziging = Some(niet_storen);
                     }
                 });
                 if self.snap.voice.actief {
@@ -421,7 +438,7 @@ impl App {
                     } else {
                         self.snap.voice.eigen_niveau
                     };
-                    niveaubalk(ui, niveau);
+                    widgets::niveaubalk(ui, niveau);
                 }
                 ui.add_space(4.0);
                 ui.separator();
@@ -439,7 +456,7 @@ impl App {
                         .and_then(|id| self.snap.timeline.nicknames.get(&id))
                         .cloned()
                         .unwrap_or_else(|| p.label.clone());
-                    peer_row(ui, p, &naam);
+                    widgets::peer_row(ui, p, &naam);
 
                     if let Some(id) = p.peer_id {
                         let ongelezen = self.snap.ongelezen_dm.get(&id).copied().unwrap_or(0);
@@ -457,7 +474,7 @@ impl App {
                     }
 
                     if in_gesprek && p.in_voice {
-                        niveaubalk(ui, p.niveau);
+                        widgets::niveaubalk(ui, p.niveau);
                         if let Some(id) = p.peer_id {
                             let mut vol = p.volume;
                             if ui
@@ -577,9 +594,9 @@ impl App {
                 // Delen kost pas iets zodra er iemand kijkt, en dat is precies wat je
                 // hier wilt kunnen zien als er een game draait.
                 let kleur = if s.kijkers > 0 {
-                    GROEN
+                    theme::STATUS_ONLINE
                 } else {
-                    egui::Color32::GRAY
+                    theme::STATUS_OFFLINE
                 };
                 ui.colored_label(kleur, "\u{25CF}");
                 ui.small(&s.titel);
@@ -963,7 +980,9 @@ impl App {
 
         if !v.actief {
             if self.snap.peers.iter().any(|p| p.in_voice) {
-                ui.small(egui::RichText::new("er is een gesprek bezig").color(GROEN));
+                ui.small(
+                    egui::RichText::new("er is een gesprek bezig").color(theme::STATUS_ONLINE),
+                );
                 ui.add_space(2.0);
             }
             return ui
@@ -1020,7 +1039,7 @@ impl App {
                     ui.separator();
                     if ui
                         .add(egui::Label::new(
-                            egui::RichText::new(format!("⚠ {err}")).color(ROOD),
+                            egui::RichText::new(format!("⚠ {err}")).color(theme::STATUS_DND),
                         ))
                         .on_hover_text("klik om te verbergen")
                         .clicked()
@@ -1391,7 +1410,7 @@ impl App {
                         ));
                     }
                     UpdateStatus::Mislukt(bericht) => {
-                        ui.colored_label(egui::Color32::from_rgb(200, 60, 60), bericht);
+                        ui.colored_label(theme::STATUS_DND, bericht);
                     }
                 }
                 ui.add_space(10.0);
@@ -1703,7 +1722,7 @@ impl App {
                                         ui.label(
                                             egui::RichText::new(self.naam_van(msg.author))
                                                 .strong()
-                                                .color(kleur_van(msg.author)),
+                                                .color(widgets::kleur_van(msg.author)),
                                         );
                                         ui.small(egui::RichText::new(tijd(msg.created_at)).weak());
                                         if msg.edited {
@@ -1735,8 +1754,8 @@ impl App {
                                 // terug te vinden.
                                 if getagd {
                                     egui::Frame::group(ui.style())
-                                        .fill(TAG_ACHTERGROND)
-                                        .stroke(egui::Stroke::new(1.0_f32, TAG_RAND))
+                                        .fill(theme::MENTION_BG)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme::MENTION_BORDER))
                                         .inner_margin(6.0)
                                         .show(ui, teken);
                                 } else {
@@ -1751,7 +1770,7 @@ impl App {
                                         self.naam_van(f.author)
                                     })
                                     .strong()
-                                    .color(kleur_van(f.author)),
+                                    .color(widgets::kleur_van(f.author)),
                                 );
 
                                 // Content-adresseerbaar: de aanbieder én elke
@@ -1831,7 +1850,7 @@ impl App {
                                                         Some(DownloadStatus::Voltooid) => {
                                                             ui.horizontal(|ui| {
                                                                 ui.colored_label(
-                                                                    GROEN,
+                                                                    theme::STATUS_ONLINE,
                                                                     "\u{2713} gedownload",
                                                                 );
                                                                 if ui
@@ -1847,7 +1866,7 @@ impl App {
                                                                 egui::RichText::new(format!(
                                                                     "mislukt: {bericht}"
                                                                 ))
-                                                                .color(ROOD),
+                                                                .color(theme::STATUS_DND),
                                                             );
                                                             if ui
                                                                 .small_button("opnieuw proberen")
@@ -1922,77 +1941,6 @@ fn toon_tekst(ui: &mut egui::Ui, body: &str) {
     }
 }
 
-fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str) {
-    let (color, text) = describe(&p.status);
-
-    ui.horizontal(|ui| {
-        ui.colored_label(color, "\u{25CF}");
-        ui.vertical(|ui| {
-            let naam_kleur = p
-                .peer_id
-                .map(kleur_van)
-                .unwrap_or(ui.visuals().text_color());
-            ui.label(egui::RichText::new(naam).strong().color(naam_kleur));
-            ui.small(egui::RichText::new(text).color(color));
-        });
-    })
-    .response
-    .on_hover_text(&p.address);
-}
-
-const GROEN: egui::Color32 = egui::Color32::from_rgb(80, 200, 120);
-const GEEL: egui::Color32 = egui::Color32::from_rgb(220, 180, 70);
-const GRIJS: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);
-const ROOD: egui::Color32 = egui::Color32::from_rgb(220, 90, 90);
-/// Zacht genoeg om niet als foutmelding te lezen, zowel licht als donker thema.
-const TAG_ACHTERGROND: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 75, 20, 40);
-const TAG_RAND: egui::Color32 = GEEL;
-
-fn describe(status: &PeerStatus) -> (egui::Color32, String) {
-    match status {
-        PeerStatus::Online { rtt_ms, .. } => (GROEN, format!("online · {rtt_ms} ms")),
-        PeerStatus::Connecting => (GEEL, "verbinden…".into()),
-        PeerStatus::Offline { reason } => (GRIJS, format!("offline · {reason}")),
-        PeerStatus::VersionMismatch { theirs, ours } => (
-            ROOD,
-            format!("versie {theirs} vs {ours} — één van beiden moet updaten"),
-        ),
-        PeerStatus::IdentityChanged { .. } => {
-            (ROOD, "andere identiteit dan verwacht op dit adres".into())
-        }
-    }
-}
-
-/// Stabiele kleur per peer, zodat je in de chat aan de kleur ziet wie wat zei.
-fn kleur_van(peer: PeerId) -> egui::Color32 {
-    let b = peer.as_bytes();
-    let tint = (u16::from(b[0]) << 8) | u16::from(b[1]);
-    let hoek = f32::from(tint) / 65535.0 * 360.0;
-    // Vaste verzadiging en helderheid: elke peer krijgt een goed leesbare kleur,
-    // ook in een donker thema.
-    let (r, g, bl) = hsv_naar_rgb(hoek, 0.55, 0.95);
-    egui::Color32::from_rgb(r, g, bl)
-}
-
-fn hsv_naar_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-    let (r, g, b) = match h as u32 / 60 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    (
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
-}
-
 /// D3D11 levert BGRA, egui verwacht RGBA. Alleen de eerste en derde byte per pixel
 /// wisselen; alfa en groen staan al goed.
 fn bgra_naar_rgba(data: &[u8]) -> Vec<u8> {
@@ -2056,30 +2004,6 @@ fn tijd(millis: i64) -> String {
     match Local.timestamp_millis_opt(millis).single() {
         Some(t) => t.format("%H:%M").to_string(),
         None => String::new(),
-    }
-}
-
-/// Smalle balk die meebeweegt met hoe hard iemand praat.
-///
-/// Logaritmisch geschaald: spraak zit qua energie laag ten opzichte van het maximum,
-/// en lineair zou de balk nauwelijks bewegen.
-fn niveaubalk(ui: &mut egui::Ui, niveau: f32) {
-    let deel = if niveau <= 0.0005 {
-        0.0
-    } else {
-        ((niveau.log10() * 20.0 + 60.0) / 60.0).clamp(0.0, 1.0)
-    };
-
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width().min(200.0), 4.0),
-        egui::Sense::hover(),
-    );
-    let schilder = ui.painter();
-    schilder.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
-    if deel > 0.0 {
-        let mut gevuld = rect;
-        gevuld.set_width(rect.width() * deel);
-        schilder.rect_filled(gevuld, 2.0, GROEN);
     }
 }
 

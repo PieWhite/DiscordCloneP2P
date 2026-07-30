@@ -37,6 +37,11 @@ pub const STATUS_CONNECTING: Color32 = Color32::from_rgb(219, 180, 74);
 pub const STATUS_DND: Color32 = Color32::from_rgb(232, 88, 84);
 pub const STATUS_OFFLINE: Color32 = Color32::from_rgb(96, 102, 110);
 
+/// Zacht genoeg om niet als foutmelding te lezen, voor het kader rond een bericht dat
+/// jou @-tagt.
+pub const MENTION_BG: Color32 = Color32::from_rgba_premultiplied(90, 75, 20, 40);
+pub const MENTION_BORDER: Color32 = STATUS_CONNECTING;
+
 /// Ronding voor kaarten/knoppen/invoervelden.
 pub const ROUNDING: CornerRadius = CornerRadius::same(8);
 /// Ronding voor pillen/chips/tabs — ronder, want vaak maar ~20-26px hoog.
