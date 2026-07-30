@@ -11,7 +11,7 @@ use crate::tags;
 use crate::tray;
 use eframe::egui;
 use fitcom_net::PeerStatus;
-use fitcom_proto::{Channel, OpId, PeerId};
+use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use fitcom_store::Message;
 use fitcom_video::{Bron, BronSoort, Miniatuur};
 use std::collections::{HashMap, HashSet};
@@ -62,6 +62,12 @@ pub struct App {
     /// `Some` zolang het profielvenster open staat. Bewerkbare kopie van de naam, zodat
     /// "annuleren" niets hoeft terug te draaien.
     profiel: Option<String>,
+    /// `Some` zolang het invoerveld voor een nieuw subkanaal open staat, met de al
+    /// getypte titel erin.
+    nieuw_kanaal_titel: Option<String>,
+    /// `Some` zolang het hernoem-venster voor een subkanaal open staat: welk subkanaal,
+    /// en een bewerkbare kopie van zijn titel.
+    kanaal_hernoemen: Option<(TopicId, String)>,
     /// Welke suggestie in de @tag-autocomplete gemarkeerd is. Reset zodra de getypte
     /// tag verandert, zie `chat_paneel`.
     tag_selectie: usize,
@@ -129,6 +135,8 @@ impl App {
             instellingen: None,
             bevestig_verwijder_afbeeldingen: false,
             profiel: None,
+            nieuw_kanaal_titel: None,
+            kanaal_hernoemen: None,
             tag_selectie: 0,
             tag_actief: false,
             miniatuur_cache: HashMap::new(),
@@ -190,6 +198,8 @@ impl App {
         self.bewerkt = None;
         if let Some(peer) = kanaal.dm_peer() {
             self.stuur(UiCommand::GelezenDm(peer));
+        } else if let Some(topic) = kanaal.topic_id() {
+            self.stuur(UiCommand::GelezenTopic(topic));
         } else {
             self.stuur(UiCommand::Gelezen);
         }
@@ -241,11 +251,14 @@ impl eframe::App for App {
             // Alleen het kanaal dat je daadwerkelijk bekijkt telt als gelezen: zit je
             // in een DM, dan mag dat het algemene kanaal niet stilletjes wegstrepen,
             // en andersom.
-            match self.actief_kanaal.dm_peer() {
-                None if self.snap.ongelezen > 0 => self.stuur(UiCommand::Gelezen),
-                Some(p) if self.snap.ongelezen_dm.get(&p).copied().unwrap_or(0) > 0 => {
+            match (self.actief_kanaal.dm_peer(), self.actief_kanaal.topic_id()) {
+                (Some(p), _) if self.snap.ongelezen_dm.get(&p).copied().unwrap_or(0) > 0 => {
                     self.stuur(UiCommand::GelezenDm(p));
                 }
+                (None, Some(t)) if self.snap.ongelezen_topic.get(&t).copied().unwrap_or(0) > 0 => {
+                    self.stuur(UiCommand::GelezenTopic(t));
+                }
+                (None, None) if self.snap.ongelezen > 0 => self.stuur(UiCommand::Gelezen),
                 _ => {}
             }
         }
@@ -257,6 +270,7 @@ impl eframe::App for App {
         self.instellingen_venster(ctx);
         self.bevestig_verwijder_afbeeldingen_venster(ctx);
         self.profiel_venster(ctx);
+        self.kanaal_hernoemen_venster(ctx);
         self.statusbalk(ctx);
         self.overzicht_strook(ctx);
         self.chat_paneel(ctx);
@@ -291,6 +305,68 @@ impl App {
                 {
                     kanaal_wissel = Some(Channel::GENERAL);
                 }
+
+                let mut topics: Vec<(TopicId, String)> = self
+                    .snap
+                    .timeline
+                    .topics
+                    .iter()
+                    .map(|(id, titel)| (*id, titel.clone()))
+                    .collect();
+                // Alfabetisch, met het id als tiebreaker: zonder een vaste sortering
+                // zou de volgorde per peer kunnen verschillen (`HashMap`-iteratie is
+                // niet gegarandeerd gelijk), terwijl de inhoud van `topics` bij
+                // iedereen wel identiek is.
+                topics.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+                for (id, titel) in &topics {
+                    let ongelezen = self.snap.ongelezen_topic.get(id).copied().unwrap_or(0);
+                    let label = if ongelezen > 0 {
+                        format!("# {titel} ({ongelezen})")
+                    } else {
+                        format!("# {titel}")
+                    };
+                    let actief = self.actief_kanaal.topic_id() == Some(*id);
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(actief, label).clicked() {
+                            kanaal_wissel = Some(Channel::topic(*id));
+                        }
+                        if actief
+                            && ui
+                                .small_button("\u{270E}")
+                                .on_hover_text("hernoemen")
+                                .clicked()
+                        {
+                            self.kanaal_hernoemen = Some((*id, titel.clone()));
+                        }
+                    });
+                }
+
+                let mut nieuw_kanaal_aanmaken = false;
+                let mut nieuw_kanaal_annuleren = false;
+                if let Some(concept) = &mut self.nieuw_kanaal_titel {
+                    ui.horizontal(|ui| {
+                        let veld = ui.add(egui::TextEdit::singleline(concept).desired_width(120.0));
+                        let enter =
+                            veld.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.small_button("aanmaken").clicked() || enter)
+                            && !concept.trim().is_empty()
+                        {
+                            nieuw_kanaal_aanmaken = true;
+                        } else if ui.small_button("\u{2715}").clicked() {
+                            nieuw_kanaal_annuleren = true;
+                        }
+                    });
+                } else if ui.small_button("+ nieuw kanaal").clicked() {
+                    self.nieuw_kanaal_titel = Some(String::new());
+                }
+                if nieuw_kanaal_aanmaken {
+                    let titel = self.nieuw_kanaal_titel.take().unwrap();
+                    self.stuur(UiCommand::MaakKanaal(titel.trim().to_string()));
+                } else if nieuw_kanaal_annuleren {
+                    self.nieuw_kanaal_titel = None;
+                }
+
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -1151,6 +1227,51 @@ impl App {
         }
     }
 
+    /// Titel van een bestaand subkanaal wijzigen. Zelfde mechanisme als aanmaken —
+    /// zie `Chat::zet_kanaal_titel` — dus dit venster stuurt gewoon een nieuwe
+    /// `HernoemKanaal` met hetzelfde id.
+    fn kanaal_hernoemen_venster(&mut self, ctx: &egui::Context) {
+        let Some((_id, concept)) = &mut self.kanaal_hernoemen else {
+            return;
+        };
+        let mut open = true;
+        let mut opslaan = false;
+        let mut annuleren = false;
+
+        egui::Window::new("Subkanaal hernoemen")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("Titel").strong());
+                ui.add_space(6.0);
+                let veld = ui.add(egui::TextEdit::singleline(concept).desired_width(f32::INFINITY));
+                let enter = veld.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!concept.trim().is_empty(), egui::Button::new("Opslaan"))
+                        .clicked()
+                        || (enter && !concept.trim().is_empty())
+                    {
+                        opslaan = true;
+                    }
+                    if ui.button("Annuleren").clicked() {
+                        annuleren = true;
+                    }
+                });
+            });
+
+        if opslaan {
+            let (id, titel) = self.kanaal_hernoemen.take().unwrap();
+            self.stuur(UiCommand::HernoemKanaal(id, titel));
+        } else if annuleren || !open {
+            self.kanaal_hernoemen = None;
+        }
+    }
+
     fn chat_paneel(&mut self, ctx: &egui::Context) {
         // Invoer eerst vastzetten, zodat de berichtenlijst de rest van de hoogte krijgt
         // en niet onder het invoerveld doorloopt.
@@ -1233,7 +1354,9 @@ impl App {
                 // `GetAsyncKeyState` gaat en niet via egui's eigen `key_pressed`.
                 let geen_modaal_venster_open = self.profiel.is_none()
                     && self.instellingen.is_none()
-                    && self.bronkeuze.is_none();
+                    && self.bronkeuze.is_none()
+                    && self.kanaal_hernoemen.is_none()
+                    && self.nieuw_kanaal_titel.is_none();
                 if geen_modaal_venster_open && self.ctrl_v_zojuist_ingedrukt(ctx) {
                     tracing::debug!(
                         "ctrl+v gezien, klembord wordt gecontroleerd op een afbeelding"
@@ -1337,13 +1460,27 @@ impl App {
             let mut te_downloaden: Option<OpId> = None;
             let mut open_downloads = false;
 
-            ui.horizontal(|ui| match self.actief_kanaal.dm_peer() {
-                None => {
-                    ui.label(egui::RichText::new("# Algemeen").strong());
-                }
-                Some(p) => {
-                    ui.label(egui::RichText::new(format!("DM met {}", self.naam_van(p))).strong());
-                    ui.weak("alleen jij en deze peer zien dit gesprek");
+            ui.horizontal(|ui| {
+                match (self.actief_kanaal.dm_peer(), self.actief_kanaal.topic_id()) {
+                    (Some(p), _) => {
+                        ui.label(
+                            egui::RichText::new(format!("DM met {}", self.naam_van(p))).strong(),
+                        );
+                        ui.weak("alleen jij en deze peer zien dit gesprek");
+                    }
+                    (None, Some(t)) => {
+                        let titel = self
+                            .snap
+                            .timeline
+                            .topics
+                            .get(&t)
+                            .cloned()
+                            .unwrap_or_else(|| "onbekend subkanaal".to_string());
+                        ui.label(egui::RichText::new(format!("# {titel}")).strong());
+                    }
+                    (None, None) => {
+                        ui.label(egui::RichText::new("# Algemeen").strong());
+                    }
                 }
             });
             ui.separator();
@@ -1798,14 +1935,16 @@ fn niveaubalk(ui: &mut egui::Ui, niveau: f32) {
 /// `App::hoort_bij_actief_kanaal` voor de uitleg van de valkuil die dit voorkomt: een
 /// DM-gesprek met X bestaat uit twee kanaalwaarden (`Dm(X)` voor jouw berichten, `Dm(mij)`
 /// voor die van X), dus simpelweg vergelijken met `actief` (altijd `Dm(X)`) laat de helft
-/// van het gesprek verdwijnen.
+/// van het gesprek verdwijnen. Voor het algemene kanaal en een subkanaal geldt die valkuil
+/// niet — daar draagt elke op, van wie dan ook, precies dezelfde kanaalwaarde — dus is een
+/// gewone gelijkheid genoeg.
 fn hoort_bij_kanaal(actief: Channel, mij: PeerId, kanaal: Channel, auteur: PeerId) -> bool {
     match actief.dm_peer() {
-        None => kanaal.is_general(),
         Some(partner) => {
             (auteur == mij && kanaal == Channel::dm(partner))
                 || (auteur == partner && kanaal == Channel::dm(mij))
         }
+        None => kanaal == actief,
     }
 }
 
@@ -1817,6 +1956,38 @@ mod kanaal_tests {
         let mut b = [0u8; 16];
         b[0] = n;
         PeerId::from_bytes(b)
+    }
+
+    fn topic(n: u8) -> TopicId {
+        TopicId::from_bytes([n; 16])
+    }
+
+    #[test]
+    fn subkanaal_toont_alleen_zijn_eigen_berichten() {
+        let (mij, ander) = (peer(1), peer(2));
+        let a = Channel::topic(topic(1));
+        let b = Channel::topic(topic(2));
+
+        assert!(hoort_bij_kanaal(a, mij, a, ander), "eigen subkanaal");
+        assert!(
+            !hoort_bij_kanaal(a, mij, b, ander),
+            "een ander subkanaal hoort er niet bij"
+        );
+        assert!(
+            !hoort_bij_kanaal(a, mij, Channel::GENERAL, ander),
+            "het algemene kanaal hoort niet bij een subkanaal"
+        );
+    }
+
+    #[test]
+    fn algemeen_toont_geen_berichten_uit_een_subkanaal() {
+        let (mij, ander) = (peer(1), peer(2));
+        assert!(!hoort_bij_kanaal(
+            Channel::GENERAL,
+            mij,
+            Channel::topic(topic(1)),
+            ander
+        ));
     }
 
     #[test]

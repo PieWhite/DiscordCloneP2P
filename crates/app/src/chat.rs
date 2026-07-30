@@ -14,7 +14,7 @@
 use anyhow::Result;
 use fitcom_net::MeshCommand;
 use fitcom_proto::control::{OpBroadcast, SyncRequest, SyncResponse};
-use fitcom_proto::{Channel, ControlMsg, Op, OpId, OpKind, PeerId, VersionVector};
+use fitcom_proto::{Channel, ControlMsg, Op, OpId, OpKind, PeerId, TopicId, VersionVector};
 use fitcom_store::{Store, Timeline, SYNC_BATCH};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +40,10 @@ pub struct Chat {
     /// omdat je een DM kunt missen terwijl je wel naar het algemene kanaal kijkt, en
     /// andersom.
     ongelezen_dm: HashMap<PeerId, usize>,
+    /// Zelfde, maar per subkanaal onder het algemene kanaal (fase 9). Los van zowel
+    /// `ongelezen` als `ongelezen_dm`: een subkanaal is een eigen gesprek met een eigen
+    /// "heb ik gemist"-status.
+    ongelezen_topic: HashMap<TopicId, usize>,
 }
 
 impl Chat {
@@ -52,6 +56,7 @@ impl Chat {
             vuil: false,
             ongelezen: 0,
             ongelezen_dm: HashMap::new(),
+            ongelezen_topic: HashMap::new(),
         })
     }
 
@@ -61,6 +66,14 @@ impl Chat {
 
     pub fn markeer_dm_gelezen(&mut self, met: PeerId) {
         self.ongelezen_dm.remove(&met);
+    }
+
+    pub fn ongelezen_topic(&self) -> &HashMap<TopicId, usize> {
+        &self.ongelezen_topic
+    }
+
+    pub fn markeer_topic_gelezen(&mut self, topic: TopicId) {
+        self.ongelezen_topic.remove(&topic);
     }
 
     pub fn me(&self) -> PeerId {
@@ -133,6 +146,20 @@ impl Chat {
             Channel::GENERAL,
             OpKind::SetNick {
                 name: naam.to_string(),
+            },
+        )
+    }
+
+    /// Maakt een subkanaal aan of hernoemt er een — hetzelfde mechanisme, want de laatste
+    /// `SetTopicTitle` per `id` wint, precies als bij een bijnaam. Altijd op het algemene
+    /// kanaal: dit is metadata over kanalen zelf, geen gespreksinhoud van een specifiek
+    /// kanaal, en moet voor iedereen dezelfde robuustheid hebben als een bijnaam.
+    pub fn zet_kanaal_titel(&mut self, id: TopicId, titel: &str) -> Result<Vec<MeshCommand>> {
+        self.eigen_op(
+            Channel::GENERAL,
+            OpKind::SetTopicTitle {
+                id,
+                title: titel.trim().to_string(),
             },
         )
     }
@@ -271,21 +298,25 @@ impl Chat {
             if !matches!(op.kind(), Ok(Some(OpKind::Post { .. }))) {
                 continue;
             }
-            match op.channel.dm_peer() {
-                None => self.ongelezen += 1,
-                Some(_) => *self.ongelezen_dm.entry(op.author).or_insert(0) += 1,
+            if op.channel.dm_peer().is_some() {
+                *self.ongelezen_dm.entry(op.author).or_insert(0) += 1;
+            } else if let Some(topic) = op.channel.topic_id() {
+                *self.ongelezen_topic.entry(topic).or_insert(0) += 1;
+            } else {
+                self.ongelezen += 1;
             }
         }
 
         tracing::debug!(peer = ?van, aantal = nieuw.len(), "nieuwe ops opgeslagen");
 
-        // Doorsturen naar de rest — maar uitsluitend het algemene kanaal. Een DM is al
-        // bij zijn enige geoorloofde ontvanger; die verder doorgeven aan een derde peer
-        // zou precies de lekpreventie ondermijnen waar kanalen voor bestaan. Dit dekt
-        // zowel een `OpBroadcast` als ops die net via een `SyncResponse` binnenkwamen.
+        // Doorsturen naar de rest — maar uitsluitend wat publiek is (het algemene kanaal
+        // zelf en elk subkanaal daaronder). Een DM is al bij zijn enige geoorloofde
+        // ontvanger; die verder doorgeven aan een derde peer zou precies de lekpreventie
+        // ondermijnen waar kanalen voor bestaan. Dit dekt zowel een `OpBroadcast` als ops
+        // die net via een `SyncResponse` binnenkwamen.
         Ok(nieuw
             .into_iter()
-            .filter(|op| op.channel.is_general())
+            .filter(|op| op.channel.is_public())
             .map(|op| MeshCommand::Broadcast(ControlMsg::OpBroadcast(OpBroadcast { op })))
             .collect())
     }

@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
-use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId};
+use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
 use fitcom_video::{KijkerConfig, KijkerEvent, KijkerHandle, Miniatuur};
@@ -126,6 +126,9 @@ pub struct Snapshot {
     /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
     /// kanaal) — je kunt het een missen zonder het ander te missen.
     pub ongelezen_dm: HashMap<PeerId, usize>,
+    /// Ongelezen berichten per subkanaal onder het algemene kanaal (fase 9). Los van
+    /// zowel `ongelezen` als `ongelezen_dm`.
+    pub ongelezen_topic: HashMap<TopicId, usize>,
     /// Onderdrukt alle Windows-meldingen, ook een directe tag naar jezelf. Geldt alleen
     /// voor deze sessie, net als mute/deafen — geen configvermelding.
     pub niet_storen: bool,
@@ -141,6 +144,8 @@ pub enum UiCommand {
     Gelezen,
     /// Een DM-gesprek is bekeken; telt niet mee voor `Snapshot::ongelezen_dm`.
     GelezenDm(PeerId),
+    /// Een subkanaal is bekeken; telt niet mee voor `Snapshot::ongelezen_topic`.
+    GelezenTopic(TopicId),
     FoutWeg,
     VoiceDeelnemen,
     VoiceVerlaten,
@@ -175,6 +180,11 @@ pub enum UiCommand {
     /// schijfruimte — de kaarten blijven in de tijdlijn staan, net als bij een
     /// bronbestand dat toevallig van schijf verdwijnt (zie `files.rs`).
     VerwijderAlleAfbeeldingen,
+    /// Nieuw subkanaal onder het algemene kanaal aanmaken, met een titel.
+    MaakKanaal(String),
+    /// Bestaand subkanaal hernoemen. Zelfde mechanisme als aanmaken — zie
+    /// `Chat::zet_kanaal_titel`.
+    HernoemKanaal(TopicId, String),
 }
 
 pub struct EngineHandle {
@@ -495,20 +505,70 @@ impl Engine {
                     };
                     let voor_alg = self.chat.ongelezen;
                     let voor_dm = self.chat.ongelezen_dm().get(&from).copied().unwrap_or(0);
+                    let voor_topic = live_post
+                        .as_ref()
+                        .and_then(|(c, _)| c.topic_id())
+                        .map(|t| self.chat.ongelezen_topic().get(&t).copied().unwrap_or(0));
+
+                    // Vóór `bij_bericht`: welke afbeeldingen kennen we al, zodat we straks
+                    // alleen de écht nieuwe kunnen herkennen (zie de auto-download hieronder).
+                    let bekende_afbeeldingen: HashSet<OpId> = self
+                        .chat
+                        .timeline()
+                        .files
+                        .iter()
+                        .filter(|f| files::is_afbeelding(&f.name))
+                        .map(|f| f.id)
+                        .collect();
 
                     let r = self.chat.bij_bericht(from, andere);
                     self.verwerk(r);
+                    // Nieuwe bestanden zitten pas in de timeline ná een refresh — die
+                    // gebeurt normaal aan het eind van de hoofdlus, maar de auto-download
+                    // hieronder heeft de bijgewerkte lijst nu al nodig.
+                    self.chat.refresh();
 
                     if let Some((channel, body)) = live_post {
                         // Pas ná `bij_bericht` weten we of dit echt nieuw was: een
                         // dubbel bezorgde broadcast mag geen tweede melding geven.
-                        let nieuw = if channel.is_general() {
+                        let nieuw = if let Some(topic) = channel.topic_id() {
+                            self.chat
+                                .ongelezen_topic()
+                                .get(&topic)
+                                .copied()
+                                .unwrap_or(0)
+                                > voor_topic.unwrap_or(0)
+                        } else if channel.is_general() {
                             self.chat.ongelezen > voor_alg
                         } else {
                             self.chat.ongelezen_dm().get(&from).copied().unwrap_or(0) > voor_dm
                         };
                         if nieuw {
                             self.overweeg_melding(from, &body);
+                        }
+                    }
+
+                    // Afbeeldingen downloaden zichzelf automatisch, voor iedereen — live
+                    // binnengekomen én ingehaald bij (her)verbinding. Andere bestanden
+                    // blijven achter de bevestigingswal (de downloadknop) staan, precies
+                    // zoals dat al was. Eigen aanbod slaan we over: dat staat al op schijf
+                    // via `hash_en_bied_aan`, en downloaden zou alleen jezelf aanvragen.
+                    let me = self.chat.me();
+                    let nieuwe_afbeeldingen: Vec<OpId> = self
+                        .chat
+                        .timeline()
+                        .files
+                        .iter()
+                        .filter(|f| {
+                            f.author != me
+                                && !bekende_afbeeldingen.contains(&f.id)
+                                && files::is_afbeelding(&f.name)
+                        })
+                        .map(|f| f.id)
+                        .collect();
+                    for id in nieuwe_afbeeldingen {
+                        if self.files.status(id).is_none() {
+                            self.download_bestand(id);
                         }
                     }
                 }
@@ -921,6 +981,7 @@ impl Engine {
             }
             UiCommand::Gelezen => self.chat.markeer_gelezen(),
             UiCommand::GelezenDm(peer) => self.chat.markeer_dm_gelezen(peer),
+            UiCommand::GelezenTopic(topic) => self.chat.markeer_topic_gelezen(topic),
             UiCommand::FoutWeg => self.fout = None,
             UiCommand::VoiceDeelnemen => self.deelnemen(),
             UiCommand::VoiceVerlaten => self.verlaten(),
@@ -982,6 +1043,14 @@ impl Engine {
             UiCommand::ZetNaam(naam) => self.zet_naam(&naam),
             UiCommand::NietStoren(aan) => self.niet_storen = aan,
             UiCommand::VerwijderAlleAfbeeldingen => self.verwijder_alle_afbeeldingen(),
+            UiCommand::MaakKanaal(titel) => {
+                let r = self.chat.zet_kanaal_titel(TopicId::new_random(), &titel);
+                self.verwerk(r);
+            }
+            UiCommand::HernoemKanaal(id, titel) => {
+                let r = self.chat.zet_kanaal_titel(id, &titel);
+                self.verwerk(r);
+            }
         }
     }
 
@@ -1248,6 +1317,7 @@ impl Engine {
             files,
             ongelezen: self.chat.ongelezen,
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
+            ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
             fout: self.fout.clone(),
         }));
@@ -1275,12 +1345,16 @@ pub fn deelbare_bronnen() -> Result<Vec<Bron>> {
 /// van `(author, channel, seq)` in plaats van de leesbare naam: twee aanbiedingen met
 /// dezelfde bestandsnaam van verschillende peers mogen elkaar niet overschrijven. Het
 /// kanaal moet erbij sinds `seq` per (auteur, kanaal) telt in plaats van per auteur
-/// alleen — zonder dat zou een algemeen bestand en een DM-bestand van dezelfde auteur
-/// met toevallig dezelfde `seq` op dezelfde tijdelijke naam uitkomen.
+/// alleen — zonder dat zou een algemeen bestand, een DM-bestand en een bestand in een
+/// subkanaal van dezelfde auteur met toevallig dezelfde `seq` op dezelfde tijdelijke naam
+/// uitkomen.
 fn deelbestand_naam(entry: &FileEntry) -> String {
-    let kanaal = match entry.channel.dm_peer() {
-        Some(p) => format!("dm-{}", p.0.simple()),
-        None => "algemeen".to_string(),
+    let kanaal = if let Some(p) = entry.channel.dm_peer() {
+        format!("dm-{}", p.0.simple())
+    } else if let Some(t) = entry.channel.topic_id() {
+        format!("topic-{}", t.0.simple())
+    } else {
+        "algemeen".to_string()
     };
     format!("{}-{kanaal}-{}.part", entry.author.0.simple(), entry.id.seq)
 }

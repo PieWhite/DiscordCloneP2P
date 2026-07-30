@@ -15,10 +15,11 @@
 //! dezelfde `(author, seq)` niet te onderscheiden zijn.
 
 use anyhow::{Context, Result};
-use fitcom_proto::{Channel, OpId, PeerId};
+use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use quinn::{RecvStream, SendStream};
 
-/// 16-byte peer-uuid + 1-byte kanaal-tag + 16-byte kanaal-peer (nullen als afwezig) + 8-byte seq.
+/// 16-byte peer-uuid + 1-byte kanaal-tag + 16-byte kanaal-peer-of-subkanaal-id (nullen als
+/// afwezig) + 8-byte seq.
 const HEADER_LEN: usize = 16 + 1 + 16 + 8;
 
 pub async fn write_header(stream: &mut SendStream, file: OpId) -> Result<()> {
@@ -51,15 +52,19 @@ pub async fn read_header(stream: &mut RecvStream) -> Result<OpId> {
 }
 
 fn encode_channel(channel: Channel) -> (u8, [u8; 16]) {
-    match channel.dm_peer() {
-        Some(p) => (1, *p.as_bytes()),
-        None => (0, [0u8; 16]),
+    if let Some(p) = channel.dm_peer() {
+        return (1, *p.as_bytes());
     }
+    if let Some(t) = channel.topic_id() {
+        return (2, *t.as_bytes());
+    }
+    (0, [0u8; 16])
 }
 
-fn decode_channel(tag: u8, peer: [u8; 16]) -> Channel {
+fn decode_channel(tag: u8, id: [u8; 16]) -> Channel {
     match tag {
-        1 => Channel::dm(PeerId::from_bytes(peer)),
+        1 => Channel::dm(PeerId::from_bytes(id)),
+        2 => Channel::topic(TopicId::from_bytes(id)),
         _ => Channel::GENERAL,
     }
 }
@@ -78,5 +83,9 @@ mod tests {
         let dm = Channel::dm(ander);
         let (tag, peer) = encode_channel(dm);
         assert_eq!(decode_channel(tag, peer), dm);
+
+        let subkanaal = Channel::topic(TopicId::new_random());
+        let (tag, id) = encode_channel(subkanaal);
+        assert_eq!(decode_channel(tag, id), subkanaal);
     }
 }

@@ -8,7 +8,7 @@
 //! store naar de andere verplaatst. Daardoor kunnen we uitval, partities en willekeurige
 //! aankomstvolgorde afdwingen in plaats van erop te hopen.
 
-use fitcom_proto::{Channel, Op, OpKind, PeerId};
+use fitcom_proto::{Channel, Op, OpKind, PeerId, TopicId};
 use fitcom_store::{Store, SYNC_BATCH};
 
 fn peer(n: u8) -> PeerId {
@@ -474,4 +474,73 @@ fn bewerken_werkt_ook_als_de_ontvanger_het_bericht_later_krijgt() {
 
     b.apply_remote(&origineel).unwrap();
     assert_eq!(bodies(&b), ["verbeterd"]);
+}
+
+#[test]
+fn subkanaal_bereikt_alle_peers_net_als_algemeen_anders_dan_een_dm() {
+    // De kern van de fase 9-uitbreiding: een subkanaal onder "Algemeen" is publiek,
+    // niet DM-achtig beperkt tot de geadresseerde.
+    let topic = Channel::topic(TopicId::from_bytes([0x42; 16]));
+    let mut a = store(1);
+    let mut b = store(2);
+    let mut c = store(3);
+
+    a.append_local(topic, &fitcom_store::post("in het subkanaal"), 0)
+        .unwrap();
+
+    push_for(&a, peer(2), &mut b);
+    push_for(&a, peer(3), &mut c);
+
+    for s in [&b, &c] {
+        let berichten: Vec<String> = s
+            .timeline()
+            .unwrap()
+            .messages
+            .into_iter()
+            .map(|m| m.body)
+            .collect();
+        assert_eq!(
+            berichten,
+            ["in het subkanaal"],
+            "een subkanaal hoort net als algemeen bij iedereen aan te komen"
+        );
+    }
+}
+
+#[test]
+fn subkanaal_titel_en_bericht_overleven_een_herstart() {
+    // Oefent de blob-encodering van een `Channel::topic` door de echte SQLite-opslag
+    // heen — niet alleen in het geheugen, zoals `channel_tests` in `proto` dat al doet.
+    let topic = TopicId::from_bytes([0x77; 16]);
+    let dir = std::env::temp_dir().join(format!("fitcom-subkanaal-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pad = dir.join("chat.sqlite");
+
+    {
+        let mut s = Store::open(&pad, peer(1)).unwrap();
+        s.append_local(
+            Channel::GENERAL,
+            &OpKind::SetTopicTitle {
+                id: topic,
+                title: "project x".into(),
+            },
+            0,
+        )
+        .unwrap();
+        s.append_local(
+            Channel::topic(topic),
+            &fitcom_store::post("eerste bericht"),
+            0,
+        )
+        .unwrap();
+    }
+    {
+        let s = Store::open(&pad, peer(1)).unwrap();
+        let t = s.timeline().unwrap();
+        assert_eq!(t.topics[&topic], "project x");
+        assert_eq!(t.messages[0].channel, Channel::topic(topic));
+        assert_eq!(t.messages[0].body, "eerste bericht");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

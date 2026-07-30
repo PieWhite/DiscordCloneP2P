@@ -4,7 +4,7 @@
 //! geen willekeur. Daardoor is het gedrag bij door elkaar aankomende ops en gelijktijdige
 //! bewerkingen exact te testen.
 
-use fitcom_proto::{Channel, Op, OpId, OpKind, PeerId};
+use fitcom_proto::{Channel, Op, OpId, OpKind, PeerId, TopicId};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +51,10 @@ pub struct Timeline {
     /// Alle bekende aanbiedingen, op weergavevolgorde. Geen bewerken of intrekken in v1
     /// — zie `TODO.md`.
     pub files: Vec<FileEntry>,
+    /// Subkanalen onder het algemene kanaal en hun huidige titel (fase 9). Bestaan en
+    /// titel komen allebei uit `OpKind::SetTopicTitle` — geen apart "aangemaakt"-bericht,
+    /// precies zoals een bijnaam geen apart "peer bestaat"-bericht nodig heeft.
+    pub topics: HashMap<TopicId, String>,
 }
 
 /// Sorteersleutel die op alle peers dezelfde uitkomst geeft. `wall_clock` mag hier
@@ -74,6 +78,7 @@ pub fn build(ops: &[Op]) -> Timeline {
     }
     let mut changes: HashMap<OpId, ((u64, PeerId), Change)> = HashMap::new();
     let mut nicknames: HashMap<PeerId, ((u64, PeerId), String)> = HashMap::new();
+    let mut topics: HashMap<TopicId, ((u64, PeerId), String)> = HashMap::new();
 
     for op in sorted {
         // Onbekende soort: van een nieuwere peer. We bewaren en verspreiden hem wel,
@@ -143,6 +148,18 @@ pub fn build(ops: &[Op]) -> Timeline {
                     },
                 ));
             }
+            OpKind::SetTopicTitle { id, title } => {
+                // Laatste titel wint, precies als bij een bijnaam — dit dekt zowel het
+                // aanmaken (eerste keer gezien) als het hernoemen (latere keer) van
+                // hetzelfde subkanaal.
+                let k = key(op);
+                match topics.get(&id) {
+                    Some((prev, _)) if *prev >= k => {}
+                    _ => {
+                        topics.insert(id, (k, title));
+                    }
+                }
+            }
         }
     }
 
@@ -191,6 +208,7 @@ pub fn build(ops: &[Op]) -> Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
         files,
+        topics: topics.into_iter().map(|(id, (_, t))| (id, t)).collect(),
     }
 }
 
@@ -519,6 +537,63 @@ mod tests {
         let t = build(&[post, edit]);
         assert_eq!(t.messages[0].body, "origineel");
         assert!(!t.messages[0].edited);
+    }
+
+    #[test]
+    fn bericht_in_een_subkanaal_draagt_zijn_kanaal() {
+        let t_id = TopicId::from_bytes([0x33; 16]);
+        let bericht = op_in(
+            Channel::topic(t_id),
+            peer(1),
+            1,
+            1,
+            OpKind::Post {
+                body: "in project x".into(),
+            },
+        );
+        let t = build(&[bericht]);
+        assert_eq!(t.messages[0].channel, Channel::topic(t_id));
+    }
+
+    #[test]
+    fn subkanaal_titel_komt_uit_settopictitle() {
+        let t_id = TopicId::from_bytes([0x44; 16]);
+        let aanmaken = op(
+            peer(1),
+            1,
+            1,
+            OpKind::SetTopicTitle {
+                id: t_id,
+                title: "project x".into(),
+            },
+        );
+        let t = build(&[aanmaken]);
+        assert_eq!(t.topics[&t_id], "project x");
+    }
+
+    #[test]
+    fn laatste_subkanaal_titel_wint_net_als_bijnaam() {
+        let t_id = TopicId::from_bytes([0x55; 16]);
+        let a = op(
+            peer(1),
+            1,
+            1,
+            OpKind::SetTopicTitle {
+                id: t_id,
+                title: "project x".into(),
+            },
+        );
+        let b = op(
+            peer(2),
+            1,
+            9,
+            OpKind::SetTopicTitle {
+                id: t_id,
+                title: "project x (hernoemd)".into(),
+            },
+        );
+        let t = build(&[b, a]);
+        assert_eq!(t.topics[&t_id], "project x (hernoemd)");
     }
 
     #[test]

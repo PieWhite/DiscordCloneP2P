@@ -491,13 +491,19 @@ fn peer_from_row(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<PeerId
     Ok(PeerId::from_bytes(arr))
 }
 
-/// `Channel` als 17-byte blob: 1 tag-byte + 16-byte peer (nullen als afwezig). Dezelfde
-/// aanpak als de bestandsoverdracht-header in `crates/net/src/filestream.rs`.
+/// `Channel` als 17-byte blob: 1 tag-byte + 16-byte peer-of-subkanaal-id (nullen als
+/// afwezig). Een subkanaal-id (`TopicId`) hergebruikt dezelfde 16-byte slot als een
+/// DM-peer: de twee sluiten elkaar uit (tag bepaalt welke het is), dus dit kost geen
+/// bredere blob en dus geen schema-migratie. Dezelfde aanpak als de
+/// bestandsoverdracht-header in `crates/net/src/filestream.rs`.
 fn channel_to_blob(channel: Channel) -> [u8; 17] {
     let mut buf = [0u8; 17];
     if let Some(p) = channel.dm_peer() {
         buf[0] = 1;
         buf[1..].copy_from_slice(p.as_bytes());
+    } else if let Some(t) = channel.topic_id() {
+        buf[0] = 2;
+        buf[1..].copy_from_slice(t.as_bytes());
     }
     buf
 }
@@ -515,6 +521,11 @@ fn channel_from_blob(bytes: &[u8]) -> rusqlite::Result<Channel> {
             let mut peer = [0u8; 16];
             peer.copy_from_slice(&bytes[1..]);
             Channel::dm(PeerId::from_bytes(peer))
+        }
+        2 => {
+            let mut id = [0u8; 16];
+            id.copy_from_slice(&bytes[1..]);
+            Channel::topic(fitcom_proto::TopicId::from_bytes(id))
         }
         _ => Channel::GENERAL,
     })

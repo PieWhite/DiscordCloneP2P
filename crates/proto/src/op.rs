@@ -11,7 +11,7 @@
 //! peer. Zou hij hem laten vallen, dan convergeert de mesh niet meer zodra er
 //! versieverschil is. Decoderen naar `OpKind` gebeurt pas bij het renderen.
 
-use crate::{Channel, OpId, PeerId};
+use crate::{Channel, OpId, PeerId, TopicId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -131,7 +131,13 @@ op_kinds! {
     // hun eigenaarschap ook al via `op.author` regelen in plaats van een los veld dat uit de
     // pas zou kunnen lopen. Zie docs/ARCHITECTURE.md voor de rest van het ontwerp.
     10 => FileMeta { name: String, size: u64, hash: [u8; 32] },
-    // 11+ GERESERVEERD: React, Reply. Zie TODO.md.
+    // 11-19 GERESERVEERD: React, Reply. Zie TODO.md.
+    // Legt zowel het aanmaken (eerste keer gezien) als het hernoemen (latere keer) van een
+    // subkanaal onder het algemene kanaal vast — laatste `(lamport, author)` wint, precies
+    // zoals bij SetNick. Altijd op Channel::GENERAL geplaatst: dit is metadata over
+    // kanalen zelf, geen gespreksinhoud van één specifiek kanaal. Zie fase 9 in
+    // ROADMAP.md en docs/ARCHITECTURE.md, sectie "Kanalen".
+    20 => SetTopicTitle { id: TopicId, title: String },
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 
@@ -230,17 +236,18 @@ impl VersionVector {
         self.0.is_empty()
     }
 
-    /// Alleen de sleutels die `viewer` ooit mag zien: het algemene kanaal, een DM-kanaal
-    /// gericht aan `viewer`, en (voor het geval `viewer` eigen data kwijtraakte) alles
-    /// waarvan `viewer` zelf de auteur is. Gebruikt vóór we iets van deze vector naar
-    /// `viewer` sturen of ermee vergelijken wat hij nog mist — zonder dit zou een DM
-    /// tussen twee andere peers gewoon meegossipt worden naar wie het niet aangaat.
+    /// Alleen de sleutels die `viewer` ooit mag zien: het algemene kanaal en elk subkanaal
+    /// daaronder (allebei publiek, zie `Channel::is_public`), een DM-kanaal gericht aan
+    /// `viewer`, en (voor het geval `viewer` eigen data kwijtraakte) alles waarvan
+    /// `viewer` zelf de auteur is. Gebruikt vóór we iets van deze vector naar `viewer`
+    /// sturen of ermee vergelijken wat hij nog mist — zonder dit zou een DM tussen twee
+    /// andere peers gewoon meegossipt worden naar wie het niet aangaat.
     pub fn visible_to(&self, viewer: PeerId) -> VersionVector {
         VersionVector(
             self.0
                 .iter()
                 .filter(|((author, channel), _)| {
-                    channel.is_general() || *author == viewer || channel.dm_peer() == Some(viewer)
+                    channel.is_public() || *author == viewer || channel.dm_peer() == Some(viewer)
                 })
                 .map(|(&k, &v)| (k, v))
                 .collect(),
@@ -289,6 +296,10 @@ mod tests {
                 name: "vakantiefotos.zip".into(),
                 size: 123_456_789,
                 hash: [0x42; 32],
+            },
+            OpKind::SetTopicTitle {
+                id: crate::TopicId::from_bytes([0x77; 16]),
+                title: "project x".into(),
             },
         ];
         for kind in kinds {
@@ -426,5 +437,27 @@ mod tests {
         let mut vv = VersionVector::new();
         vv.observe(peer(1), Channel::dm(peer(2)), 3);
         assert_eq!(vv.visible_to(peer(1)).get(peer(1), Channel::dm(peer(2))), 3);
+    }
+
+    #[test]
+    fn visible_to_laat_een_subkanaal_net_als_algemeen_altijd_door() {
+        // Een subkanaal onder "Algemeen" is net zo publiek als het hoofdkanaal zelf —
+        // geen uitzondering zoals bij een DM.
+        let topic = Channel::topic(crate::TopicId::from_bytes([0x99; 16]));
+        let mut vv = VersionVector::new();
+        vv.observe(peer(1), topic, 5);
+        assert_eq!(vv.visible_to(peer(9)).get(peer(1), topic), 5);
+    }
+
+    #[test]
+    fn dm_en_subkanaal_tellen_apart_ook_voor_dezelfde_auteur() {
+        let topic = Channel::topic(crate::TopicId::from_bytes([0x11; 16]));
+        let mut vv = VersionVector::new();
+        vv.observe(peer(1), Channel::GENERAL, 5);
+        vv.observe(peer(1), Channel::dm(peer(2)), 2);
+        vv.observe(peer(1), topic, 9);
+        assert_eq!(vv.get(peer(1), Channel::GENERAL), 5);
+        assert_eq!(vv.get(peer(1), Channel::dm(peer(2))), 2);
+        assert_eq!(vv.get(peer(1), topic), 9);
     }
 }
