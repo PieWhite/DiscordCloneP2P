@@ -116,8 +116,8 @@ bij een botsing wint de verbinding waarvan de initiator de laagste UUID heeft.
 
 ```rust
 enum ControlMsg {
-    Hello { protocol_version: u32, peer_id: Uuid, display_name: String },
-    HelloAck { protocol_version: u32, peer_id: Uuid, display_name: String },
+    Hello { protocol_version: u32, peer_id: Uuid, display_name: String, app_version: String },
+    HelloAck { protocol_version: u32, peer_id: Uuid, display_name: String, app_version: String },
     Ping { nonce: u64 },
     Pong { nonce: u64 },
 
@@ -138,6 +138,10 @@ enum ControlMsg {
     // file transfer — zie "Bestandsdeling" hieronder
     FileRequest  { file: OpId, have_bytes: u64 },
     FileResponse { file: OpId, outcome: FileOutcome },
+
+    // automatische updates (fase 11) — zie "Automatische updates" hieronder
+    UpdateRequest  { have_bytes: u64 },
+    UpdateResponse { outcome: FileOutcome, size: u64, hash: [u8; 32] },
 }
 ```
 
@@ -306,7 +310,7 @@ bericht, want elke peer mag een subkanaal aanmaken/hernoemen en dus ook verwijde
 een latere `SetTopicTitle` alsnog van de `DeleteTopic`, dan komt het subkanaal terug — net
 zo'n gewone laatste-schrijver-wint-uitkomst als bij een bijnaam.
 
-### Protocolversie: 1 → 2, 2 → 3
+### Protocolversie: 1 → 2, 2 → 3, 3 → 4
 
 **1 → 2**, bij de kanalen-uitbreiding (DM's): `VersionVector` en de bestandsoverdracht-
 header (`crates/net/src/filestream.rs`) veranderden allebei van vorm om het kanaal mee te
@@ -331,6 +335,18 @@ een échte algemene op van diezelfde auteur, met permanent dataverlies of een ve
 geadresseerde bestandsoverdracht tot gevolg. Precies het patroon dat de 1→2-bump ook al
 moest voorkomen, hier alleen niet in de wire-vorm maar in de lokale opslag. Gevonden door de
 `protocol-reviewer`-agent vóór het committen, niet door een test. Zie `crates/proto/src/lib.rs`.
+
+**3 → 4**, bij automatische updates (fase 11): elke uni-stream voor een bulkoverdracht
+(`crates/net/src/filestream.rs`) kreeg een 1-byte kind-prefix vóór de bestaande body
+(`0` = bestand, gevolgd door de bestaande 41-byte `OpId`-header; `1` = update, zonder
+verdere body). Dit verandert de bytes-op-de-draad van **bestaande, al geleverde**
+bestandsoverdracht: een oudere peer zou dat eerste byte anders verkeerd als onderdeel van
+zijn oude header lezen — precies de klasse fout die de eerdere bumps ook moesten
+voorkomen. `Hello`/`HelloAck.app_version` en `UpdateRequest`/`UpdateResponse` zijn op
+zichzelf onschadelijk (map-encoded, onbekend bericht wordt genegeerd), maar horen bij
+dezelfde bump: een peer zonder update-begrip verstuurt toch nooit een `UpdateRequest`, dus
+beide kanten van de functionaliteit vallen sowieso samen. Zie "Automatische updates"
+hieronder. Geverifieerd door de `protocol-reviewer`-agent vóór het committen.
 
 ### Waarom `seq` per (auteur, kanaal) telt, niet per auteur
 
@@ -511,6 +527,58 @@ alternatief voor `OpKind::Delete` — die twee doen iets anders en kunnen allebe
 - **Geen downloadlocatie-dialoog.** Bestanden landen in een vaste map (config
   `download_dir`, standaard `<datamap>/downloads`); zie `crates/app/src/config.rs`.
   Afbeeldingen zijn de uitzondering — zie hierboven.
+
+## Automatische updates
+
+Elke peer ziet in de handshake (`Hello`/`HelloAck.app_version`, `env!("CARGO_PKG_VERSION")`)
+of een ander verder is. Vergelijken gaat via `fitcom_proto::is_newer` (pure
+tuple-vergelijking van `MAJOR.MINOR.PATCH`, geen `semver`-dependency — het formaat ligt
+vast op `workspace.package.version`). Een onleesbare versie van een peer telt als ouder
+in plaats van te paniceren.
+
+**Wie initieert.** De peer met de oudere versie stuurt `UpdateRequest` naar de peer met de
+nieuwere, zodra die `Online` gaat. `crates/app/src/updates.rs` (`Updates`, zelfde
+pure-beslissing/uitvoering-scheiding als `files.rs`) houdt bij welke versie op dit moment
+aangeboden, onderweg of klaar is — één slot tegelijk, niet per peer: een nog nieuwere
+versie die langskomt wint van wat al onderweg was.
+
+**Downloaden is vrijwel fase 6, maar niet via de oplog.** Er is geen `FileMeta`-op voor
+een update — het is geen chatgeschiedenis, maar per-peer, vluchtige status die niet hoeft
+te convergeren. In plaats daarvan:
+
+```rust
+UpdateRequest  { have_bytes: u64 }                       // aanvrager -> peer met nieuwere versie
+UpdateResponse { outcome: FileOutcome, size: u64, hash: [u8; 32] }
+```
+
+Geen `version`/`file`-veld: de identiteit is impliciet ("jouw huidige, draaiende exe").
+`FileOutcome` wordt hergebruikt. Anders dan `FileResponse` draagt `UpdateResponse` ook
+`size`/`hash` mee — die liggen bij een gewoon bestand al vooraf vast in de `FileMeta`-op,
+maar bij een update is er geen voorafgaand bericht dat dat al deed.
+
+De bytes gaan, net als bij bestandsdeling, over een eigen QUIC-uni-stream
+(`MeshCommand::OpenUploadStream`/`MeshEvent::IncomingFileStream`), nooit over de
+control-stream. Omdat diezelfde uni-streams nu voor twee dingen gebruikt worden, begint
+elke stream met een 1-byte kind (`crates/net/src/filestream.rs::read_kind`): `0` = bestand
+(gevolgd door de bestaande 41-byte `OpId`-header), `1` = update (geen verdere body nodig).
+Dat kind-byte is de reden voor de `PROTOCOL_VERSION`-bump 3 → 4 hierboven. Hervatten werkt
+met `have_bytes`/een `.part`-bestand, verificatie met een BLAKE3-hash over het geheel —
+exact hetzelfde patroon als bij een gewoon bestand, alleen zonder `FileEntry`.
+
+**Toepassen: een los updater-procesje, geen nieuwe crate.**
+`crates/app/src/bin/fitcom-updater.rs` is een tweede binary in hetzelfde `fitcom`-package
+(cargo pakt alles in `src/bin/*.rs` vanzelf op). Een exe kan zichzelf niet overschrijven
+terwijl hij draait op Windows, dus: `engine.rs::pas_update_toe` spawnt de updater met het
+pad van de geverifieerde download, het pad van de huidige exe en het eigen PID, en sluit
+de app daarna af via dezelfde weg als het tray-menu (`EngineHandle::afsluiten_voor_update`,
+gecontroleerd in `ui.rs::afsluiten_of_verbergen`). De updater wacht via
+`OpenProcess(SYNCHRONIZE) + WaitForSingleObject` tot dat PID echt weg is, hernoemt dan de
+nieuwe exe over de oude heen (`copy`+verwijderen als terugval bij een cross-volume-fout),
+start hem opnieuw op, en stopt zelf.
+
+**Vertrouwensgrens verschuift.** Dit is de eerste functie waarbij "een peer vertrouwen"
+ook "code van een peer uitvoeren" betekent — bewust niet extra afgeschermd bovenop het
+tailnet + de UUID-allowlist, zie `TODO.md`, sectie "Beveiliging".
 
 ## Verbindingsbeheer
 - Bij start verbindt elke peer met alle geconfigureerde adressen.

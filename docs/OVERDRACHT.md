@@ -3,7 +3,8 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-30, na fase 10 (resoluties, bitrate, gecombineerd delen).
+Laatst bijgewerkt: 2026-07-30, na fase 11 (automatische updates tussen peers) — de laatste
+geplande fase uit `ROADMAP.md`.
 
 ---
 
@@ -23,6 +24,7 @@ Laatst bijgewerkt: 2026-07-30, na fase 10 (resoluties, bitrate, gecombineerd del
 | 8 — Chat verrijking: bestanden inline, plakken, links | ✅ af, grotendeels bevestigd (Ctrl+V-plakken bevestigd, zie beslissing 15) | volledige testsuite blijft groen (o.a. `crates/app/tests/file_deling.rs`, `crates/store/src/timeline.rs`); slepen-en-neerzetten, de miniatuur in de tijdlijn en het Instellingenscherm nog niet met de hand bekeken |
 | 9 — Algemeen: subkanalen met een eigen titel | ✅ af, nog niet met een echte peer getest | volledige testsuite blijft groen (nieuwe tests in `crates/proto`, `crates/store`, `crates/app/src/ui.rs`) + `protocol-reviewer`-agent vóór het committen + twee lokale instanties starten en verbinden schoon; zie `docs/TESTPLAN.md`, fase 9 |
 | 10 — Resoluties, bitrate, gecombineerd delen | ✅ af, **nog niet met echte hardware getest** | bugfix heeft een regressietest (`crates/app/src/streams.rs`); resolutie bleek al parametrisch (audit, geen codewijziging); bitrate is een configwaarde; wasapi-exclude-route + terugval compileert en start schoon in twee lokale instanties, maar het capturen/uitsluiten zelf kan alleen met echte speakers/koptelefoon gecontroleerd worden — zie `docs/TESTPLAN.md`, fase 10 |
+| 11 — Automatische updates tussen peers | ✅ af, **nog niet met een echt versieverschil getest** | volledige testsuite blijft groen (nieuwe tests in `crates/proto`: `Hello`-veld, `is_newer`, `UpdateRequest`/`UpdateResponse`-roundtrip; `crates/app/src/updates.rs`: 12 unit-tests op de pure beslislogica) + `protocol-reviewer`-agent vóór het committen (protocolversie 3→4) + twee lokale instanties starten en verbinden schoon; een echt versieverschil, het bevestigingsvenster en het toepassen door `fitcom-updater.exe` kan alleen met een tweede, oudere build getest worden — zie `docs/TESTPLAN.md`, fase 11 |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -380,6 +382,31 @@ af, dus de resample/encode/verstuur-lus erna (ongewijzigd) ziet geen verschil.
 
 **Nog niet met echte hardware bevestigd** of de exclude-modus daadwerkelijk aanslaat op de
 testmachines. Zie `docs/TESTPLAN.md`, fase 10.
+
+### 18. Kind-byte op elke uni-stream in plaats van een sentinel-`OpId`, en `PROTOCOL_VERSION` opnieuw omhoog (fase 11)
+
+Een update-overdracht heeft, anders dan een bestand, geen `OpId` om de inkomende
+uni-stream aan te herkennen — er is geen `FileMeta`-op. Overwogen: een gereserveerde
+sentinel-waarde in het bestaande `OpId`-veld (bijvoorbeeld een all-nul auteur). Verworpen
+vóór er iets gebouwd werd: dat is precies het soort impliciete aliasing dat in fase 9 al
+een echte bug opleverde (een onbekende kanaal-tag die stilzwijgend op dezelfde
+opslagsleutel als het algemene kanaal terechtkwam, zie de bug hieronder). In plaats
+daarvan een expliciet 1-byte kind vóór elke stream (`0` = bestand, `1` = update) —
+duidelijk in plaats van toevallig, met dezelfde motivatie als destijds.
+
+Dat kind-byte wijzigt het wire-formaat van de **bestaande** bestandsoverdracht, dus
+`PROTOCOL_VERSION` ging opnieuw omhoog, van 3 naar 4 — derde keer dat dit gebeurt, zie
+"Protocolversie: 1 → 2, 2 → 3, 3 → 4" in `docs/ARCHITECTURE.md`. Vooraf voorgelegd aan de
+`protocol-reviewer`-agent (niet pas ná een gevonden bug, zoals bij de 2→3-bump): die
+bevestigde dat de bump nodig en compleet is, en vond geen resterend pad waarop een oudere
+peer het nieuwe byte verkeerd zou kunnen lezen — een peer op protocolversie 3 verstuurt
+sowieso nooit een `UpdateRequest`, dus de twee kanten van deze functionaliteit vallen altijd
+samen.
+
+Het updater-procesje (`fitcom-updater.exe`) is bewust een tweede binary in hetzelfde
+`fitcom`-package (`crates/app/src/bin/`) geworden, niet een nieuwe workspace-crate: cargo
+pakt `src/bin/*.rs` vanzelf op, en een aparte crate voor iets dat alleen wacht, hernoemt en
+herstart zou alleen extra `Cargo.toml`-boekhouding zijn zonder een echt voordeel.
 
 ---
 
@@ -868,6 +895,72 @@ weergave.
 
 ---
 
+## Hoe automatische updates in elkaar zitten (fase 11)
+
+```
+crates/proto/src/appversion.rs   is_newer(theirs, ours) — pure tuple-vergelijking,
+                                   geen semver-dependency.
+crates/proto/src/control.rs      Hello/HelloAck kregen app_version; UpdateRequest/
+                                   UpdateResponse (tags 42/43).
+crates/proto/src/lib.rs          PROTOCOL_VERSION 3 → 4 — zie hieronder.
+crates/net/src/filestream.rs     1-byte kind-prefix op elke uni-stream (0 = bestand,
+                                   1 = update); read_kind/write_update_header.
+crates/net/src/mesh.rs           app_version door MeshConfig/Established/Active/
+                                   PeerStatus::Online.
+crates/app/src/updates.rs        Updates (nieuw) — pure beslislogica, zelfde opzet als
+                                   files.rs. Eén slot tegelijk, niet per peer.
+crates/app/src/engine.rs         overweeg_update, update_upload_taak/download_update_taak
+                                   (mirror van hash_en_bied_aan/upload_taak/download_taak),
+                                   pas_update_toe, EngineHandle::afsluiten_voor_update.
+crates/app/src/bin/fitcom-updater.rs (nieuw) los updater-procesje, tweede binary in
+                                   hetzelfde package.
+crates/app/src/ui.rs             update_beschikbaar_venster — bevestigingsvraag/voortgang.
+```
+
+**De kern staat in `docs/ARCHITECTURE.md`, sectie "Automatische updates"**, inclusief de
+volledige onderbouwing van de `PROTOCOL_VERSION`-bump 3 → 4.
+
+**Geen `FileMeta`-achtige oplog-op voor een update.** Dat was de eerste vraag bij het
+ontwerp: waarom niet gewoon hetzelfde mechanisme als bestandsdeling, op-en-op? Een update
+is geen chatgeschiedenis — hij hoeft niet te convergeren, niet te overleven bij een derde
+peer die hem nooit zag, en betekent niets buiten "wie draait er op dit moment welke
+versie". Dat is per-peer, vluchtige status, net als een RTT-meting. Vandaar twee kleine,
+losstaande control-berichten in plaats van een oplog-op.
+
+**Eén slot, niet per peer.** `Updates` houdt maar één "huidige aanbieding/download" bij.
+Biedt een tweede peer dezelfde versie aan terwijl de eerste al bezig is, dan wordt dat
+genegeerd — geen reden om twee keer hetzelfde te downloaden. Een nog nieuwere versie die
+langskomt tijdens een lopende download wint wél, want die is per definitie beter. Een
+mislukte poging wordt niet actief opnieuw geprobeerd: dat gebeurt vanzelf zodra die peer
+opnieuw `Online` gaat (dezelfde "reconnect is de natuurlijke retry"-redenering als bij de
+oplog-sync).
+
+**Het kind-byte was de enige echte ontwerpvraag.** `MeshEvent::IncomingFileStream` levert
+een kale `RecvStream` — er is op mesh-niveau niets dat een bestandsoverdracht van een
+update-overdracht onderscheidt. De drie opties die overwogen zijn: (1) een sentinel-waarde
+in het bestaande `OpId`-veld (verworpen — precies het soort impliciete aliasing dat in
+fase 9 al een bug opleverde), (2) een volledig apart transportkanaal (te zwaar voor wat
+uiteindelijk maar één extra byte hoeft te zijn), (3) een 1-byte kind-prefix vóór elke
+stream. Optie 3 is gekozen, met als consequentie dat het bestaande bestandsoverdracht-
+formaat verandert — vandaar de `PROTOCOL_VERSION`-bump, bevestigd door de
+`protocol-reviewer`-agent als terecht en compleet.
+
+**De updater is een tweede binary in `fitcom`, geen nieuwe workspace-crate.** Cargo pakt
+alles in `src/bin/*.rs` vanzelf op als extra binary in hetzelfde package — dat scheelde een
+`[workspace] members`-wijziging en een nieuwe `Cargo.toml` voor iets dat maar drie dingen
+doet: wachten op een PID, een bestand hernoemen, opnieuw starten.
+
+**Wat hier het meest kon misgaan, en dus getest is:**
+- Dat een oude, onleesbare of ontbrekende `app_version`-string nooit een update triggert in
+  plaats van te paniceren — `crates/proto/src/appversion.rs::tests::onleesbare_versie_van_een_peer_crasht_niet_en_telt_als_ouder`.
+- Dat een oudere peer die het `Hello`-veld nog niet kent gewoon op `"0.0.0"` uitkomt —
+  `crates/proto/src/control.rs::tests::hello_zonder_app_versie_valt_terug_op_onbekend`.
+- De volledige beslislogica van `Updates` (aanbieden, negeren, een nog nieuwere versie die
+  wint, voortgang, mislukking, wegklikken) — twaalf pure unit-tests in
+  `crates/app/src/updates.rs`, zonder netwerk of schijf.
+
+---
+
 ## Wat nog nooit met een echte peer getest is
 
 **Fase 1 t/m 7, en kanalen (DM's) erna, zijn inmiddels allemaal door Rick met een echte
@@ -937,3 +1030,15 @@ precies het soort gedrag dat deze omgeving niet kan simuleren:
   "terugval op gewone loopback" (mislukt, en dan graag de foutmelding erbij).
 - **1440p en 3440×1440 scherp en zonder framedrops** kan alleen op de echte
   1440p-hoofdschermen gecontroleerd worden, niet in deze omgeving.
+
+Van fase 11 (automatische updates) is de sync-onafhankelijke beslislogica volledig
+unit-getest en de protocolwijziging door de `protocol-reviewer`-agent gecontroleerd, maar
+alles wat hier écht om draait vergt een echt versieverschil: `run-peers.ps1` start overal
+dezelfde build, dus er is geen manier om lokaal twee verschillende versies te laten praten.
+**Niet geverifieerd, voor Rick met een tweede, oudere build:**
+- Dat een oudere peer de nieuwere versie automatisch aangeboden krijgt zodra hij verbindt.
+- Het bevestigingsvenster zelf (de voortgangsbalk, de tekst, de knoppen).
+- Dat `fitcom-updater.exe` na bevestiging echt wacht tot de hoofd-app dicht is, de exe
+  vervangt en de nieuwe versie start — dit is het enige stuk van deze fase dat sowieso
+  nooit door een geautomatiseerde test gedekt kan worden, want het draait per definitie
+  na het afsluiten van het proces dat de test erop zou controleren.

@@ -471,6 +471,48 @@ pas als ook de laatste bron stopt, stopt het geluid. *Faalt dit, dan telt
 
 ---
 
+## Fase 11 — Automatische updates tussen peers
+
+Nieuw deze ronde, nog niet met een echt versieverschil getest. `run-peers.ps1` start overal
+dezelfde build, dus dit kan niet met de gebruikelijke lokale opzet — je hebt hiervoor een
+**tweede, oudere build** nodig (bijvoorbeeld: bouw een keer, kopieer `target\debug\fitcom.exe`
+en `fitcom-updater.exe` naar een aparte map als "oude versie", verhoog daarna
+`workspace.package.version` in `Cargo.toml` met een patch-nummer, bouw opnieuw, en start de
+oude exe als de "peer met de oudere versie"). Zet `FITCOM_LOG=debug` aan op beide kanten.
+
+**11.1 Een nieuwere versie wordt automatisch aangeboden**
+Start de oude build en de nieuwe build als twee peers die met elkaar verbinden. Bij de oude
+peer moet vanzelf — zonder klikken — een venster "Nieuwere versie beschikbaar" verschijnen
+zodra hij verbindt. *Verschijnt er niets, controleer in het log van de oude peer of
+`Hello`/`HelloAck` een `app_version` meekreeg en of die hoger is dan de eigen versie.*
+
+**11.2 De download komt binnen en wordt geverifieerd**
+Laat 11.1 doorlopen: de voortgangsbalk moet oplopen tot 100% en het venster moet vanzelf
+overgaan naar een "Nu bijwerken en herstarten"-knop. *Blijft hij hangen op "bezig", dan is
+de uni-stream niet aangekomen of niet als update herkend — kijk naar `read_kind` in
+`crates/net/src/filestream.rs`. Faalt de hash-verificatie, dan staat dat expliciet in het
+log ("update is corrupt geraakt").*
+
+**11.3 Bevestigen werkt: de oude peer wordt de nieuwe versie**
+Klik "Nu bijwerken en herstarten" op de oude peer. De app moet zichzelf afsluiten, en na
+hooguit een paar seconden moet er een nieuw venster verschijnen dat nu de nieuwe versie
+draait (zie de titelbalk-log-regel "FitCommunication start versie=..."). *Gebeurt er niets,
+kijk in `updater.log` naast de exe — die zegt exact waar het is blijven steken (wachten op
+het oude proces, hernoemen, of opnieuw starten).*
+
+**11.4 Onderbreken en hervatten**
+Herhaal 11.1, maar sluit de oude peer af (of verbreek het netwerk) terwijl de download nog
+bezig is. Start hem daarna opnieuw: de download moet hervatten vanaf waar hij was, niet
+opnieuw vanaf 0. *Kijk naar de grootte van `updates\update-<versie>.exe.part` in de datamap
+vlak vóór het herstarten.*
+
+**11.5 Negeren houdt op met vragen, deze sessie**
+Klik "Negeren" op het aanbod. Het venster moet verdwijnen en niet vanzelf terugkomen zolang
+de peer verbonden blijft. Herstart de oude peer: het aanbod mag dan wél weer verschijnen
+(negeren is sessie-lokaal, geen instelling).
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

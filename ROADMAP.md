@@ -367,7 +367,7 @@ voor het volledige ontwerp.
 terugval goed voelt, en of een peer zijn eigen stem echt niet terughoort, kan alleen Rick met
 een tweede machine en een koptelefoon controleren.
 
-### Fase 11 — Automatische updates tussen peers
+### Fase 11 — Automatische updates tussen peers ✅
 - **Versievergelijking bij de handshake**: naast de bestaande `protocol_version` een
   app-versie (semver) uitwisselen zodat een peer kan zien dat een ander een nieuwere build
   heeft.
@@ -389,3 +389,26 @@ een tweede machine en een koptelefoon controleren.
 **Klaar als:** een peer met een oudere versie krijgt de nieuwe automatisch aangeboden zodra
 hij weer online komt, ziet een duidelijke bevestigingsvraag, en draait na akkoord de nieuwe
 versie zonder dat iemand handmatig een zip hoeft uit te pakken.
+
+**Gebouwd zoals gepland, twee kleine technische afwijkingen van de oorspronkelijke schets.**
+Er is geen apart `FileMeta`-achtig bericht voor een update — dat zou een oplog-op
+veronderstellen, en een update is geen chatgeschiedenis maar per-peer, vluchtige status.
+In plaats daarvan twee nieuwe, kleine control-berichten (`UpdateRequest`/`UpdateResponse`)
+die verder vrijwel letterlijk het bestandsdelingsmechanisme hergebruiken: zelfde
+eigen-QUIC-stream, zelfde hervat-via-`have_bytes`, zelfde BLAKE3-verificatie na afloop.
+
+Om een bestandsoverdracht en een update-overdracht op dezelfde soort uni-stream uit elkaar
+te houden kreeg elke stream een 1-byte kind-prefix — dat wijzigt het wire-formaat van de
+**bestaande** bestandsoverdracht, dus `PROTOCOL_VERSION` ging van 3 naar 4. Zie
+`docs/ARCHITECTURE.md`, secties "Protocolversie" en "Automatische updates", voor de volledige
+onderbouwing en het `protocol-reviewer`-akkoord.
+
+Het updater-procesje (`fitcom-updater.exe`) is een tweede binary in hetzelfde
+`fitcom`-package (`crates/app/src/bin/`) in plaats van een aparte crate — cargo pakt dat
+vanzelf op, en het scheelde een workspace-lid voor iets dat alleen wacht, hernoemt en
+herstart.
+
+**Niet lokaal te testen, dus voor Rick met de hand:** `run-peers.ps1` start overal
+dezelfde build, dus een echt versieverschil (twee gebouwde exe's met een andere
+`workspace.package.version`) is alleen met een tweede, oudere build te simuleren. Zie
+`docs/TESTPLAN.md`, fase 11.
