@@ -1059,11 +1059,9 @@ impl App {
 
         if bevestigd {
             self.stuur(UiCommand::VerwijderAlleAfbeeldingen);
-            // Zonder dit blijft een al geladen miniatuur gewoon zichtbaar tot de
-            // volgende herstart: `bijlage_texture` leest alleen van schijf bij een
-            // cache-miss, en de textuur staat na het laden nog gewoon op de GPU. De
-            // motor heeft de bytes net verwijderd, dus deze sessie moet dat ook zien.
-            self.bijlage_texturen.clear();
+            // Bewust géén self.bijlage_texturen.clear() hier: een al geladen miniatuur
+            // blijft dan zichtbaar tot de volgende herstart, ook al zijn de bytes net
+            // van schijf verwijderd. Dat is prima zo — Rick wil dat expliciet zo houden.
         }
         if bevestigd || geannuleerd || !open {
             self.bevestig_verwijder_afbeeldingen = false;
