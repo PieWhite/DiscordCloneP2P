@@ -43,7 +43,7 @@ pub fn rail(app: &mut App, ctx: &egui::Context) {
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 ui.add_space(10.0);
-                if widgets::rail_button(ui, false, "\u{2699}")
+                if widgets::rail_button(ui, app.view == AppView::Settings, "\u{2699}")
                     .on_hover_text("Instellingen")
                     .clicked()
                 {
@@ -57,5 +57,6 @@ pub fn rail(app: &mut App, ctx: &egui::Context) {
     }
     if instellingen_openen {
         app.open_instellingen();
+        app.view = AppView::Settings;
     }
 }

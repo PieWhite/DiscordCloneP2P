@@ -8,11 +8,13 @@ pub mod channels;
 pub mod chat_pane;
 pub mod dms;
 pub mod rail;
+pub mod settings;
 pub mod theme;
 pub mod titlebar;
 pub mod widgets;
 
-use crate::config::VideoConfig;
+use settings::SettingsTab;
+
 use crate::engine::{self, EngineHandle, Snapshot, UiCommand};
 use crate::tray;
 use eframe::egui;
@@ -37,6 +39,7 @@ const VOICE_REPAINT: Duration = Duration::from_millis(80);
 pub enum AppView {
     Channels,
     Dms,
+    Settings,
 }
 
 pub struct App {
@@ -68,6 +71,8 @@ pub struct App {
     /// Laatst geopende DM-gesprek, indien er ooit één geopend is. `None` betekent: de
     /// DM-weergave toont een lege "kies een gesprek"-staat, geen geforceerde keuze.
     laatste_dm: Option<PeerId>,
+    /// Welke tab van de Instellingen-weergave getoond wordt.
+    settings_tab: SettingsTab,
     naar_tray: bool,
     /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
     /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
@@ -157,6 +162,7 @@ impl App {
             view: AppView::Channels,
             laatste_niet_dm_kanaal: Channel::GENERAL,
             laatste_dm: None,
+            settings_tab: SettingsTab::Account,
             naar_tray,
             bronkeuze: None,
             instellingen: None,
@@ -255,6 +261,9 @@ impl App {
                     self.wissel_kanaal(Channel::dm(peer));
                 }
             }
+            // Instellingen heeft geen "actief kanaal" om te herstellen — de rail vult
+            // hier zelf `self.instellingen` (zie `App::open_instellingen`).
+            AppView::Settings => {}
         }
     }
 
@@ -296,6 +305,8 @@ impl App {
         ui.horizontal(|ui| {
             if ui.small_button("naam wijzigen").clicked() {
                 self.profiel = Some(eigen.clone());
+                self.settings_tab = SettingsTab::Account;
+                self.view = AppView::Settings;
             }
             ui.small("niet storen");
             let mut niet_storen = self.snap.niet_storen;
@@ -379,9 +390,7 @@ impl eframe::App for App {
         rail::rail(self, ctx);
 
         self.bronkeuze_venster(ctx);
-        self.instellingen_venster(ctx);
         self.bevestig_verwijder_afbeeldingen_venster(ctx);
-        self.profiel_venster(ctx);
         self.kanaal_hernoemen_venster(ctx);
         self.bevestig_verwijder_kanaal_venster(ctx);
         self.update_beschikbaar_venster(ctx);
@@ -390,6 +399,7 @@ impl eframe::App for App {
         match self.view {
             AppView::Channels => self.channels_view(ctx),
             AppView::Dms => self.dms_view(ctx),
+            AppView::Settings => self.settings_view(ctx),
         }
     }
 }
@@ -834,7 +844,6 @@ impl App {
 
     fn statusbalk(&mut self, ctx: &egui::Context) {
         let mut fout_weg = false;
-        let mut instellingen_openen = false;
 
         egui::TopBottomPanel::bottom("statusbalk").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -852,10 +861,6 @@ impl App {
                     let _ = std::process::Command::new("explorer")
                         .arg(&self.data_dir)
                         .spawn();
-                }
-                ui.separator();
-                if ui.small_button("instellingen").clicked() {
-                    instellingen_openen = true;
                 }
                 if let Some(err) = &self.snap.fout {
                     ui.separator();
@@ -875,113 +880,18 @@ impl App {
         if fout_weg {
             self.stuur(UiCommand::FoutWeg);
         }
-        if instellingen_openen {
-            self.open_instellingen();
-        }
     }
 
-    /// Opent het instellingenscherm met een verse bewerkkopie van de huidige
-    /// video-instellingen. Gedeeld door de statusbalk-knop en het tandwiel in de
-    /// icoonrail (`ui/rail.rs`) — één plek die bepaalt wat "instellingen openen"
-    /// betekent.
+    /// Vult een verse bewerkkopie van de huidige video-instellingen. Aangeroepen door
+    /// het tandwiel in de icoonrail (`ui/rail.rs`) bij het openen van de Instellingen-
+    /// weergave, en door `ui/settings.rs` zelf na "Toepassen"/"Annuleren" op het
+    /// Video-tabblad om een verse kopie te tonen.
     fn open_instellingen(&mut self) {
         self.instellingen = Some(VideoConcept {
             codec: self.snap.video.codec.clone(),
             fps: self.snap.video.fps,
             bitrate_mbit: self.snap.video.bitrate as f32 / 1_000_000.0,
         });
-    }
-
-    /// Algemeen instellingenscherm: video (codec/fps/bitrate) en beheer van de lokale
-    /// `Pictures`-map. Video bewerkt een kopie, zodat "annuleren" niets hoeft terug te
-    /// draaien — pas "toepassen" stuurt iets naar de motor. Lopende deelsessies
-    /// herstarten daar meteen mee; zie `engine.rs`.
-    fn instellingen_venster(&mut self, ctx: &egui::Context) {
-        let Some(concept) = &mut self.instellingen else {
-            return;
-        };
-        let mut open = true;
-        let mut toepassen = false;
-        let mut annuleren = false;
-        let mut verwijder_afbeeldingen_geklikt = false;
-
-        egui::Window::new("Instellingen")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(360.0)
-            .show(ctx, |ui| {
-                ui.heading("Video");
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new("Codec").strong());
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut concept.codec, "h264".to_string(), "H.264");
-                    ui.selectable_value(&mut concept.codec, "hevc".to_string(), "HEVC");
-                });
-                if concept.codec == "hevc" {
-                    ui.small(
-                        "HEVC decoderen loopt op Windows via een Store-uitbreiding die er niet \
-                         standaard op zit. Zet dit alleen aan als je zeker weet dat alle peers \
-                         hem kunnen decoderen.",
-                    );
-                } else {
-                    ui.small("Aanbevolen: zit altijd in Windows, bij iedereen.");
-                }
-                ui.add_space(10.0);
-
-                ui.label(egui::RichText::new("Beelden per seconde").strong());
-                ui.add(egui::Slider::new(&mut concept.fps, 15..=60));
-                ui.add_space(10.0);
-
-                ui.label(egui::RichText::new("Bitrate").strong());
-                ui.add(
-                    egui::Slider::new(&mut concept.bitrate_mbit, 2.0..=50.0)
-                        .suffix(" Mbit/s")
-                        .fixed_decimals(0),
-                );
-                ui.small("Op een gigabitnetwerk zijn bits gratis; hoger geeft scherpere tekst.");
-                ui.add_space(14.0);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Toepassen").clicked() {
-                        toepassen = true;
-                    }
-                    if ui.button("Annuleren").clicked() {
-                        annuleren = true;
-                    }
-                });
-                ui.add_space(4.0);
-                ui.small("Geldt voor lopende en nieuw gestarte deelsessies.");
-
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                ui.heading("Afbeeldingen");
-                ui.add_space(6.0);
-                ui.small(
-                    "Afbeeldingen die je zelf deelt of downloadt staan apart van je gewone \
-                     downloads, zodat ze inline in de chat getoond kunnen worden.",
-                );
-                ui.add_space(6.0);
-                if ui.button("Verwijder alle afbeeldingen").clicked() {
-                    verwijder_afbeeldingen_geklikt = true;
-                }
-            });
-
-        if toepassen {
-            let concept = self.instellingen.take().unwrap();
-            self.stuur(UiCommand::ZetVideoInstellingen(VideoConfig {
-                codec: concept.codec,
-                fps: concept.fps,
-                bitrate: (concept.bitrate_mbit * 1_000_000.0).round() as u32,
-            }));
-        } else if annuleren || !open {
-            self.instellingen = None;
-        }
-        if verwijder_afbeeldingen_geklikt {
-            self.bevestig_verwijder_afbeeldingen = true;
-        }
     }
 
     /// Bevestigingsvraag vóór "Verwijder alle afbeeldingen" — een onomkeerbare
@@ -1027,52 +937,6 @@ impl App {
         }
         if bevestigd || geannuleerd || !open {
             self.bevestig_verwijder_afbeeldingen = false;
-        }
-    }
-
-    /// Eigen weergavenaam wijzigen. Bewerkt een kopie zodat "annuleren" niets hoeft
-    /// terug te draaien; pas "opslaan" stuurt een `SetNick`-op naar de motor, die hem
-    /// ook meteen in `config.toml` bewaart.
-    fn profiel_venster(&mut self, ctx: &egui::Context) {
-        let Some(concept) = &mut self.profiel else {
-            return;
-        };
-        let mut open = true;
-        let mut opslaan = false;
-        let mut annuleren = false;
-
-        egui::Window::new("Profiel")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(300.0)
-            .show(ctx, |ui| {
-                ui.label(egui::RichText::new("Weergavenaam").strong());
-                ui.small("Zichtbaar voor de andere peers, overal waar jouw naam getoond wordt.");
-                ui.add_space(6.0);
-                let veld = ui.add(egui::TextEdit::singleline(concept).desired_width(f32::INFINITY));
-                let enter = veld.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!concept.trim().is_empty(), egui::Button::new("Opslaan"))
-                        .clicked()
-                        || (enter && !concept.trim().is_empty())
-                    {
-                        opslaan = true;
-                    }
-                    if ui.button("Annuleren").clicked() {
-                        annuleren = true;
-                    }
-                });
-            });
-
-        if opslaan {
-            let naam = self.profiel.take().unwrap();
-            self.stuur(UiCommand::ZetNaam(naam));
-        } else if annuleren || !open {
-            self.profiel = None;
         }
     }
 
