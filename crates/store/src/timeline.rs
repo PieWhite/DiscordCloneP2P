@@ -65,7 +65,7 @@ pub fn build(ops: &[Op]) -> Timeline {
     sorted.sort_by_key(|o| key(o));
 
     let mut posts: Vec<(OpId, Message)> = Vec::new();
-    let mut files: Vec<FileEntry> = Vec::new();
+    let mut file_aanbiedingen: Vec<(OpId, FileEntry)> = Vec::new();
 
     // Laatste bewerking of verwijdering per bericht, met de sleutel die won.
     enum Change {
@@ -111,6 +111,10 @@ pub fn build(ops: &[Op]) -> Timeline {
                 record(&mut changes, target, key(op), Change::Edit(body));
             }
             OpKind::Delete { target } => {
+                // Geldt ook voor een `FileMeta`-op: `target` is een kale `OpId`, en die
+                // is al globaal uniek ongeacht welke soort op hij aanwijst. Dezelfde
+                // regel als bij een bericht: alleen de auteur van het doel mag het
+                // verwijderen, en alleen binnen hetzelfde kanaal.
                 if target.author != op.author || target.channel != op.channel {
                     continue;
                 }
@@ -126,15 +130,18 @@ pub fn build(ops: &[Op]) -> Timeline {
                 }
             }
             OpKind::FileMeta { name, size, hash } => {
-                files.push(FileEntry {
-                    id: op.id(),
-                    author: op.author,
-                    channel: op.channel,
-                    name,
-                    size,
-                    hash,
-                    lamport: op.lamport,
-                });
+                file_aanbiedingen.push((
+                    op.id(),
+                    FileEntry {
+                        id: op.id(),
+                        author: op.author,
+                        channel: op.channel,
+                        name,
+                        size,
+                        hash,
+                        lamport: op.lamport,
+                    },
+                ));
             }
         }
     }
@@ -167,6 +174,17 @@ pub fn build(ops: &[Op]) -> Timeline {
             None => {}
         }
         messages.push(msg);
+    }
+
+    // Een `Edit` op een bestandsaanbod betekent niets — er is niets te herschrijven —
+    // dus die wordt hier genegeerd, net zoals hij dat al deed toen `changes` alleen op
+    // berichten werd toegepast.
+    let mut files: Vec<FileEntry> = Vec::with_capacity(file_aanbiedingen.len());
+    for (id, entry) in file_aanbiedingen {
+        if matches!(changes.get(&id), Some((_, Change::Delete))) {
+            continue;
+        }
+        files.push(entry);
     }
 
     Timeline {
@@ -410,6 +428,53 @@ mod tests {
         );
         let t = build(&[dm]);
         assert_eq!(t.messages[0].channel, Channel::dm(peer(2)));
+    }
+
+    #[test]
+    fn aangeboden_bestand_kan_verwijderd_worden_net_als_een_bericht() {
+        let aanbod = op(
+            peer(1),
+            1,
+            1,
+            OpKind::FileMeta {
+                name: "oeps.zip".into(),
+                size: 42,
+                hash: [0x11; 32],
+            },
+        );
+        let del = op(
+            peer(1),
+            2,
+            2,
+            OpKind::Delete {
+                target: aanbod.id(),
+            },
+        );
+        assert!(build(&[aanbod, del]).files.is_empty());
+    }
+
+    #[test]
+    fn alleen_de_aanbieder_zelf_mag_zijn_bestand_verwijderen() {
+        let aanbod = op(
+            peer(1),
+            1,
+            1,
+            OpKind::FileMeta {
+                name: "van_peer_1.zip".into(),
+                size: 42,
+                hash: [0x11; 32],
+            },
+        );
+        let kaping = op(
+            peer(2),
+            1,
+            2,
+            OpKind::Delete {
+                target: aanbod.id(),
+            },
+        );
+        let t = build(&[aanbod, kaping]);
+        assert_eq!(t.files.len(), 1, "bestand mag niet verwijderd zijn");
     }
 
     #[test]

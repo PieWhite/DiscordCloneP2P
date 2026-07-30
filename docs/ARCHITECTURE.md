@@ -370,10 +370,21 @@ De op draagt geen `offered_by`-veld. `op.author` is de aanbieder, precies zoals
 `Edit`/`Delete` hun eigenaarschap ook via `op.author`/`target.author` regelen in plaats
 van een los veld dat uit de pas zou kunnen lopen. `hash` is een 32-byte BLAKE3-digest.
 
-Er is geen `OpKind` om een aanbod in te trekken: eenmaal aangeboden blijft het voor
-altijd in de timeline staan, net als een bericht. Wil de aanbieder niet meer serveren
-(bestand verplaatst of verwijderd), dan komt dat pas aan het licht bij een download­poging
-— zie hieronder.
+Er is geen apart `OpKind` om een aanbod in te trekken — de bestaande, generieke
+`OpKind::Delete { target }` doet dat al (fase 8): `target` is een kale `OpId` zonder
+onderscheid tussen "welke soort op dit was", dus dezelfde regel als bij een bericht
+(alleen de auteur van het doel, alleen binnen hetzelfde kanaal) geldt hier vanzelf. Zodra
+de Delete-op zich verspreidt verdwijnt de kaart uit ieders timeline, én stopt de aanbieder
+zelf met serveren: `crates/app/src/engine.rs` roept bij `UiCommand::Verwijder` ook
+`Files::verwijder_aanbod` aan, die het pad uit `Files::aangeboden` haalt zodat een
+volgend `FileRequest` netjes op `NOT_AVAILABLE` uitkomt — zonder die stap zou de kaart wel
+verdwijnen maar het bestand voor wie de `OpId` al kende gewoon downloadbaar blijven.
+
+Dit is geen volledige intrekking. Een download die al liep op het moment van verwijderen
+loopt gewoon af (dezelfde afhandeling als wanneer het bronbestand handmatig van schijf
+verdwijnt, zie hieronder), en een peer die de bytes al eerder volledig downloadde houdt
+zijn eigen kopie — daar is niets aan te doen zonder een vertrouwensmodel dat verder gaat
+dan "leest de anderen kunnen lezen".
 
 ### Downloaden = punt-naar-punt over een eigen stream
 
@@ -418,6 +429,39 @@ binnen is. Dit is precies de reden dat `quinn`/QUIC gekozen is in plaats van é�
 TCP-socket (zie de techstack-tabel): meerdere onafhankelijke streams per verbinding, geen
 head-of-line blocking tussen berichttypes.
 
+### Content-adresseerbare afbeeldingen (fase 8)
+
+Een `FileMeta` waarvan `name` er als afbeelding uitziet (`files::is_afbeelding`, een
+extensie-check) landt niet in `download_dir` maar in een aparte, content-adresseerbare
+map (`pictures_dir`, standaard `<datamap>/Pictures`): `<hex(hash)>.<extensie>`.
+
+Dit lost een asymmetrie op die met een leesbare naam niet op te lossen was. Een gewoon
+bestand krijgt zijn definitieve naam pas bij de aanvrager, ná verificatie, met `" (2)"`
+etc. bij een naamsbotsing (zie boven) — dat pad ligt dus per downloadende peer
+verschillend en pas ná afloop vast. Voor een afbeelding wil de UI diezelfde bytes echter
+inline tonen bij **beide** kanten, en dat vraagt om een pad dat van tevoren al vaststaat.
+`FileMeta.hash` is precies dat: hij ligt al vóór het downloaden vast en is bij aanbieder
+en ontvanger identiek. Een losse randomizer zou dit niet oplossen — die zou bij elke
+peer onafhankelijk een andere waarde opleveren; alleen een deterministische, uit de
+inhoud afgeleide naam werkt hier.
+
+- **Aanbieden:** `hash_en_bied_aan` (`engine.rs`) kopieert het bestand, ná het hashen,
+  zelf naar `pictures_dir` — het origineel (ergens anders op schijf, van de gebruiker)
+  blijft ongemoeid.
+- **Downloaden:** `download_bytes` (`engine.rs`) hernoemt na een geslaagde
+  hash-verificatie naar `pictures_dir` in plaats van naar `unieke_bestandsnaam` in
+  `download_dir`.
+- **Weergave:** de UI berekent hetzelfde pad zelf uit `FileView.hash`/`FileView.name` en
+  probeert het te laden; bestaat het nog niet (niet gedownload, of de aanbieder is nog
+  aan het hashen), dan faalt dat geruisloos en toont de kaart de generieke weergave met
+  een downloadknop.
+
+**"Verwijder alle afbeeldingen"** (instellingenscherm) is puur lokale schijfruimte
+opschonen: het leegt `pictures_dir`, maar raakt geen enkele op aan. De kaarten blijven in
+de tijdlijn staan; een download- of uploadpoging erna krijgt dezelfde nette afhandeling
+als een bronbestand dat toevallig van schijf verdwijnt (zie hieronder). Dit is dus geen
+alternatief voor `OpKind::Delete` — die twee doen iets anders en kunnen allebei apart.
+
 ### Wat hier niet zit
 
 - **Geen chunk-niveau voortgang van de aanbieder naar de aanvrager.** De aanvrager kent
@@ -428,6 +472,7 @@ head-of-line blocking tussen berichttypes.
   waarde bij, en komt bij een oudere peer gewoon als "onbekend" binnen — zie boven.
 - **Geen downloadlocatie-dialoog.** Bestanden landen in een vaste map (config
   `download_dir`, standaard `<datamap>/downloads`); zie `crates/app/src/config.rs`.
+  Afbeeldingen zijn de uitzondering — zie hierboven.
 
 ## Verbindingsbeheer
 - Bij start verbindt elke peer met alle geconfigureerde adressen.

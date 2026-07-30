@@ -216,25 +216,82 @@ nooit naar `Channel::is_general()` om te beslissen of er gemeld wordt — alleen
 "ongelezen"-teller (algemeen of per DM-partner) gebruikt wordt om vast te stellen of een
 op daadwerkelijk nieuw was, niet om de meldingsbeslissing zelf.
 
-### 12. Miniatuurweergave alleen voor bestanden die je zelf aanbiedt (fase 8)
+### 12. Content-adresseerbare afbeeldingen in plaats van een sessie-lokale padcache (fase 8)
 ROADMAP.md vroeg om "een miniatuurweergave in plaats van een generieke bestandskaart" bij
-Ctrl+V-plakken. Bij het bouwen bleek dat niet zonder meer uit te breiden naar elke ontvangen
-afbeelding, om een reden die al in fase 6 vastlag maar hier voor het eerst relevant werd:
-een gedownload bestand landt onder zijn leesbare naam pas ná een geslaagde
-hash-verificatie, en bij een naamsbotsing met `" (2)"` erachter — de UI kent dus nooit
-vooraf het exacte pad op schijf van een bestand dat een ander aanbiedt, alleen
-`FileEntry.name` uit de oplog. Voor een bestand dat je zelf aanbiedt ligt dat anders: de UI
-kiest zelf het pad (dialoog, sleep-drop of het weggeschreven plak-bestand) en kan dat
-onthouden vóórdat de motor er ooit een `OpId` aan hangt.
+Ctrl+V-plakken. Eerste versie loste dat te bekrompen op: een `App::eigen_afbeeldingen`
+(`HashMap<naam, pad>`) die alleen het lokale pad van je **eigen** aanbod onthield, met als
+onderbouwing dat een gedownload bestand pas ná hash-verificatie zijn leesbare naam krijgt
+(met `" (2)"` bij een botsing), dus de UI vooraf nooit het exacte pad van een ontvangen
+afbeelding zou kennen. Een ontvangen afbeelding kreeg daardoor nooit een miniatuur, ook niet
+na downloaden — een asymmetrie die Rick terecht niet begreep en die ook niet hoefde.
 
-Gekozen oplossing: `App::eigen_afbeeldingen` (`ui.rs`) onthoudt het lokale pad per
-bestandsnaam op het moment van aanbieden, ongeacht via welke van de drie invoerwegen dat
-gebeurde — dialoog, slepen-en-neerzetten of plakken lopen daarom allemaal via één centrale
-`App::bied_bestand_aan`. Een ontvangen afbeelding toont altijd de generieke kaart, ook na
-downloaden. Het alternatief (de motor het uiteindelijke downloadpad laten terugrapporteren
-naar de UI) zou het probleem pas hebben verplaatst: dan moet de UI alsnog op een
-naamsbotsing anticiperen, en dat raakt precies het stuk van `engine.rs`/`files.rs` dat in
-fase 6 bewust is dichtgetimmerd. Geen aanname dus, maar een grens die al bestond.
+Rick's eigen voorstel loste het echt op: gebruik niet een sessie-lokale boekhouding, maar
+de **inhoudshash die er al lag** (`FileMeta.hash`, ook gebruikt voor verificatie). Die ligt
+al vóór het downloaden vast en is bij aanbieder en ontvanger identiek — in tegenstelling tot
+een losse randomizer, die bij elke peer onafhankelijk een andere waarde zou opleveren en dus
+niets zou oplossen. Elke afbeelding (aangeboden of gedownload) landt daarom nu onder
+`<hex(hash)>.<extensie>` in een eigen map (`pictures_dir`, standaard `<datamap>/Pictures`),
+apart van de gewone downloadmap:
+
+- **Aanbieden:** `hash_en_bied_aan` (`engine.rs`) kopieert, ná het hashen, zelf een kopie
+  naar `pictures_dir`. Het origineel (het bestand van de gebruiker, ergens anders op
+  schijf) blijft ongemoeid.
+- **Downloaden:** `download_bytes` (`engine.rs`) hernoemt na een geslaagde
+  hash-verificatie naar `pictures_dir` in plaats van naar de gebruikelijke
+  `unieke_bestandsnaam` in `download_dir`.
+- **Weergave:** `ui.rs` berekent hetzelfde pad uit `FileView.hash`/`.name` (nu een gedeelde
+  pure functie, `files::hash_bestandsnaam`) en probeert simpelweg te laden. Staat het
+  bestand er nog niet, dan faalt dat geruisloos en toont de kaart de generieke weergave —
+  precies zoals eerst, maar nu voor **beide** kanten in plaats van alleen de aanbieder.
+
+`App::eigen_afbeeldingen` is daarmee volledig vervallen: er is geen sessie-lokale
+boekhouding meer nodig, het pad is overal deterministisch af te leiden. Zie
+`docs/ARCHITECTURE.md`, sectie "Bestandsdeling", voor het volledige ontwerp.
+
+**Terzijde, in dezelfde ronde gefixt:** Ctrl+V-plakken werkte niet, gemeld door Rick. Niet
+omdat `arboard` of egui dat niet zouden kunnen — arboard's Windows-implementatie checkt al
+eerst op het "PNG"-klembordformaat, precies wat Win+Shift+S erop zet — maar omdat de check
+vastzat aan `output.response.has_focus()`: na een screenshot alt-tab je terug en druk je
+Ctrl+V zonder eerst in de chatbox te klikken, en dan had de focus-eis nooit gehaald. Losgemaakt
+van focus, met alleen een uitzondering als er een ander modaal venster open staat (zodat een
+klembord-afbeelding daar geen verrassend bestand aanbiedt terwijl je gewoon tekst wilt
+plakken).
+
+### 13. Een bestand verwijderen moest ook echt stoppen met serveren (fase 8)
+Rick vroeg dat een zelf aangeboden bestand of foto net als een bericht te verwijderen moet
+zijn. `OpKind::Delete { target: OpId }` bleek daar al generiek genoeg voor — `target` maakt
+geen onderscheid tussen "een bericht" en "een bestandsaanbod", dus `crates/store/src/timeline.rs::build()`
+hoefde alleen dezelfde `changes`-toepassing die al voor `messages` bestond, ook op `files`
+toe te passen. Zelfde regel (alleen de auteur van het doel, alleen binnen hetzelfde kanaal),
+geen protocolwijziging, geen `protocol_version`-bump — bevestigd door de
+`protocol-reviewer`-agent vóór het committen.
+
+Die agent vond wel een echt gat, niet in `store` maar in `crates/app`: de Delete-op liet
+alleen de kaart uit de timeline verdwijnen. `Files::aangeboden` (welk lokaal pad bij welke
+`OpId` hoort) werd nergens opgeschoond, dus kon een peer die de `OpId` al kende het bestand
+na "verwijderen" gewoon nog steeds downloaden — schijnzekerheid in plaats van een echte
+intrekking. Gefixt met `Files::verwijder_aanbod` (`crates/app/src/files.rs`), aangeroepen
+vanuit `UiCommand::Verwijder` in `engine.rs` naast de bestaande `chat.verwijder_bericht`-aanroep.
+Een no-op als het doel geen eigen bestandsaanbod is (bijvoorbeeld een gewoon bericht), dus
+geen aparte tak nodig om te onderscheiden wat er verwijderd wordt.
+
+**Nog steeds geen volledige intrekking**, en dat kán ook niet zonder een vertrouwensmodel
+dat verder gaat dan dit tailnet biedt: een download die al liep op het moment van
+verwijderen loopt gewoon af, en een peer die de bytes al eerder volledig binnenhad houdt
+zijn eigen kopie. Zie `docs/ARCHITECTURE.md`, sectie "Bestandsdeling", voor de volledige
+uitleg.
+
+### 14. Eén algemeen instellingenscherm in plaats van los "video-instellingen" (fase 8)
+De nieuwe knop "Verwijder alle afbeeldingen" (met bevestigingsvraag, want onomkeerbaar)
+had geen voor de hand liggende plek: er was alleen een video-specifiek instellingenscherm
+en het profielvenster, geen algemeen scherm. Voorgelegd aan Rick met drie opties (nieuw
+algemeen scherm, bijplakken in video-instellingen, of een losse knop in de statusbalk).
+Rick koos voor een nieuw algemeen "Instellingen"-scherm, met de bestaande
+video-instellingen als eerste sectie erin en "Afbeeldingen" (de nieuwe knop) als tweede.
+De statusbalk-knop heet nu "instellingen" in plaats van "video-instellingen".
+Niet-storen en naam wijzigen zijn bewust blijven staan waar ze al stonden
+(deelnemerspaneel) — dat zijn live bedieningen, geen instellingen, en waren geen deel van
+de vraag.
 
 ---
 
@@ -454,9 +511,14 @@ Pas na een geslaagde hash-verificatie wordt het hernoemd naar zijn eigen, leesba
 een volgende poging weer vanaf 0 — er wordt niets gedeeltelijk bewaard dat niet
 geverifieerd is.
 
-**Wat expres ontbreekt:** een `FileRevoke`-achtige intrekking (eenmaal aangeboden blijft
-voor altijd in de timeline staan, net als een bericht), en een downloadlocatie-dialoog per
-bestand (vaste, instelbare map in plaats van een keuze per keer).
+**Verwijderen kan wel** (sinds fase 8, zie beslissing 13), maar niet via een apart
+`FileRevoke`-bericht: de generieke `OpKind::Delete` die al voor berichten bestond, verbergt
+sindsdien ook een `FileEntry` uit de timeline, en `Files::verwijder_aanbod` stopt de
+aanbieder ook echt met serveren. Dit is bewust géén volledige intrekking — een download die
+al liep loopt af, en wie de bytes al eerder volledig had houdt zijn kopie.
+
+**Wat verder expres ontbreekt:** een downloadlocatie-dialoog per bestand (vaste, instelbare
+map in plaats van een keuze per keer).
 
 ---
 
@@ -555,13 +617,18 @@ elke start weer uit.
 ## Hoe chat-verrijking (bestanden inline, plakken) in elkaar zit
 
 ```
-crates/store/src/timeline.rs   Message en FileEntry kregen een lamport-veld: de sorteersleutel
-                                van hun eigen op, nodig om ze buiten de store samen te voegen.
-crates/app/src/engine.rs       FileView kreeg hetzelfde lamport-veld, gekopieerd van FileEntry.
+crates/store/src/timeline.rs   Message en FileEntry kregen een lamport-veld (sorteersleutel
+                                van hun eigen op) en Delete werkt nu ook op FileEntry.
+crates/app/src/config.rs       resolve_pictures_dir — <datamap>/Pictures, naast download_dir.
+crates/app/src/files.rs        is_afbeelding, hash_bestandsnaam (puur), verwijder_aanbod.
+crates/app/src/engine.rs       FileView kreeg lamport en hash. hash_en_bied_aan kopieert een
+                                aangeboden afbeelding naar pictures_dir; download_bytes landt
+                                een gedownloade afbeelding daar ook, i.p.v. in download_dir.
+                                UiCommand::VerwijderAlleAfbeeldingen leegt pictures_dir.
 crates/app/src/ui.rs           ChatItem (Bericht/Bestand) — de samengevoegde, gesorteerde
                                 tijdlijn; App::bied_bestand_aan/verwerk_gedropte_bestanden/
                                 plak_afbeelding/bijlage_texture — de drie invoerwegen en de
-                                miniatuurweergave.
+                                miniatuurweergave; algemeen Instellingen-venster.
 ```
 
 **Waarom een `lamport`-veld op `Message` en `FileEntry` in plaats van een nieuw
@@ -576,25 +643,33 @@ naast elkaar toont.
 
 **`App::bied_bestand_aan` is de ene plek waar alle drie de invoerwegen samenkomen.** De
 bestandsdialoog, slepen-en-neerzetten (`ctx.input(|i| i.raw.dropped_files)`) en Ctrl+V-plakken
-leiden alle drie naar dezelfde functie, die zelf niets nieuws doet — hij herkent alleen of
-het een afbeelding is (voor de miniatuur, zie beslissing 12 hierboven) en stuurt daarna
-hetzelfde `UiCommand::BiedBestandAan` dat al sinds fase 6 bestaat. Dat is precies wat
-ROADMAP.md vroeg: "alleen een nieuwe invoerweg, geen nieuwe logica".
+leiden alle drie naar dezelfde functie, die zelf niets nieuws doet — hij stuurt hetzelfde
+`UiCommand::BiedBestandAan` dat al sinds fase 6 bestaat. Dat is precies wat ROADMAP.md
+vroeg: "alleen een nieuwe invoerweg, geen nieuwe logica". Sinds beslissing 12 hoeft deze
+functie ook niets meer te onthouden over de plek van een afbeelding — dat is
+`hash_en_bied_aan` in `engine.rs` gaan doen, deterministisch via de hash.
 
 **Ctrl+V onderscheidt zich niet via een apart toetsen-event, maar via wat er op het
 klembord staat.** egui levert voor tekst-plakken al een kant-en-klaar `Event::Paste`, maar
 niets vergelijkbaars voor een afbeelding — het OS-klembord zit daarvoor los van wat egui via
 `i.events`/`i.raw` aanbiedt. `App::plak_afbeelding` leest daarom zelf `Ctrl+V` uit de
-ruwe toetsenbordstatus en probeert via `arboard` een afbeelding van het klembord te lezen.
-Staat er geen afbeelding op (gewone tekst, of niets), dan levert dat `None` op en gebeurt er
-verder niets — egui's eigen tekst-plakken in de `TextEdit` is daarmee nooit in de weg
-gezeten, want die twee klembord-inhouden (tekst met een `Event::Paste`, een afbeelding zonder)
-sluiten elkaar uit.
+ruwe toetsenbordstatus (los van welk veld focus heeft, zie beslissing 12) en probeert via
+`arboard` een afbeelding van het klembord te lezen. Staat er geen afbeelding op (gewone
+tekst, of niets), dan levert dat `None` op en gebeurt er verder niets — egui's eigen
+tekst-plakken in de `TextEdit` is daarmee nooit in de weg gezeten, want die twee
+klembord-inhouden (tekst met een `Event::Paste`, een afbeelding zonder) sluiten elkaar uit.
+Het weggeschreven bestand staat in de OS-tijdelijke map, niet in de eigen datamap — een
+blijvende plek is niet nodig, want `hash_en_bied_aan` maakt er zelf meteen een duurzame,
+content-adresseerbare kopie van in `pictures_dir`.
 
 **De miniatuur-textuurcache (`App::bijlage_texturen`) hoeft nooit ververst te worden**, in
-tegenstelling tot `miniatuur_cache` voor screenshare-thumbnails: de bytes van een aangeboden
-bestand veranderen na het aanbieden nooit meer (geen `FileRevoke`, zie `TODO.md`), dus is een
-simpele "eenmaal geladen, blijft geladen"-cache op `OpId` genoeg.
+tegenstelling tot `miniatuur_cache` voor screenshare-thumbnails: de bytes op een
+content-adresseerbaar pad veranderen per definitie nooit (een andere inhoud geeft een
+andere hash, dus een ander pad), dus is een simpele "eenmaal geladen, blijft geladen"-cache
+op `OpId` genoeg. Het pad zelf wordt wel elke frame opnieuw berekend uit `FileView.hash`
+— goedkoop, en zo is er geen aparte "is dit al gedownload"-status nodig: bestaat het
+bestand nog niet, dan faalt het laden gewoon en valt de kaart terug op de generieke
+weergave.
 
 ---
 
@@ -650,10 +725,15 @@ doen — bij voorkeur met minstens twee vensters tegelijk open, want het venster
 verborgen/geminimaliseerd zijn voordat er überhaupt een melding komt.
 
 Van fase 8 zijn de bestaande geautomatiseerde ketentests (`file_deling.rs`, `chat_sync.rs`,
-`timeline.rs`) blijven groen na het samenvoegen van berichten en bestanden tot één tijdlijn —
-dat raakt alleen hoe `ui.rs` de al bestaande `Snapshot` presenteert, niet de motor of de
-sync zelf. Twee lokale instanties starten en verbinden schoon. **Niet geverifieerd, om
-dezelfde reden als bij eerdere fases — invoer naar het bureaublad kan een script hier niet
-sturen:** slepen-en-neerzetten vanuit de Verkenner, Ctrl+V met een echte afbeelding op het
-Windows-klembord, of een bestandskaart en een miniatuur er in de tijdlijn ook zo uitzien als
-bedoeld tussen de berichten door. Dat moet Rick met de hand doen.
+`timeline.rs`, plus nieuwe unit-tests op `Files::verwijder_aanbod` en het verwijderen van een
+`FileEntry` in `timeline.rs`) blijven groen na het samenvoegen van berichten en bestanden tot
+één tijdlijn en na het generiek maken van `Delete` — dat raakt hoe `ui.rs` de al bestaande
+`Snapshot` presenteert en hoe `timeline::build()` een bekende soort op interpreteert, niet de
+motor of de sync zelf. De store-wijziging is bovendien door de `protocol-reviewer`-agent
+gecontroleerd vóór het committen. Twee lokale instanties starten en verbinden schoon.
+**Niet geverifieerd, om dezelfde reden als bij eerdere fases — invoer naar het bureaublad kan
+een script hier niet sturen:** slepen-en-neerzetten vanuit de Verkenner, Ctrl+V met een echte
+afbeelding op het Windows-klembord (ook na de focus-fix), of een bestandskaart en een
+miniatuur er in de tijdlijn ook zo uitzien als bedoeld tussen de berichten door, het nieuwe
+algemene Instellingenscherm, en de bevestigingsvraag bij "Verwijder alle afbeeldingen". Dat
+moet Rick met de hand doen.

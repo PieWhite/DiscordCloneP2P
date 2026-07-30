@@ -54,6 +54,17 @@ impl Files {
         self.aangeboden.insert(file, pad);
     }
 
+    /// Stopt met een eigen aanbod serveren — bijvoorbeeld omdat de gebruiker het net
+    /// als een bericht heeft "verwijderd" (zie `Chat::verwijder_bericht`, generiek voor
+    /// elke soort op). Zonder dit zou de `Delete`-op alleen de kaart uit de timeline
+    /// laten verdwijnen, terwijl `verzoek_ontvangen` het bestand daarna gewoon nog
+    /// levert aan wie er zelf al de `OpId` van kende — schijnzekerheid in plaats van een
+    /// echte intrekking. Doet niets als `file` niet iets is dat wij aanbieden (bijv. een
+    /// verwijderd bericht, of andermans bestand) — dat is dan gewoon een no-op.
+    pub fn verwijder_aanbod(&mut self, file: OpId) {
+        self.aangeboden.remove(&file);
+    }
+
     pub fn status(&self, file: OpId) -> Option<&DownloadStatus> {
         self.downloads.get(&file)
     }
@@ -162,6 +173,35 @@ impl Files {
                 DownloadStatus::Mislukt("bestand is niet meer beschikbaar bij de aanbieder".into()),
             );
         }
+    }
+}
+
+/// Grove extensie-check: alleen de formaten die de `image`-crate-features in
+/// `Cargo.toml` ook daadwerkelijk kunnen decoderen.
+pub fn is_afbeelding(naam: &str) -> bool {
+    let laag = naam.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".bmp"]
+        .iter()
+        .any(|ext| laag.ends_with(ext))
+}
+
+/// Content-adresseerbare bestandsnaam voor de `Pictures`-map: de hash die toch al voor
+/// verificatie gebruikt wordt (zie `FileEntry::hash`), als hex, met de originele
+/// extensie erachter.
+///
+/// De aanbieder en elke downloadende peer komen zo, zonder iets extra af te spreken, op
+/// exact hetzelfde pad uit — dat lost de asymmetrie op die een leesbare naam met
+/// `" (2)"`-deduplicatie niet kan oplossen: die naam ligt bij de aanbieder al vóór het
+/// downloaden vast, bij de ontvanger pas ná een geslaagde verificatie (zie
+/// `docs/OVERDRACHT.md`).
+pub fn hash_bestandsnaam(hash: &[u8; 32], oorspronkelijke_naam: &str) -> String {
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    match std::path::Path::new(oorspronkelijke_naam)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
+        Some(ext) => format!("{hex}.{}", ext.to_ascii_lowercase()),
+        None => hex,
     }
 }
 
@@ -301,6 +341,39 @@ mod tests {
     }
 
     #[test]
+    fn verwijder_aanbod_laat_een_volgend_verzoek_not_available_krijgen() {
+        let mut f = Files::new();
+        let file = OpId::new(peer(1), Channel::GENERAL, 3);
+        f.biedt_aan(file, PathBuf::from("C:/data/vakantiefotos.zip"));
+
+        f.verwijder_aanbod(file);
+
+        let van = peer(2);
+        let req = FileRequest {
+            file,
+            have_bytes: 0,
+        };
+        let (cmd, actie) = f.verzoek_ontvangen(van, &req);
+        assert!(
+            actie.is_none(),
+            "een ingetrokken aanbod mag niets meer serveren"
+        );
+        match cmd {
+            MeshCommand::Send {
+                msg: ControlMsg::FileResponse(r),
+                ..
+            } => assert_eq!(r.outcome, FileOutcome::NOT_AVAILABLE),
+            other => panic!("verkeerd commando: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verwijder_aanbod_van_iets_dat_we_niet_aanbieden_is_een_no_op() {
+        let mut f = Files::new();
+        f.verwijder_aanbod(OpId::new(peer(1), Channel::GENERAL, 1)); // mag niet paniceren
+    }
+
+    #[test]
     fn dm_bestand_wordt_wel_geleverd_aan_de_geadresseerde() {
         let mut f = Files::new();
         let geadresseerde = peer(2);
@@ -350,6 +423,29 @@ mod tests {
             outcome: FileOutcome::NOT_AVAILABLE,
         });
         assert!(matches!(f.status(e.id), Some(DownloadStatus::Mislukt(_))));
+    }
+
+    #[test]
+    fn is_afbeelding_kijkt_naar_de_extensie_hoofdletterongevoelig() {
+        assert!(is_afbeelding("vakantie.PNG"));
+        assert!(is_afbeelding("foto.jpg"));
+        assert!(!is_afbeelding("document.pdf"));
+        assert!(!is_afbeelding("archief.zip"));
+    }
+
+    #[test]
+    fn hash_bestandsnaam_is_hex_plus_originele_extensie() {
+        let hash = [0x11u8; 32];
+        assert_eq!(
+            hash_bestandsnaam(&hash, "vakantie.PNG"),
+            format!("{}.png", "11".repeat(32))
+        );
+    }
+
+    #[test]
+    fn hash_bestandsnaam_zonder_extensie_is_kale_hex() {
+        let hash = [0xabu8; 32];
+        assert_eq!(hash_bestandsnaam(&hash, "zondereigentijd"), "ab".repeat(32));
     }
 
     #[test]

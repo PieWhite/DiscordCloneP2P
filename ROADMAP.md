@@ -212,23 +212,39 @@ Bestanden en afbeeldingen horen in de conversatie te zitten, niet in een los pan
   (zie `TODO.md`) — geen thumbnail, titel of kanaalnaam, gewoon een klikbare tekstlink zoals
   nu al het geval is.
 
-**Miniatuurweergave is beperkt tot eigen aanbod.** Een afbeelding die je zelf aanbiedt (via
-dialoog, slepen of plakken) toont een miniatuur in plaats van de generieke bestandskaart —
-de UI onthoudt daarvoor het lokale pad per bestandsnaam (`App::eigen_afbeeldingen`). Voor een
-ontvangen afbeelding gebeurt dat bewust niet: pas na een geslaagde download staat de
-uiteindelijke naam op schijf vast, en die kan bij een naamsbotsing afwijken van `FileEntry.name`
-(zie `docs/OVERDRACHT.md`, "Hoe bestandsdeling in elkaar zit") — er is dus geen betrouwbaar pad
-om een miniatuur vanaf te laden zonder dat probleem opnieuw op te lossen. Een ontvangen
-afbeelding blijft daarom de gewone kaart tonen, ook na downloaden.
+**Miniatuurweergave werkt symmetrisch, voor eigen én ontvangen afbeeldingen** — een
+herziening tijdens het bouwen, zie beslissing 12 in `docs/OVERDRACHT.md`. Elke afbeelding
+(aangeboden of gedownload) landt onder een naam afgeleid van zijn `FileMeta.hash` in een
+eigen, content-adresseerbare map (`pictures_dir`, standaard `<datamap>/Pictures`) in plaats
+van in de gewone downloadmap. Aanbieder en ontvanger komen zo, zonder iets extra af te
+spreken, op exact hetzelfde pad uit — de UI laadt een miniatuur simpelweg zodra het bestand
+daar staat, ongeacht wie hem erheen zette.
+
+**Ctrl+V werkt los van welk veld focus heeft.** Na een screenshot (Win+Shift+S) alt-tab je
+terug en druk je Ctrl+V zonder eerst in de chatbox te klikken — dat moest dus niet aan de
+focus van de `TextEdit` hangen, alleen aan "staat er geen ander modaal venster open".
+
+**Bestanden en foto's die je zelf aanbood zijn nu ook te verwijderen**, net als een
+bericht — dezelfde generieke `OpKind::Delete` als bij chat, nu ook toegepast op
+`FileEntry` in `crates/store/src/timeline.rs`. De motor stopt dan ook echt met serveren
+(`Files::verwijder_aanbod`), niet alleen de kaart uit de tijdlijn; zie
+`docs/ARCHITECTURE.md`, sectie "Bestandsdeling", voor wat dit wel en niet dekt (geen
+terugroepen van bytes die een ander al binnen had).
+
+**Instellingenscherm geconsolideerd.** Video-instellingen (codec/fps/bitrate) en het
+nieuwe "Verwijder alle afbeeldingen" (met bevestigingsvraag, leegt alleen `pictures_dir`
+op schijf) zitten nu samen in één algemeen "Instellingen"-venster in plaats van een los
+video-scherm.
 
 **Klaar als:** een gesleept, geplakt of via de dialoog gekozen bestand verschijnt als kaart op
-zijn eigen plek in de tijdlijn met voortgang en downloadknop, een eigen aangeboden afbeelding
-toont een miniatuur, en er is geen apart bestandenpaneel meer in de UI. Bevestigd met de
-volledige testsuite (`cargo test --workspace`, inclusief `crates/app/tests/file_deling.rs` en
-`crates/store/src/timeline.rs`) en twee lokale instanties die schoon opstarten en verbinden.
-**Niet geverifieerd, om dezelfde reden als bij eerdere fases:** het slepen zelf, het plakken
-vanaf een echt Windows-klembord, en hoe een miniatuur er in de tijdlijn daadwerkelijk uitziet
-— dat moet Rick met de hand doen.
+zijn eigen plek in de tijdlijn met voortgang en downloadknop, een afbeelding toont een
+miniatuur zodra de bytes er staan (bij beide kanten), een eigen bestand of foto is te
+verwijderen, en er is geen apart bestandenpaneel meer in de UI. Bevestigd met de volledige
+testsuite (`cargo test --workspace`, inclusief `crates/app/tests/file_deling.rs` en
+`crates/store/src/timeline.rs`), een protocol-reviewer-ronde over de store-wijziging, en twee
+lokale instanties die schoon opstarten en verbinden. **Niet geverifieerd, om dezelfde reden als
+bij eerdere fases:** het slepen zelf, het plakken vanaf een echt Windows-klembord, en hoe een
+miniatuur er in de tijdlijn daadwerkelijk uitziet — dat moet Rick met de hand doen.
 
 ### Fase 9 — DM: meerdere kanalen per peer met een eigen titel
 Eén DM met een peer moet meerdere losse, benoembare gesprekken kunnen bevatten

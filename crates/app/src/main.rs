@@ -104,6 +104,7 @@ fn main() -> Result<()> {
     let poort = cfg.control_port;
     let naar_tray = cfg.minimize_to_tray;
     let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
+    let pictures_dir = config::resolve_pictures_dir(&data_dir);
 
     if let Err(e) = tray::zet_autostart(cfg.autostart) {
         // Geen reden om de app niet te starten; alleen melden.
@@ -122,6 +123,7 @@ fn main() -> Result<()> {
         poort,
         data_dir,
         downloads_dir,
+        pictures_dir,
         naar_tray,
         runtime,
     );

@@ -6,7 +6,7 @@
 
 use crate::config::VideoConfig;
 use crate::engine::{self, EngineHandle, FileView, PeerView, Snapshot, UiCommand};
-use crate::files::DownloadStatus;
+use crate::files::{hash_bestandsnaam, is_afbeelding, DownloadStatus};
 use crate::tags;
 use crate::tray;
 use eframe::egui;
@@ -35,6 +35,10 @@ pub struct App {
     control_port: u16,
     data_dir: PathBuf,
     downloads_dir: PathBuf,
+    /// Content-adresseerbare map voor afbeeldingen, zowel eigen aanbod als gedownload —
+    /// zie `files::hash_bestandsnaam`. Apart van `downloads_dir`: dit zijn geen
+    /// gebruikersbestanden met een leesbare naam.
+    pictures_dir: PathBuf,
     /// Moet in leven blijven zolang de app draait, anders stopt alles eronder.
     _runtime: tokio::runtime::Runtime,
     invoer: String,
@@ -47,9 +51,14 @@ pub struct App {
     /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
     /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
     bronkeuze: Option<Vec<Bron>>,
-    /// `Some` zolang het instellingenscherm open staat. Een kopie om in te bewerken,
-    /// zodat "annuleren" niets hoeft terug te draaien.
+    /// `Some` zolang het algemene instellingenscherm open staat. Een kopie van de
+    /// video-instellingen om in te bewerken, zodat "annuleren" niets hoeft terug te
+    /// draaien — geldt alleen voor de video-sectie van het scherm.
     instellingen: Option<VideoConcept>,
+    /// Staat de bevestigingsvraag voor "Verwijder alle afbeeldingen" open? Los van
+    /// `instellingen`, zodat annuleren van de bevestiging het instellingenscherm zelf
+    /// niet sluit.
+    bevestig_verwijder_afbeeldingen: bool,
     /// `Some` zolang het profielvenster open staat. Bewerkbare kopie van de naam, zodat
     /// "annuleren" niets hoeft terug te draaien.
     profiel: Option<String>,
@@ -65,15 +74,13 @@ pub struct App {
     /// `Arc` erbij. Zo hoeft een miniatuur die niet ververst is niet elke frame opnieuw
     /// naar de GPU; alleen een echt nieuwe `Arc` (van de kijk-thread) triggert dat.
     miniatuur_cache: HashMap<(PeerId, u32), (usize, egui::TextureHandle)>,
-    /// Lokaal pad per bestandsnaam, voor bestanden die wíj hebben aangeboden en die er
-    /// als afbeelding uitzien — via de dialoog, slepen-en-neerzetten of Ctrl+V-plakken.
-    /// Alleen zo weten we waar de bytes vandaan te lezen zijn om er een miniatuur van te
-    /// tonen in de tijdlijn; voor een ontvangen bestand kennen we alleen de metadata tot
-    /// het gedownload is, dus daar tonen we de generieke kaart.
-    eigen_afbeeldingen: HashMap<String, PathBuf>,
-    /// Geladen miniatuurteksturen van eigen aangeboden afbeeldingen, per `OpId`. De
-    /// bytes van een aangeboden bestand veranderen nooit meer, dus dit hoeft nooit
-    /// ververst te worden zoals `miniatuur_cache` dat wel moet.
+    /// Geladen miniatuurteksturen van aangeboden afbeeldingen, per `OpId`. Het pad zelf
+    /// is altijd deterministisch af te leiden uit `FileView::hash` (zie
+    /// `files::hash_bestandsnaam`) — zowel voor wat wij aanbieden als voor wat we
+    /// gedownload hebben — dus is er geen aparte boekhouding per bestandsnaam nodig
+    /// zoals eerder wel het geval was. De bytes van een aangeboden bestand veranderen
+    /// nooit meer, dus dit hoeft nooit ververst te worden zoals `miniatuur_cache` dat
+    /// wel moet.
     bijlage_texturen: HashMap<OpId, egui::TextureHandle>,
 }
 
@@ -94,6 +101,7 @@ impl App {
         control_port: u16,
         data_dir: PathBuf,
         downloads_dir: PathBuf,
+        pictures_dir: PathBuf,
         naar_tray: bool,
         runtime: tokio::runtime::Runtime,
     ) -> Self {
@@ -106,6 +114,7 @@ impl App {
             control_port,
             data_dir,
             downloads_dir,
+            pictures_dir,
             _runtime: runtime,
             invoer: String::new(),
             bewerkt: None,
@@ -114,11 +123,11 @@ impl App {
             naar_tray,
             bronkeuze: None,
             instellingen: None,
+            bevestig_verwijder_afbeeldingen: false,
             profiel: None,
             tag_selectie: 0,
             tag_actief: false,
             miniatuur_cache: HashMap::new(),
-            eigen_afbeeldingen: HashMap::new(),
             bijlage_texturen: HashMap::new(),
         }
     }
@@ -241,6 +250,7 @@ impl eframe::App for App {
         self.deelnemers_paneel(ctx);
         self.bronkeuze_venster(ctx);
         self.instellingen_venster(ctx);
+        self.bevestig_verwijder_afbeeldingen_venster(ctx);
         self.profiel_venster(ctx);
         self.statusbalk(ctx);
         self.overzicht_strook(ctx);
@@ -527,18 +537,11 @@ impl App {
 
     /// Centrale plek waar een lokaal bestand de aanbiedflow ingaat, ongeacht of het via
     /// de bestandsdialoog, slepen-en-neerzetten of Ctrl+V-plakken binnenkwam — alleen een
-    /// nieuwe invoerweg, geen nieuwe logica (zie `ROADMAP.md`, fase 8).
-    ///
-    /// Onthoudt het pad bij de bestandsnaam als het een afbeelding is: alleen zo kan de
-    /// kaart in de tijdlijn er straks een miniatuur van laden in plaats van de generieke
-    /// bestandskaart te tonen. Dat kan alleen voor bestanden die wíj aanbieden — we
-    /// kennen alleen ons eigen pad op schijf, niet dat van een ander.
+    /// nieuwe invoerweg, geen nieuwe logica (zie `ROADMAP.md`, fase 8). Is het een
+    /// afbeelding, dan kopieert de motor hem zelf naar `pictures_dir` onder een naam op
+    /// basis van zijn inhoudshash (`hash_en_bied_aan` in `engine.rs`) — de UI hoeft hier
+    /// dus zelf niets te onthouden.
     fn bied_bestand_aan(&mut self, pad: PathBuf) {
-        if let Some(naam) = pad.file_name().map(|n| n.to_string_lossy().to_string()) {
-            if is_afbeelding(&naam) {
-                self.eigen_afbeeldingen.insert(naam, pad.clone());
-            }
-        }
         self.stuur(UiCommand::BiedBestandAan(pad, self.actief_kanaal));
     }
 
@@ -568,10 +571,18 @@ impl App {
         }
     }
 
-    /// Leest een afbeelding van het klembord en schrijft hem als PNG weg in de eigen
-    /// datamap. `None` als het klembord geen afbeelding bevat (bijvoorbeeld gewone
-    /// tekst, of niets) — dan laat dit egui's eigen tekst-plakken in de `TextEdit`
-    /// met rust; die twee klembord-inhouden gaan nooit tegelijk over hetzelfde pad.
+    /// Leest een afbeelding van het klembord en schrijft hem als PNG weg in een
+    /// tijdelijk bestand. `None` als het klembord geen afbeelding bevat (bijvoorbeeld
+    /// gewone tekst, of niets) — dan laat dit egui's eigen tekst-plakken in de
+    /// `TextEdit` met rust; die twee klembord-inhouden gaan nooit tegelijk over
+    /// hetzelfde pad.
+    ///
+    /// Dit hoeft geen permanente plek te zijn: `hash_en_bied_aan` in `engine.rs` maakt
+    /// er zelf een blijvende, content-adresseerbare kopie van in `pictures_dir` zodra
+    /// hij hasht. Dit bestand is daarna niet meer nodig — het opruimen ervan laten we
+    /// aan Windows' eigen tijdelijke-bestandenbeheer over, net als bij een gesleept of
+    /// via de dialoog gekozen bestand, waarvan het origineel ook niet door de app wordt
+    /// aangeraakt.
     fn plak_afbeelding(&self) -> Option<PathBuf> {
         let mut klembord = arboard::Clipboard::new().ok()?;
         let beeld = klembord.get_image().ok()?;
@@ -581,13 +592,11 @@ impl App {
             beeld.bytes.into_owned(),
         )?;
 
-        let map = self.data_dir.join("geplakt");
-        std::fs::create_dir_all(&map).ok()?;
         let naam = format!(
-            "plakafbeelding-{}.png",
+            "fitcom-plak-{}.png",
             chrono::Local::now().format("%Y%m%d-%H%M%S%3f")
         );
-        let pad = map.join(naam);
+        let pad = std::env::temp_dir().join(naam);
         buffer.save(&pad).ok()?;
         Some(pad)
     }
@@ -857,7 +866,7 @@ impl App {
                         .spawn();
                 }
                 ui.separator();
-                if ui.small_button("video-instellingen").clicked() {
+                if ui.small_button("instellingen").clicked() {
                     instellingen_openen = true;
                 }
                 if let Some(err) = &self.snap.fout {
@@ -887,9 +896,10 @@ impl App {
         }
     }
 
-    /// Codec, framerate en bitrate voor screenshare. Bewerkt een kopie, zodat
-    /// "annuleren" niets hoeft terug te draaien — pas "toepassen" stuurt iets naar de
-    /// motor. Lopende deelsessies herstarten daar meteen mee; zie `engine.rs`.
+    /// Algemeen instellingenscherm: video (codec/fps/bitrate) en beheer van de lokale
+    /// `Pictures`-map. Video bewerkt een kopie, zodat "annuleren" niets hoeft terug te
+    /// draaien — pas "toepassen" stuurt iets naar de motor. Lopende deelsessies
+    /// herstarten daar meteen mee; zie `engine.rs`.
     fn instellingen_venster(&mut self, ctx: &egui::Context) {
         let Some(concept) = &mut self.instellingen else {
             return;
@@ -897,13 +907,16 @@ impl App {
         let mut open = true;
         let mut toepassen = false;
         let mut annuleren = false;
+        let mut verwijder_afbeeldingen_geklikt = false;
 
-        egui::Window::new("Video-instellingen")
+        egui::Window::new("Instellingen")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(340.0)
+            .default_width(360.0)
             .show(ctx, |ui| {
+                ui.heading("Video");
+                ui.add_space(6.0);
                 ui.label(egui::RichText::new("Codec").strong());
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut concept.codec, "h264".to_string(), "H.264");
@@ -943,6 +956,21 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.small("Geldt voor lopende en nieuw gestarte deelsessies.");
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                ui.heading("Afbeeldingen");
+                ui.add_space(6.0);
+                ui.small(
+                    "Afbeeldingen die je zelf deelt of downloadt staan apart van je gewone \
+                     downloads, zodat ze inline in de chat getoond kunnen worden.",
+                );
+                ui.add_space(6.0);
+                if ui.button("Verwijder alle afbeeldingen").clicked() {
+                    verwijder_afbeeldingen_geklikt = true;
+                }
             });
 
         if toepassen {
@@ -954,6 +982,52 @@ impl App {
             }));
         } else if annuleren || !open {
             self.instellingen = None;
+        }
+        if verwijder_afbeeldingen_geklikt {
+            self.bevestig_verwijder_afbeeldingen = true;
+        }
+    }
+
+    /// Bevestigingsvraag vóór "Verwijder alle afbeeldingen" — een onomkeerbare
+    /// schijfoperatie verdient een expliciete stap ertussen. Raakt alleen lokale
+    /// schijfruimte: de berichten/kaarten blijven in de tijdlijn staan (zie
+    /// `engine.rs::verwijder_alle_afbeeldingen`).
+    fn bevestig_verwijder_afbeeldingen_venster(&mut self, ctx: &egui::Context) {
+        if !self.bevestig_verwijder_afbeeldingen {
+            return;
+        }
+        let mut open = true;
+        let mut bevestigd = false;
+        let mut geannuleerd = false;
+
+        egui::Window::new("Alle afbeeldingen verwijderen?")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Dit verwijdert alle gedeelde en gedownloade afbeeldingen van je eigen \
+                     schijf. De berichten blijven staan; vraagt iemand een afbeelding later \
+                     opnieuw op, dan krijgt hij netjes te horen dat hij niet meer \
+                     beschikbaar is.",
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Ja, verwijderen").clicked() {
+                        bevestigd = true;
+                    }
+                    if ui.button("Annuleren").clicked() {
+                        geannuleerd = true;
+                    }
+                });
+            });
+
+        if bevestigd {
+            self.stuur(UiCommand::VerwijderAlleAfbeeldingen);
+        }
+        if bevestigd || geannuleerd || !open {
+            self.bevestig_verwijder_afbeeldingen = false;
         }
     }
 
@@ -1073,7 +1147,17 @@ impl App {
                 // in de invoer terecht te komen. Staat er geen afbeelding op het
                 // klembord (bijvoorbeeld gewone tekst), dan gebeurt hier niets en blijft
                 // egui's eigen tekst-plakken in de `TextEdit` intact.
-                if output.response.has_focus()
+                //
+                // Bewust *niet* gebonden aan focus op de chatbox: na een screenshot
+                // (Win+Shift+S) alt-tab je terug naar het venster en druk je meteen
+                // Ctrl+V, zonder eerst ergens in te klikken. Alleen als er een ander
+                // modaal venster open staat (bijvoorbeeld het profiel, waar je gewoon
+                // tekst wilt kunnen plakken) doet dit niets — anders zou een
+                // klembord-afbeelding daar een verrassend bestand aanbieden.
+                let geen_modaal_venster_open = self.profiel.is_none()
+                    && self.instellingen.is_none()
+                    && self.bronkeuze.is_none();
+                if geen_modaal_venster_open
                     && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::V))
                 {
                     if let Some(pad) = self.plak_afbeelding() {
@@ -1300,19 +1384,17 @@ impl App {
                                     .color(kleur_van(f.author)),
                                 );
 
-                                // Een miniatuur kan alleen voor een bestand dat wíj
-                                // aanbieden — we kennen alleen ons eigen pad op schijf
-                                // (`App::eigen_afbeeldingen`). Een ontvangen afbeelding
-                                // toont, ook na downloaden, de generieke kaart: de
-                                // uiteindelijke bestandsnaam op schijf kan bij een
-                                // naamsbotsing afwijken van `f.name` (zie
-                                // `docs/OVERDRACHT.md`, "Hoe bestandsdeling in elkaar
-                                // zit"), dus is er geen betrouwbaar pad om vanaf te lezen.
-                                let miniatuur = if f.is_mine && is_afbeelding(&f.name) {
-                                    self.eigen_afbeeldingen
-                                        .get(&f.name)
-                                        .cloned()
-                                        .and_then(|pad| self.bijlage_texture(ui.ctx(), f.id, &pad))
+                                // Content-adresseerbaar: de aanbieder én elke
+                                // downloadende peer komen op exact hetzelfde pad uit
+                                // (zie `files::hash_bestandsnaam`), dus dit werkt voor
+                                // eigen én ontvangen afbeeldingen. Staat het bestand er
+                                // nog niet (niet gedownload, of nog niet gehasht), dan
+                                // faalt dit geruisloos en valt de kaart terug op de
+                                // generieke weergave.
+                                let miniatuur = if is_afbeelding(&f.name) {
+                                    let pad =
+                                        self.pictures_dir.join(hash_bestandsnaam(&f.hash, &f.name));
+                                    self.bijlage_texture(ui.ctx(), f.id, &pad)
                                 } else {
                                     None
                                 };
@@ -1321,7 +1403,12 @@ impl App {
                                     Some((tex, natuurlijk)) => {
                                         let schaal = (240.0 / natuurlijk.x).min(1.0);
                                         ui.image((tex, natuurlijk * schaal));
-                                        ui.small(&f.name);
+                                        ui.horizontal(|ui| {
+                                            ui.small(&f.name);
+                                            if f.is_mine && ui.small_button("verwijder").clicked() {
+                                                te_verwijderen = Some(f.id);
+                                            }
+                                        });
                                     }
                                     None => {
                                         egui::Frame::group(ui.style()).inner_margin(6.0).show(
@@ -1331,10 +1418,17 @@ impl App {
                                                 ui.small(grootte_tekst(f.size));
 
                                                 if f.is_mine {
-                                                    ui.small(
-                                                        egui::RichText::new("aangeboden door jou")
+                                                    ui.horizontal(|ui| {
+                                                        ui.small(
+                                                            egui::RichText::new(
+                                                                "aangeboden door jou",
+                                                            )
                                                             .weak(),
-                                                    );
+                                                        );
+                                                        if ui.small_button("verwijder").clicked() {
+                                                            te_verwijderen = Some(f.id);
+                                                        }
+                                                    });
                                                 } else {
                                                     match &f.status {
                                                         None => {
@@ -1431,15 +1525,6 @@ impl App {
 enum ChatItem<'a> {
     Bericht(&'a Message),
     Bestand(&'a FileView),
-}
-
-/// Grove extensie-check: alleen de formaten die de `image`-crate-features in
-/// `Cargo.toml` ook daadwerkelijk kunnen decoderen.
-fn is_afbeelding(naam: &str) -> bool {
-    let laag = naam.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg", ".gif", ".bmp"]
-        .iter()
-        .any(|ext| laag.ends_with(ext))
 }
 
 /// Rendert de tekst met herkenbare codeblokken. Bewust minimaal: we kijken samen naar

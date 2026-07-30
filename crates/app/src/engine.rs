@@ -13,7 +13,7 @@
 
 use crate::chat::Chat;
 use crate::config::{self, Config, VideoConfig};
-use crate::files::{DownloadStatus, Files, StartUpload};
+use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::notify;
 use crate::streams::{Actie, Streams};
 use crate::tags;
@@ -107,6 +107,9 @@ pub struct FileView {
     /// Zie `fitcom_store::timeline::Message::lamport` — bepaalt waar dit bestand tussen
     /// de berichten in de tijdlijn komt te staan.
     pub lamport: u64,
+    /// Voor een afbeelding: samen met `name`'s extensie het pad in `pictures_dir` waar
+    /// de UI een miniatuur vandaan kan laden, zie `files::hash_bestandsnaam`.
+    pub hash: [u8; 32],
 }
 
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
@@ -168,6 +171,10 @@ pub enum UiCommand {
     ZetNaam(String),
     /// Niet-storenmodus aan/uit. Onderdrukt alle Windows-meldingen, ook een tag.
     NietStoren(bool),
+    /// Wist alle bestanden in `pictures_dir` van schijf. Raakt alleen lokale
+    /// schijfruimte — de kaarten blijven in de tijdlijn staan, net als bij een
+    /// bronbestand dat toevallig van schijf verdwijnt (zie `files.rs`).
+    VerwijderAlleAfbeeldingen,
 }
 
 pub struct EngineHandle {
@@ -198,6 +205,8 @@ pub fn spawn(
         .unwrap_or_else(|| PathBuf::from("."));
     let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
     std::fs::create_dir_all(&downloads_dir).context("downloadmap aanmaken")?;
+    let pictures_dir = config::resolve_pictures_dir(&data_dir);
+    std::fs::create_dir_all(&pictures_dir).context("picturesmap aanmaken")?;
 
     let peers = cfg
         .peers
@@ -237,6 +246,7 @@ pub fn spawn(
         stream_volumes: HashMap::new(),
         files: Files::new(),
         downloads_dir,
+        pictures_dir,
         file_tx,
         file_rx,
         fout: None,
@@ -290,6 +300,9 @@ struct Engine {
     /// het lezen/schrijven/hashen zelf gebeurt in losse tokio-taken hieronder.
     files: Files,
     downloads_dir: PathBuf,
+    /// Content-adresseerbare map voor afbeeldingen: `<hash-hex>.<ext>`, zowel voor wat
+    /// wij aanbieden als voor wat we downloaden. Zie `files::hash_bestandsnaam`.
+    pictures_dir: PathBuf,
     /// Voor het klonen naar bestandstaken toe; `file_rx` is waar de motor op wacht.
     file_tx: mpsc::Sender<FileEvent>,
     file_rx: mpsc::Receiver<FileEvent>,
@@ -897,6 +910,12 @@ impl Engine {
                 self.verwerk(r);
             }
             UiCommand::Verwijder(doel) => {
+                // Generiek: `doel` kan een bericht zijn of een eigen bestandsaanbod. Is
+                // het het laatste, dan moet `verzoek_ontvangen` het na deze klik ook
+                // echt niet meer serveren — anders verdwijnt alleen de kaart uit de
+                // tijdlijn terwijl het bestand nog gewoon downloadbaar blijft voor wie
+                // de OpId al kende. Een no-op als `doel` geen eigen aanbod is.
+                self.files.verwijder_aanbod(doel);
                 let r = self.chat.verwijder_bericht(doel);
                 self.verwerk(r);
             }
@@ -956,12 +975,41 @@ impl Engine {
             }
             UiCommand::BiedBestandAan(pad, channel) => {
                 let tx = self.file_tx.clone();
-                tokio::spawn(hash_en_bied_aan(pad, channel, tx));
+                let pictures_dir = self.pictures_dir.clone();
+                tokio::spawn(hash_en_bied_aan(pad, channel, pictures_dir, tx));
             }
             UiCommand::DownloadBestand(file) => self.download_bestand(file),
             UiCommand::ZetNaam(naam) => self.zet_naam(&naam),
             UiCommand::NietStoren(aan) => self.niet_storen = aan,
+            UiCommand::VerwijderAlleAfbeeldingen => self.verwijder_alle_afbeeldingen(),
         }
+    }
+
+    /// Leegt `pictures_dir`. Faalt een los bestand (bijvoorbeeld nog in gebruik), dan
+    /// gaat de rest gewoon door — net als bij offline peers is dit geen foutpad om op
+    /// vast te lopen. Een download of upload die net onderweg is naar/van een van deze
+    /// paden krijgt de al bestaande "bronbestand verdwenen"-afhandeling; zie `files.rs`.
+    fn verwijder_alle_afbeeldingen(&mut self) {
+        let lezing = match std::fs::read_dir(&self.pictures_dir) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(error = %e, "picturesmap niet te lezen");
+                return;
+            }
+        };
+        let mut verwijderd = 0u32;
+        for entry in lezing.flatten() {
+            let pad = entry.path();
+            if pad.is_file() {
+                match std::fs::remove_file(&pad) {
+                    Ok(()) => verwijderd += 1,
+                    Err(e) => {
+                        tracing::warn!(pad = %pad.display(), error = %e, "afbeelding niet te verwijderen")
+                    }
+                }
+            }
+        }
+        tracing::info!(verwijderd, "picturesmap opgeschoond");
     }
 
     /// Legt een nieuwe weergavenaam vast: eerst in `config.toml` (zodat hij de volgende
@@ -1019,9 +1067,16 @@ impl Engine {
 
     fn start_download(&mut self, stream: RecvStream) {
         let downloads_dir = self.downloads_dir.clone();
+        let pictures_dir = self.pictures_dir.clone();
         let timeline = self.chat.timeline_arc();
         let events = self.file_tx.clone();
-        tokio::spawn(download_taak(stream, downloads_dir, timeline, events));
+        tokio::spawn(download_taak(
+            stream,
+            downloads_dir,
+            pictures_dir,
+            timeline,
+            events,
+        ));
     }
 
     fn op_file_event(&mut self, ev: FileEvent) {
@@ -1179,6 +1234,7 @@ impl Engine {
                 is_mine: f.author == me,
                 status: self.files.status(f.id).cloned(),
                 lamport: f.lamport,
+                hash: f.hash,
             })
             .collect();
 
@@ -1256,26 +1312,51 @@ fn unieke_bestandsnaam(dir: &Path, naam: &str) -> PathBuf {
 /// Leest een lokaal bestand, hasht het, en meldt het resultaat terug zodat de motor het
 /// als `FileMeta`-op kan vastleggen. Op een losse taak: bij een groot bestand kan dit
 /// seconden duren, en dat mag de UI niet blokkeren.
-async fn hash_en_bied_aan(pad: PathBuf, channel: Channel, events: mpsc::Sender<FileEvent>) {
+async fn hash_en_bied_aan(
+    pad: PathBuf,
+    channel: Channel,
+    pictures_dir: PathBuf,
+    events: mpsc::Sender<FileEvent>,
+) {
     let naam = pad
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "bestand".to_string());
 
     let leespad = pad.clone();
-    let resultaat = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, [u8; 32])> {
-        let mut bestand = std::fs::File::open(&leespad)?;
-        let mut hasher = blake3::Hasher::new();
-        let grootte = std::io::copy(&mut bestand, &mut hasher)?;
-        Ok((grootte, *hasher.finalize().as_bytes()))
-    })
-    .await;
+    let naam_voor_taak = naam.clone();
+    let resultaat =
+        tokio::task::spawn_blocking(move || -> std::io::Result<(u64, [u8; 32], PathBuf)> {
+            let mut bestand = std::fs::File::open(&leespad)?;
+            let mut hasher = blake3::Hasher::new();
+            let grootte = std::io::copy(&mut bestand, &mut hasher)?;
+            let hash = *hasher.finalize().as_bytes();
+
+            // Een afbeelding krijgt een eigen, content-adresseerbare kopie in
+            // `pictures_dir` — daar leest de UI straks een miniatuur van, op precies
+            // hetzelfde pad dat een downloadende peer er ook voor gebruikt (zie
+            // `files::hash_bestandsnaam`). Het origineel blijft ongemoeid: dat is
+            // waarschijnlijk het bestand van de gebruiker zelf, ergens anders op schijf.
+            let aanbodpad = if files::is_afbeelding(&naam_voor_taak) {
+                let bestemming =
+                    pictures_dir.join(files::hash_bestandsnaam(&hash, &naam_voor_taak));
+                if bestemming != leespad && !bestemming.exists() {
+                    std::fs::copy(&leespad, &bestemming)?;
+                }
+                bestemming
+            } else {
+                leespad
+            };
+
+            Ok((grootte, hash, aanbodpad))
+        })
+        .await;
 
     match resultaat {
-        Ok(Ok((grootte, hash))) => {
+        Ok(Ok((grootte, hash, aanbodpad))) => {
             let _ = events
                 .send(FileEvent::NieuwAanbod {
-                    pad,
+                    pad: aanbodpad,
                     naam,
                     grootte,
                     hash,
@@ -1371,6 +1452,7 @@ async fn upload_bytes(
 async fn download_taak(
     mut stream: RecvStream,
     downloads_dir: PathBuf,
+    pictures_dir: PathBuf,
     timeline: Arc<Timeline>,
     events: mpsc::Sender<FileEvent>,
 ) {
@@ -1387,7 +1469,9 @@ async fn download_taak(
         return;
     };
 
-    if let Err(e) = download_bytes(&mut stream, &downloads_dir, &entry, &events).await {
+    if let Err(e) =
+        download_bytes(&mut stream, &downloads_dir, &pictures_dir, &entry, &events).await
+    {
         let _ = events
             .send(FileEvent::Mislukt {
                 file: entry.id,
@@ -1400,6 +1484,7 @@ async fn download_taak(
 async fn download_bytes(
     stream: &mut RecvStream,
     downloads_dir: &Path,
+    pictures_dir: &Path,
     entry: &FileEntry,
     events: &mpsc::Sender<FileEvent>,
 ) -> Result<()> {
@@ -1462,7 +1547,16 @@ async fn download_bytes(
         anyhow::bail!("hash klopt niet; bestand is corrupt geraakt en is verwijderd");
     }
 
-    let definitief = unieke_bestandsnaam(downloads_dir, &entry.name);
+    // Een afbeelding landt content-adresseerbaar in `pictures_dir` in plaats van in de
+    // downloadmap: dat is het pad waar de UI een miniatuur vandaan leest, en het is
+    // precies hetzelfde pad dat de aanbieder er zelf ook voor gebruikt (zie
+    // `files::hash_bestandsnaam`) — zo is een afbeelding voor beide kanten inline te
+    // tonen, niet alleen bij wie hem aanbood.
+    let definitief = if files::is_afbeelding(&entry.name) {
+        pictures_dir.join(files::hash_bestandsnaam(&entry.hash, &entry.name))
+    } else {
+        unieke_bestandsnaam(downloads_dir, &entry.name)
+    };
     tokio::fs::rename(&deelpad, &definitief)
         .await
         .context("bestand hernoemen naar definitieve naam")?;

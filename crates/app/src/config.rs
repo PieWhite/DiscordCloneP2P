@@ -245,6 +245,16 @@ pub fn resolve_download_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| data_dir.join("downloads"))
 }
 
+/// Waar een afbeelding landt die je zelf aanbiedt of van een ander downloadt — apart van
+/// `download_dir`, want dit is geen gebruikersbestand met een leesbare naam maar een
+/// content-adresseerbare cache (zie `crates/app/src/files.rs::hash_bestandsnaam`) die de
+/// aanbieder en elke downloadende peer op exact hetzelfde pad laat uitkomen, zodat een
+/// afbeelding voor beide kanten inline te tonen is. Niet instelbaar: dit is intern
+/// plumbing, geen gebruikersbestand zoals een download.
+pub fn resolve_pictures_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("Pictures")
+}
+
 fn whoami_or(fallback: &str) -> String {
     std::env::var("USERNAME")
         .ok()
