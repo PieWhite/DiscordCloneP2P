@@ -220,9 +220,11 @@ van in de gewone downloadmap. Aanbieder en ontvanger komen zo, zonder iets extra
 spreken, op exact hetzelfde pad uit — de UI laadt een miniatuur simpelweg zodra het bestand
 daar staat, ongeacht wie hem erheen zette.
 
-**Ctrl+V werkt los van welk veld focus heeft.** Na een screenshot (Win+Shift+S) alt-tab je
-terug en druk je Ctrl+V zonder eerst in de chatbox te klikken — dat moest dus niet aan de
-focus van de `TextEdit` hangen, alleen aan "staat er geen ander modaal venster open".
+**Ctrl+V gaat via `GetAsyncKeyState`, niet via egui's eigen toetsenbordevents.** Bleek pas
+via het logbestand: `egui-winit` herkent Ctrl+V zelf al als de OS-plakopdracht en stuurt in
+dat geval nooit een gewone toetsaanslag door — bevat het klembord alleen een afbeelding
+(geen tekst om te plakken), dan komt er dus helemaal niets in `ctx.input()` terecht om op te
+reageren, ongeacht focus. Zie beslissing 15 in `docs/OVERDRACHT.md`.
 
 **Bestanden en foto's die je zelf aanbood zijn nu ook te verwijderen**, net als een
 bericht — dezelfde generieke `OpKind::Delete` als bij chat, nu ook toegepast op

@@ -82,6 +82,10 @@ pub struct App {
     /// nooit meer, dus dit hoeft nooit ververst te worden zoals `miniatuur_cache` dat
     /// wel moet.
     bijlage_texturen: HashMap<OpId, egui::TextureHandle>,
+    /// Was Ctrl+V vorige frame al ingedrukt? Voor randdetectie op `GetAsyncKeyState` —
+    /// zie `App::ctrl_v_zojuist_ingedrukt` voor waarom dit niet via egui's eigen
+    /// toetsenbordevents kan.
+    ctrl_v_ingedrukt: bool,
 }
 
 /// Bewerkbare kopie van de video-instellingen. Bitrate in Mbit/s voor de schuif —
@@ -129,6 +133,7 @@ impl App {
             tag_actief: false,
             miniatuur_cache: HashMap::new(),
             bijlage_texturen: HashMap::new(),
+            ctrl_v_ingedrukt: false,
         }
     }
 
@@ -583,6 +588,38 @@ impl App {
     /// aan Windows' eigen tijdelijke-bestandenbeheer over, net als bij een gesleept of
     /// via de dialoog gekozen bestand, waarvan het origineel ook niet door de app wordt
     /// aangeraakt.
+    /// Of Ctrl+V dit frame *net* is ingedrukt (overgang van los naar ingedrukt).
+    ///
+    /// Kan niet via egui's eigen toetsenbordevents: `egui-winit` herkent Ctrl+V zelf al
+    /// als de OS-plakopdracht (`is_paste_command` in zijn `lib.rs`) en stuurt in dat
+    /// geval **geen gewone `Key::V`-event** door — hij probeert zelf tekst van het
+    /// klembord te lezen en stopt daarna (`return`), met of zonder succes. Bevat het
+    /// klembord alleen een afbeelding (geen tekst), dan komt er dus helemaal niets in
+    /// `ctx.input()` terecht om op te reageren — `i.key_pressed(egui::Key::V)` blijft
+    /// voor altijd `false`, wat precies verklaart waarom de eerdere aanpak niets deed.
+    /// Dit is bevestigd via de app-log: alleen `egui_winit::clipboard`'s eigen (tekst-)
+    /// klembordpoging verschijnt daar, nooit een eigen gedetecteerde toetsaanslag.
+    ///
+    /// In plaats daarvan wordt de fysieke toetsstatus rechtstreeks bij Windows
+    /// opgevraagd (`GetAsyncKeyState`), los van egui's eigen event-vertaling. Alleen
+    /// als het venster ook daadwerkelijk de voorgrond heeft: deze functie is anders
+    /// niet gebonden aan welk venster de OS-focus heeft, en zonder die check zou een
+    /// Ctrl+V in een willekeurige andere toepassing hier ook een bestand aanbieden.
+    fn ctrl_v_zojuist_ingedrukt(&mut self, ctx: &egui::Context) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_V};
+
+        if !ctx.input(|i| i.focused) {
+            self.ctrl_v_ingedrukt = false;
+            return false;
+        }
+
+        let ingedrukt = |vk: u16| unsafe { GetAsyncKeyState(i32::from(vk)) as u16 & 0x8000 != 0 };
+        let nu = ingedrukt(VK_CONTROL.0) && ingedrukt(VK_V.0);
+        let net_ingedrukt = nu && !self.ctrl_v_ingedrukt;
+        self.ctrl_v_ingedrukt = nu;
+        net_ingedrukt
+    }
+
     fn plak_afbeelding(&self) -> Option<PathBuf> {
         // Uitgebreid gelogd (op debug-niveau, dus alleen zichtbaar met
         // `$env:FITCOM_LOG = "debug"`): dit stuk faalde bij Rick zonder duidelijke
@@ -1191,12 +1228,13 @@ impl App {
                 // modaal venster open staat (bijvoorbeeld het profiel, waar je gewoon
                 // tekst wilt kunnen plakken) doet dit niets — anders zou een
                 // klembord-afbeelding daar een verrassend bestand aanbieden.
+                //
+                // Zie `App::ctrl_v_zojuist_ingedrukt` voor waarom dit via
+                // `GetAsyncKeyState` gaat en niet via egui's eigen `key_pressed`.
                 let geen_modaal_venster_open = self.profiel.is_none()
                     && self.instellingen.is_none()
                     && self.bronkeuze.is_none();
-                if geen_modaal_venster_open
-                    && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::V))
-                {
+                if geen_modaal_venster_open && self.ctrl_v_zojuist_ingedrukt(ctx) {
                     tracing::debug!(
                         "ctrl+v gezien, klembord wordt gecontroleerd op een afbeelding"
                     );

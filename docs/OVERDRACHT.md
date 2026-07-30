@@ -248,14 +248,10 @@ apart van de gewone downloadmap:
 boekhouding meer nodig, het pad is overal deterministisch af te leiden. Zie
 `docs/ARCHITECTURE.md`, sectie "Bestandsdeling", voor het volledige ontwerp.
 
-**Terzijde, in dezelfde ronde gefixt:** Ctrl+V-plakken werkte niet, gemeld door Rick. Niet
-omdat `arboard` of egui dat niet zouden kunnen — arboard's Windows-implementatie checkt al
-eerst op het "PNG"-klembordformaat, precies wat Win+Shift+S erop zet — maar omdat de check
-vastzat aan `output.response.has_focus()`: na een screenshot alt-tab je terug en druk je
-Ctrl+V zonder eerst in de chatbox te klikken, en dan had de focus-eis nooit gehaald. Losgemaakt
-van focus, met alleen een uitzondering als er een ander modaal venster open staat (zodat een
-klembord-afbeelding daar geen verrassend bestand aanbiedt terwijl je gewoon tekst wilt
-plakken).
+**Terzijde, in dezelfde ronde:** Ctrl+V-plakken werkte niet, gemeld door Rick. Eerste gok was
+dat de check aan `output.response.has_focus()` vastzat — losgemaakt van focus, met alleen een
+uitzondering als er een ander modaal venster open staat. Dat was nodig maar niet voldoende;
+de echte oorzaak zat dieper en staat in beslissing 15.
 
 ### 13. Een bestand verwijderen moest ook echt stoppen met serveren (fase 8)
 Rick vroeg dat een zelf aangeboden bestand of foto net als een bericht te verwijderen moet
@@ -292,6 +288,34 @@ De statusbalk-knop heet nu "instellingen" in plaats van "video-instellingen".
 Niet-storen en naam wijzigen zijn bewust blijven staan waar ze al stonden
 (deelnemerspaneel) — dat zijn live bedieningen, geen instellingen, en waren geen deel van
 de vraag.
+
+### 15. Ctrl+V via `GetAsyncKeyState`, niet via egui's eigen toetsenbordevents (fase 8)
+De focus-fix uit beslissing 12 loste Ctrl+V niet op — Rick meldde dat het nog steeds niet
+werkte. Het logbestand (met `FITCOM_LOG=debug`) liet zien dat `egui_winit::clipboard` zelf
+een `arboard paste error` gooide bij elke Ctrl+V, maar geen enkele eigen debug-regel van
+`plak_afbeelding` verscheen — dus mijn eigen check werd nooit bereikt, ook niet nadat de
+focus-eis weg was.
+
+De oorzaak lag in `egui-winit` zelf (`lib.rs`, `is_paste_command`): zodra het een
+toetsaanslag herkent als de OS-plakopdracht (Ctrl+V op Windows), leest het zelf de
+klembordtekst, voegt hoogstens een `Event::Paste(tekst)` toe, en **stuurt daarna nooit een
+gewone `Key::V`-toetsaanslag door** (een vroege `return` in de match). Bevat het klembord
+alleen een afbeelding — geen tekst — dan komt er dus helemaal niets in `ctx.input()`
+terecht: geen `Event::Paste` (leeg/mislukt) én geen `Key::V`-event om op te reageren.
+`ui.input(|i| i.key_pressed(egui::Key::V))` kán in dat geval nooit `true` worden, ongeacht
+focus. Dat is precies wat de `egui_winit::clipboard`-foutmeldingen in het logbestand ook
+lieten zien: dat was `egui-winit`'s eigen, mislukte poging — niet de onze, want die
+startte nooit.
+
+Oplossing: `App::ctrl_v_zojuist_ingedrukt` vraagt de fysieke toetsstatus rechtstreeks op
+bij Windows via `GetAsyncKeyState(VK_CONTROL)`/`GetAsyncKeyState(VK_V)`
+(`Win32_UI_Input_KeyboardAndMouse`, een nieuwe feature op de al aanwezige `windows`-crate),
+volledig langs egui's eigen event-vertaling. Met randdetectie (`App::ctrl_v_ingedrukt`
+onthoudt vorige frame) zodat het niet elke frame opnieuw triggert zolang de toetsen
+ingedrukt blijven. Bewust **wel** gebonden aan `ctx.input(|i| i.focused)`:
+`GetAsyncKeyState` kijkt naar de fysieke toetsstatus ongeacht welk venster de OS-focus
+heeft, dus zonder die check zou Ctrl+V in een andere toepassing hier ook een bestand
+aanbieden.
 
 ---
 
