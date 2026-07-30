@@ -73,6 +73,7 @@ fn main() -> Result<()> {
         display_name: cfg.display_name.clone(),
         control_port: cfg.control_port,
         media_port: cfg.media_port,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
         targets: cfg
             .peers
             .iter()

@@ -257,6 +257,13 @@ pub fn resolve_pictures_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("Pictures")
 }
 
+/// Waar een van een peer opgehaalde nieuwere exe landt (fase 11), tot hij toegepast
+/// wordt. Zelfde niet-instelbare-plumbing-patroon als `resolve_pictures_dir` — geen
+/// gebruikersbestand, dus geen `config.toml`-veld.
+pub fn resolve_updates_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("updates")
+}
+
 fn whoami_or(fallback: &str) -> String {
     std::env::var("USERNAME")
         .ok()

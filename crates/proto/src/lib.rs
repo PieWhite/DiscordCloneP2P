@@ -4,11 +4,13 @@
 //! hier zit de subtiele logica en die moet volledig unit-testbaar blijven.
 //! Zie `docs/ARCHITECTURE.md` voor het ontwerp en de compatibiliteitsregels.
 
+pub mod appversion;
 pub mod control;
 pub mod ids;
 pub mod media;
 pub mod op;
 
+pub use appversion::is_newer;
 pub use control::{ControlMsg, StreamKind};
 pub use ids::{Channel, OpId, PeerId, TopicId};
 pub use media::{MediaHeader, PayloadType, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN, VOICE_STREAM_ID};
@@ -35,7 +37,16 @@ pub use op::{Op, OpKind, VersionVector};
 /// diezelfde auteur, met permanent dataverlies of een verkeerd geadresseerde
 /// bestandsoverdracht tot gevolg. Gevonden door de `protocol-reviewer`-agent vóór het
 /// committen, niet door een test. Zie `docs/ARCHITECTURE.md`, sectie "Kanalen".
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// 3 → 4 bij automatische updates (fase 11): elke uni-stream voor een bulkoverdracht
+/// (`crates/net/src/filestream.rs`) kreeg een 1-byte kind-prefix vóór de bestaande body,
+/// om een bestandsoverdracht van een update-overdracht te kunnen onderscheiden — een
+/// oudere peer zou dat eerste byte anders verkeerd als onderdeel van de oude
+/// `OpId`-header lezen. `Hello`/`HelloAck.app_version` en `UpdateRequest`/`UpdateResponse`
+/// zijn op zichzelf onschadelijk (map-encoded, nieuw bericht wordt genegeerd), maar horen
+/// bij dezelfde bump omdat een oudere peer een `UpdateRequest` toch nooit kan versturen.
+/// Zie `docs/ARCHITECTURE.md`, sectie "Automatische updates".
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Bovengrens voor een control-frame. Grote sync-antwoorden worden opgeknipt door de
 /// netwerklaag, zodat we hier bij normaal gebruik nooit tegenaan lopen.

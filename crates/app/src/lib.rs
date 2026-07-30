@@ -13,3 +13,4 @@ pub mod streams;
 pub mod tags;
 pub mod tray;
 pub mod ui;
+pub mod updates;

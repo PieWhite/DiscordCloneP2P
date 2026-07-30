@@ -38,6 +38,7 @@ fn config_multi(me: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> MeshConf
         display_name: naam.to_string(),
         control_port: eigen,
         media_port: 0,
+        app_version: "0.1.0".to_string(),
         targets: anderen
             .iter()
             .map(|&ander| PeerTarget {

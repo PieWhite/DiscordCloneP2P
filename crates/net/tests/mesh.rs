@@ -52,6 +52,7 @@ fn config_multi(me: PeerId, name: &str, my_port: u16, peer_ports: &[u16]) -> Mes
         display_name: name.to_string(),
         control_port: my_port,
         media_port: 0,
+        app_version: "0.1.0".to_string(),
         targets: peer_ports
             .iter()
             .map(|&p| PeerTarget {

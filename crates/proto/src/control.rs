@@ -117,6 +117,11 @@ control_messages! {
     // daadwerkelijk ophalen van de bytes bij de aanbieder. Zie docs/ARCHITECTURE.md.
     40 => FileRequest(FileRequest),
     41 => FileResponse(FileResponse),
+
+    // fase 11: automatische updates. Geen `version`/`file`-veld nodig — de identiteit is
+    // impliciet ("jouw huidige, draaiende exe"). Zie docs/ARCHITECTURE.md.
+    42 => UpdateRequest(UpdateRequest),
+    43 => UpdateResponse(UpdateResponse),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -126,6 +131,12 @@ pub struct Hello {
     pub display_name: String,
     /// UDP-poort waarop deze peer media verwacht.
     pub media_port: u16,
+    /// `env!("CARGO_PKG_VERSION")` van deze build. Voor fase 11 (automatische updates):
+    /// hiermee ziet een peer dat een ander een nieuwere build draait. Een oudere peer die
+    /// dit veld nog niet kent, decodeert gewoon zonder — `#[serde(default)]` levert dan
+    /// `"0.0.0"`, wat nooit een update triggert.
+    #[serde(default = "onbekende_app_versie")]
+    pub app_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,6 +145,12 @@ pub struct HelloAck {
     pub peer_id: PeerId,
     pub display_name: String,
     pub media_port: u16,
+    #[serde(default = "onbekende_app_versie")]
+    pub app_version: String,
+}
+
+fn onbekende_app_versie() -> String {
+    "0.0.0".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -277,6 +294,26 @@ pub struct FileResponse {
     pub outcome: FileOutcome,
 }
 
+/// "Jij draait een nieuwere versie dan ik; stuur me je exe." Verstuurd door de peer met
+/// de oudere versie, zodra hij via `Hello`/`HelloAck.app_version` ziet dat een ander
+/// verder is. `have_bytes` werkt net als bij `FileRequest`: wat er al op schijf staat van
+/// een eerdere, onderbroken poging aan precies deze versie.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateRequest {
+    #[serde(default)]
+    pub have_bytes: u64,
+}
+
+/// Antwoord van de peer met de nieuwere versie. Anders dan `FileResponse` draagt dit ook
+/// grootte en hash mee: bij een update is er geen voorafgaande `FileMeta`-op die dat al
+/// vastlegt, dus de aanvrager moet het hier vernemen om te kunnen verifiëren.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateResponse {
+    pub outcome: FileOutcome,
+    pub size: u64,
+    pub hash: [u8; 32],
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,9 +326,39 @@ mod tests {
             peer_id: PeerId::new_random(),
             display_name: "Rick".into(),
             media_port: 41700,
+            app_version: "0.1.0".into(),
         });
         let bytes = msg.encode().unwrap();
         assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+    }
+
+    #[test]
+    fn hello_zonder_app_versie_valt_terug_op_onbekend() {
+        // Een oudere peer die het veld nog niet kent — mag nooit een update triggeren.
+        #[derive(Serialize)]
+        struct OudeHello {
+            protocol_version: u32,
+            peer_id: PeerId,
+            display_name: String,
+            media_port: u16,
+        }
+        let mut body = 1u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &OudeHello {
+                protocol_version: crate::PROTOCOL_VERSION,
+                peer_id: PeerId::new_random(),
+                display_name: "Rick".into(),
+                media_port: 41700,
+            },
+            &mut ser,
+        )
+        .unwrap();
+
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::Hello(h) => assert_eq!(h.app_version, "0.0.0"),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
     }
 
     #[test]
@@ -319,6 +386,12 @@ mod tests {
             ControlMsg::FileResponse(FileResponse {
                 file: OpId::new(PeerId::new_random(), Channel::GENERAL, 1),
                 outcome: FileOutcome::READY,
+            }),
+            ControlMsg::UpdateRequest(UpdateRequest { have_bytes: 0 }),
+            ControlMsg::UpdateResponse(UpdateResponse {
+                outcome: FileOutcome::READY,
+                size: 0,
+                hash: [0u8; 32],
             }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
@@ -392,6 +465,35 @@ mod tests {
         let back = ControlMsg::decode(&bytes).unwrap().unwrap();
         match back {
             ControlMsg::StreamAnnounce(a) => assert!(!a.kind.is_known()),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_request_response_roundtrip() {
+        let req = ControlMsg::UpdateRequest(UpdateRequest { have_bytes: 12345 });
+        let bytes = req.encode().unwrap();
+        assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(req));
+
+        let resp = ControlMsg::UpdateResponse(UpdateResponse {
+            outcome: FileOutcome::READY,
+            size: 999,
+            hash: [7u8; 32],
+        });
+        let bytes = resp.encode().unwrap();
+        assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(resp));
+    }
+
+    #[test]
+    fn update_request_zonder_have_bytes_valt_terug_op_nul() {
+        #[derive(Serialize)]
+        struct OudeUpdateRequest {}
+        let mut body = 42u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(&OudeUpdateRequest {}, &mut ser).unwrap();
+
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::UpdateRequest(r) => assert_eq!(r.have_bytes, 0),
             other => panic!("verkeerde variant: {other:?}"),
         }
     }

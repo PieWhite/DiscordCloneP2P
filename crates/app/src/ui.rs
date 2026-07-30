@@ -215,7 +215,7 @@ impl App {
     /// door, dus je blijft berichten ontvangen en een melding krijgen terwijl je iets
     /// anders doet. Echt afsluiten gaat via het tray-menu.
     fn afsluiten_of_verbergen(&mut self, ctx: &egui::Context) -> bool {
-        if tray::wil_afsluiten() {
+        if tray::wil_afsluiten() || self.engine.afsluiten_voor_update.load(Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return true;
         }
@@ -276,6 +276,7 @@ impl eframe::App for App {
         self.profiel_venster(ctx);
         self.kanaal_hernoemen_venster(ctx);
         self.bevestig_verwijder_kanaal_venster(ctx);
+        self.update_beschikbaar_venster(ctx);
         self.statusbalk(ctx);
         self.overzicht_strook(ctx);
         self.chat_paneel(ctx);
@@ -1316,6 +1317,110 @@ impl App {
             self.bevestig_verwijder_kanaal = None;
         } else if geannuleerd || !open {
             self.bevestig_verwijder_kanaal = None;
+        }
+    }
+
+    /// Fase 11: toont dat een peer een nieuwere versie draait, de voortgang van het
+    /// automatisch ophalen, en pas een "nu bijwerken en herstarten"-knop zodra de
+    /// download geverifieerd binnen is. Geen apart open/dicht-veld op `App` nodig zoals
+    /// bij de andere bevestigingsvensters hierboven: de motor zelf is hier de bron van
+    /// waarheid (`Snapshot::update`), dus dit venster verschijnt en verdwijnt vanzelf
+    /// mee met die status.
+    fn update_beschikbaar_venster(&mut self, ctx: &egui::Context) {
+        use crate::updates::UpdateStatus;
+
+        let Some(status) = self.snap.update.clone() else {
+            return;
+        };
+
+        let peer_label = |id: PeerId| -> String {
+            self.snap
+                .peers
+                .iter()
+                .find(|p| p.peer_id == Some(id))
+                .map(|p| p.label.clone())
+                .unwrap_or_else(|| "een peer".to_string())
+        };
+
+        let mut open = true;
+        let mut toepassen = false;
+        let mut wegklikken = false;
+
+        egui::Window::new("Nieuwere versie beschikbaar")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                match &status {
+                    UpdateStatus::Aangeboden { peer, hun_versie } => {
+                        ui.label(format!(
+                            "{} heeft versie {hun_versie}. Ophalen wordt gestart...",
+                            peer_label(*peer)
+                        ));
+                    }
+                    UpdateStatus::Bezig {
+                        peer,
+                        hun_versie,
+                        ontvangen,
+                        totaal,
+                        ..
+                    } => {
+                        ui.label(format!(
+                            "Versie {hun_versie} ophalen bij {}...",
+                            peer_label(*peer)
+                        ));
+                        let fractie = if *totaal > 0 {
+                            *ontvangen as f32 / *totaal as f32
+                        } else {
+                            0.0
+                        };
+                        ui.add(egui::ProgressBar::new(fractie).text(format!(
+                            "{} / {}",
+                            grootte_tekst(*ontvangen),
+                            grootte_tekst(*totaal)
+                        )));
+                    }
+                    UpdateStatus::KlaarOmToeTePassen {
+                        peer, hun_versie, ..
+                    } => {
+                        ui.label(format!(
+                            "{} heeft versie {hun_versie}. Nu bijwerken en herstarten?",
+                            peer_label(*peer)
+                        ));
+                    }
+                    UpdateStatus::Mislukt(bericht) => {
+                        ui.colored_label(egui::Color32::from_rgb(200, 60, 60), bericht);
+                    }
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if matches!(status, UpdateStatus::KlaarOmToeTePassen { .. })
+                        && ui.button("Nu bijwerken en herstarten").clicked()
+                    {
+                        toepassen = true;
+                    }
+                    let knoptekst = if matches!(status, UpdateStatus::Mislukt(_)) {
+                        "OK"
+                    } else {
+                        "Negeren"
+                    };
+                    if ui.button(knoptekst).clicked() {
+                        wegklikken = true;
+                    }
+                });
+            });
+
+        if toepassen {
+            self.stuur(UiCommand::PasUpdateToe);
+        } else if wegklikken || !open {
+            match &status {
+                UpdateStatus::Mislukt(_) => self.stuur(UiCommand::WisUpdateMelding),
+                other => {
+                    if let Some(versie) = other.hun_versie() {
+                        self.stuur(UiCommand::NegeerUpdate(versie.to_string()));
+                    }
+                }
+            }
         }
     }
 

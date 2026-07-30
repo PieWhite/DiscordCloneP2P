@@ -17,10 +17,11 @@ use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::notify;
 use crate::streams::{Actie, Streams};
 use crate::tags;
+use crate::updates::{UpdateStatus, Updates};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
-use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
+use fitcom_proto::control::{FileOutcome, StreamKind, UpdateResponse, VoiceJoin, VoiceLeave};
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
@@ -41,6 +42,10 @@ const TIK: Duration = Duration::from_millis(100);
 /// Hoe vaak een lopende download zijn voortgang naar de UI duwt. Bij 1 Gbit komen er
 /// per seconde veel te veel gelezen stukjes langs om elk apart te melden.
 const VOORTGANG_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Fase 11: eigen versie, uitgewisseld in de handshake en vergeleken met wat een peer
+/// meldt (`fitcom_proto::is_newer`).
+const EIGEN_VERSIE: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone)]
 pub struct PeerView {
@@ -132,6 +137,10 @@ pub struct Snapshot {
     /// Onderdrukt alle Windows-meldingen, ook een directe tag naar jezelf. Geldt alleen
     /// voor deze sessie, net als mute/deafen — geen configvermelding.
     pub niet_storen: bool,
+    /// Fase 11: staat een peer met een nieuwere versie aangeboden/onderweg/klaar?
+    /// `None` betekent: niets aan de hand, iedereen die we spreken zit op onze versie
+    /// (of ouder).
+    pub update: Option<UpdateStatus>,
     pub fout: Option<String>,
 }
 
@@ -186,6 +195,13 @@ pub enum UiCommand {
     HernoemKanaal(TopicId, String),
     /// Subkanaal verwijderen. UI vraagt hier eerst een bevestiging voor.
     VerwijderKanaal(TopicId),
+    /// Fase 11: een klaarstaande update bevestigen — start het updaterproces en sluit de
+    /// app af.
+    PasUpdateToe,
+    /// Deze versie niet meer vanzelf aanbieden, deze sessie.
+    NegeerUpdate(String),
+    /// Een mislukte update-melding wegklikken.
+    WisUpdateMelding,
 }
 
 pub struct EngineHandle {
@@ -194,6 +210,10 @@ pub struct EngineHandle {
     /// Wordt door de UI bijgehouden. Staat het venster niet op de voorgrond, dan
     /// verstuurt de motor een Windows-melding bij een nieuw bericht.
     pub voorgrond: Arc<AtomicBool>,
+    /// Gaat aan zodra de gebruiker een klaarstaande update bevestigt en het
+    /// updater-proces gestart is. De UI sluit het venster dan net zo af als via het
+    /// tray-menu — zie `tray::wil_afsluiten` en `ui.rs::afsluiten_of_verbergen`.
+    pub afsluiten_voor_update: Arc<AtomicBool>,
 }
 
 pub fn spawn(
@@ -218,6 +238,9 @@ pub fn spawn(
     std::fs::create_dir_all(&downloads_dir).context("downloadmap aanmaken")?;
     let pictures_dir = config::resolve_pictures_dir(&data_dir);
     std::fs::create_dir_all(&pictures_dir).context("picturesmap aanmaken")?;
+    let updates_dir = config::resolve_updates_dir(&data_dir);
+    std::fs::create_dir_all(&updates_dir).context("updatesmap aanmaken")?;
+    let afsluiten_voor_update = Arc::new(AtomicBool::new(false));
 
     let peers = cfg
         .peers
@@ -258,12 +281,15 @@ pub fn spawn(
         files: Files::new(),
         downloads_dir,
         pictures_dir,
+        updates: Updates::new(),
+        updates_dir,
         file_tx,
         file_rx,
         fout: None,
         niet_storen: false,
         snap_tx,
         voorgrond: voorgrond.clone(),
+        afsluiten_voor_update: afsluiten_voor_update.clone(),
     };
 
     tokio::spawn(engine.run(cmd_rx));
@@ -272,6 +298,7 @@ pub fn spawn(
         snapshot: snap_rx,
         commands: cmd_tx,
         voorgrond,
+        afsluiten_voor_update,
     })
 }
 
@@ -314,6 +341,11 @@ struct Engine {
     /// Content-adresseerbare map voor afbeeldingen: `<hash-hex>.<ext>`, zowel voor wat
     /// wij aanbieden als voor wat we downloaden. Zie `files::hash_bestandsnaam`.
     pictures_dir: PathBuf,
+    /// Wie op dit moment de nieuwste versie draait die we gezien hebben, en waar we
+    /// staan met een eventuele download daarvan. Zie `crate::updates`.
+    updates: Updates,
+    /// Waar een opgehaalde nieuwere exe landt, tot toepassing.
+    updates_dir: PathBuf,
     /// Voor het klonen naar bestandstaken toe; `file_rx` is waar de motor op wacht.
     file_tx: mpsc::Sender<FileEvent>,
     file_rx: mpsc::Receiver<FileEvent>,
@@ -323,6 +355,7 @@ struct Engine {
     niet_storen: bool,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
+    afsluiten_voor_update: Arc<AtomicBool>,
 }
 
 /// Wat een bestandstaak (hashen, uploaden, downloaden) terugmeldt aan de motor. Losse
@@ -346,6 +379,17 @@ enum FileEvent {
     },
     Mislukt {
         file: OpId,
+        bericht: String,
+    },
+    /// Fase 11: voortgang/uitkomst van een lopende update-download. Los van `Voortgang`/
+    /// `Voltooid`/`Mislukt` hierboven omdat een update geen `OpId` heeft.
+    UpdateVoortgang {
+        ontvangen: u64,
+    },
+    UpdateKlaar {
+        pad: PathBuf,
+    },
+    UpdateMislukt {
         bericht: String,
     },
 }
@@ -405,6 +449,7 @@ impl Engine {
                         peer_id,
                         display_name,
                         media_addr,
+                        app_version,
                         ..
                     } => {
                         self.verbonden.insert(*peer_id, *media_addr);
@@ -424,6 +469,7 @@ impl Engine {
                             }
                             let cmds = self.streams.bij_verbinding(id);
                             self.stuur_alles(cmds);
+                            self.overweeg_update(id, app_version);
                         }
                     }
                     _ => {
@@ -456,10 +502,11 @@ impl Engine {
                 }
             }
 
-            // Een bulkoverdracht, los van de control-stream. De header in de stream zelf
-            // zegt om welk bestand het gaat; `from` is hier niet nodig om hem te routeren.
+            // Een bulkoverdracht, los van de control-stream. Het kind-byte plus (voor een
+            // bestand) de header erachteraan zegt om wat het gaat; `from` is hier niet
+            // nodig om te routeren.
             MeshEvent::IncomingFileStream { from: _, stream } => {
-                self.start_download(stream);
+                self.start_incoming_stream(stream);
             }
 
             MeshEvent::Message { from, msg } => match msg {
@@ -482,6 +529,13 @@ impl Engine {
                 }
                 ControlMsg::FileResponse(resp) => {
                     self.files.antwoord_ontvangen(&resp);
+                }
+                ControlMsg::UpdateRequest(req) => {
+                    let mesh_commands = self.mesh.commands.clone();
+                    tokio::spawn(update_upload_taak(mesh_commands, from, req.have_bytes));
+                }
+                ControlMsg::UpdateResponse(resp) => {
+                    self.updates.antwoord_ontvangen(&resp);
                 }
                 andere => {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
@@ -574,6 +628,66 @@ impl Engine {
                     }
                 }
             },
+        }
+    }
+
+    // -- updates (fase 11) --------------------------------------------------
+
+    /// Waar het deelbestand van een onderbroken update-download aan precies `versie`
+    /// zou staan — voor het hervatpunt in een verse `UpdateRequest`.
+    fn update_deelpad(&self, versie: &str) -> PathBuf {
+        self.updates_dir.join(format!("update-{versie}.exe.part"))
+    }
+
+    /// Een peer bleek net een nieuwere versie te draaien dan wijzelf. Vraagt zijn exe op
+    /// tenzij we die versie al ophalen, al hebben liggen, of de gebruiker hem negeerde —
+    /// zie `Updates::nieuwere_versie_gezien`.
+    fn overweeg_update(&mut self, peer: PeerId, hun_versie: &str) {
+        if !fitcom_proto::is_newer(hun_versie, EIGEN_VERSIE) {
+            return;
+        }
+        let bestaand = std::fs::metadata(self.update_deelpad(hun_versie))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if let Some(cmd) = self
+            .updates
+            .nieuwere_versie_gezien(peer, hun_versie, bestaand)
+        {
+            self.stuur_alles(vec![cmd]);
+        }
+    }
+
+    /// De gebruiker bevestigt "nu bijwerken en herstarten": start het losse
+    /// updater-proces (dat wacht tot wíj afgesloten zijn, want een exe kan zichzelf niet
+    /// overschrijven terwijl hij draait) en sluit daarna net zo af als via het tray-menu.
+    fn pas_update_toe(&mut self) {
+        let Some(UpdateStatus::KlaarOmToeTePassen { pad, .. }) = self.updates.status().cloned()
+        else {
+            return;
+        };
+        let huidige_exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                self.fout = Some(format!("eigen exe-pad niet te bepalen: {e}"));
+                return;
+            }
+        };
+        // Naast de hoofd-exe, net als bij een gewone build (zie `crates/app/src/bin/fitcom-updater.rs`).
+        let updater = huidige_exe.with_file_name("fitcom-updater.exe");
+        let resultaat = std::process::Command::new(&updater)
+            .arg("--new")
+            .arg(&pad)
+            .arg("--target")
+            .arg(&huidige_exe)
+            .arg("--pid")
+            .arg(std::process::id().to_string())
+            .spawn();
+        match resultaat {
+            Ok(_) => self.afsluiten_voor_update.store(true, Ordering::Relaxed),
+            Err(e) => {
+                tracing::error!(error = %e, pad = %updater.display(), "updater niet te starten");
+                self.fout = Some(format!("updater starten mislukt: {e}"));
+            }
         }
     }
 
@@ -1098,6 +1212,9 @@ impl Engine {
                 let r = self.chat.verwijder_kanaal(id);
                 self.verwerk(r);
             }
+            UiCommand::PasUpdateToe => self.pas_update_toe(),
+            UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
+            UiCommand::WisUpdateMelding => self.updates.wis_melding(),
         }
     }
 
@@ -1181,16 +1298,29 @@ impl Engine {
         ));
     }
 
-    fn start_download(&mut self, stream: RecvStream) {
+    /// Leest eerst het kind-byte van een inkomende uni-stream en stuurt hem dan naar het
+    /// bestands- of het update-downloadpad. Zie `fitcom_net::filestream::read_kind`.
+    fn start_incoming_stream(&mut self, stream: RecvStream) {
         let downloads_dir = self.downloads_dir.clone();
         let pictures_dir = self.pictures_dir.clone();
         let timeline = self.chat.timeline_arc();
+        let updates_dir = self.updates_dir.clone();
+        // Alleen relevant als we op dit moment ook echt een update binnenhalen — anders
+        // is er niets om de bytes tegen te verifiëren en negeren we de stream.
+        let verwachte_update = match self.updates.status() {
+            Some(UpdateStatus::Bezig {
+                hun_versie, hash, ..
+            }) => Some((hun_versie.clone(), *hash)),
+            _ => None,
+        };
         let events = self.file_tx.clone();
-        tokio::spawn(download_taak(
+        tokio::spawn(dispatch_inkomende_stream(
             stream,
             downloads_dir,
             pictures_dir,
             timeline,
+            updates_dir,
+            verwachte_update,
             events,
         ));
     }
@@ -1223,6 +1353,12 @@ impl Engine {
                 tracing::warn!(?file, %bericht, "bestandsoverdracht mislukt");
                 self.files
                     .zet_status(file, DownloadStatus::Mislukt(bericht));
+            }
+            FileEvent::UpdateVoortgang { ontvangen } => self.updates.voortgang(ontvangen),
+            FileEvent::UpdateKlaar { pad } => self.updates.klaar(pad),
+            FileEvent::UpdateMislukt { bericht } => {
+                tracing::warn!(%bericht, "update-download mislukt");
+                self.updates.mislukt(bericht);
             }
         }
     }
@@ -1366,6 +1502,7 @@ impl Engine {
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
             ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
+            update: self.updates.status().cloned(),
             fout: self.fout.clone(),
         }));
     }
@@ -1568,23 +1705,45 @@ async fn upload_bytes(
     Ok(())
 }
 
-/// Leest de header van een inkomende bulk-stream, zoekt het bijbehorende bestand op in
-/// de (op het moment van binnenkomst al bekende) timeline, en downloadt het.
+/// Leest het kind-byte van een inkomende bulk-stream en stuurt hem naar het bestands- of
+/// het update-downloadpad. Zie `fitcom_net::filestream::read_kind`.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_inkomende_stream(
+    mut stream: RecvStream,
+    downloads_dir: PathBuf,
+    pictures_dir: PathBuf,
+    timeline: Arc<Timeline>,
+    updates_dir: PathBuf,
+    verwachte_update: Option<(String, [u8; 32])>,
+    events: mpsc::Sender<FileEvent>,
+) {
+    match fitcom_net::filestream::read_kind(&mut stream).await {
+        Ok(fitcom_net::filestream::Inkomend::Bestand(file)) => {
+            download_taak(stream, file, downloads_dir, pictures_dir, timeline, events).await;
+        }
+        Ok(fitcom_net::filestream::Inkomend::Update) => {
+            let Some((versie, hash)) = verwachte_update else {
+                tracing::warn!("update-stream binnengekomen zonder dat we er een verwachtten");
+                return;
+            };
+            download_update_taak(stream, updates_dir, versie, hash, events).await;
+        }
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "kind van inkomende overdracht onleesbaar");
+        }
+    }
+}
+
+/// Zoekt het bijbehorende bestand op in de (op het moment van binnenkomst al bekende)
+/// timeline, en downloadt het.
 async fn download_taak(
     mut stream: RecvStream,
+    file: OpId,
     downloads_dir: PathBuf,
     pictures_dir: PathBuf,
     timeline: Arc<Timeline>,
     events: mpsc::Sender<FileEvent>,
 ) {
-    let file = match fitcom_net::filestream::read_header(&mut stream).await {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(error = %format!("{e:#}"), "header van inkomende bestandsstream onleesbaar");
-            return;
-        }
-    };
-
     let Some(entry) = timeline.files.iter().find(|f| f.id == file).cloned() else {
         tracing::warn!(?file, "bestandsstream voor een onbekend bestand genegeerd");
         return;
@@ -1600,6 +1759,205 @@ async fn download_taak(
             })
             .await;
     }
+}
+
+/// Vraagt (op een losse taak) de eigen, draaiende exe op en biedt hem aan, zoals
+/// `hash_en_bied_aan` dat voor een gewoon bestand doet. Antwoordt `NotAvailable` als de
+/// eigen exe onverhoopt niet te lezen is — dan is er simpelweg niets te versturen.
+async fn update_upload_taak(
+    mesh_commands: mpsc::Sender<MeshCommand>,
+    naar: PeerId,
+    have_bytes: u64,
+) {
+    async fn niet_beschikbaar(mesh_commands: &mpsc::Sender<MeshCommand>, naar: PeerId) {
+        let _ = mesh_commands
+            .send(MeshCommand::Send {
+                to: naar,
+                msg: ControlMsg::UpdateResponse(UpdateResponse {
+                    outcome: FileOutcome::NOT_AVAILABLE,
+                    size: 0,
+                    hash: [0u8; 32],
+                }),
+            })
+            .await;
+    }
+
+    let pad = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "eigen exe-pad niet te bepalen voor update-aanvraag");
+            niet_beschikbaar(&mesh_commands, naar).await;
+            return;
+        }
+    };
+
+    let leespad = pad.clone();
+    let gehasht = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, [u8; 32])> {
+        let mut bestand = std::fs::File::open(&leespad)?;
+        let mut hasher = blake3::Hasher::new();
+        let grootte = std::io::copy(&mut bestand, &mut hasher)?;
+        Ok((grootte, *hasher.finalize().as_bytes()))
+    })
+    .await;
+
+    let (grootte, hash) = match gehasht {
+        Ok(Ok(v)) => v,
+        _ => {
+            tracing::warn!(pad = %pad.display(), "eigen exe niet te lezen voor update-aanvraag");
+            niet_beschikbaar(&mesh_commands, naar).await;
+            return;
+        }
+    };
+
+    if mesh_commands
+        .send(MeshCommand::Send {
+            to: naar,
+            msg: ControlMsg::UpdateResponse(UpdateResponse {
+                outcome: FileOutcome::READY,
+                size: grootte,
+                hash,
+            }),
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut bestand = match tokio::fs::File::open(&pad).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "eigen exe niet meer te openen voor update-upload");
+            return;
+        }
+    };
+
+    let (tx, rx) = oneshot::channel();
+    if mesh_commands
+        .send(MeshCommand::OpenUploadStream {
+            to: naar,
+            respond: tx,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let stream = match rx.await {
+        Ok(Some(s)) => s,
+        _ => {
+            tracing::debug!(peer = ?naar, "kon geen uploadstream openen voor update; peer waarschijnlijk weg");
+            return;
+        }
+    };
+
+    if let Err(e) = update_upload_bytes(stream, &mut bestand, have_bytes).await {
+        tracing::warn!(error = %format!("{e:#}"), peer = ?naar, "update-upload mislukt");
+    }
+}
+
+async fn update_upload_bytes(
+    mut stream: SendStream,
+    bestand: &mut tokio::fs::File,
+    vanaf: u64,
+) -> Result<()> {
+    fitcom_net::filestream::write_update_header(&mut stream).await?;
+    bestand
+        .seek(std::io::SeekFrom::Start(vanaf))
+        .await
+        .context("hervatpunt opzoeken in de eigen exe")?;
+    tokio::io::copy(bestand, &mut stream)
+        .await
+        .context("bytes versturen")?;
+    stream.finish().context("uploadstream afsluiten")?;
+    Ok(())
+}
+
+/// Downloadt een update-overdracht, verifieert hem tegen de aangekondigde hash en zet
+/// hem klaar onder een vaste, aan de versie gekoppelde naam. Zelfde opzet als
+/// `download_bytes`, maar zonder `FileEntry` (er is geen oplog-op voor een update).
+async fn download_update_taak(
+    mut stream: RecvStream,
+    updates_dir: PathBuf,
+    versie: String,
+    verwachte_hash: [u8; 32],
+    events: mpsc::Sender<FileEvent>,
+) {
+    if let Err(e) =
+        download_update_bytes(&mut stream, &updates_dir, &versie, verwachte_hash, &events).await
+    {
+        let _ = events
+            .send(FileEvent::UpdateMislukt {
+                bericht: format!("{e:#}"),
+            })
+            .await;
+    }
+}
+
+async fn download_update_bytes(
+    stream: &mut RecvStream,
+    updates_dir: &Path,
+    versie: &str,
+    verwachte_hash: [u8; 32],
+    events: &mpsc::Sender<FileEvent>,
+) -> Result<()> {
+    let deelpad = updates_dir.join(format!("update-{versie}.exe.part"));
+    let mut bestand = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&deelpad)
+        .await
+        .context("deelbestand van update openen")?;
+    let mut ontvangen = bestand
+        .metadata()
+        .await
+        .context("deelbestand-grootte opvragen")?
+        .len();
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut laatste_update = Instant::now();
+    loop {
+        match stream.read(&mut buf).await.context("bytes ontvangen")? {
+            None => break,
+            Some(n) => {
+                bestand
+                    .write_all(&buf[..n])
+                    .await
+                    .context("bytes wegschrijven")?;
+                ontvangen += n as u64;
+                if laatste_update.elapsed() >= VOORTGANG_INTERVAL {
+                    laatste_update = Instant::now();
+                    let _ = events.send(FileEvent::UpdateVoortgang { ontvangen }).await;
+                }
+            }
+        }
+    }
+    bestand.flush().await.context("deelbestand doorschrijven")?;
+    drop(bestand);
+
+    let te_hashen = deelpad.clone();
+    let klopt = tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
+        let mut bestand = std::fs::File::open(&te_hashen)?;
+        let mut hasher = blake3::Hasher::new();
+        std::io::copy(&mut bestand, &mut hasher)?;
+        Ok(*hasher.finalize().as_bytes() == verwachte_hash)
+    })
+    .await
+    .context("hash-taak afgebroken")??;
+
+    if !klopt {
+        let _ = tokio::fs::remove_file(&deelpad).await;
+        anyhow::bail!("hash klopt niet; update is corrupt geraakt en is verwijderd");
+    }
+
+    let definitief = updates_dir.join(format!("update-{versie}.exe"));
+    tokio::fs::rename(&deelpad, &definitief)
+        .await
+        .context("update hernoemen naar definitieve naam")?;
+    let _ = events
+        .send(FileEvent::UpdateKlaar { pad: definitief })
+        .await;
+    Ok(())
 }
 
 async fn download_bytes(

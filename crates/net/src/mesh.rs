@@ -37,6 +37,9 @@ pub struct MeshConfig {
     pub control_port: u16,
     pub media_port: u16,
     pub targets: Vec<PeerTarget>,
+    /// `env!("CARGO_PKG_VERSION")` van deze build. Gaat mee in `Hello`/`HelloAck`, zodat
+    /// de app-laag (fase 11: automatische updates) kan zien wanneer een peer verder is.
+    pub app_version: String,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +65,9 @@ pub enum PeerStatus {
         /// mediapoort die hij in de handshake opgaf.
         media_addr: SocketAddr,
         rtt_ms: u32,
+        /// `env!("CARGO_PKG_VERSION")` van de peer, uit de handshake. `"0.0.0"` voor een
+        /// peer die het veld nog niet kende.
+        app_version: String,
     },
     /// De peer draait een andere protocolversie. Geen crash, wel onbruikbaar tot
     /// één van beiden update.
@@ -186,6 +192,7 @@ struct Established {
     peer_id: PeerId,
     display_name: String,
     media_port: u16,
+    app_version: String,
     /// Wie deze verbinding opzette. Bepaalt wie een botsing wint.
     initiator: PeerId,
     remote: SocketAddr,
@@ -354,6 +361,7 @@ struct Active {
     target: Option<usize>,
     display_name: String,
     media_addr: SocketAddr,
+    app_version: String,
     conn: quinn::Connection,
     out: mpsc::Sender<ControlMsg>,
 }
@@ -560,6 +568,7 @@ impl Actor {
             display_name: e.display_name.clone(),
             media_addr,
             rtt_ms: e.conn.rtt().as_millis() as u32,
+            app_version: e.app_version.clone(),
         };
 
         self.active.insert(
@@ -569,6 +578,7 @@ impl Actor {
                 target: Some(target),
                 display_name: e.display_name,
                 media_addr,
+                app_version: e.app_version,
                 conn: e.conn,
                 out: e.out,
             },
@@ -678,6 +688,7 @@ impl Actor {
                             display_name: a.display_name.clone(),
                             media_addr: a.media_addr,
                             rtt_ms: a.conn.rtt().as_millis() as u32,
+                            app_version: a.app_version.clone(),
                         },
                     )
                 })
@@ -793,6 +804,7 @@ async fn try_dial(
                 peer_id: cfg.me,
                 display_name: cfg.display_name.clone(),
                 media_port: cfg.media_port,
+                app_version: cfg.app_version.clone(),
             }),
         )
         .await?;
@@ -835,6 +847,7 @@ async fn try_dial(
         ack.peer_id,
         ack.display_name,
         ack.media_port,
+        ack.app_version,
         cfg.me, // wij dialden, dus wij zijn de initiator
         int.clone(),
     )
@@ -892,6 +905,7 @@ async fn accept_one(
             peer_id: cfg.me,
             display_name: cfg.display_name.clone(),
             media_port: cfg.media_port,
+            app_version: cfg.app_version.clone(),
         }),
     )
     .await?;
@@ -919,6 +933,7 @@ async fn accept_one(
         hello.peer_id,
         hello.display_name,
         hello.media_port,
+        hello.app_version,
         hello.peer_id, // zij dialden, dus zij zijn de initiator
         int,
     )
@@ -938,6 +953,7 @@ async fn run_session(
     peer_id: PeerId,
     display_name: String,
     media_port: u16,
+    app_version: String,
     initiator: PeerId,
     int: mpsc::Sender<Internal>,
 ) {
@@ -950,6 +966,7 @@ async fn run_session(
         peer_id,
         display_name,
         media_port,
+        app_version,
         initiator,
         remote: conn.remote_address(),
         conn: conn.clone(),
