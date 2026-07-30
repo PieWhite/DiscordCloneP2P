@@ -70,8 +70,10 @@ pub struct VideoConfig {
     #[serde(default = "default_fps")]
     pub fps: u32,
 
-    /// Bits per seconde. Op een gigabitnetwerk zijn bits gratis; hoger geeft scherpere
-    /// tekst en dat is waar het bij een gedeeld scherm om gaat.
+    /// Bits per seconde. Op het tailnet zelf zijn bits gratis, maar een peer met een
+    /// mindere eigen internetverbinding kreeg bij 25 Mbit/s meetbare audio-lag in zijn
+    /// *eigen* voice — niet bij de kijker. 12 Mbit/s loste dat op zonder merkbaar
+    /// kwaliteitsverlies. Zie `docs/SPEC.md`, sectie "Bitrate".
     #[serde(default = "default_bitrate")]
     pub bitrate: u32,
 }
@@ -95,7 +97,7 @@ fn default_fps() -> u32 {
 }
 
 fn default_bitrate() -> u32 {
-    25_000_000
+    12_000_000
 }
 
 fn waar() -> bool {

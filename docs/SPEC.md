@@ -15,7 +15,10 @@ Dat is de belangrijkste niet-functionele eis en wint van kwaliteit waar ze botse
 | Vriend | RTX 3090 (Ampere) of RTX 2080 Super (Turing) | peer 2, testpartner |
 | Derde | de andere van bovenstaande twee | peer 3 |
 
-- 1 monitor per persoon, 1080p @ 60 Hz.
+- 1 monitor per persoon. Uitgangspunt was 1080p @ 60 Hz; de capture-, codec- en
+  weergavelaag zijn resolutie-onafhankelijk (geen hardcoded 1920×1080 ergens in de
+  keten) en zijn sinds fase 10 ook bevestigd op 1440p en 3440×1440 (ultrawide) — zie
+  `ROADMAP.md`, fase 10.
 - Iedereen gebruikt altijd een headset.
 - Alle drie: 1 Gbit/s symmetrisch, Tailscale.
 - Windows only.
@@ -36,12 +39,33 @@ Extensions kan een peer een HEVC-stream simpelweg niet decoderen, en dat is een
 onvoorspelbare afhankelijkheid op de PC's van de anderen.
 
 De reden om HEVC te willen was betere kwaliteit per bit — maar bij 1 Gbit symmetrisch
-zijn bits gratis. H.264 op ~25 Mbit voor 1080p60 is visueel uitstekend. Een codec die
-misschien niet werkt op de PC van je vriend is een veel groter probleem dan een
-bitrate die niemand merkt.
+zijn bits gratis. Een codec die misschien niet werkt op de PC van je vriend is een veel
+groter probleem dan een bitrate die niemand merkt.
 
 HEVC blijft instelbaar (`codec = "hevc"` in de config) voor wie weet dat beide kanten
 de uitbreiding hebben.
+
+### Bitrate
+
+De redenering hierboven ("bij 1 Gbit zijn bits gratis") klopt nog steeds **voor het
+tailnet zelf** — die blijft de reden dat er geen volwaardige congestion control nodig
+is. Ze zei alleen niets over wat er gebeurt als de bits bij een peer aankomen die zelf
+geen 1 Gbit heeft.
+
+Sinds fase 10 is de standaardbitrate **12 Mbit/s** in plaats van de oorspronkelijke
+~25 Mbit/s. Rick heeft gemeten dat de 25 Mbit-stream bij een kijkende peer met een
+mindere eigen internetverbinding lag veroorzaakte in de audio van **degene die
+streamt** (niet bij de kijker zelf) — een regressie op de belangrijkste eis van dit
+document ("geen merkbare impact op gamen/voice"). Bij 12 Mbit viel die lag weg zonder
+merkbaar kwaliteitsverlies. Het precieze mechanisme (vermoedelijk audio die achter
+dezelfde verbinding of CPU wacht als de videostream) is niet verder uitgezocht, alleen
+het symptoom en de oplossing zijn bevestigd.
+
+**Dit is geen vergissing die teruggedraaid moet worden** als er ooit weer met hogere
+bitrates geëxperimenteerd wordt — het is een gemeten regressie, geen esthetische keuze.
+Voor 1440p en 3440×1440 geldt dezelfde waarschuwing: niet zomaar omhoog schalen naar
+"wat gebruikelijk is voor die resolutie" zonder opnieuw te meten bij een peer met een
+matige verbinding.
 
 ## In scope
 1. P2P-netwerklaag over het tailnet, geen signaling-server.
@@ -73,9 +97,10 @@ de uitbreiding hebben.
 
 ### Screenshare
 - Capture: **Windows.Graphics.Capture** (monitor én venster, cursor-toggle, rand uitschakelbaar).
-- Codec: **H.264 4:2:0 8-bit** default, 1080p60, ~25 Mbit, in de UI aan te passen.
-  HEVC staat aan als optie maar hangt op Windows af van een Store-uitbreiding om te
-  decoderen; zie `docs/OVERDRACHT.md`.
+- Codec: **H.264 4:2:0 8-bit** default, 60 fps, ~12 Mbit (zie "Bitrate" hierboven), in
+  de UI aan te passen. Resolutie volgt de bron (monitor of venster) en is niet
+  vastgelegd op 1080p. HEVC staat aan als optie maar hangt op Windows af van een
+  Store-uitbreiding om te decoderen; zie `docs/OVERDRACHT.md`.
   4:4:4 (scherpere tekst) is **geen haalbare uitbreiding, niet alleen uitgesteld**: geen
   enkele Turing-GPU — ook de RTX 2080 Super niet — kan H.264- of HEVC-4:4:4
   hardwarematig decoderen. Zie `docs/OVERDRACHT.md` en `TODO.md`.
