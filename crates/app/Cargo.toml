@@ -15,11 +15,11 @@ directories = "6.0.0"
 eframe = "0.32.3"
 egui = "0.32.3"
 image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
-fitcom-audio = { version = "0.1.0", path = "../audio" }
-fitcom-net = { version = "0.1.0", path = "../net" }
-fitcom-proto = { version = "0.1.0", path = "../proto" }
-fitcom-store = { version = "0.1.0", path = "../store" }
-fitcom-video = { version = "0.1.0", path = "../video" }
+fitcom-audio.workspace = true
+fitcom-net.workspace = true
+fitcom-proto.workspace = true
+fitcom-store.workspace = true
+fitcom-video.workspace = true
 raw-window-handle = "0.6.2"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }

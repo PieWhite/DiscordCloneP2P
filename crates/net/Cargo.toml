@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-fitcom-proto = { version = "0.1.0", path = "../proto" }
+fitcom-proto.workspace = true
 quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 # ring i.p.v. aws-lc-rs: die laatste vereist cmake + nasm om te bouwen op Windows.
 # Moet overeenkomen met quinn's "rustls-ring" feature, anders krijg je twee

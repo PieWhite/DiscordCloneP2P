@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-fitcom-proto = { version = "0.1.0", path = "../proto" }
+fitcom-proto.workspace = true
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 tracing = "0.1.44"
 

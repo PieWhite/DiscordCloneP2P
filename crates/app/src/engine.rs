@@ -283,6 +283,7 @@ pub fn spawn(
         pictures_dir,
         updates: Updates::new(),
         updates_dir,
+        update_verwachting_tx: watch::channel(None).0,
         file_tx,
         file_rx,
         fout: None,
@@ -346,6 +347,14 @@ struct Engine {
     updates: Updates,
     /// Waar een opgehaalde nieuwere exe landt, tot toepassing.
     updates_dir: PathBuf,
+    /// Spiegelt `updates.status()`'s `Bezig`-veld voor `dispatch_inkomende_stream`: de
+    /// `UpdateResponse` (control-stream) en de bytes-stream (eigen uni-stream) zijn twee
+    /// onafhankelijke QUIC-streams zonder onderlinge volgorde-garantie. Over loopback komt
+    /// de control-stream altijd eerder aan, over een echte verbinding niet per se — zonder
+    /// dit zou een net geopende update-stream soms binnenkomen vóór wij weten dát we een
+    /// update verwachten, en dan wordt hij stilletjes weggegooid (zie
+    /// `wacht_op_update_verwachting`).
+    update_verwachting_tx: watch::Sender<Option<(String, [u8; 32])>>,
     /// Voor het klonen naar bestandstaken toe; `file_rx` is waar de motor op wacht.
     file_tx: mpsc::Sender<FileEvent>,
     file_rx: mpsc::Receiver<FileEvent>,
@@ -536,6 +545,7 @@ impl Engine {
                 }
                 ControlMsg::UpdateResponse(resp) => {
                     self.updates.antwoord_ontvangen(&resp);
+                    self.publiceer_update_verwachting();
                 }
                 andere => {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
@@ -639,6 +649,19 @@ impl Engine {
         self.updates_dir.join(format!("update-{versie}.exe.part"))
     }
 
+    /// Na elke wijziging aan `self.updates` opnieuw uitsturen, zodat
+    /// `wacht_op_update_verwachting` in een al-lopende `dispatch_inkomende_stream`-taak de
+    /// verwachting alsnog ziet verschijnen als hij er nét te vroeg voor was.
+    fn publiceer_update_verwachting(&self) {
+        let verwachting = match self.updates.status() {
+            Some(UpdateStatus::Bezig {
+                hun_versie, hash, ..
+            }) => Some((hun_versie.clone(), *hash)),
+            _ => None,
+        };
+        let _ = self.update_verwachting_tx.send(verwachting);
+    }
+
     /// Een peer bleek net een nieuwere versie te draaien dan wijzelf. Vraagt zijn exe op
     /// tenzij we die versie al ophalen, al hebben liggen, of de gebruiker hem negeerde —
     /// zie `Updates::nieuwere_versie_gezien`.
@@ -653,6 +676,7 @@ impl Engine {
             .updates
             .nieuwere_versie_gezien(peer, hun_versie, bestaand)
         {
+            self.publiceer_update_verwachting();
             self.stuur_alles(vec![cmd]);
         }
     }
@@ -1213,8 +1237,14 @@ impl Engine {
                 self.verwerk(r);
             }
             UiCommand::PasUpdateToe => self.pas_update_toe(),
-            UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
-            UiCommand::WisUpdateMelding => self.updates.wis_melding(),
+            UiCommand::NegeerUpdate(versie) => {
+                self.updates.negeer(&versie);
+                self.publiceer_update_verwachting();
+            }
+            UiCommand::WisUpdateMelding => {
+                self.updates.wis_melding();
+                self.publiceer_update_verwachting();
+            }
         }
     }
 
@@ -1305,14 +1335,11 @@ impl Engine {
         let pictures_dir = self.pictures_dir.clone();
         let timeline = self.chat.timeline_arc();
         let updates_dir = self.updates_dir.clone();
-        // Alleen relevant als we op dit moment ook echt een update binnenhalen — anders
-        // is er niets om de bytes tegen te verifiëren en negeren we de stream.
-        let verwachte_update = match self.updates.status() {
-            Some(UpdateStatus::Bezig {
-                hun_versie, hash, ..
-            }) => Some((hun_versie.clone(), *hash)),
-            _ => None,
-        };
+        // Geeft de dispatch-taak een levend zicht op `Updates::status()` in plaats van een
+        // snapshot van nu: de `UpdateResponse` die dit pas laat weten kan over een echte
+        // verbinding ná deze stream binnenkomen (aparte QUIC-streams, geen onderlinge
+        // volgorde-garantie). Zie `wacht_op_update_verwachting`.
+        let verwachting_rx = self.update_verwachting_tx.subscribe();
         let events = self.file_tx.clone();
         tokio::spawn(dispatch_inkomende_stream(
             stream,
@@ -1320,7 +1347,7 @@ impl Engine {
             pictures_dir,
             timeline,
             updates_dir,
-            verwachte_update,
+            verwachting_rx,
             events,
         ));
     }
@@ -1355,10 +1382,14 @@ impl Engine {
                     .zet_status(file, DownloadStatus::Mislukt(bericht));
             }
             FileEvent::UpdateVoortgang { ontvangen } => self.updates.voortgang(ontvangen),
-            FileEvent::UpdateKlaar { pad } => self.updates.klaar(pad),
+            FileEvent::UpdateKlaar { pad } => {
+                self.updates.klaar(pad);
+                self.publiceer_update_verwachting();
+            }
             FileEvent::UpdateMislukt { bericht } => {
                 tracing::warn!(%bericht, "update-download mislukt");
                 self.updates.mislukt(bericht);
+                self.publiceer_update_verwachting();
             }
         }
     }
@@ -1714,7 +1745,7 @@ async fn dispatch_inkomende_stream(
     pictures_dir: PathBuf,
     timeline: Arc<Timeline>,
     updates_dir: PathBuf,
-    verwachte_update: Option<(String, [u8; 32])>,
+    mut verwachting_rx: watch::Receiver<Option<(String, [u8; 32])>>,
     events: mpsc::Sender<FileEvent>,
 ) {
     match fitcom_net::filestream::read_kind(&mut stream).await {
@@ -1722,14 +1753,45 @@ async fn dispatch_inkomende_stream(
             download_taak(stream, file, downloads_dir, pictures_dir, timeline, events).await;
         }
         Ok(fitcom_net::filestream::Inkomend::Update) => {
-            let Some((versie, hash)) = verwachte_update else {
-                tracing::warn!("update-stream binnengekomen zonder dat we er een verwachtten");
+            let Some((versie, hash)) = wacht_op_update_verwachting(&mut verwachting_rx).await
+            else {
+                tracing::warn!(
+                    "update-stream binnengekomen zonder dat we er (op tijd) een verwachtten"
+                );
                 return;
             };
             download_update_taak(stream, updates_dir, versie, hash, events).await;
         }
         Err(e) => {
             tracing::warn!(error = %format!("{e:#}"), "kind van inkomende overdracht onleesbaar");
+        }
+    }
+}
+
+/// Wacht tot `Updates::status()` een `Bezig` voor deze stream laat zien. Nodig omdat de
+/// `UpdateResponse` (control-stream) en deze uni-stream over een echte verbinding in elke
+/// volgorde kunnen aankomen — op loopback viel dat nooit op. Geeft na 5s op net als de oude
+/// synchrone check, zodat een stream die nooit bij een update hoorde niet voor altijd blijft
+/// hangen.
+async fn wacht_op_update_verwachting(
+    rx: &mut watch::Receiver<Option<(String, [u8; 32])>>,
+) -> Option<(String, [u8; 32])> {
+    if let Some(v) = rx.borrow().clone() {
+        return Some(v);
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let resterend = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if resterend.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(resterend, rx.changed()).await {
+            Ok(Ok(())) => {
+                if let Some(v) = rx.borrow().clone() {
+                    return Some(v);
+                }
+            }
+            _ => return None,
         }
     }
 }

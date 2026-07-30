@@ -9,9 +9,10 @@ license.workspace = true
 anyhow = "1.0.104"
 cpal = "0.18.1"
 crossbeam-channel = "0.5.16"
-fitcom-net = { version = "0.1.0", path = "../net" }
-fitcom-proto = { version = "0.1.0", path = "../proto" }
+fitcom-net.workspace = true
+fitcom-proto.workspace = true
 nnnoiseless = "0.5.2"
 opus = "0.3.1"
 tracing = "0.1.44"
 wasapi = "0.23"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
