@@ -4,7 +4,9 @@
 //! Er wordt hier geen enkele beslissing genomen over netwerk of opslag, en er staat
 //! geen state in die verloren gaat als het venster even niet tekent.
 
+pub mod rail;
 pub mod theme;
+pub mod titlebar;
 pub mod widgets;
 
 use crate::config::VideoConfig;
@@ -29,6 +31,14 @@ const IDLE_REPAINT: Duration = Duration::from_millis(250);
 /// oogt traag. Dit kost pas iets als er daadwerkelijk gepraat wordt.
 const VOICE_REPAINT: Duration = Duration::from_millis(80);
 
+/// Welke van de elkaar uitsluitende hoofdweergaven getoond wordt, gestuurd door de
+/// icoonrail (`ui/rail.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppView {
+    Channels,
+    Dms,
+}
+
 pub struct App {
     engine: EngineHandle,
     snap: Arc<Snapshot>,
@@ -49,6 +59,15 @@ pub struct App {
     /// Het algemene kanaal, of een DM — bepaalt wat de chat- en bestandenpanelen tonen
     /// en waar een nieuw bericht naartoe gaat.
     actief_kanaal: Channel,
+    /// Welke hoofdweergave de icoonrail net toont. Bepaalt alleen de lay-out, niet
+    /// welk kanaal actief is — zie `laatste_niet_dm_kanaal`/`laatste_dm` hieronder.
+    view: AppView,
+    /// Laatst bekeken niet-DM-kanaal (Algemeen of een subkanaal). Zo verlies je je
+    /// plek niet als je tijdelijk naar de DM-weergave wisselt en terugkomt.
+    laatste_niet_dm_kanaal: Channel,
+    /// Laatst geopende DM-gesprek, indien er ooit één geopend is. `None` betekent: de
+    /// DM-weergave toont een lege "kies een gesprek"-staat, geen geforceerde keuze.
+    laatste_dm: Option<PeerId>,
     naar_tray: bool,
     /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
     /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
@@ -135,6 +154,9 @@ impl App {
             bewerkt: None,
             vorig_aantal: 0,
             actief_kanaal: Channel::GENERAL,
+            view: AppView::Channels,
+            laatste_niet_dm_kanaal: Channel::GENERAL,
+            laatste_dm: None,
             naar_tray,
             bronkeuze: None,
             instellingen: None,
@@ -196,6 +218,15 @@ impl App {
     /// Wisselt van kanaal. Een half getypt bericht of een lopende bewerking hoort niet
     /// per ongeluk in het verkeerde gesprek terecht te komen, dus die vervallen hierbij.
     fn wissel_kanaal(&mut self, kanaal: Channel) {
+        // Bijhouden welk kanaal je in elke weergave het laatst bekeek, ook als dit
+        // vroegtijdig terugkeert omdat het al het actieve kanaal is — anders zou een
+        // eerste `wissel_view` naar Dms nooit een `laatste_dm` vinden als je toevallig
+        // al op die DM zat vóór het wisselen van weergave.
+        match kanaal.dm_peer() {
+            Some(peer) => self.laatste_dm = Some(peer),
+            None => self.laatste_niet_dm_kanaal = kanaal,
+        }
+
         if self.actief_kanaal == kanaal {
             return;
         }
@@ -208,6 +239,22 @@ impl App {
             self.stuur(UiCommand::GelezenTopic(topic));
         } else {
             self.stuur(UiCommand::Gelezen);
+        }
+    }
+
+    /// Wisselt van hoofdweergave (icoonrail) en herstelt daarbij waar je was: de
+    /// Kanalen-weergave opent op het laatst bekeken niet-DM-kanaal, de DM-weergave op
+    /// het laatst geopende gesprek — of laat het actieve kanaal met rust als er nog
+    /// geen DM is geweest, zodat er geen gesprekspartner wordt afgedwongen.
+    fn wissel_view(&mut self, view: AppView) {
+        self.view = view;
+        match view {
+            AppView::Channels => self.wissel_kanaal(self.laatste_niet_dm_kanaal),
+            AppView::Dms => {
+                if let Some(peer) = self.laatste_dm {
+                    self.wissel_kanaal(Channel::dm(peer));
+                }
+            }
         }
     }
 
@@ -270,6 +317,10 @@ impl eframe::App for App {
         }
 
         self.verwerk_gedropte_bestanden(ctx);
+
+        titlebar::resize_randen(ctx);
+        titlebar::titlebar(ctx);
+        rail::rail(self, ctx);
 
         self.deelnemers_paneel(ctx);
         self.bronkeuze_venster(ctx);
@@ -1054,12 +1105,20 @@ impl App {
             self.stuur(UiCommand::FoutWeg);
         }
         if instellingen_openen {
-            self.instellingen = Some(VideoConcept {
-                codec: self.snap.video.codec.clone(),
-                fps: self.snap.video.fps,
-                bitrate_mbit: self.snap.video.bitrate as f32 / 1_000_000.0,
-            });
+            self.open_instellingen();
         }
+    }
+
+    /// Opent het instellingenscherm met een verse bewerkkopie van de huidige
+    /// video-instellingen. Gedeeld door de statusbalk-knop en het tandwiel in de
+    /// icoonrail (`ui/rail.rs`) — één plek die bepaalt wat "instellingen openen"
+    /// betekent.
+    fn open_instellingen(&mut self) {
+        self.instellingen = Some(VideoConcept {
+            codec: self.snap.video.codec.clone(),
+            fps: self.snap.video.fps,
+            bitrate_mbit: self.snap.video.bitrate as f32 / 1_000_000.0,
+        });
     }
 
     /// Algemeen instellingenscherm: video (codec/fps/bitrate) en beheer van de lokale

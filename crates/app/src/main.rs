@@ -133,7 +133,10 @@ fn main() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([980.0, 640.0])
             .with_min_inner_size([560.0, 400.0])
-            .with_title("FitCommunication"),
+            .with_title("FitCommunication")
+            // Eigen titelbalk (`ui/titlebar.rs`) volgens het ontwerp, dus de
+            // OS-decoraties (titelbalk + rand) staan uit.
+            .with_decorations(false),
         ..Default::default()
     };
 

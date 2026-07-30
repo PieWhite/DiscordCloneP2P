@@ -110,9 +110,8 @@ pub fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     response
 }
 
-/// Pil-vormige tab/knop: rail-knoppen, instellingen-tabs, en een actief-kanaal-rij
-/// delen allemaal deze stijl — accent-getint en -omrand als geselecteerd, anders
-/// gedempt. Eén functie in plaats van vier bijna-identieke stylings.
+/// Pil-vormige tab/knop: instellingen-tabs en een actief-kanaal-rij delen deze stijl —
+/// accent-getint en -omrand als geselecteerd, anders gedempt.
 pub fn pill_tab(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
     let kleur = if selected {
         theme::ACCENT
@@ -125,6 +124,30 @@ pub fn pill_tab(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response
             theme::ACCENT.gamma_multiply(0.22)
         } else {
             Color32::TRANSPARENT
+        })
+        .stroke(if selected {
+            Stroke::new(1.0_f32, theme::ACCENT)
+        } else {
+            Stroke::NONE
+        });
+    ui.add(knop)
+}
+
+/// Vierkante 40×40 icoonknop voor de rail: accent-getint en -omrand als geselecteerd,
+/// anders een gedempt vierkant — zoals de mockup's DM-/server-/instellingen-knoppen.
+pub fn rail_button(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    let kleur = if selected {
+        theme::ACCENT
+    } else {
+        theme::TEXT_MUTED
+    };
+    let knop = egui::Button::new(egui::RichText::new(text).size(13.0).strong().color(kleur))
+        .min_size(Vec2::splat(40.0))
+        .corner_radius(theme::ROUNDING)
+        .fill(if selected {
+            theme::ACCENT.gamma_multiply(0.22)
+        } else {
+            theme::BG_SIDEBAR
         })
         .stroke(if selected {
             Stroke::new(1.0_f32, theme::ACCENT)
