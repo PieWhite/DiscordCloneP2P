@@ -3,7 +3,7 @@
 //! `AppView`-waarden gebruikt vanuit `mod.rs`'s `update()` — een eigen DM-weergave met
 //! een DM-lijst in plaats van een ledenlijst volgt in een latere fase.
 
-use super::{theme, widgets, AppView};
+use super::{widgets, AppView};
 use crate::engine::UiCommand;
 use eframe::egui;
 use fitcom_proto::{Channel, PeerId, TopicId};
@@ -129,59 +129,8 @@ impl super::App {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(6.0);
-
-                let eigen = self
-                    .snap
-                    .timeline
-                    .nicknames
-                    .get(&self.mij)
-                    .cloned()
-                    .unwrap_or_else(|| self.eigen_naam.clone());
-
-                let eigen_kleur = widgets::kleur_van(self.mij);
-                let status_kleur = if self.snap.niet_storen {
-                    theme::STATUS_DND
-                } else {
-                    theme::STATUS_ONLINE
-                };
-                ui.horizontal(|ui| {
-                    let avatar =
-                        widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 32.0);
-                    widgets::status_badge(
-                        ui.painter(),
-                        avatar.rect,
-                        status_kleur,
-                        theme::BG_SIDEBAR,
-                    );
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(&eigen).strong().color(eigen_kleur));
-                        ui.small(
-                            egui::RichText::new(if self.snap.niet_storen {
-                                "Niet storen"
-                            } else {
-                                "Online"
-                            })
-                            .color(status_kleur),
-                        );
-                    });
-                });
-                ui.horizontal(|ui| {
-                    if ui.small_button("naam wijzigen").clicked() {
-                        self.profiel = Some(eigen.clone());
-                    }
-                    ui.small("niet storen");
-                    let mut niet_storen = self.snap.niet_storen;
-                    if widgets::toggle_switch(ui, &mut niet_storen).changed() {
-                        niet_storen_wijziging = Some(niet_storen);
-                    }
-                });
-                if self.snap.voice.actief {
-                    let niveau = if self.snap.voice.muted {
-                        0.0
-                    } else {
-                        self.snap.voice.eigen_niveau
-                    };
-                    widgets::niveaubalk(ui, niveau);
+                if let Some(aan) = self.eigen_mini_kaart(ui) {
+                    niet_storen_wijziging = Some(aan);
                 }
             });
 

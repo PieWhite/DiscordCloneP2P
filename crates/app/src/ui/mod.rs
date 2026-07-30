@@ -6,6 +6,7 @@
 
 pub mod channels;
 pub mod chat_pane;
+pub mod dms;
 pub mod rail;
 pub mod theme;
 pub mod titlebar;
@@ -257,6 +258,62 @@ impl App {
         }
     }
 
+    /// Eigen avatar, naam, aanwezigheidsstatus en de "niet storen"-toggle — identiek
+    /// onderaan zowel de Kanalen- als de DM-zijbalk (`ui/channels.rs`, `ui/dms.rs`),
+    /// dus hier één keer getekend in plaats van tweemaal gedupliceerd. Levert de
+    /// nieuwe "niet storen"-waarde als die net gewijzigd is.
+    fn eigen_mini_kaart(&mut self, ui: &mut egui::Ui) -> Option<bool> {
+        let eigen = self
+            .snap
+            .timeline
+            .nicknames
+            .get(&self.mij)
+            .cloned()
+            .unwrap_or_else(|| self.eigen_naam.clone());
+        let eigen_kleur = widgets::kleur_van(self.mij);
+        let status_kleur = if self.snap.niet_storen {
+            theme::STATUS_DND
+        } else {
+            theme::STATUS_ONLINE
+        };
+        ui.horizontal(|ui| {
+            let avatar = widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 32.0);
+            widgets::status_badge(ui.painter(), avatar.rect, status_kleur, theme::BG_SIDEBAR);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(&eigen).strong().color(eigen_kleur));
+                ui.small(
+                    egui::RichText::new(if self.snap.niet_storen {
+                        "Niet storen"
+                    } else {
+                        "Online"
+                    })
+                    .color(status_kleur),
+                );
+            });
+        });
+
+        let mut niet_storen_wijziging = None;
+        ui.horizontal(|ui| {
+            if ui.small_button("naam wijzigen").clicked() {
+                self.profiel = Some(eigen.clone());
+            }
+            ui.small("niet storen");
+            let mut niet_storen = self.snap.niet_storen;
+            if widgets::toggle_switch(ui, &mut niet_storen).changed() {
+                niet_storen_wijziging = Some(niet_storen);
+            }
+        });
+        if self.snap.voice.actief {
+            let niveau = if self.snap.voice.muted {
+                0.0
+            } else {
+                self.snap.voice.eigen_niveau
+            };
+            widgets::niveaubalk(ui, niveau);
+        }
+        niet_storen_wijziging
+    }
+
     /// Levert `true` als er deze frame niets meer getekend hoeft te worden.
     ///
     /// De sluitknop verbergt naar de tray in plaats van af te sluiten: de motor loopt
@@ -330,7 +387,10 @@ impl eframe::App for App {
         self.update_beschikbaar_venster(ctx);
         self.statusbalk(ctx);
         self.overzicht_strook(ctx);
-        self.channels_view(ctx);
+        match self.view {
+            AppView::Channels => self.channels_view(ctx),
+            AppView::Dms => self.dms_view(ctx),
+        }
     }
 }
 
