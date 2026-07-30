@@ -208,19 +208,8 @@ pub fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str) {
 
 pub fn describe(status: &PeerStatus) -> (Color32, String) {
     match status {
-        PeerStatus::Online { rtt_ms, .. } => {
-            (theme::STATUS_ONLINE, format!("online · {rtt_ms} ms"))
-        }
-        PeerStatus::Connecting => (theme::STATUS_CONNECTING, "verbinden…".into()),
-        PeerStatus::Offline { reason } => (theme::STATUS_OFFLINE, format!("offline · {reason}")),
-        PeerStatus::VersionMismatch { theirs, ours } => (
-            theme::STATUS_DND,
-            format!("versie {theirs} vs {ours} — één van beiden moet updaten"),
-        ),
-        PeerStatus::IdentityChanged { .. } => (
-            theme::STATUS_DND,
-            "andere identiteit dan verwacht op dit adres".into(),
-        ),
+        PeerStatus::Online { .. } => (theme::STATUS_ONLINE, "online".into()),
+        _ => (theme::STATUS_OFFLINE, "offline".into()),
     }
 }
 

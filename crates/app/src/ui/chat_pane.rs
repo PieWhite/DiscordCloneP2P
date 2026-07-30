@@ -286,34 +286,55 @@ impl super::App {
                                 let getagd = tags::bevat_tag(&msg.body, &eigen_naam);
 
                                 let mut teken = |ui: &mut egui::Ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(self.naam_van(msg.author))
-                                                .strong()
-                                                .color(widgets::kleur_van(msg.author)),
-                                        );
-                                        ui.small(egui::RichText::new(tijd(msg.created_at)).weak());
-                                        if msg.edited {
-                                            ui.small(egui::RichText::new("(bewerkt)").weak());
-                                        }
-
-                                        if msg.author == self.mij {
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    if ui.small_button("verwijder").clicked() {
-                                                        te_verwijderen = Some(msg.id);
-                                                    }
-                                                    if ui.small_button("bewerk").clicked() {
-                                                        te_bewerken =
-                                                            Some((msg.id, msg.body.clone()));
-                                                    }
-                                                },
+                                    let blok = ui.scope(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(self.naam_van(msg.author))
+                                                    .strong()
+                                                    .color(widgets::kleur_van(msg.author)),
                                             );
-                                        }
+                                            ui.small(
+                                                egui::RichText::new(tijd(msg.created_at)).weak(),
+                                            );
+                                            if msg.edited {
+                                                ui.small(egui::RichText::new("(bewerkt)").weak());
+                                            }
+                                        });
+
+                                        toon_tekst(ui, &msg.body);
                                     });
 
-                                    toon_tekst(ui, &msg.body);
+                                    // Alleen tonen bij hover: anders staat er achter elk
+                                    // bericht permanent "bewerk verwijder", wat bij een
+                                    // lange geschiedenis alleen maar ruis is.
+                                    if msg.author == self.mij && blok.response.hovered() {
+                                        ui.scope_builder(
+                                            egui::UiBuilder::new().max_rect(
+                                                egui::Rect::from_min_size(
+                                                    blok.response.rect.right_top()
+                                                        - egui::vec2(96.0, 0.0),
+                                                    egui::vec2(96.0, 18.0),
+                                                ),
+                                            ),
+                                            |ui| {
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        if ui.small_button("verwijder").clicked()
+                                                        {
+                                                            te_verwijderen = Some(msg.id);
+                                                        }
+                                                        if ui.small_button("bewerk").clicked() {
+                                                            te_bewerken =
+                                                                Some((msg.id, msg.body.clone()));
+                                                        }
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    }
                                 };
 
                                 // Een tag naar jezelf springt eruit met een gekleurd

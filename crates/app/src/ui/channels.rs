@@ -3,7 +3,7 @@
 //! `AppView`-waarden gebruikt vanuit `mod.rs`'s `update()` — een eigen DM-weergave met
 //! een DM-lijst in plaats van een ledenlijst volgt in een latere fase.
 
-use super::{widgets, AppView};
+use super::widgets;
 use crate::engine::UiCommand;
 use eframe::egui;
 use fitcom_proto::{Channel, PeerId, TopicId};
@@ -119,9 +119,7 @@ impl super::App {
                 ui.add_space(8.0);
                 voice_cmd = self.voice_bediening(ui);
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 let (cmd, openen) = self.deel_bediening(ui);
                 stream_cmd = cmd;
                 bronnen_openen = openen;
@@ -158,7 +156,6 @@ impl super::App {
     fn leden_zijbalk(&mut self, ctx: &egui::Context) {
         let mut volume_wijziging: Option<(PeerId, f32)> = None;
         let mut stream_cmd: Option<UiCommand> = None;
-        let mut naar_dm: Option<PeerId> = None;
 
         egui::SidePanel::right("leden")
             .resizable(false)
@@ -181,21 +178,6 @@ impl super::App {
                         .cloned()
                         .unwrap_or_else(|| p.label.clone());
                     widgets::peer_row(ui, p, &naam);
-
-                    if let Some(id) = p.peer_id {
-                        let ongelezen = self.snap.ongelezen_dm.get(&id).copied().unwrap_or(0);
-                        let label = if ongelezen > 0 {
-                            format!("\u{1F4AC} DM ({ongelezen})")
-                        } else {
-                            "\u{1F4AC} DM".to_string()
-                        };
-                        if ui
-                            .selectable_label(self.actief_kanaal.dm_peer() == Some(id), label)
-                            .clicked()
-                        {
-                            naar_dm = Some(id);
-                        }
-                    }
 
                     if in_gesprek && p.in_voice {
                         widgets::niveaubalk(ui, p.niveau);
@@ -270,13 +252,6 @@ impl super::App {
         }
         if let Some(cmd) = stream_cmd {
             self.stuur(cmd);
-        }
-        if let Some(id) = naar_dm {
-            // Rechtstreeks het gekozen gesprek zetten in plaats van via `wissel_view`
-            // (die het *laatst* geopende gesprek zou herstellen — hier weten we al
-            // precies welke DM het moet worden).
-            self.wissel_kanaal(Channel::dm(id));
-            self.view = AppView::Dms;
         }
     }
 }

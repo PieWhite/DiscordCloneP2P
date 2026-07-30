@@ -81,9 +81,7 @@ impl super::App {
                 ui.add_space(8.0);
                 voice_cmd = self.voice_bediening(ui);
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 let (cmd, openen) = self.deel_bediening(ui);
                 stream_cmd = cmd;
                 bronnen_openen = openen;

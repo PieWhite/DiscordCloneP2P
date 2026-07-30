@@ -306,11 +306,6 @@ impl App {
 
         let mut niet_storen_wijziging = None;
         ui.horizontal(|ui| {
-            if ui.small_button("naam wijzigen").clicked() {
-                self.profiel = Some(eigen.clone());
-                self.settings_tab = SettingsTab::Account;
-                self.view = AppView::Settings;
-            }
             ui.small("niet storen");
             let mut niet_storen = self.snap.niet_storen;
             if widgets::toggle_switch(ui, &mut niet_storen).changed() {
@@ -414,8 +409,6 @@ impl App {
     /// te voeren: binnen de paneelsluiting is `self` al onveranderlijk geleend.
     fn deel_bediening(&self, ui: &mut egui::Ui) -> (Option<UiCommand>, bool) {
         let mut cmd = None;
-        ui.label(egui::RichText::new("Scherm delen").strong());
-        ui.add_space(4.0);
 
         let schermen: Vec<_> = self
             .snap
@@ -651,6 +644,8 @@ impl App {
                 );
                 ui.add_space(2.0);
             }
+            ui.label(egui::RichText::new("Deelnemen aan voicechannel").strong());
+            ui.add_space(4.0);
             return ui
                 .add_sized([ui.available_width(), 28.0], egui::Button::new("Deelnemen"))
                 .clicked()
