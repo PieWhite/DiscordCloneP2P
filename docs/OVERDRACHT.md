@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-30, na fase 7 (tags, meldingen, niet storen, gebruikersnaam).
+Laatst bijgewerkt: 2026-07-30, na fase 8 (chat verrijking: bestanden inline, plakken, links).
 
 ---
 
@@ -20,6 +20,7 @@ Laatst bijgewerkt: 2026-07-30, na fase 7 (tags, meldingen, niet storen, gebruike
 | 6 — Bestandsdeling | ✅ af, nog niet met een echte peer getest | `crates/app/tests/file_deling.rs`: volledige overdracht + hash door de echte motor heen, geen GPU nodig |
 | Kanalen (DM's), na fase 6 | ✅ af, nog niet met een echte peer getest | `crates/app/tests/chat_sync.rs` (drie peers, volledige mesh, echte QUIC) + `crates/store/tests/convergentie.rs` (kanaal-scoping op store-niveau) |
 | 7 — Tags, meldingen, niet storen, gebruikersnaam | ✅ af, nog niet met een echte peer getest | `crates/app/src/tags.rs` (unit-tests op de tag-herkenning en cursor-parsing) + twee lokale instanties starten en verbinden schoon |
+| 8 — Chat verrijking: bestanden inline, plakken, links | ✅ af, nog niet met een echte peer getest | volledige testsuite blijft groen (o.a. `crates/app/tests/file_deling.rs`, `crates/store/src/timeline.rs`) + twee lokale instanties starten en verbinden schoon |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -214,6 +215,26 @@ nooit naar `Channel::is_general()` om te beslissen of er gemeld wordt — alleen
 `tags::bevat_tag`. Het kanaal is uitsluitend nog relevant om te bepalen welke
 "ongelezen"-teller (algemeen of per DM-partner) gebruikt wordt om vast te stellen of een
 op daadwerkelijk nieuw was, niet om de meldingsbeslissing zelf.
+
+### 12. Miniatuurweergave alleen voor bestanden die je zelf aanbiedt (fase 8)
+ROADMAP.md vroeg om "een miniatuurweergave in plaats van een generieke bestandskaart" bij
+Ctrl+V-plakken. Bij het bouwen bleek dat niet zonder meer uit te breiden naar elke ontvangen
+afbeelding, om een reden die al in fase 6 vastlag maar hier voor het eerst relevant werd:
+een gedownload bestand landt onder zijn leesbare naam pas ná een geslaagde
+hash-verificatie, en bij een naamsbotsing met `" (2)"` erachter — de UI kent dus nooit
+vooraf het exacte pad op schijf van een bestand dat een ander aanbiedt, alleen
+`FileEntry.name` uit de oplog. Voor een bestand dat je zelf aanbiedt ligt dat anders: de UI
+kiest zelf het pad (dialoog, sleep-drop of het weggeschreven plak-bestand) en kan dat
+onthouden vóórdat de motor er ooit een `OpId` aan hangt.
+
+Gekozen oplossing: `App::eigen_afbeeldingen` (`ui.rs`) onthoudt het lokale pad per
+bestandsnaam op het moment van aanbieden, ongeacht via welke van de drie invoerwegen dat
+gebeurde — dialoog, slepen-en-neerzetten of plakken lopen daarom allemaal via één centrale
+`App::bied_bestand_aan`. Een ontvangen afbeelding toont altijd de generieke kaart, ook na
+downloaden. Het alternatief (de motor het uiteindelijke downloadpad laten terugrapporteren
+naar de UI) zou het probleem pas hebben verplaatst: dan moet de UI alsnog op een
+naamsbotsing anticiperen, en dat raakt precies het stuk van `engine.rs`/`files.rs` dat in
+fase 6 bewust is dichtgetimmerd. Geen aanname dus, maar een grens die al bestond.
 
 ---
 
@@ -531,6 +552,52 @@ elke start weer uit.
 
 ---
 
+## Hoe chat-verrijking (bestanden inline, plakken) in elkaar zit
+
+```
+crates/store/src/timeline.rs   Message en FileEntry kregen een lamport-veld: de sorteersleutel
+                                van hun eigen op, nodig om ze buiten de store samen te voegen.
+crates/app/src/engine.rs       FileView kreeg hetzelfde lamport-veld, gekopieerd van FileEntry.
+crates/app/src/ui.rs           ChatItem (Bericht/Bestand) — de samengevoegde, gesorteerde
+                                tijdlijn; App::bied_bestand_aan/verwerk_gedropte_bestanden/
+                                plak_afbeelding/bijlage_texture — de drie invoerwegen en de
+                                miniatuurweergave.
+```
+
+**Waarom een `lamport`-veld op `Message` en `FileEntry` in plaats van een nieuw
+`TimelineItem`-type in `store`.** `Timeline::build()` hield `messages` en `files` al apart
+en al elk intern gesorteerd op `(lamport, author)` — maar zodra ze de store verlaten is dat
+sorteersleutel-veld nergens meer terug te vinden op de items zelf, alleen op de `Op` waaruit
+ze gebouwd zijn. Om ze in `ui.rs` te kunnen interleaven zonder de scheiding tussen store
+(puur, geen UI-kennis) en app (beslist hoe het getoond wordt) te doorbreken, is het simpelst
+om dat ene veld gewoon mee te geven in plaats van in `store` zelf al een gecombineerd,
+UI-vormig type te bouwen. `store` blijft zo onwetend van hoe de UI berichten en bestanden
+naast elkaar toont.
+
+**`App::bied_bestand_aan` is de ene plek waar alle drie de invoerwegen samenkomen.** De
+bestandsdialoog, slepen-en-neerzetten (`ctx.input(|i| i.raw.dropped_files)`) en Ctrl+V-plakken
+leiden alle drie naar dezelfde functie, die zelf niets nieuws doet — hij herkent alleen of
+het een afbeelding is (voor de miniatuur, zie beslissing 12 hierboven) en stuurt daarna
+hetzelfde `UiCommand::BiedBestandAan` dat al sinds fase 6 bestaat. Dat is precies wat
+ROADMAP.md vroeg: "alleen een nieuwe invoerweg, geen nieuwe logica".
+
+**Ctrl+V onderscheidt zich niet via een apart toetsen-event, maar via wat er op het
+klembord staat.** egui levert voor tekst-plakken al een kant-en-klaar `Event::Paste`, maar
+niets vergelijkbaars voor een afbeelding — het OS-klembord zit daarvoor los van wat egui via
+`i.events`/`i.raw` aanbiedt. `App::plak_afbeelding` leest daarom zelf `Ctrl+V` uit de
+ruwe toetsenbordstatus en probeert via `arboard` een afbeelding van het klembord te lezen.
+Staat er geen afbeelding op (gewone tekst, of niets), dan levert dat `None` op en gebeurt er
+verder niets — egui's eigen tekst-plakken in de `TextEdit` is daarmee nooit in de weg
+gezeten, want die twee klembord-inhouden (tekst met een `Event::Paste`, een afbeelding zonder)
+sluiten elkaar uit.
+
+**De miniatuur-textuurcache (`App::bijlage_texturen`) hoeft nooit ververst te worden**, in
+tegenstelling tot `miniatuur_cache` voor screenshare-thumbnails: de bytes van een aangeboden
+bestand veranderen na het aanbieden nooit meer (geen `FileRevoke`, zie `TODO.md`), dus is een
+simpele "eenmaal geladen, blijft geladen"-cache op `OpId` genoeg.
+
+---
+
 ## Wat nog nooit met een echte peer getest is
 
 Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 t/m 6, en kanalen erna,
@@ -581,3 +648,12 @@ nieuwe regel achter te laten, de highlight rond een getagd bericht, de niet-stor
 of een Windows-melding er in het echt ook zo uitziet als bedoeld. Dat moet Rick met de hand
 doen — bij voorkeur met minstens twee vensters tegelijk open, want het venster moet
 verborgen/geminimaliseerd zijn voordat er überhaupt een melding komt.
+
+Van fase 8 zijn de bestaande geautomatiseerde ketentests (`file_deling.rs`, `chat_sync.rs`,
+`timeline.rs`) blijven groen na het samenvoegen van berichten en bestanden tot één tijdlijn —
+dat raakt alleen hoe `ui.rs` de al bestaande `Snapshot` presenteert, niet de motor of de
+sync zelf. Twee lokale instanties starten en verbinden schoon. **Niet geverifieerd, om
+dezelfde reden als bij eerdere fases — invoer naar het bureaublad kan een script hier niet
+sturen:** slepen-en-neerzetten vanuit de Verkenner, Ctrl+V met een echte afbeelding op het
+Windows-klembord, of een bestandskaart en een miniatuur er in de tijdlijn ook zo uitzien als
+bedoeld tussen de berichten door. Dat moet Rick met de hand doen.

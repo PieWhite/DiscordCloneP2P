@@ -188,6 +188,7 @@ mod tests {
             name: "test.bin".into(),
             size: 1000,
             hash: [0u8; 32],
+            lamport: 1,
         }
     }
 

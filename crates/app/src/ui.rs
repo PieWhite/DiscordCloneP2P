@@ -12,9 +12,10 @@ use crate::tray;
 use eframe::egui;
 use fitcom_net::PeerStatus;
 use fitcom_proto::{Channel, OpId, PeerId};
+use fitcom_store::Message;
 use fitcom_video::{Bron, BronSoort, Miniatuur};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +65,16 @@ pub struct App {
     /// `Arc` erbij. Zo hoeft een miniatuur die niet ververst is niet elke frame opnieuw
     /// naar de GPU; alleen een echt nieuwe `Arc` (van de kijk-thread) triggert dat.
     miniatuur_cache: HashMap<(PeerId, u32), (usize, egui::TextureHandle)>,
+    /// Lokaal pad per bestandsnaam, voor bestanden die wíj hebben aangeboden en die er
+    /// als afbeelding uitzien — via de dialoog, slepen-en-neerzetten of Ctrl+V-plakken.
+    /// Alleen zo weten we waar de bytes vandaan te lezen zijn om er een miniatuur van te
+    /// tonen in de tijdlijn; voor een ontvangen bestand kennen we alleen de metadata tot
+    /// het gedownload is, dus daar tonen we de generieke kaart.
+    eigen_afbeeldingen: HashMap<String, PathBuf>,
+    /// Geladen miniatuurteksturen van eigen aangeboden afbeeldingen, per `OpId`. De
+    /// bytes van een aangeboden bestand veranderen nooit meer, dus dit hoeft nooit
+    /// ververst te worden zoals `miniatuur_cache` dat wel moet.
+    bijlage_texturen: HashMap<OpId, egui::TextureHandle>,
 }
 
 /// Bewerkbare kopie van de video-instellingen. Bitrate in Mbit/s voor de schuif —
@@ -107,6 +118,8 @@ impl App {
             tag_selectie: 0,
             tag_actief: false,
             miniatuur_cache: HashMap::new(),
+            eigen_afbeeldingen: HashMap::new(),
+            bijlage_texturen: HashMap::new(),
         }
     }
 
@@ -223,8 +236,9 @@ impl eframe::App for App {
             }
         }
 
+        self.verwerk_gedropte_bestanden(ctx);
+
         self.deelnemers_paneel(ctx);
-        self.bestanden_paneel(ctx);
         self.bronkeuze_venster(ctx);
         self.instellingen_venster(ctx);
         self.profiel_venster(ctx);
@@ -511,126 +525,100 @@ impl App {
             .map(|s| s.stream_id)
     }
 
-    /// Wat er is aangeboden — door ons of door een ander — plus downloadknop, voortgang
-    /// of "opnieuw proberen" per bestand. Eigen aanbiedingen komen gratis mee via de
-    /// oplog-sync, dus deze lijst is nooit leger dan wat de anderen ook zien.
-    fn bestanden_paneel(&mut self, ctx: &egui::Context) {
-        let mut cmd: Option<UiCommand> = None;
-        let mut kies_bestand = false;
-        let mut open_downloads = false;
-
-        egui::SidePanel::right("bestanden")
-            .resizable(false)
-            .exact_width(260.0)
-            .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.heading("Bestanden");
-                ui.small(match self.actief_kanaal.dm_peer() {
-                    None => "algemeen".to_string(),
-                    Some(p) => format!("DM met {}", self.naam_van(p)),
-                });
-                ui.add_space(8.0);
-
-                let getoond: Vec<&FileView> = self
-                    .snap
-                    .files
-                    .iter()
-                    .filter(|f| self.hoort_bij_actief_kanaal(f.channel, f.author))
-                    .collect();
-
-                if getoond.is_empty() {
-                    ui.weak("Nog niets aangeboden.");
-                    ui.add_space(8.0);
-                }
-
-                egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 40.0)
-                    .show(ui, |ui| {
-                        for f in getoond {
-                            ui.label(egui::RichText::new(&f.name).strong());
-                            ui.horizontal(|ui| {
-                                ui.small(grootte_tekst(f.size));
-                                ui.small("·");
-                                ui.small(if f.is_mine {
-                                    "jij".to_string()
-                                } else {
-                                    self.naam_van(f.author)
-                                });
-                            });
-
-                            if f.is_mine {
-                                ui.small(egui::RichText::new("aangeboden door jou").weak());
-                            } else {
-                                match &f.status {
-                                    None => {
-                                        if ui.small_button("downloaden").clicked() {
-                                            cmd = Some(UiCommand::DownloadBestand(f.id));
-                                        }
-                                    }
-                                    Some(DownloadStatus::Bezig { ontvangen, totaal }) => {
-                                        let deel = if *totaal > 0 {
-                                            *ontvangen as f32 / *totaal as f32
-                                        } else {
-                                            0.0
-                                        };
-                                        ui.add(egui::ProgressBar::new(deel).text(format!(
-                                            "{} / {}",
-                                            grootte_tekst(*ontvangen),
-                                            grootte_tekst(*totaal)
-                                        )));
-                                    }
-                                    Some(DownloadStatus::Voltooid) => {
-                                        ui.horizontal(|ui| {
-                                            ui.colored_label(GROEN, "\u{2713} gedownload");
-                                            if ui.small_button("map openen").clicked() {
-                                                open_downloads = true;
-                                            }
-                                        });
-                                    }
-                                    Some(DownloadStatus::Mislukt(bericht)) => {
-                                        ui.small(
-                                            egui::RichText::new(format!("mislukt: {bericht}"))
-                                                .color(ROOD),
-                                        );
-                                        if ui.small_button("opnieuw proberen").clicked() {
-                                            cmd = Some(UiCommand::DownloadBestand(f.id));
-                                        }
-                                    }
-                                }
-                            }
-                            ui.add_space(8.0);
-                            ui.separator();
-                            ui.add_space(4.0);
-                        }
-                    });
-
-                ui.add_space(4.0);
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 26.0],
-                        egui::Button::new("Bestand delen…"),
-                    )
-                    .clicked()
-                {
-                    kies_bestand = true;
-                }
-            });
-
-        if let Some(cmd) = cmd {
-            self.stuur(cmd);
-        }
-        if open_downloads {
-            let _ = std::process::Command::new("explorer")
-                .arg(&self.downloads_dir)
-                .spawn();
-        }
-        if kies_bestand {
-            // Blokkeert kort op de native dialoog — normaal voor een bestandskeuze en
-            // raakt de motor niet: die draait op zijn eigen tokio-runtime.
-            if let Some(pad) = rfd::FileDialog::new().pick_file() {
-                self.stuur(UiCommand::BiedBestandAan(pad, self.actief_kanaal));
+    /// Centrale plek waar een lokaal bestand de aanbiedflow ingaat, ongeacht of het via
+    /// de bestandsdialoog, slepen-en-neerzetten of Ctrl+V-plakken binnenkwam — alleen een
+    /// nieuwe invoerweg, geen nieuwe logica (zie `ROADMAP.md`, fase 8).
+    ///
+    /// Onthoudt het pad bij de bestandsnaam als het een afbeelding is: alleen zo kan de
+    /// kaart in de tijdlijn er straks een miniatuur van laden in plaats van de generieke
+    /// bestandskaart te tonen. Dat kan alleen voor bestanden die wíj aanbieden — we
+    /// kennen alleen ons eigen pad op schijf, niet dat van een ander.
+    fn bied_bestand_aan(&mut self, pad: PathBuf) {
+        if let Some(naam) = pad.file_name().map(|n| n.to_string_lossy().to_string()) {
+            if is_afbeelding(&naam) {
+                self.eigen_afbeeldingen.insert(naam, pad.clone());
             }
         }
+        self.stuur(UiCommand::BiedBestandAan(pad, self.actief_kanaal));
+    }
+
+    /// Een bestand vanaf Windows in het venster gesleept: start dezelfde aanbiedflow als
+    /// de bestandsdialoog.
+    fn verwerk_gedropte_bestanden(&mut self, ctx: &egui::Context) {
+        let gedropt: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        for pad in gedropt {
+            self.bied_bestand_aan(pad);
+        }
+
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            egui::Area::new(egui::Id::new("sleep_hint"))
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label("Zet hier neer om te delen");
+                    });
+                });
+        }
+    }
+
+    /// Leest een afbeelding van het klembord en schrijft hem als PNG weg in de eigen
+    /// datamap. `None` als het klembord geen afbeelding bevat (bijvoorbeeld gewone
+    /// tekst, of niets) — dan laat dit egui's eigen tekst-plakken in de `TextEdit`
+    /// met rust; die twee klembord-inhouden gaan nooit tegelijk over hetzelfde pad.
+    fn plak_afbeelding(&self) -> Option<PathBuf> {
+        let mut klembord = arboard::Clipboard::new().ok()?;
+        let beeld = klembord.get_image().ok()?;
+        let buffer = image::RgbaImage::from_raw(
+            beeld.width as u32,
+            beeld.height as u32,
+            beeld.bytes.into_owned(),
+        )?;
+
+        let map = self.data_dir.join("geplakt");
+        std::fs::create_dir_all(&map).ok()?;
+        let naam = format!(
+            "plakafbeelding-{}.png",
+            chrono::Local::now().format("%Y%m%d-%H%M%S%3f")
+        );
+        let pad = map.join(naam);
+        buffer.save(&pad).ok()?;
+        Some(pad)
+    }
+
+    /// Laadt een eigen aangeboden afbeelding als egui-textuur, of levert de al geladen
+    /// textuur terug. Faalt geruisloos (bijvoorbeeld een sindsdien verplaatst pad) —
+    /// de aanroeper valt dan terug op de generieke bestandskaart.
+    fn bijlage_texture(
+        &mut self,
+        ctx: &egui::Context,
+        file: OpId,
+        pad: &Path,
+    ) -> Option<(egui::TextureId, egui::Vec2)> {
+        if let Some(handle) = self.bijlage_texturen.get(&file) {
+            return Some((handle.id(), handle.size_vec2()));
+        }
+
+        let beeld = image::open(pad).ok()?.into_rgba8();
+        let (breedte, hoogte) = beeld.dimensions();
+        let kleur = egui::ColorImage::from_rgba_unmultiplied(
+            [breedte as usize, hoogte as usize],
+            beeld.as_raw(),
+        );
+        let handle = ctx.load_texture(
+            format!("bijlage-{file:?}"),
+            kleur,
+            egui::TextureOptions::LINEAR,
+        );
+        let resultaat = (handle.id(), handle.size_vec2());
+        self.bijlage_texturen.insert(file, handle);
+        Some(resultaat)
     }
 
     fn open_bronkeuze(&mut self) {
@@ -1051,18 +1039,47 @@ impl App {
                     "versturen"
                 };
 
-                let (mut output, verstuur_geklikt) = ui
+                let (mut output, verstuur_geklikt, bestand_geklikt) = ui
                     .horizontal(|ui| {
-                        let breedte = (ui.available_width() - 90.0).max(80.0);
+                        let breedte = (ui.available_width() - 90.0 - 30.0).max(80.0);
                         let output = egui::TextEdit::multiline(&mut self.invoer)
                             .desired_rows(1)
                             .desired_width(breedte)
-                            .hint_text("bericht… (shift+enter voor een nieuwe regel)")
+                            .hint_text(
+                                "bericht… (shift+enter voor een nieuwe regel, sleep of plak \
+                                 een bestand)",
+                            )
                             .show(ui);
+                        let bestand = ui
+                            .button("\u{1F4CE}")
+                            .on_hover_text("bestand delen")
+                            .clicked();
                         let geklikt = ui.button(knop).clicked();
-                        (output, geklikt)
+                        (output, geklikt, bestand)
                     })
                     .inner;
+
+                if bestand_geklikt {
+                    // Blokkeert kort op de native dialoog — normaal voor een
+                    // bestandskeuze en raakt de motor niet: die draait op zijn eigen
+                    // tokio-runtime.
+                    if let Some(pad) = rfd::FileDialog::new().pick_file() {
+                        self.bied_bestand_aan(pad);
+                    }
+                }
+
+                // Ctrl+V met een afbeelding op het klembord gaat via dezelfde
+                // aanbiedflow als een bestand kiezen of slepen, in plaats van als tekst
+                // in de invoer terecht te komen. Staat er geen afbeelding op het
+                // klembord (bijvoorbeeld gewone tekst), dan gebeurt hier niets en blijft
+                // egui's eigen tekst-plakken in de `TextEdit` intact.
+                if output.response.has_focus()
+                    && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::V))
+                {
+                    if let Some(pad) = self.plak_afbeelding() {
+                        self.bied_bestand_aan(pad);
+                    }
+                }
 
                 // Welke tag er nog getypt wordt, op basis van de cursor. Alleen relevant
                 // zolang het veld focus heeft — anders zou een klik ergens anders de
@@ -1155,6 +1172,8 @@ impl App {
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut te_bewerken: Option<(OpId, String)> = None;
             let mut te_verwijderen: Option<OpId> = None;
+            let mut te_downloaden: Option<OpId> = None;
+            let mut open_downloads = false;
 
             ui.horizontal(|ui| match self.actief_kanaal.dm_peer() {
                 None => {
@@ -1167,18 +1186,39 @@ impl App {
             });
             ui.separator();
 
-            let berichten: Vec<_> = self
-                .snap
+            // Onafhankelijke kopie van de `Arc`: zo blijft `items` hieronder niet aan
+            // `self` geleend, en kan er verderop in de lus alsnog een `&mut self`-methode
+            // (`bijlage_texture`) aangeroepen worden om een miniatuur te laden. Kost geen
+            // kopie van de geschiedenis, alleen een refcount — zie `Snapshot` in
+            // `engine.rs`.
+            let snap = Arc::clone(&self.snap);
+
+            // Berichten en bestanden op hun eigen plek in de tijdlijn, chronologisch
+            // geïnterleaved. Beide hebben al een `lamport`-sleutel van hun oorspronkelijke
+            // op, dus is dit dezelfde sortering als de timeline zelf al per lijst
+            // aanhoudt — hier alleen samengevoegd. Zie `ROADMAP.md`, fase 8.
+            let mut items: Vec<ChatItem> = snap
                 .timeline
                 .messages
                 .iter()
                 .filter(|m| self.hoort_bij_actief_kanaal(m.channel, m.author))
+                .map(ChatItem::Bericht)
+                .chain(
+                    snap.files
+                        .iter()
+                        .filter(|f| self.hoort_bij_actief_kanaal(f.channel, f.author))
+                        .map(ChatItem::Bestand),
+                )
                 .collect();
+            items.sort_by_key(|item| match item {
+                ChatItem::Bericht(m) => (m.lamport, m.author),
+                ChatItem::Bestand(f) => (f.lamport, f.author),
+            });
 
             // Alleen naar beneden springen als er echt iets bij is gekomen; anders kun
             // je niet terugscrollen in de geschiedenis terwijl de RTT blijft tikken.
-            let gegroeid = berichten.len() != self.vorig_aantal;
-            self.vorig_aantal = berichten.len();
+            let gegroeid = items.len() != self.vorig_aantal;
+            self.vorig_aantal = items.len();
 
             // Waarop een tag naar "jezelf" gecontroleerd wordt: dezelfde naam die ook
             // getoond wordt, dus exact wat een ander zou typen om jou te taggen.
@@ -1188,61 +1228,177 @@ impl App {
                 .stick_to_bottom(gegroeid)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if berichten.is_empty() {
+                    if items.is_empty() {
                         ui.add_space(20.0);
                         ui.vertical_centered(|ui| {
-                            ui.weak("Nog geen berichten.");
+                            ui.weak("Nog geen berichten of bestanden.");
                             ui.small(
-                                "Wat je hier typt wordt bewaard en komt aan zodra de \
+                                "Wat je hier plaatst wordt bewaard en komt aan zodra de \
                                  anderen online zijn.",
                             );
                         });
                     }
 
-                    for msg in berichten {
-                        let getagd = tags::bevat_tag(&msg.body, &eigen_naam);
+                    for item in items {
+                        match item {
+                            ChatItem::Bericht(msg) => {
+                                let getagd = tags::bevat_tag(&msg.body, &eigen_naam);
 
-                        let mut teken = |ui: &mut egui::Ui| {
-                            ui.horizontal(|ui| {
+                                let mut teken = |ui: &mut egui::Ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(self.naam_van(msg.author))
+                                                .strong()
+                                                .color(kleur_van(msg.author)),
+                                        );
+                                        ui.small(egui::RichText::new(tijd(msg.created_at)).weak());
+                                        if msg.edited {
+                                            ui.small(egui::RichText::new("(bewerkt)").weak());
+                                        }
+
+                                        if msg.author == self.mij {
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui.small_button("verwijder").clicked() {
+                                                        te_verwijderen = Some(msg.id);
+                                                    }
+                                                    if ui.small_button("bewerk").clicked() {
+                                                        te_bewerken =
+                                                            Some((msg.id, msg.body.clone()));
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    });
+
+                                    toon_tekst(ui, &msg.body);
+                                };
+
+                                // Een tag naar jezelf springt eruit met een gekleurd
+                                // kader — subtiel genoeg om niet als foutmelding te
+                                // lezen, opvallend genoeg om in een lange geschiedenis
+                                // terug te vinden.
+                                if getagd {
+                                    egui::Frame::group(ui.style())
+                                        .fill(TAG_ACHTERGROND)
+                                        .stroke(egui::Stroke::new(1.0_f32, TAG_RAND))
+                                        .inner_margin(6.0)
+                                        .show(ui, teken);
+                                } else {
+                                    teken(ui);
+                                }
+                            }
+                            ChatItem::Bestand(f) => {
                                 ui.label(
-                                    egui::RichText::new(self.naam_van(msg.author))
-                                        .strong()
-                                        .color(kleur_van(msg.author)),
+                                    egui::RichText::new(if f.is_mine {
+                                        "jij".to_string()
+                                    } else {
+                                        self.naam_van(f.author)
+                                    })
+                                    .strong()
+                                    .color(kleur_van(f.author)),
                                 );
-                                ui.small(egui::RichText::new(tijd(msg.created_at)).weak());
-                                if msg.edited {
-                                    ui.small(egui::RichText::new("(bewerkt)").weak());
+
+                                // Een miniatuur kan alleen voor een bestand dat wíj
+                                // aanbieden — we kennen alleen ons eigen pad op schijf
+                                // (`App::eigen_afbeeldingen`). Een ontvangen afbeelding
+                                // toont, ook na downloaden, de generieke kaart: de
+                                // uiteindelijke bestandsnaam op schijf kan bij een
+                                // naamsbotsing afwijken van `f.name` (zie
+                                // `docs/OVERDRACHT.md`, "Hoe bestandsdeling in elkaar
+                                // zit"), dus is er geen betrouwbaar pad om vanaf te lezen.
+                                let miniatuur = if f.is_mine && is_afbeelding(&f.name) {
+                                    self.eigen_afbeeldingen
+                                        .get(&f.name)
+                                        .cloned()
+                                        .and_then(|pad| self.bijlage_texture(ui.ctx(), f.id, &pad))
+                                } else {
+                                    None
+                                };
+
+                                match miniatuur {
+                                    Some((tex, natuurlijk)) => {
+                                        let schaal = (240.0 / natuurlijk.x).min(1.0);
+                                        ui.image((tex, natuurlijk * schaal));
+                                        ui.small(&f.name);
+                                    }
+                                    None => {
+                                        egui::Frame::group(ui.style()).inner_margin(6.0).show(
+                                            ui,
+                                            |ui| {
+                                                ui.label(egui::RichText::new(&f.name).strong());
+                                                ui.small(grootte_tekst(f.size));
+
+                                                if f.is_mine {
+                                                    ui.small(
+                                                        egui::RichText::new("aangeboden door jou")
+                                                            .weak(),
+                                                    );
+                                                } else {
+                                                    match &f.status {
+                                                        None => {
+                                                            if ui
+                                                                .small_button("downloaden")
+                                                                .clicked()
+                                                            {
+                                                                te_downloaden = Some(f.id);
+                                                            }
+                                                        }
+                                                        Some(DownloadStatus::Bezig {
+                                                            ontvangen,
+                                                            totaal,
+                                                        }) => {
+                                                            let deel = if *totaal > 0 {
+                                                                *ontvangen as f32 / *totaal as f32
+                                                            } else {
+                                                                0.0
+                                                            };
+                                                            ui.add(
+                                                                egui::ProgressBar::new(deel).text(
+                                                                    format!(
+                                                                        "{} / {}",
+                                                                        grootte_tekst(*ontvangen),
+                                                                        grootte_tekst(*totaal)
+                                                                    ),
+                                                                ),
+                                                            );
+                                                        }
+                                                        Some(DownloadStatus::Voltooid) => {
+                                                            ui.horizontal(|ui| {
+                                                                ui.colored_label(
+                                                                    GROEN,
+                                                                    "\u{2713} gedownload",
+                                                                );
+                                                                if ui
+                                                                    .small_button("map openen")
+                                                                    .clicked()
+                                                                {
+                                                                    open_downloads = true;
+                                                                }
+                                                            });
+                                                        }
+                                                        Some(DownloadStatus::Mislukt(bericht)) => {
+                                                            ui.small(
+                                                                egui::RichText::new(format!(
+                                                                    "mislukt: {bericht}"
+                                                                ))
+                                                                .color(ROOD),
+                                                            );
+                                                            if ui
+                                                                .small_button("opnieuw proberen")
+                                                                .clicked()
+                                                            {
+                                                                te_downloaden = Some(f.id);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    }
                                 }
-
-                                if msg.author == self.mij {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui.small_button("verwijder").clicked() {
-                                                te_verwijderen = Some(msg.id);
-                                            }
-                                            if ui.small_button("bewerk").clicked() {
-                                                te_bewerken = Some((msg.id, msg.body.clone()));
-                                            }
-                                        },
-                                    );
-                                }
-                            });
-
-                            toon_tekst(ui, &msg.body);
-                        };
-
-                        // Een tag naar jezelf springt eruit met een gekleurd kader —
-                        // subtiel genoeg om niet als foutmelding te lezen, opvallend
-                        // genoeg om in een lange geschiedenis terug te vinden.
-                        if getagd {
-                            egui::Frame::group(ui.style())
-                                .fill(TAG_ACHTERGROND)
-                                .stroke(egui::Stroke::new(1.0_f32, TAG_RAND))
-                                .inner_margin(6.0)
-                                .show(ui, teken);
-                        } else {
-                            teken(ui);
+                            }
                         }
                         ui.add_space(8.0);
                     }
@@ -1255,8 +1411,35 @@ impl App {
             if let Some(id) = te_verwijderen {
                 self.stuur(UiCommand::Verwijder(id));
             }
+            if let Some(id) = te_downloaden {
+                self.stuur(UiCommand::DownloadBestand(id));
+            }
+            if open_downloads {
+                let _ = std::process::Command::new("explorer")
+                    .arg(&self.downloads_dir)
+                    .spawn();
+            }
         });
     }
+}
+
+/// Eén plek in de chronologische tijdlijn: een bericht of een aangeboden bestand. Beide
+/// dragen al een `lamport`-sleutel van hun oorspronkelijke op, dus zijn ze op dezelfde
+/// manier te sorteren als de timeline zelf — hier alleen samengevoegd zodat een
+/// aangeboden bestand op zijn eigen plek tussen de berichten verschijnt in plaats van in
+/// een los paneel. Zie `ROADMAP.md`, fase 8.
+enum ChatItem<'a> {
+    Bericht(&'a Message),
+    Bestand(&'a FileView),
+}
+
+/// Grove extensie-check: alleen de formaten die de `image`-crate-features in
+/// `Cargo.toml` ook daadwerkelijk kunnen decoderen.
+fn is_afbeelding(naam: &str) -> bool {
+    let laag = naam.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".bmp"]
+        .iter()
+        .any(|ext| laag.ends_with(ext))
 }
 
 /// Rendert de tekst met herkenbare codeblokken. Bewust minimaal: we kijken samen naar

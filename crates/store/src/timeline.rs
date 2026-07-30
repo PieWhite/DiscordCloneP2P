@@ -19,6 +19,10 @@ pub struct Message {
     /// Millis sinds epoch, van de klok van de auteur. Alleen voor weergave.
     pub created_at: i64,
     pub edited: bool,
+    /// Sorteersleutel van de oorspronkelijke `Post`-op (een `Edit` verandert deze niet).
+    /// Nodig om berichten en bestanden (`FileEntry::lamport`) in de UI in één
+    /// chronologische tijdlijn te kunnen samenvoegen — zie fase 8 in `ROADMAP.md`.
+    pub lamport: u64,
 }
 
 /// Een aangeboden bestand. `id` is de `OpId` van de `FileMeta`-op zelf — die is al
@@ -35,6 +39,8 @@ pub struct FileEntry {
     pub name: String,
     pub size: u64,
     pub hash: [u8; 32],
+    /// Zie `Message::lamport`.
+    pub lamport: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,6 +91,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                         body,
                         created_at: op.wall_clock,
                         edited: false,
+                        lamport: op.lamport,
                     },
                 ));
             }
@@ -126,6 +133,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                     name,
                     size,
                     hash,
+                    lamport: op.lamport,
                 });
             }
         }

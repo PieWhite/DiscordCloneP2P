@@ -104,6 +104,9 @@ pub struct FileView {
     pub is_mine: bool,
     /// `None` betekent: nog niet gedownload en niet mee bezig.
     pub status: Option<DownloadStatus>,
+    /// Zie `fitcom_store::timeline::Message::lamport` — bepaalt waar dit bestand tussen
+    /// de berichten in de tijdlijn komt te staan.
+    pub lamport: u64,
 }
 
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
@@ -1175,6 +1178,7 @@ impl Engine {
                 size: f.size,
                 is_mine: f.author == me,
                 status: self.files.status(f.id).cloned(),
+                lamport: f.lamport,
             })
             .collect();
 

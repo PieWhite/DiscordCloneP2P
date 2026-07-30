@@ -189,26 +189,46 @@ zonder fouten; **niet geverifieerd:** het typen van `@`, de suggestielijst, de h
 de niet-storenknop zelf aanklikken, om dezelfde reden als bij eerdere fases — dat kan in
 deze omgeving niet automatisch, en moet Rick met de hand doen.
 
-### Fase 8 — Chat verrijking: bestanden inline, plakken, links
+### Fase 8 — Chat verrijking: bestanden inline, plakken, links ✅
 Bestanden en afbeeldingen horen in de conversatie te zitten, niet in een los paneel.
 
-- **Slepen-en-neerzetten**: een bestand vanaf Windows naar de chatbox slepen start dezelfde
-  aanbiedflow als de bestaande bestandsdialoog (`hash_en_bied_aan` in `engine.rs`) — alleen
-  een nieuwe invoerweg, geen nieuwe logica.
-- **Bestanden inline in de chat, geen apart paneel meer.** Een aangeboden bestand
-  (`FileEntry`) verschijnt als een berichtkaart op zijn eigen plek in de tijdlijn: naam,
+- **Slepen-en-neerzetten**: een bestand vanaf Windows naar het venster slepen start dezelfde
+  aanbiedflow als de bestandsdialoog (`hash_en_bied_aan` in `engine.rs`, aangeroepen via de
+  nieuwe `App::bied_bestand_aan`) — alleen een nieuwe invoerweg, geen nieuwe logica. Een
+  lichte overlay ("Zet hier neer om te delen") verschijnt zolang er iets over het venster
+  hangt.
+- **Bestanden inline in de chat, geen apart paneel meer.** Berichten en aangeboden bestanden
+  worden in `ui.rs` samengevoegd tot één chronologische lijst (`ChatItem::Bericht` /
+  `ChatItem::Bestand`), gesorteerd op dezelfde `(lamport, author)`-sleutel die de store al
+  per lijst aanhield. Een bestand verschijnt zo op zijn eigen plek tussen de berichten: naam,
   grootte, voortgangsbalk tijdens downloaden, downloadknop als het nog niet binnen is. Het
-  losse `bestanden_paneel` in `ui.rs` vervalt; DM-bestanden blijven wel scopen op hun kanaal,
-  zoals nu.
-- **Ctrl+V afbeelding plakken**: een afbeelding op het klembord in de chatbox plakken stuurt
-  hem meteen als bijlage, via dezelfde bestand-aanbiedflow als hierboven (met een
-  miniatuurweergave in plaats van een generieke bestandskaart).
+  losse `bestanden_paneel` is vervallen; DM-bestanden scopen nog steeds op hun kanaal, zoals
+  nu. De "Bestand delen…"-knop staat voortaan naast de chatbox in plaats van in een side panel.
+- **Ctrl+V afbeelding plakken**: een afbeelding op het klembord in de chatbox plakken (via
+  `arboard`) schrijft hem als PNG weg in `<datamap>/geplakt` en biedt hem meteen aan via
+  dezelfde flow als hierboven. Bevat het klembord geen afbeelding (gewone tekst, of niets),
+  dan gebeurt er niets en blijft egui's eigen tekst-plakken in de `TextEdit` intact.
 - **YouTube-links blijven kale links.** Rick heeft de externe-API-uitzondering afgewezen
   (zie `TODO.md`) — geen thumbnail, titel of kanaalnaam, gewoon een klikbare tekstlink zoals
   nu al het geval is.
 
-**Klaar als:** een gesleept of geplakt bestand verschijnt als bericht in de tijdlijn met
-voortgang en downloadknop, en er is geen apart bestandenpaneel meer in de UI.
+**Miniatuurweergave is beperkt tot eigen aanbod.** Een afbeelding die je zelf aanbiedt (via
+dialoog, slepen of plakken) toont een miniatuur in plaats van de generieke bestandskaart —
+de UI onthoudt daarvoor het lokale pad per bestandsnaam (`App::eigen_afbeeldingen`). Voor een
+ontvangen afbeelding gebeurt dat bewust niet: pas na een geslaagde download staat de
+uiteindelijke naam op schijf vast, en die kan bij een naamsbotsing afwijken van `FileEntry.name`
+(zie `docs/OVERDRACHT.md`, "Hoe bestandsdeling in elkaar zit") — er is dus geen betrouwbaar pad
+om een miniatuur vanaf te laden zonder dat probleem opnieuw op te lossen. Een ontvangen
+afbeelding blijft daarom de gewone kaart tonen, ook na downloaden.
+
+**Klaar als:** een gesleept, geplakt of via de dialoog gekozen bestand verschijnt als kaart op
+zijn eigen plek in de tijdlijn met voortgang en downloadknop, een eigen aangeboden afbeelding
+toont een miniatuur, en er is geen apart bestandenpaneel meer in de UI. Bevestigd met de
+volledige testsuite (`cargo test --workspace`, inclusief `crates/app/tests/file_deling.rs` en
+`crates/store/src/timeline.rs`) en twee lokale instanties die schoon opstarten en verbinden.
+**Niet geverifieerd, om dezelfde reden als bij eerdere fases:** het slepen zelf, het plakken
+vanaf een echt Windows-klembord, en hoe een miniatuur er in de tijdlijn daadwerkelijk uitziet
+— dat moet Rick met de hand doen.
 
 ### Fase 9 — DM: meerdere kanalen per peer met een eigen titel
 Eén DM met een peer moet meerdere losse, benoembare gesprekken kunnen bevatten
