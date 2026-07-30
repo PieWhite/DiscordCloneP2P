@@ -780,8 +780,11 @@ impl Engine {
                         d.zet_kijkers(kijkers);
                     }
                 }
-                Actie::StopDelen { stream_id } => {
-                    if self.is_geluid(stream_id) {
+                Actie::StopDelen {
+                    stream_id,
+                    is_geluid,
+                } => {
+                    if is_geluid {
                         if let Some(v) = &self.voice {
                             v.stop_bureaublad();
                         }

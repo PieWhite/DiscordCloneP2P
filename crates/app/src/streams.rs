@@ -41,7 +41,7 @@ pub enum Actie {
         kijkers: Vec<SocketAddr>,
     },
     /// Stop met opnemen en coderen.
-    StopDelen { stream_id: u32 },
+    StopDelen { stream_id: u32, is_geluid: bool },
     /// Volgend beeld als keyframe versturen.
     StuurKeyframe { stream_id: u32 },
     /// Open een venster en ga luisteren.
@@ -164,7 +164,10 @@ impl Streams {
 
         let mut acties = Vec::new();
         if stream.wordt_bekeken() {
-            acties.push(Actie::StopDelen { stream_id });
+            acties.push(Actie::StopDelen {
+                stream_id,
+                is_geluid: stream.kind == StreamKind::DESKTOP_AUDIO,
+            });
         }
         (
             vec![MeshCommand::Broadcast(ControlMsg::StreamRevoke(
@@ -278,7 +281,10 @@ impl Streams {
                         kijkers: s.doelen(),
                     }
                 } else {
-                    Actie::StopDelen { stream_id: s.id }
+                    Actie::StopDelen {
+                        stream_id: s.id,
+                        is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                    }
                 });
             }
         }
@@ -395,7 +401,10 @@ impl Streams {
             }]
         } else {
             tracing::info!(stream = stream_id, "laatste kijker weg; opnemen stopt");
-            vec![Actie::StopDelen { stream_id }]
+            vec![Actie::StopDelen {
+                stream_id,
+                is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+            }]
         }
     }
 
@@ -504,7 +513,13 @@ mod tests {
             ip(),
             &ControlMsg::StreamUnsubscribe(StreamUnsubscribe { stream_id: id }),
         );
-        assert_eq!(acties, vec![Actie::StopDelen { stream_id: id }]);
+        assert_eq!(
+            acties,
+            vec![Actie::StopDelen {
+                stream_id: id,
+                is_geluid: false
+            }]
+        );
     }
 
     #[test]
@@ -518,7 +533,10 @@ mod tests {
 
         assert_eq!(
             s.bij_verbreking(a),
-            vec![Actie::StopDelen { stream_id: id }]
+            vec![Actie::StopDelen {
+                stream_id: id,
+                is_geluid: false
+            }]
         );
         assert!(!s.eigen()[0].wordt_bekeken());
     }
@@ -661,6 +679,26 @@ mod tests {
         s.bij_bericht(a, ip(), &aankondiging(1));
         assert_eq!(s.wil_kijken(a, 1).len(), 1);
         assert!(s.wil_kijken(a, 1).is_empty(), "we keken al");
+    }
+
+    #[test]
+    fn expliciet_stoppen_met_bureaubladgeluid_is_gemarkeerd_als_geluid() {
+        // Bug (fase 10): stop_delen haalt de stream al uit `eigen` vóórdat de motor
+        // met `is_geluid` zou kunnen navragen wat voor stream het was. Daarom draagt
+        // de actie het zelf, in plaats van dat de motor het achteraf opzoekt.
+        let mut s = Streams::new();
+        let (id, _) = s.deel(StreamKind::DESKTOP_AUDIO, "Bureaubladgeluid".into(), 0, 0);
+        let a = PeerId::new_random();
+        s.bij_bericht(a, ip(), &intekening(id, 41000));
+
+        let (_, acties) = s.stop_delen(id);
+        assert_eq!(
+            acties,
+            vec![Actie::StopDelen {
+                stream_id: id,
+                is_geluid: true
+            }]
+        );
     }
 
     #[test]
