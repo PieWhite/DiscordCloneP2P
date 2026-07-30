@@ -4,6 +4,8 @@
 //! Er wordt hier geen enkele beslissing genomen over netwerk of opslag, en er staat
 //! geen state in die verloren gaat als het venster even niet tekent.
 
+pub mod theme;
+
 use crate::config::VideoConfig;
 use crate::engine::{self, EngineHandle, FileView, PeerView, Snapshot, UiCommand};
 use crate::files::{hash_bestandsnaam, is_afbeelding, DownloadStatus};

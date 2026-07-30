@@ -141,6 +141,8 @@ fn main() -> Result<()> {
         "FitCommunication",
         native_options,
         Box::new(move |cc| {
+            ui::theme::apply(&cc.egui_ctx);
+
             // Het venster onthouden zodat de tray-thread het kan tonen en verbergen
             // ook wanneer egui niet tekent.
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
