@@ -584,20 +584,54 @@ impl App {
     /// via de dialoog gekozen bestand, waarvan het origineel ook niet door de app wordt
     /// aangeraakt.
     fn plak_afbeelding(&self) -> Option<PathBuf> {
-        let mut klembord = arboard::Clipboard::new().ok()?;
-        let beeld = klembord.get_image().ok()?;
-        let buffer = image::RgbaImage::from_raw(
-            beeld.width as u32,
-            beeld.height as u32,
-            beeld.bytes.into_owned(),
-        )?;
+        // Uitgebreid gelogd (op debug-niveau, dus alleen zichtbaar met
+        // `$env:FITCOM_LOG = "debug"`): dit stuk faalde bij Rick zonder duidelijke
+        // reden, en "geen afbeelding op het klembord" (heel normaal bij een gewone
+        // tekst-plak, want dit loopt nu voor elke Ctrl+V, niet alleen met een
+        // afbeelding erop) moet te onderscheiden zijn van een echte bug hieronder.
+        let mut klembord = match arboard::Clipboard::new() {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(error = %e, "klembord openen mislukt bij Ctrl+V");
+                return None;
+            }
+        };
+        let beeld = match klembord.get_image() {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(error = %e, "geen afbeelding op het klembord");
+                return None;
+            }
+        };
+        tracing::debug!(
+            breedte = beeld.width,
+            hoogte = beeld.height,
+            bytes = beeld.bytes.len(),
+            "afbeelding van het klembord gelezen"
+        );
+
+        let breedte = beeld.width as u32;
+        let hoogte = beeld.height as u32;
+        let bytes = beeld.bytes.into_owned();
+        let Some(buffer) = image::RgbaImage::from_raw(breedte, hoogte, bytes) else {
+            tracing::warn!(
+                breedte,
+                hoogte,
+                "klembordafbeelding paste niet in breedte×hoogte×4 bytes"
+            );
+            return None;
+        };
 
         let naam = format!(
             "fitcom-plak-{}.png",
             chrono::Local::now().format("%Y%m%d-%H%M%S%3f")
         );
         let pad = std::env::temp_dir().join(naam);
-        buffer.save(&pad).ok()?;
+        if let Err(e) = buffer.save(&pad) {
+            tracing::warn!(error = %e, pad = %pad.display(), "klembordafbeelding als PNG wegschrijven mislukt");
+            return None;
+        }
+        tracing::debug!(pad = %pad.display(), "klembordafbeelding weggeschreven");
         Some(pad)
     }
 
@@ -1025,6 +1059,11 @@ impl App {
 
         if bevestigd {
             self.stuur(UiCommand::VerwijderAlleAfbeeldingen);
+            // Zonder dit blijft een al geladen miniatuur gewoon zichtbaar tot de
+            // volgende herstart: `bijlage_texture` leest alleen van schijf bij een
+            // cache-miss, en de textuur staat na het laden nog gewoon op de GPU. De
+            // motor heeft de bytes net verwijderd, dus deze sessie moet dat ook zien.
+            self.bijlage_texturen.clear();
         }
         if bevestigd || geannuleerd || !open {
             self.bevestig_verwijder_afbeeldingen = false;
@@ -1160,6 +1199,9 @@ impl App {
                 if geen_modaal_venster_open
                     && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::V))
                 {
+                    tracing::debug!(
+                        "ctrl+v gezien, klembord wordt gecontroleerd op een afbeelding"
+                    );
                     if let Some(pad) = self.plak_afbeelding() {
                         self.bied_bestand_aan(pad);
                     }
