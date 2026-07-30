@@ -78,7 +78,14 @@ pub fn build(ops: &[Op]) -> Timeline {
     }
     let mut changes: HashMap<OpId, ((u64, PeerId), Change)> = HashMap::new();
     let mut nicknames: HashMap<PeerId, ((u64, PeerId), String)> = HashMap::new();
-    let mut topics: HashMap<TopicId, ((u64, PeerId), String)> = HashMap::new();
+    // Titel of verwijderd, per subkanaal — dezelfde laatste-schrijver-wint-vergelijking
+    // als Edit/Delete bij een bericht. Geen apart auteurschap: elke peer mag een
+    // subkanaal aanmaken/hernoemen/verwijderen.
+    enum TopicChange {
+        Titled(String),
+        Deleted,
+    }
+    let mut topics: HashMap<TopicId, ((u64, PeerId), TopicChange)> = HashMap::new();
 
     for op in sorted {
         // Onbekende soort: van een nieuwere peer. We bewaren en verspreiden hem wel,
@@ -151,12 +158,22 @@ pub fn build(ops: &[Op]) -> Timeline {
             OpKind::SetTopicTitle { id, title } => {
                 // Laatste titel wint, precies als bij een bijnaam — dit dekt zowel het
                 // aanmaken (eerste keer gezien) als het hernoemen (latere keer) van
-                // hetzelfde subkanaal.
+                // hetzelfde subkanaal. Wint deze van een eerdere Delete, dan komt het
+                // subkanaal gewoon terug.
                 let k = key(op);
                 match topics.get(&id) {
                     Some((prev, _)) if *prev >= k => {}
                     _ => {
-                        topics.insert(id, (k, title));
+                        topics.insert(id, (k, TopicChange::Titled(title)));
+                    }
+                }
+            }
+            OpKind::DeleteTopic { id } => {
+                let k = key(op);
+                match topics.get(&id) {
+                    Some((prev, _)) if *prev >= k => {}
+                    _ => {
+                        topics.insert(id, (k, TopicChange::Deleted));
                     }
                 }
             }
@@ -208,7 +225,13 @@ pub fn build(ops: &[Op]) -> Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
         files,
-        topics: topics.into_iter().map(|(id, (_, t))| (id, t)).collect(),
+        topics: topics
+            .into_iter()
+            .filter_map(|(id, (_, t))| match t {
+                TopicChange::Titled(title) => Some((id, title)),
+                TopicChange::Deleted => None,
+            })
+            .collect(),
     }
 }
 
@@ -594,6 +617,49 @@ mod tests {
         );
         let t = build(&[b, a]);
         assert_eq!(t.topics[&t_id], "project x (hernoemd)");
+    }
+
+    #[test]
+    fn verwijderd_subkanaal_verdwijnt_uit_topics() {
+        let t_id = TopicId::from_bytes([0x66; 16]);
+        let aanmaken = op(
+            peer(1),
+            1,
+            1,
+            OpKind::SetTopicTitle {
+                id: t_id,
+                title: "project x".into(),
+            },
+        );
+        let verwijderen = op(peer(2), 1, 2, OpKind::DeleteTopic { id: t_id });
+        let t = build(&[aanmaken, verwijderen]);
+        assert!(!t.topics.contains_key(&t_id));
+    }
+
+    #[test]
+    fn hernoemen_na_verwijderen_laat_het_subkanaal_terugkomen() {
+        let t_id = TopicId::from_bytes([0x77; 16]);
+        let aanmaken = op(
+            peer(1),
+            1,
+            1,
+            OpKind::SetTopicTitle {
+                id: t_id,
+                title: "project x".into(),
+            },
+        );
+        let verwijderen = op(peer(2), 1, 2, OpKind::DeleteTopic { id: t_id });
+        let opnieuw = op(
+            peer(1),
+            2,
+            3,
+            OpKind::SetTopicTitle {
+                id: t_id,
+                title: "project x (terug)".into(),
+            },
+        );
+        let t = build(&[aanmaken, verwijderen, opnieuw]);
+        assert_eq!(t.topics[&t_id], "project x (terug)");
     }
 
     #[test]

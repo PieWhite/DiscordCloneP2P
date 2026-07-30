@@ -194,6 +194,7 @@ enum OpKind {
     FileMeta{ name: String, size: u64, hash: [u8; 32] },
     // later: React, Reply — nieuwe varianten, geen migratie
     SetTopicTitle{ id: TopicId, title: String },  // fase 9, zie "Kanalen"
+    DeleteTopic{ id: TopicId },                    // fase 9, zie "Kanalen"
 }
 ```
 
@@ -298,6 +299,12 @@ zelf, maar in een gewone op (`OpKind::SetTopicTitle { id, title }`, altijd op
 `Channel::GENERAL` geplaatst), last-writer-wins per `(lamport, author)`, precies zoals een
 bijnaam (`OpKind::SetNick`) — dat dekt zowel het aanmaken (eerste keer gezien) als het
 hernoemen (latere keer) zonder een apart "kanaal aangemaakt"-bericht.
+
+Verwijderen gaat via `OpKind::DeleteTopic { id }`, dezelfde `(lamport, author)`-vergelijking
+als `SetTopicTitle` op hetzelfde `id` — geen apart `target`/auteurscheck zoals bij een
+bericht, want elke peer mag een subkanaal aanmaken/hernoemen en dus ook verwijderen. Wint
+een latere `SetTopicTitle` alsnog van de `DeleteTopic`, dan komt het subkanaal terug — net
+zo'n gewone laatste-schrijver-wint-uitkomst als bij een bijnaam.
 
 ### Protocolversie: 1 → 2, 2 → 3
 

@@ -185,6 +185,8 @@ pub enum UiCommand {
     /// Bestaand subkanaal hernoemen. Zelfde mechanisme als aanmaken — zie
     /// `Chat::zet_kanaal_titel`.
     HernoemKanaal(TopicId, String),
+    /// Subkanaal verwijderen. UI vraagt hier eerst een bevestiging voor.
+    VerwijderKanaal(TopicId),
 }
 
 pub struct EngineHandle {
@@ -1049,6 +1051,10 @@ impl Engine {
             }
             UiCommand::HernoemKanaal(id, titel) => {
                 let r = self.chat.zet_kanaal_titel(id, &titel);
+                self.verwerk(r);
+            }
+            UiCommand::VerwijderKanaal(id) => {
+                let r = self.chat.verwijder_kanaal(id);
                 self.verwerk(r);
             }
         }

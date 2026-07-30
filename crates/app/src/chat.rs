@@ -164,6 +164,12 @@ impl Chat {
         )
     }
 
+    /// Verwijdert een subkanaal. Geen auteurscheck: iedereen mag een subkanaal
+    /// aanmaken/hernoemen, dus ook verwijderen — zie `OpKind::DeleteTopic`.
+    pub fn verwijder_kanaal(&mut self, id: TopicId) -> Result<Vec<MeshCommand>> {
+        self.eigen_op(Channel::GENERAL, OpKind::DeleteTopic { id })
+    }
+
     /// Legt een bestandsaanbod vast in de oplog, precies zoals een bericht — dat is het
     /// hele punt van de generieke oplog. Levert de `OpId` op die de overdracht zelf
     /// identificeert, zodat de motor kan onthouden waar het originele bestand staat.

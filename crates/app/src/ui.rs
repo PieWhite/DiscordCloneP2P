@@ -68,6 +68,9 @@ pub struct App {
     /// `Some` zolang het hernoem-venster voor een subkanaal open staat: welk subkanaal,
     /// en een bewerkbare kopie van zijn titel.
     kanaal_hernoemen: Option<(TopicId, String)>,
+    /// `Some` zolang de bevestigingsvraag voor "subkanaal verwijderen" open staat, met
+    /// welk subkanaal het betreft.
+    bevestig_verwijder_kanaal: Option<TopicId>,
     /// Welke suggestie in de @tag-autocomplete gemarkeerd is. Reset zodra de getypte
     /// tag verandert, zie `chat_paneel`.
     tag_selectie: usize,
@@ -137,6 +140,7 @@ impl App {
             profiel: None,
             nieuw_kanaal_titel: None,
             kanaal_hernoemen: None,
+            bevestig_verwijder_kanaal: None,
             tag_selectie: 0,
             tag_actief: false,
             miniatuur_cache: HashMap::new(),
@@ -271,6 +275,7 @@ impl eframe::App for App {
         self.bevestig_verwijder_afbeeldingen_venster(ctx);
         self.profiel_venster(ctx);
         self.kanaal_hernoemen_venster(ctx);
+        self.bevestig_verwijder_kanaal_venster(ctx);
         self.statusbalk(ctx);
         self.overzicht_strook(ctx);
         self.chat_paneel(ctx);
@@ -338,6 +343,14 @@ impl App {
                                 .clicked()
                         {
                             self.kanaal_hernoemen = Some((*id, titel.clone()));
+                        }
+                        if actief
+                            && ui
+                                .small_button("\u{1F5D1}")
+                                .on_hover_text("verwijderen")
+                                .clicked()
+                        {
+                            self.bevestig_verwijder_kanaal = Some(*id);
                         }
                     });
                 }
@@ -1272,6 +1285,56 @@ impl App {
         }
     }
 
+    /// Bevestigingsvraag vóór een subkanaal echt verwijderd wordt — onomkeerbaar voor
+    /// iedereen, dus geen knop-per-ongeluk.
+    fn bevestig_verwijder_kanaal_venster(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.bevestig_verwijder_kanaal else {
+            return;
+        };
+        let titel = self
+            .snap
+            .timeline
+            .topics
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "dit subkanaal".to_string());
+
+        let mut open = true;
+        let mut bevestigd = false;
+        let mut geannuleerd = false;
+
+        egui::Window::new("Subkanaal verwijderen?")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Weet je zeker dat je \"{titel}\" wilt verwijderen? Dit gebeurt bij \
+                     iedereen."
+                ));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Ja, verwijderen").clicked() {
+                        bevestigd = true;
+                    }
+                    if ui.button("Annuleren").clicked() {
+                        geannuleerd = true;
+                    }
+                });
+            });
+
+        if bevestigd {
+            self.stuur(UiCommand::VerwijderKanaal(id));
+            if self.actief_kanaal.topic_id() == Some(id) {
+                self.wissel_kanaal(Channel::GENERAL);
+            }
+            self.bevestig_verwijder_kanaal = None;
+        } else if geannuleerd || !open {
+            self.bevestig_verwijder_kanaal = None;
+        }
+    }
+
     fn chat_paneel(&mut self, ctx: &egui::Context) {
         // Invoer eerst vastzetten, zodat de berichtenlijst de rest van de hoogte krijgt
         // en niet onder het invoerveld doorloopt.
@@ -1356,7 +1419,8 @@ impl App {
                     && self.instellingen.is_none()
                     && self.bronkeuze.is_none()
                     && self.kanaal_hernoemen.is_none()
-                    && self.nieuw_kanaal_titel.is_none();
+                    && self.nieuw_kanaal_titel.is_none()
+                    && self.bevestig_verwijder_kanaal.is_none();
                 if geen_modaal_venster_open && self.ctrl_v_zojuist_ingedrukt(ctx) {
                     tracing::debug!(
                         "ctrl+v gezien, klembord wordt gecontroleerd op een afbeelding"

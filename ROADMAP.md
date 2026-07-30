@@ -277,9 +277,10 @@ een enkel gesprek tussen twee peers, zoals hij nu is.
   legt zowel het aanmaken (eerste keer gezien) als het hernoemen (latere keer, hoogste
   `(lamport, author)` wint) vast — geen apart "kanaal aangemaakt"-bericht nodig.
 - **UI**: binnen "Algemeen" een lijst subkanalen, een nieuwe aanmaken met een titel,
-  een bestaande hernoemen, en ertussen wisselen; berichten en bestanden blijven per
-  subkanaal gescheiden, net als nu tussen algemeen en een DM. Eigen ongelezen-teller per
-  subkanaal, los van het hoofdkanaal en van DM's.
+  een bestaande hernoemen of verwijderen (met bevestigingsvraag — onomkeerbaar voor
+  iedereen), en ertussen wisselen; berichten en bestanden blijven per subkanaal
+  gescheiden, net als nu tussen algemeen en een DM. Eigen ongelezen-teller per subkanaal,
+  los van het hoofdkanaal en van DM's.
 - Dit moet, net als bij de vorige kanalen-uitbreiding, langs de `protocol-reviewer`-agent
   vóór het committen — dit soort wijzigingen in `crates/proto`/`crates/store` is precies
   waar eerder een reken- en een schema-fout binnenslopen (zie `docs/OVERDRACHT.md`,

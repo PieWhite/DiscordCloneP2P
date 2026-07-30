@@ -138,6 +138,11 @@ op_kinds! {
     // kanalen zelf, geen gespreksinhoud van één specifiek kanaal. Zie fase 9 in
     // ROADMAP.md en docs/ARCHITECTURE.md, sectie "Kanalen".
     20 => SetTopicTitle { id: TopicId, title: String },
+    // Verwijdert een subkanaal. Wint van een `SetTopicTitle` (of andersom) op dezelfde
+    // `(lamport, author)`-vergelijking als Edit/Delete bij een bericht — een latere
+    // hernoeming laat het subkanaal dus gewoon weer terugkomen. Geen aparte
+    // auteurscheck: elke peer mag een subkanaal aanmaken/hernoemen, dus ook verwijderen.
+    21 => DeleteTopic { id: TopicId },
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 

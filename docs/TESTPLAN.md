@@ -386,6 +386,12 @@ elkaar niet rechtstreeks bereiken maar allebei wel B, dan moet een bericht van A
 subkanaal bij C aankomen via B — in tegenstelling tot een DM. Komt het niet aan, dan is
 `Channel::is_public()` ergens niet toegepast waar `is_general()` eerder stond.
 
+**9.7 Subkanaal verwijderen, met bevestiging**
+Klik het prullenbak-knopje naast de titel van een subkanaal waar je in zit. Er moet een
+"Weet je zeker?"-vraag verschijnen. Annuleren doet niets. Bevestigen verwijdert het
+subkanaal bij jou én bij je vriend, zonder dat hij iets doet, en je springt zelf terug naar
+"# Algemeen".
+
 ---
 
 ## Sidenote: afbeeldingen downloaden zichzelf automatisch

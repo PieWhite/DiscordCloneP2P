@@ -643,14 +643,17 @@ al zo getagd dat dat later als nieuwe waarde bij kan zonder protocolbreuk, zie `
 ```
 crates/proto/src/ids.rs      TopicId (nieuw, een Uuid-newtype); Channel kreeg tag 2 +
                               topic: Option<TopicId>; is_public() = tag 0 || tag 2
-crates/proto/src/op.rs       OpKind::SetTopicTitle { id, title } (tag 20); visible_to()
-                              gebruikt nu is_public() in plaats van is_general()
+crates/proto/src/op.rs       OpKind::SetTopicTitle { id, title } (tag 20),
+                              OpKind::DeleteTopic { id } (tag 21); visible_to() gebruikt
+                              nu is_public() in plaats van is_general()
 crates/proto/src/lib.rs      PROTOCOL_VERSION 2 → 3 — zie beslissing 16 en de bug hierboven
 crates/store/src/lib.rs      channel_to_blob/from_blob: tag 2 hergebruikt dezelfde 16-byte
                               slot als een DM-peer (sluiten elkaar uit), dus geen
                               schema-migratie nodig
 crates/store/src/timeline.rs Timeline.topics: HashMap<TopicId, String>, opgebouwd uit
-                              SetTopicTitle net als nicknames uit SetNick
+                              SetTopicTitle net als nicknames uit SetNick; DeleteTopic
+                              concurreert op dezelfde (lamport, author)-sleutel, dus een
+                              latere hernoeming laat het subkanaal gewoon terugkomen
 crates/net/src/filestream.rs encode_channel/decode_channel: tag 2 in de bestandsheader
 crates/app/src/chat.rs       zet_kanaal_titel() (aanmaken én hernoemen, zelfde op);
                               ongelezen_topic: HashMap<TopicId, usize>, los van ongelezen_dm
@@ -659,7 +662,8 @@ crates/app/src/engine.rs     UiCommand::MaakKanaal/HernoemKanaal/GelezenTopic;
                               subkanaal-bestand dezelfde tijdelijke naam kunnen krijgen als
                               een algemeen bestand van dezelfde auteur met dezelfde seq)
 crates/app/src/ui.rs         Sidebar toont subkanalen onder "# Algemeen" (aanmaken/
-                              hernoemen/wisselen); hoort_bij_kanaal() kreeg een derde tak
+                              hernoemen/verwijderen/wisselen), verwijderen achter een
+                              bevestigingsvraag; hoort_bij_kanaal() kreeg een derde tak
 ```
 
 **De kern staat in `docs/ARCHITECTURE.md`, sectie "Kanalen"**, inclusief waarom dit als
