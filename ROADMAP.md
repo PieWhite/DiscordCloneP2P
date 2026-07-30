@@ -290,7 +290,7 @@ een enkel gesprek tussen twee peers, zoals hij nu is.
 een subkanaal bij iedereen aankomen (ook bij een peer die pas later online komt) net als in
 het algemene kanaal, en het aanmaken/hernoemen/wisselen in de UI werkt.
 
-### Fase 10 — Beeld en geluid: resoluties, bitrate, gecombineerd delen
+### Fase 10 — Beeld en geluid: resoluties, bitrate, gecombineerd delen ✅
 - **Resolutieondersteuning 2560×1440 en 3440×1440 (ultrawide).** SPEC ging uit van
   1080p@60Hz per persoon; de dev-PC heeft in de praktijk al een 1440p-hoofdscherm (zie
   "Valkuilen" in `docs/OVERDRACHT.md`). Uitzoeken en wegnemen van elke plek die stilzwijgend
@@ -330,6 +330,42 @@ het algemene kanaal, en het aanmaken/hernoemen/wisselen in de UI werkt.
 nieuwe bitrate-defaults in SPEC.md staan met hun onderbouwing, scherm delen automatisch
 geluid meeneemt zonder een eigen knop, stoppen met delen ook echt stil is bij de
 ontvanger, en een peer zijn eigen stem niet hoort terugkomen via gedeeld bureaubladgeluid.
+
+**Bugfix eerst, zoals gepland.** `is_geluid` werd in `voer_uit` (`crates/app/src/engine.rs`)
+opgezocht via `streams.eigen()` ná `streams.stop_delen()` — maar die functie had de stream
+op dat moment al verwijderd, dus de vlag was altijd `false` en `stop_bureaublad()` werd bij
+een expliciete stop nooit aangeroepen. `Actie::StopDelen` draagt de vlag nu zelf, bepaald
+vóór de stream weg is — hetzelfde patroon als `StartKijken.is_geluid` al gebruikte. Eigen
+regressietest in `crates/app/src/streams.rs`.
+
+**Resolutie bleek al klaar, niets te bouwen.** Capture (WGC), encoder/decoder-init
+(`crates/video/src/codec.rs`), kleuromzetting (`crates/video/src/kleur.rs`), kijkvenster
+(`crates/video/src/venster.rs`) en de miniaturen-downscale (`crates/video/src/d3d.rs`,
+`crates/video/src/kijker.rs`) nemen overal de echte breedte/hoogte van de bron aan; geen
+enkele hardcoded `1920`/`1080` in logica, alleen in tests en voorbeeldcommentaar. SPEC.md
+is bijgewerkt om dat vast te leggen (zie `docs/OVERDRACHT.md` voor de audit).
+**Nog niet bevestigd met een echt 1440p/ultrawide-scherm** — dat blijft, net als de rest van
+beeld, iets voor Rick om met de hand te controleren.
+
+**Bitrate-default naar 12 Mbit/s**, met een nieuwe sectie "Bitrate" in `docs/SPEC.md` die
+uitlegt dat de oude "bits zijn gratis"-redenering nog klopt voor het tailnet zelf, maar
+niets zei over een kijker met een mindere eigen verbinding. Zie `docs/SPEC.md`.
+
+**Geluid delen automatisch bij scherm delen, met terugval.** `media-research`-agent
+bevestigde vooraf een proces-exclusieve WASAPI-loopback (`AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS`
+met `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`, via de `wasapi`-crate) die de eigen
+voice-weergave van de app kan uitsluiten — beschikbaar sinds Windows 10 build 20348 (in de
+praktijk Windows 11), geen Store-uitbreiding, GPU-onafhankelijk. Gebouwd in
+`crates/audio/src/session.rs` (submodule `wasapi_capture`): probeert eerst die route, valt
+bij een fout stil terug op de bestaande `cpal`-loopback (het oude gedrag, inclusief het
+eigen-stem-risico, als ondergrens). `crates/app/src/engine.rs` start/stopt bureaubladgeluid
+nu zelf zodra de eerste/laatste monitor of venster gedeeld wordt (`deel_bron`,
+`UiCommand::StopDelen`) of zodra je een gesprek in komt terwijl je al deelt (`deelnemen`);
+de losse knop in de UI is weg, alleen nog een passieve statusregel. Zie `docs/OVERDRACHT.md`
+voor het volledige ontwerp.
+**Niet bevestigd met echte hardware** — of de exclude-modus daadwerkelijk aanslaat, of de
+terugval goed voelt, en of een peer zijn eigen stem echt niet terughoort, kan alleen Rick met
+een tweede machine en een koptelefoon controleren.
 
 ### Fase 11 — Automatische updates tussen peers
 - **Versievergelijking bij de handshake**: naast de bestaande `protocol_version` een

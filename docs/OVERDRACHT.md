@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-30, na fase 9 (subkanalen onder het algemene kanaal).
+Laatst bijgewerkt: 2026-07-30, na fase 10 (resoluties, bitrate, gecombineerd delen).
 
 ---
 
@@ -22,6 +22,7 @@ Laatst bijgewerkt: 2026-07-30, na fase 9 (subkanalen onder het algemene kanaal).
 | 7 — Tags, meldingen, niet storen, gebruikersnaam | ✅ af, **bevestigd met een echte peer** | `crates/app/src/tags.rs` (unit-tests op de tag-herkenning en cursor-parsing); `docs/TESTPLAN.md` 7.1 t/m 7.7 |
 | 8 — Chat verrijking: bestanden inline, plakken, links | ✅ af, grotendeels bevestigd (Ctrl+V-plakken bevestigd, zie beslissing 15) | volledige testsuite blijft groen (o.a. `crates/app/tests/file_deling.rs`, `crates/store/src/timeline.rs`); slepen-en-neerzetten, de miniatuur in de tijdlijn en het Instellingenscherm nog niet met de hand bekeken |
 | 9 — Algemeen: subkanalen met een eigen titel | ✅ af, nog niet met een echte peer getest | volledige testsuite blijft groen (nieuwe tests in `crates/proto`, `crates/store`, `crates/app/src/ui.rs`) + `protocol-reviewer`-agent vóór het committen + twee lokale instanties starten en verbinden schoon; zie `docs/TESTPLAN.md`, fase 9 |
+| 10 — Resoluties, bitrate, gecombineerd delen | ✅ af, **nog niet met echte hardware getest** | bugfix heeft een regressietest (`crates/app/src/streams.rs`); resolutie bleek al parametrisch (audit, geen codewijziging); bitrate is een configwaarde; wasapi-exclude-route + terugval compileert en start schoon in twee lokale instanties, maar het capturen/uitsluiten zelf kan alleen met echte speakers/koptelefoon gecontroleerd worden — zie `docs/TESTPLAN.md`, fase 10 |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -349,6 +350,37 @@ opslag (`channel_to_blob` in `crates/store/src/lib.rs`, `encode_channel` in
 algemene kanaal zou aliasen — zie de bug hieronder, gevonden door de `protocol-reviewer`-
 agent vóór het committen.
 
+### 17. Bureaubladgeluid via `wasapi`-crate met terugval, niet via raw COM (fase 10)
+
+Automatisch geluid meesturen bij scherm delen kan alleen zonder dat een peer zijn eigen
+stem terugkrijgt — anders capturet de gewone `cpal`-loopback ook de eigen voice-weergave
+van deze app. Vooraf uitgezocht (`media-research`-agent, niet aangenomen): Windows heeft
+sinds build 20348 (in de praktijk Windows 11) een proces-exclusieve loopback-capture
+(`AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` met `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`),
+geen Store-uitbreiding nodig, GPU-onafhankelijk.
+
+Zelf de COM-completion-handler en `PROPVARIANT`-inpakking met raw WASAPI bouwen was niet
+nodig: de **`wasapi`-crate** (0.23, MIT, hangt al af van dezelfde `windows` 0.62-lijn als
+de rest van de workspace) heeft `AudioClient::new_application_loopback_client(pid,
+include_tree)` kant-en-klaar, met `include_tree: false` als de exclude-modus — precies de
+usecase uit het eigen voorbeeld van die crate (`examples/record_application.rs`).
+
+Belangrijkste valkuil: `AudioClient`/`AudioCaptureClient`/`Handle` zijn niet `Send`. Alles
+opzetten én gebruiken moet dus op dezelfde OS-thread — de nieuwe `wasapi_capture`-submodule
+in `crates/audio/src/session.rs` doet dat door de hele opzet (COM-MTA, activeren, formaat,
+eventhandle, captureclient, stream starten) pas ná het spawnen van de thread uit te voeren,
+nooit ervoor.
+
+**Niet gegarandeerd op elke installatie, dus met terugval, niet met een harde aanname.**
+`bureaublad_lus` probeert de exclude-route eerst; lukt dat niet (oudere Windows-versie, of
+een andere onbekende reden), dan valt hij terug op de bestaande `cpal`-loopback — het oude
+gedrag, inclusief het eigen-stem-risico, als ondergrens in plaats van een crash of een
+compleet uitgevallen functie. Beide routes leveren mono `f32`-samples op hetzelfde kanaal
+af, dus de resample/encode/verstuur-lus erna (ongewijzigd) ziet geen verschil.
+
+**Nog niet met echte hardware bevestigd** of de exclude-modus daadwerkelijk aanslaat op de
+testmachines. Zie `docs/TESTPLAN.md`, fase 10.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -440,6 +472,26 @@ poging de oude database intact laat. Getest tegen een met de hand opgezette v1-d
 (`crates/store/tests/convergentie.rs::database_van_voor_de_kanalen_uitbreiding_wordt_gemigreerd_niet_geweigerd`)
 én tegen Ricks eigen bestand (met een backup ervan gemaakt vóórdat de nieuwe build erop
 losging).
+
+**Stoppen met bureaubladgeluid deelde stopte het delen niet echt (fase 10).** Al langer
+bekend bij Rick, opgepakt als het losstaande bugfix-item van fase 10. `Engine::voer_uit`
+(`crates/app/src/engine.rs`) besliste bij `Actie::StopDelen` via `self.is_geluid(stream_id)`
+of `stop_bureaublad()` aangeroepen moest worden — maar die functie zoekt de stream op in
+`streams.eigen()`, en `Streams::stop_delen()` had de stream daar op dat moment al uit
+verwijderd (`self.eigen.remove(plek)`, vóórdat de actie teruggegeven wordt). `is_geluid`
+gaf dus bij een expliciete stop altijd `false`, ongeacht wat er gedeeld werd, en de
+opnamethread aan de kant van de deler bleef gewoon doorsturen. Het generieke video-stoppad
+merkte dit nooit, want dat vraagt nooit naar de soort stream — `self.delers.remove(&id)` is
+toch een no-op voor een stream-id dat nooit in `delers` heeft gestaan.
+
+Niet gevonden door een geautomatiseerde test (er was er nog geen voor dit pad), wel meteen
+zichtbaar zodra je het naleest: `uitgetekend()` (de laatste kijker die zelf wegvalt) gaf
+altijd het juiste antwoord, want die verwijdert de stream niet uit `eigen` vóór de actie.
+Gefixt door de vlag in de actie zelf te leggen — `Actie::StopDelen` draagt nu `is_geluid:
+bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`stop_delen`,
+`bij_verbreking`, `uitgetekend`) terwijl de stream nog bestaat — hetzelfde patroon dat
+`Actie::StartKijken.is_geluid` al gebruikte. Eigen regressietest:
+`crates/app/src/streams.rs::tests::expliciet_stoppen_met_bureaubladgeluid_is_gemarkeerd_als_geluid`.
 
 ---
 
@@ -535,18 +587,35 @@ van de voice-sessie) of de weergave losknippen van de microfoon (grondiger, maar
 raakt code die werkt en al met een rooktest bevestigd is). De beperking valt in de
 praktijk weg: je deelt je scherm tijdens een gesprek.
 
-De UI grijst de knop uit als je niet in het gesprek zit, en verlaat je het gesprek terwijl
-je geluid deelt, dan wordt dat netjes ingetrokken — anders blijven de anderen naar een
-dood adres sturen.
+Verlaat je het gesprek terwijl je geluid deelt, dan wordt dat netjes ingetrokken — anders
+blijven de anderen naar een dood adres sturen.
 
 Verdere keuzes:
-- `cpal` 0.18 doet loopback vanzelf: bouw een **invoer**stroom op een **uitvoer**apparaat.
-  Er is dus geen eigen WASAPI-code nodig, wat een oudere aantekening hier wel vermoedde.
 - Opus in `Application::Audio` op 96 kbit/s in plaats van `Voip` op 32. Het spraakmodel
   knijpt bij muziek de hoge tonen eruit en laat percussie rammelen.
 - Geen VAD, wel een lage stiltedrempel met twee seconden hangover. Een VAD zou stukken
   uit muziek knippen; de drempel zorgt alleen dat een PC waar niets speelt geen verkeer
   veroorzaakt.
+
+### Automatisch mee met scherm delen, en eigen stem uitgesloten (fase 10)
+
+Geen losse aan/uit-knop meer: `Engine::deel_bron` roept `deel_bureaubladgeluid()` aan
+zodra de eerste monitor of het eerste venster gedeeld wordt (en bij het joinen van een
+gesprek terwijl er al gedeeld wordt), en `UiCommand::StopDelen` roept
+`stop_bureaubladgeluid()` aan zodra de laatste weg is (`Engine::deelt_scherm_of_venster`).
+`deel_bureaubladgeluid()` was al idempotent (niets doen als er al gedeeld wordt), dus dat
+hoefde niet te veranderen. De UI toont alleen nog een passieve statusregel, niets om op
+te klikken — zie beslissing 17.
+
+**`cpal`'s gewone loopback volstond niet meer.** Die vangt ook de eigen voice-weergave
+van deze app mee, en dat is onschuldig zolang je zelf moet klikken (je merkt het en zet
+het uit), maar niet meer zodra het automatisch aan staat: een luisteraar zou dan zijn
+eigen stem vertraagd terug horen via jouw gedeelde geluid. `bureaublad_lus`
+(`crates/audio/src/session.rs`) probeert daarom eerst een proces-exclusieve
+WASAPI-loopback (submodule `wasapi_capture`, via de `wasapi`-crate,
+`AudioClient::new_application_loopback_client(pid, include_tree: false)`) die dit proces
+expliciet uitsluit, en valt bij een fout terug op de oude `cpal`-route. Zie beslissing 17
+voor het volledige ontwerp en de reden dat dit niet met raw WASAPI/COM gebouwd is.
 
 ---
 
@@ -849,3 +918,22 @@ gewoon achter de bestaande bevestigingswal staan: de kaart met downloadknop, pre
 voorheen. Zie `Engine::op_mesh_event` in `crates/app/src/engine.rs`. **Niet geverifieerd:**
 of dit in de praktijk voelt zoals bedoeld — bijvoorbeeld of een handvol afbeeldingen tegelijk
 inhalen bij het opstarten niet hinderlijk aanvoelt. Dat moet Rick met de hand doen.
+
+Van fase 10 zijn twee van de vier onderdelen pure code-/configwijzigingen zonder iets om
+handmatig te verifiëren (de bugfix heeft een regressietest; resolutie bleek al overal
+parametrisch, dus geaudit in plaats van gebouwd). De twee overige onderdelen raken
+precies het soort gedrag dat deze omgeving niet kan simuleren:
+
+- **Bitrate naar 12 Mbit/s** is een configwaarde; of dat de audio-lag bij een peer met een
+  matige verbinding daadwerkelijk weg blijft nemen kan alleen Rick met zijn eigen twee
+  machines opnieuw controleren, net als de oorspronkelijke meting.
+- **Automatisch bureaubladgeluid met de proces-exclusieve WASAPI-loopback** (beslissing 17)
+  compileert, en twee lokale instanties starten en verbinden schoon — maar of de
+  exclude-route hier daadwerkelijk aanslaat (in plaats van stil terug te vallen op cpal),
+  of het geluid bij de luisteraar goed klinkt, en of een peer zijn eigen stem echt niet
+  terughoort, is met geen enkele geautomatiseerde test te dekken. Dat moet Rick met een
+  tweede machine en een koptelefoon doen — zet `FITCOM_LOG=debug` aan en kijk of de regel
+  "bureaubladgeluid via proces-exclusieve WASAPI-loopback" verschijnt (gelukt) of
+  "terugval op gewone loopback" (mislukt, en dan graag de foutmelding erbij).
+- **1440p en 3440×1440 scherp en zonder framedrops** kan alleen op de echte
+  1440p-hoofdschermen gecontroleerd worden, niet in deze omgeving.

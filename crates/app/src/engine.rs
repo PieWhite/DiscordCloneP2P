@@ -152,10 +152,9 @@ pub enum UiCommand {
     Mute(bool),
     Deafen(bool),
     Volume(PeerId, f32),
-    /// Een scherm of venster gaan delen. Er wordt nog niets opgenomen.
+    /// Een scherm of venster gaan delen. Er wordt nog niets opgenomen. Bureaubladgeluid
+    /// gaat vanzelf mee als je in het gesprek zit — geen apart commando meer (fase 10).
     DeelBron(Bron),
-    /// Het geluid van deze PC meesturen. Vereist dat je in het gesprek zit.
-    DeelBureaubladgeluid,
     StopDelen(u32),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
@@ -594,6 +593,11 @@ impl Engine {
                 self.voice = Some(h);
                 self.werk_voice_peers_bij();
                 self.meld_voice_status(None);
+                // Deelde je al een scherm vóór je het gesprek in kwam, dan hoort het
+                // geluid er nu alsnog automatisch bij (fase 10).
+                if self.deelt_scherm_of_venster() {
+                    self.deel_bureaubladgeluid();
+                }
             }
             Err(e) => {
                 tracing::error!(error = %format!("{e:#}"), "voice starten mislukt");
@@ -713,6 +717,37 @@ impl Engine {
             .deel(kind, bron.naam.clone(), afmeting.0, afmeting.1);
         self.bronnen.insert(id, bron);
         self.stuur_alles(cmds);
+
+        // Fase 10: geen losse knop meer, geluid van deze pc gaat automatisch mee zodra
+        // er iets gedeeld wordt. `deel_bureaubladgeluid` is zelf al idempotent, dus dit
+        // mag ook als er al een tweede scherm bij komt.
+        self.deel_bureaubladgeluid();
+    }
+
+    /// Of we op dit moment een monitor of venster delen — dus of bureaubladgeluid mee
+    /// hoort te lopen.
+    fn deelt_scherm_of_venster(&self) -> bool {
+        self.streams
+            .eigen()
+            .iter()
+            .any(|s| s.kind == StreamKind::MONITOR || s.kind == StreamKind::WINDOW)
+    }
+
+    /// Stopt bureaubladgeluid omdat het laatste gedeelde scherm net gestopt is. Geen-op
+    /// als er toch niets gedeeld wordt.
+    fn stop_bureaubladgeluid(&mut self) {
+        let Some(id) = self
+            .streams
+            .eigen()
+            .iter()
+            .find(|s| s.kind == StreamKind::DESKTOP_AUDIO)
+            .map(|s| s.id)
+        else {
+            return;
+        };
+        let (cmds, acties) = self.streams.stop_delen(id);
+        self.stuur_alles(cmds);
+        self.voer_uit(acties);
     }
 
     /// Of dit een van onze streams is die geluid draagt in plaats van beeld.
@@ -727,11 +762,10 @@ impl Engine {
     }
 
     /// Het geluid van deze PC aankondigen. Net als bij een scherm wordt er nog niets
-    /// opgenomen: dat begint pas als er iemand meeluistert.
+    /// opgenomen: dat begint pas als er iemand meeluistert. Automatisch aangeroepen
+    /// (fase 10), dus geen gesprek is normaal en geen fout — gewoon niets doen.
     fn deel_bureaubladgeluid(&mut self) {
         if self.voice.is_none() {
-            self.fout =
-                Some("neem eerst deel aan het gesprek; bureaubladgeluid gaat daarover mee".into());
             return;
         }
         if self
@@ -1009,7 +1043,6 @@ impl Engine {
                 }
             }
             UiCommand::DeelBron(bron) => self.deel_bron(bron),
-            UiCommand::DeelBureaubladgeluid => self.deel_bureaubladgeluid(),
             UiCommand::StreamVolume(peer, id, vol) => {
                 self.stream_volumes.insert((peer, id), vol);
                 if let Some(v) = &self.voice {
@@ -1025,10 +1058,15 @@ impl Engine {
                 self.herstart_lopende_delers();
             }
             UiCommand::StopDelen(id) => {
+                let was_scherm = self.bronnen.remove(&id).is_some();
                 let (cmds, acties) = self.streams.stop_delen(id);
-                self.bronnen.remove(&id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
+                // Fase 10: het laatste scherm weg betekent ook het geluid weg, zonder
+                // dat de gebruiker dat apart hoeft te doen.
+                if was_scherm && !self.deelt_scherm_of_venster() {
+                    self.stop_bureaubladgeluid();
+                }
             }
             UiCommand::Kijken(eigenaar, id) => {
                 let acties = self.streams.wil_kijken(eigenaar, id);

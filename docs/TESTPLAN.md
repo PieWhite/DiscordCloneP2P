@@ -416,6 +416,61 @@ foto.
 
 ---
 
+## Fase 10 — Resoluties, bitrate, gecombineerd delen
+
+Nieuw deze ronde, nog niet met een echte peer getest. De bugfix (bureaubladgeluid stopte
+niet echt bij een expliciete stop) heeft een regressietest en de resolutie-ondersteuning
+bleek al overal parametrisch — daar is niets gebouwd om te breken. Wat overblijft is
+precies het soort gedrag dat alleen met echte hardware te controleren is: hoe het beeld
+eruitziet op 1440p/ultrawide, of de bitrate-verlaging de audio-lag echt oplost, en of de
+nieuwe automatische geluidsdeling zonder eigen-stem-echo werkt.
+
+**10.1 1440p scherp en zonder framedrops**
+Deel je 1440p-hoofdscherm. Bij je vriend moet tekst scherp leesbaar zijn, zonder haperingen
+in een normaal gesprek. *Faalt dit, dan zit er toch ergens een aanname op 1080p — kijk in
+`crates/video/src/codec.rs` en `crates/video/src/kleur.rs`.*
+
+**10.2 Ultrawide (3440×1440) zonder vervorming**
+Zelfde als 10.1, maar met een ultrawide-scherm of -venster. Let vooral op de
+beeldverhouding in het kijkvenster (moet 21:9 blijven, niet uitgerekt naar 16:9). *Faalt
+dit, dan klopt `verhouding` in `crates/video/src/venster.rs` niet, of de
+video-instellingen-UI dwingt ergens stilzwijgend 16:9 af.*
+
+**10.3 12 Mbit/s lost de audio-lag op**
+Herhaal de oorspronkelijke situatie: jij deelt je scherm op 1080p60, je vriend kijkt mee
+terwijl zijn eigen internetverbinding matig is. Zijn kant moet nu **geen** hoorbare
+audio-lag meer geven bij jou (de streamer). *Dit is de kern van de bitrate-wijziging — zie
+`docs/SPEC.md`, sectie "Bitrate". Blijft de lag, dan zit het probleem niet bij de bitrate
+en moet de aanname in die sectie herzien worden.*
+
+**10.4 Scherm delen start geluid automatisch**
+Neem deel aan het gesprek, deel daarna een monitor of venster. Zonder op een knop te
+klikken moet je vriend nu ook je bureaubladgeluid horen (zet iets af dat geluid maakt).
+Zet `FITCOM_LOG=debug` aan: in het logbestand moet "bureaubladgeluid via
+proces-exclusieve WASAPI-loopback" verschijnen. *Staat er in plaats daarvan "terugval op
+gewone loopback", dan is de exclude-route niet beschikbaar op deze Windows-versie — dat is
+op zich geen bug (de terugval is bedoeld), maar dan geldt bij 10.5 het verhoogde risico dat
+je je eigen stem terughoort.*
+
+**10.5 Eigen stem komt niet terug via het gedeelde geluid**
+Terwijl je scherm en geluid deelt (10.4) en gewoon praat: je vriend mag jouw stem niet
+via het gedeelde bureaubladgeluid dubbel/vertraagd terughoren — alleen via de normale
+voice-verbinding. *Dit is precies waarom de proces-exclusieve route gebouwd is; hoort hij
+je toch dubbel, dan sluit de exclude-modus je eigen proces niet goed uit, of de terugval
+naar cpal is geactiveerd (zie 10.4) en dat is dan een bekende beperking, geen nieuwe bug.*
+
+**10.6 Stoppen met scherm delen stopt het geluid ook echt**
+Stop met delen (laatste scherm/venster weg) terwijl je geluid deelde. Bij je vriend moet
+het geluid meteen stil zijn — geen resterend geluid, geen "stoppen"-knop meer nodig (die
+is er niet meer). *Dit dekt zowel de losstaande bugfix als de nieuwe auto-koppeling.*
+
+**10.7 Eén scherm stoppen terwijl er nog een tweede gedeeld wordt**
+Deel twee bronnen (bijv. twee vensters) en stop er één. Het geluid moet **doorgaan** —
+pas als ook de laatste bron stopt, stopt het geluid. *Faalt dit, dan telt
+`deelt_scherm_of_venster()` verkeerd.*
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

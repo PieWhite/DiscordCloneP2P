@@ -562,7 +562,14 @@ impl App {
         ui.label(egui::RichText::new("Scherm delen").strong());
         ui.add_space(4.0);
 
-        for s in &self.snap.eigen_streams {
+        let schermen: Vec<_> = self
+            .snap
+            .eigen_streams
+            .iter()
+            .filter(|s| !s.is_geluid)
+            .collect();
+
+        for s in &schermen {
             ui.horizontal(|ui| {
                 // Delen kost pas iets zodra er iemand kijkt, en dat is precies wat je
                 // hier wilt kunnen zien als er een game draait.
@@ -587,7 +594,7 @@ impl App {
             ui.add_space(4.0);
         }
 
-        let label = if self.snap.eigen_streams.is_empty() {
+        let label = if schermen.is_empty() {
             "Scherm delen…"
         } else {
             "Nog een bron delen…"
@@ -596,37 +603,14 @@ impl App {
             .add_sized([ui.available_width(), 26.0], egui::Button::new(label))
             .clicked();
 
-        // Bureaubladgeluid gaat over de voice-verbinding mee, dus zonder gesprek is er
-        // geen weg naar de anderen. Uitgrijzen legt dat beter uit dan een foutmelding
-        // achteraf.
-        ui.add_space(4.0);
-        let deelt_geluid = self.snap.eigen_streams.iter().any(|s| s.is_geluid);
-        let knop = ui.add_enabled(
-            self.snap.voice.actief,
-            egui::Button::new(if deelt_geluid {
-                "Geluid niet meer delen"
-            } else {
-                "Geluid van deze pc delen"
-            })
-            .min_size([ui.available_width(), 24.0].into()),
-        );
-        if !self.snap.voice.actief {
-            knop.on_disabled_hover_text("neem eerst deel aan het gesprek");
-        } else if knop.clicked() {
-            cmd = Some(match self.eigen_geluidsstream() {
-                Some(id) => UiCommand::StopDelen(id),
-                None => UiCommand::DeelBureaubladgeluid,
-            });
+        // Geen eigen knop meer (fase 10): geluid van deze pc gaat automatisch mee zodra
+        // er een scherm of venster gedeeld wordt, en stopt automatisch met de laatste.
+        // Alleen nog een passieve statusregel, niets om op te klikken.
+        if self.snap.eigen_streams.iter().any(|s| s.is_geluid) {
+            ui.add_space(4.0);
+            ui.small("\u{1F50A} geluid van deze pc gaat automatisch mee");
         }
         (cmd, openen)
-    }
-
-    fn eigen_geluidsstream(&self) -> Option<u32> {
-        self.snap
-            .eigen_streams
-            .iter()
-            .find(|s| s.is_geluid)
-            .map(|s| s.stream_id)
     }
 
     /// Centrale plek waar een lokaal bestand de aanbiedflow ingaat, ongeacht of het via

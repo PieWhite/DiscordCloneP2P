@@ -640,11 +640,17 @@ const BUREAUBLAD_HANGOVER: u32 = 100; // 2 seconden
 
 /// Neemt op wat er uit de luidsprekers komt en stuurt het mee.
 ///
-/// # Waarom hier geen eigen WASAPI-code staat
+/// # Twee routes, met terugval
 ///
-/// `cpal` doet dit al: bouw je een *invoer*stroom op een *uitvoer*apparaat, dan zet
-/// WASAPI stilzwijgend loopback aan. Dat scheelt een hoop `unsafe` en een tweede
-/// implementatie van dezelfde apparaatlogica.
+/// Sinds fase 10 wordt bureaubladgeluid automatisch aangezet zodra iemand een scherm
+/// deelt (zie `crates/app/src/engine.rs`). Dat betekent dat de gewone `cpal`-loopback
+/// (bouw je een *invoer*stroom op een *uitvoer*apparaat, dan zet WASAPI stilzwijgend
+/// loopback aan) niet meer volstaat: die vangt ook de eigen voice-weergave van deze app
+/// op, dus zou een luisteraar zijn eigen stem vertraagd terug horen via het gedeelde
+/// geluid. `bureaublad_lus` probeert daarom eerst de proces-exclusieve WASAPI-loopback
+/// (`wasapi_capture::start_exclude_thread`, sluit dit proces expliciet uit) en valt pas
+/// bij een fout terug op de gewone `cpal`-route hieronder — beschikbaarheid hangt af van
+/// de Windows-versie, niet van de GPU, en is niet op elke machine gegarandeerd.
 fn start_bureaublad(
     gedeeld: Arc<Gedeeld>,
     socket: MediaSocket,
@@ -671,23 +677,41 @@ fn bureaublad_lus(
     socket: &MediaSocket,
     apparaat: Option<&String>,
 ) -> Result<()> {
-    let host = cpal::default_host();
-    let dev = kies_apparaat(host.output_devices()?, apparaat)
-        .or_else(|| host.default_output_device())
-        .context("geen weergaveapparaat om geluid van af te tappen")?;
-    let cfg = dev
-        .default_output_config()
-        .context("weergave-instellingen")?;
-    let rate = cfg.sample_rate();
-    let kanalen = cfg.channels() as usize;
-
     let (tx, rx) = bounded::<Vec<f32>>(32);
-    // De stroom moet blijven leven op deze thread; laat je hem vallen dan stopt de
-    // opname stil.
-    let _stroom = bouw_invoer(&dev, &cfg, kanalen, tx)?;
-    _stroom.play().context("bureaubladopname starten")?;
 
-    tracing::info!(apparaat = %dev.to_string(), rate, kanalen, "bureaubladgeluid wordt gedeeld");
+    // De stroom/thread moet blijven leven zolang deze functie loopt; laat je hem vallen
+    // dan stopt de opname stil. `_stroom` is alleen gevuld bij de cpal-terugval — de
+    // wasapi-route beheert haar eigen thread en stopt zichzelf via `gedeeld`.
+    let (rate, _kanalen, _stroom) = match wasapi_capture::start_exclude_thread(
+        gedeeld.clone(),
+        tx.clone(),
+    ) {
+        Ok(()) => {
+            tracing::info!(
+                "bureaubladgeluid via proces-exclusieve WASAPI-loopback (eigen stem uitgesloten)"
+            );
+            (SAMPLE_RATE, wasapi_capture::KANALEN, None)
+        }
+        Err(e) => {
+            tracing::info!(
+                error = %format!("{e:#}"),
+                "proces-exclusieve loopback niet beschikbaar, terugval op gewone loopback (eigen stem kan meekomen)"
+            );
+            let host = cpal::default_host();
+            let dev = kies_apparaat(host.output_devices()?, apparaat)
+                .or_else(|| host.default_output_device())
+                .context("geen weergaveapparaat om geluid van af te tappen")?;
+            let cfg = dev
+                .default_output_config()
+                .context("weergave-instellingen")?;
+            let rate = cfg.sample_rate();
+            let kanalen = cfg.channels() as usize;
+            let stroom = bouw_invoer(&dev, &cfg, kanalen, tx)?;
+            stroom.play().context("bureaubladopname starten")?;
+            tracing::info!(apparaat = %dev.to_string(), rate, kanalen, "bureaubladgeluid wordt gedeeld");
+            (rate, kanalen, Some(stroom))
+        }
+    };
 
     let mut resampler = Resampler::new(rate, SAMPLE_RATE);
     let mut encoder = Encoder::voor_muziek()?;
@@ -752,6 +776,152 @@ fn bureaublad_lus(
 
     tracing::info!("bureaubladgeluid niet meer gedeeld");
     Ok(())
+}
+
+/// Proces-exclusieve WASAPI-loopback: capturet alles wat naar de speakers gaat
+/// *behalve* dit proces, zodat de eigen voice-weergave van deze app niet meegecaptured
+/// wordt (anders hoort een luisteraar zijn eigen stem vertraagd terug via het gedeelde
+/// bureaubladgeluid). Beschikbaar sinds Windows 10 build 20348 (in de praktijk Windows
+/// 11), geen Store-uitbreiding nodig — maar niet gegarandeerd aanwezig, dus alles hier
+/// degradeert naar een `Err` in plaats van te crashen; `bureaublad_lus` valt dan terug
+/// op de gewone `cpal`-loopback.
+mod wasapi_capture {
+    use super::Gedeeld;
+    use crate::mix;
+    use anyhow::{bail, Context, Result};
+    use crossbeam_channel::Sender;
+    use std::collections::VecDeque;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Vast op stereo: eenvoudiger dan het apparaat opvragen, en `WaveFormat` dwingt
+    /// WASAPI zelf tot deze indeling via `autoconvert`.
+    pub const KANALEN: usize = 2;
+    const BYTES_PER_FRAME: usize = KANALEN * 4; // 32-bit float per kanaal
+
+    /// Start de captureloop op zijn eigen thread en wacht tot bekend is of het gelukt
+    /// is. `AudioClient`/`AudioCaptureClient`/`Handle` zijn niet `Send`, dus opzetten
+    /// én gebruiken moet op dezelfde OS-thread — vandaar dat alles hieronder ná het
+    /// spawnen gebeurt, niet ervoor. Lukt het, dan loopt de thread zelfstandig door en
+    /// stopt zichzelf via `gedeeld` — precies zoals de cpal-route dat via `gedeeld` en
+    /// haar eigen thread-levensduur doet.
+    pub fn start_exclude_thread(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>) -> Result<()> {
+        let (klaar_tx, klaar_rx) = crossbeam_channel::bounded::<Result<()>>(1);
+
+        std::thread::Builder::new()
+            .name("fitcom-bureaublad-wasapi".into())
+            .spawn(move || {
+                let (client, capture_client, event) = match opzetten() {
+                    Ok(v) => {
+                        let _ = klaar_tx.send(Ok(()));
+                        v
+                    }
+                    Err(e) => {
+                        let _ = klaar_tx.send(Err(e));
+                        return;
+                    }
+                };
+                capture_lus(&gedeeld, &capture_client, &event, &tx);
+                let _ = client.stop_stream();
+            })
+            .context("wasapi-captureloop starten")?;
+
+        match klaar_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(res) => res,
+            Err(_) => bail!("geen antwoord van de wasapi-captureloop binnen 2 seconden"),
+        }
+    }
+
+    fn opzetten() -> Result<(
+        wasapi::AudioClient,
+        wasapi::AudioCaptureClient,
+        wasapi::Handle,
+    )> {
+        wasapi::initialize_mta().ok()?;
+        let formaat = wasapi::WaveFormat::new(
+            32,
+            32,
+            &wasapi::SampleType::Float,
+            mix::SAMPLE_RATE as usize,
+            KANALEN,
+            None,
+        );
+        // `include_tree: false` is de exclude-modus: alles behalve dit proces (en zijn
+        // kindprocessen) — precies andersom dan "capture alleen dit ene proces".
+        let mut client =
+            wasapi::AudioClient::new_application_loopback_client(std::process::id(), false)
+                .context("proces-exclusieve loopback niet beschikbaar op deze Windows-versie")?;
+        let modus = wasapi::StreamMode::EventsShared {
+            autoconvert: true,
+            buffer_duration_hns: 0,
+        };
+        client
+            .initialize_client(&formaat, &wasapi::Direction::Capture, &modus)
+            .context("wasapi-client initialiseren")?;
+        let event = client.set_get_eventhandle().context("wasapi-eventhandle")?;
+        let capture_client = client
+            .get_audiocaptureclient()
+            .context("wasapi-captureclient")?;
+        client.start_stream().context("wasapi-stream starten")?;
+        Ok((client, capture_client, event))
+    }
+
+    /// Blijft lopen zolang wij bureaubladgeluid delen; stopt zichzelf zodra `gedeeld`
+    /// zegt dat niemand meer luistert, net als de cpal-route in `bureaublad_lus` dat
+    /// via dezelfde velden doet.
+    fn capture_lus(
+        gedeeld: &Arc<Gedeeld>,
+        capture_client: &wasapi::AudioCaptureClient,
+        event: &wasapi::Handle,
+        tx: &Sender<Vec<f32>>,
+    ) {
+        let mut bytes: VecDeque<u8> = VecDeque::new();
+
+        while !gedeeld.stop.load(Ordering::Relaxed) {
+            if gedeeld
+                .bureaublad
+                .lock()
+                .map(|b| b.is_none())
+                .unwrap_or(true)
+            {
+                break; // niemand luistert meer, of het geheel is gestopt
+            }
+
+            match capture_client.get_next_packet_size() {
+                Ok(Some(n)) if n > 0 => {
+                    if let Err(e) = capture_client.read_from_device_to_deque(&mut bytes) {
+                        tracing::debug!(error = %format!("{e:#}"), "wasapi-loopback lezen mislukt");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(error = %format!("{e:#}"), "wasapi-pakketgrootte opvragen mislukt");
+                }
+            }
+
+            let frames = bytes.len() / BYTES_PER_FRAME;
+            if frames > 0 {
+                let mut verweven = Vec::with_capacity(frames * KANALEN);
+                for _ in 0..frames * KANALEN {
+                    let b = [
+                        bytes.pop_front().unwrap(),
+                        bytes.pop_front().unwrap(),
+                        bytes.pop_front().unwrap(),
+                        bytes.pop_front().unwrap(),
+                    ];
+                    verweven.push(f32::from_le_bytes(b));
+                }
+                let mut mono = Vec::new();
+                mix::naar_mono(&verweven, KANALEN, &mut mono);
+                let _ = tx.try_send(mono);
+            }
+
+            if event.wait_for_event(500).is_err() {
+                break;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
