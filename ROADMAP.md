@@ -257,24 +257,37 @@ Zie beslissing 15 in `docs/OVERDRACHT.md`.
 **Niet geverifieerd, om dezelfde reden als bij eerdere fases:** het slepen zelf, en hoe een
 miniatuur er in de tijdlijn daadwerkelijk uitziet — dat moet Rick nog met de hand doen.
 
-### Fase 9 — DM: meerdere kanalen per peer met een eigen titel
-Eén DM met een peer moet meerdere losse, benoembare gesprekken kunnen bevatten
-(bijv. "algemeen" en "project X"), die wel allemaal bij diezelfde peer horen.
+### Fase 9 — Algemeen: meerdere subkanalen met een eigen titel ✅
+Oorspronkelijk gepland als meerdere benoembare gesprekken **binnen één DM**. Op verzoek
+van Rick omgedraaid tijdens het bouwen: de subkanalen horen bij **het algemene kanaal**,
+niet bij een DM. Net als Discord-kanalen binnen één server — "algemeen" en "project X" als
+aparte, voor iedereen zichtbare gesprekken naast het bestaande hoofdkanaal. Een DM blijft
+een enkel gesprek tussen twee peers, zoals hij nu is.
 
-- **Protocolwijziging, additief**: `Channel::Dm(PeerId)` krijgt een sub-kanaal-identifier
-  (en titel) erbij, net zoals `seq` recent van "per auteur" naar "per (auteur, kanaal)"
-  moest — hier wordt het "per (auteur, peer, sub-kanaal)". Zie `docs/ARCHITECTURE.md`,
-  sectie "Kanalen", voor het patroon dat hier hergebruikt wordt.
-- **UI**: binnen een DM een nieuw sub-kanaal aanmaken, hernoemen en wisselen; berichten en
-  bestanden blijven per sub-kanaal gescheiden, net als nu tussen algemeen en een DM.
+- **Protocolwijziging, additief**: `Channel` krijgt een derde soort naast algemeen en DM —
+  `Channel::topic(id)`, met een eigen `TopicId` (een `Uuid`, net als `PeerId`). Dezelfde
+  aanpak als bij de vorige kanalen-uitbreiding: `seq` telt hierdoor ook per (auteur,
+  subkanaal), en dat werkt zonder verdere wijziging omdat `seq` al per (auteur, kanaal)
+  telde, niet per auteur alleen. Zie `docs/ARCHITECTURE.md`, sectie "Kanalen".
+- **Een subkanaal is net zo zichtbaar als het algemene kanaal**: geen aparte
+  toestemming, geen doorstuurbeperking. Het is bewust géén DM-achtige uitzondering — het
+  is een extra, voor iedereen open gespreksstroom onder "Algemeen", en profiteert dus van
+  dezelfde doorstuur- en hersync-robuustheid.
+- **Titel via een gewone op**, net als een bijnaam: `OpKind::SetTopicTitle { id, title }`
+  legt zowel het aanmaken (eerste keer gezien) als het hernoemen (latere keer, hoogste
+  `(lamport, author)` wint) vast — geen apart "kanaal aangemaakt"-bericht nodig.
+- **UI**: binnen "Algemeen" een lijst subkanalen, een nieuwe aanmaken met een titel,
+  een bestaande hernoemen, en ertussen wisselen; berichten en bestanden blijven per
+  subkanaal gescheiden, net als nu tussen algemeen en een DM. Eigen ongelezen-teller per
+  subkanaal, los van het hoofdkanaal en van DM's.
 - Dit moet, net als bij de vorige kanalen-uitbreiding, langs de `protocol-reviewer`-agent
   vóór het committen — dit soort wijzigingen in `crates/proto`/`crates/store` is precies
   waar eerder een reken- en een schema-fout binnenslopen (zie `docs/OVERDRACHT.md`,
   beslissing 10 en de bugs eronder).
 
-**Klaar als:** twee peers meerdere los van elkaar gesynchroniseerde, benoemde
-sub-gesprekken kunnen voeren binnen dezelfde DM, bevestigd met een test op store-niveau
-zoals de bestaande kanaal-scoping-tests.
+**Klaar als:** alle peers dezelfde set subkanalen en titels zien, berichten en bestanden in
+een subkanaal bij iedereen aankomen (ook bij een peer die pas later online komt) net als in
+het algemene kanaal, en het aanmaken/hernoemen/wisselen in de UI werkt.
 
 ### Fase 10 — Beeld en geluid: resoluties, bitrate, gecombineerd delen
 - **Resolutieondersteuning 2560×1440 en 3440×1440 (ultrawide).** SPEC ging uit van

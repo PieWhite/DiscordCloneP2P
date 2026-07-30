@@ -9,10 +9,15 @@ Bewust niet in v1. De architectuur moet deze items kunnen opnemen zonder herontw
 - Push-to-talk met globale hotkey. Voorzien in het ontwerp, niet gebouwd.
 - Directe NVENC in plaats van Media Foundation, als de latencymeting in fase 4 daarom vraagt.
 - Groepskanalen (meer dan twee peers, maar niet iedereen). Dit is iets anders dan de
-  naamgevbare sub-kanalen binnen één DM uit fase 9: hier gaat het om een kanaal met een
-  subset van de peers die niet iedereen omvat. `Channel` is al getagd (`tag`, net als
-  `StreamKind`/`FileOutcome`) zodat dit later als nieuwe waarde bij kan zonder een
-  protocolbreuk — zie `docs/ARCHITECTURE.md`, sectie "Kanalen".
+  naamgevbare subkanalen onder "Algemeen" uit fase 9: die zijn voor iedereen zichtbaar,
+  net als het algemene kanaal zelf. Hier gaat het om een kanaal met een subset van de
+  peers die niet iedereen omvat — vergelijkbaar met een DM, maar met meer dan twee
+  deelnemers. `Channel` is al getagd (`tag`, net als `StreamKind`/`FileOutcome`) zodat dit
+  later als nieuwe waarde bij kan zonder een protocolbreuk — zie `docs/ARCHITECTURE.md`,
+  sectie "Kanalen".
+- Subkanalen binnen een DM (het oorspronkelijke plan voor fase 9, vóór Rick het omdraaide
+  naar subkanalen onder "Algemeen"). Zou dezelfde `TopicId`-aanpak kunnen hergebruiken,
+  alleen genest onder `Channel::dm(peer)` in plaats van onder het algemene kanaal.
 
 ## Afgewezen, niet alleen uitgesteld
 - **YouTube-linkvoorvertoning (thumbnail/titel/kanaalnaam).** Zou alleen kunnen door de

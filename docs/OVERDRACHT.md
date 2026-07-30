@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-30, na fase 8 (chat verrijking: bestanden inline, plakken, links).
+Laatst bijgewerkt: 2026-07-30, na fase 9 (subkanalen onder het algemene kanaal).
 
 ---
 
@@ -13,14 +13,15 @@ Laatst bijgewerkt: 2026-07-30, na fase 8 (chat verrijking: bestanden inline, pla
 |---|---|---|
 | 0 — Scaffolding | ✅ af | draait |
 | 1 — Netwerklaag | ✅ af | **echt getest tussen twee PC's over Tailscale** |
-| 2 — Tekstchat | ✅ af, nog niet met een echte peer getest | 19 unit/integratietests, 3 lokale instanties |
-| 3 — Voice | ✅ af, nog niet met een echte peer getest | ketentests + rooktest op echte geluidskaart |
-| 4 — Screenshare | ✅ af, nog niet met een echte peer getest | volledige keten op echte GPU, 55 fps op 1080p |
-| 5 — Screenshare uitbreiding | ✅ af, nog niet met een echte peer getest | ketentest + motortest blijven groen na de wijziging |
-| 6 — Bestandsdeling | ✅ af, nog niet met een echte peer getest | `crates/app/tests/file_deling.rs`: volledige overdracht + hash door de echte motor heen, geen GPU nodig |
-| Kanalen (DM's), na fase 6 | ✅ af, nog niet met een echte peer getest | `crates/app/tests/chat_sync.rs` (drie peers, volledige mesh, echte QUIC) + `crates/store/tests/convergentie.rs` (kanaal-scoping op store-niveau) |
-| 7 — Tags, meldingen, niet storen, gebruikersnaam | ✅ af, nog niet met een echte peer getest | `crates/app/src/tags.rs` (unit-tests op de tag-herkenning en cursor-parsing) + twee lokale instanties starten en verbinden schoon |
-| 8 — Chat verrijking: bestanden inline, plakken, links | ✅ af, nog niet met een echte peer getest | volledige testsuite blijft groen (o.a. `crates/app/tests/file_deling.rs`, `crates/store/src/timeline.rs`) + twee lokale instanties starten en verbinden schoon |
+| 2 — Tekstchat | ✅ af, **bevestigd met een echte peer** | 19 unit/integratietests, 3 lokale instanties, `docs/TESTPLAN.md` 2.1 t/m 2.9 |
+| 3 — Voice | ✅ af, **bevestigd met een echte peer** | ketentests + rooktest op echte geluidskaart, `docs/TESTPLAN.md` 3.1 t/m 3.10 |
+| 4 — Screenshare | ✅ af, **bevestigd met een echte peer** | volledige keten op echte GPU, 55 fps op 1080p, `docs/TESTPLAN.md` 4.1 t/m 4.12 |
+| 5 — Screenshare uitbreiding | ✅ af, **bevestigd met een echte peer** | ketentest + motortest blijven groen na de wijziging, `docs/TESTPLAN.md` 5.1 t/m 5.4 |
+| 6 — Bestandsdeling | ✅ af, **bevestigd met een echte peer** | `crates/app/tests/file_deling.rs`: volledige overdracht + hash door de echte motor heen, geen GPU nodig; `docs/TESTPLAN.md` 6.1 t/m 6.7 |
+| Kanalen (DM's), na fase 6 | ✅ af, **bevestigd met een echte peer** | `crates/app/tests/chat_sync.rs` (drie peers, volledige mesh, echte QUIC) + `crates/store/tests/convergentie.rs` (kanaal-scoping op store-niveau); `docs/TESTPLAN.md` K.1 t/m K.6 |
+| 7 — Tags, meldingen, niet storen, gebruikersnaam | ✅ af, **bevestigd met een echte peer** | `crates/app/src/tags.rs` (unit-tests op de tag-herkenning en cursor-parsing); `docs/TESTPLAN.md` 7.1 t/m 7.7 |
+| 8 — Chat verrijking: bestanden inline, plakken, links | ✅ af, grotendeels bevestigd (Ctrl+V-plakken bevestigd, zie beslissing 15) | volledige testsuite blijft groen (o.a. `crates/app/tests/file_deling.rs`, `crates/store/src/timeline.rs`); slepen-en-neerzetten, de miniatuur in de tijdlijn en het Instellingenscherm nog niet met de hand bekeken |
+| 9 — Algemeen: subkanalen met een eigen titel | ✅ af, nog niet met een echte peer getest | volledige testsuite blijft groen (nieuwe tests in `crates/proto`, `crates/store`, `crates/app/src/ui.rs`) + `protocol-reviewer`-agent vóór het committen + twee lokale instanties starten en verbinden schoon; zie `docs/TESTPLAN.md`, fase 9 |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -321,11 +322,57 @@ aanbieden.
 de enige manier waarop dit te testen was, want dit hele probleem zat in hoe Windows en egui
 onderling met het klembord omgaan, niet in iets dat een geautomatiseerde test kan simuleren.
 
+### 16. Subkanalen onder het algemene kanaal in plaats van onder een DM (fase 9)
+
+`ROADMAP.md` schetste fase 9 aanvankelijk als meerdere benoembare gesprekken **binnen één
+DM** — "algemeen" en "project X" als sub-gesprekken met dezelfde ene peer. Rick draaide dit
+tijdens het bouwen om: de subkanalen horen bij **het algemene kanaal**, niet bij een DM. Het
+resultaat is dichter bij Discord-kanalen binnen één server dan bij sub-DM's — een
+subkanaal is een extra, voor **iedereen** zichtbare gespreksstroom naast "Algemeen", geen
+uitbreiding van een privégesprek tussen twee peers.
+
+Technisch schelen de twee ontwerpen weinig: in beide gevallen krijgt `Channel` een derde
+soort met een eigen identifier, en werkt `seq` per (auteur, kanaal) al generiek genoeg om
+dat zonder verdere aanpassing te dragen. Het verschil zit in de zichtbaarheidsregel: een
+DM-subkanaal zou de DM-beperking (alleen de twee betrokkenen, geen doorstuurhulp) moeten
+erven, een subkanaal onder "Algemeen" juist niet — die moet zich in alles gedragen als het
+algemene kanaal zelf. Vandaar `Channel::is_public()` (`tag == 0 || tag == 2`) als de ene
+plek die overal bepaalt of iets zich als "algemeen" gedraagt, in plaats van het bestaande
+`is_general()` overal aan te passen: `is_general()` blijft "is dit letterlijk het
+hoofdkanaal", `is_public()` wordt "is dit voor iedereen zichtbaar en met doorstuurhulp".
+
+**Protocolversie moest opnieuw omhoog (2 → 3)**, net als bij de DM-uitbreiding, maar om een
+andere reden: niet omdat het wire-decoderen van de nieuwe `Channel`-tag een probleem was
+(dat is een map, geen tuple, dus onschadelijk voor een oudere peer), maar omdat de lokale
+opslag (`channel_to_blob` in `crates/store/src/lib.rs`, `encode_channel` in
+`crates/net/src/filestream.rs`) een onbekende tag stilzwijgend op dezelfde sleutel als het
+algemene kanaal zou aliasen — zie de bug hieronder, gevonden door de `protocol-reviewer`-
+agent vóór het committen.
+
 ---
 
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
+
+**Onbekende kanaal-tag aliasde stilzwijgend naar het algemene kanaal (fase 9).** Niet door
+een test gevonden, maar door de `protocol-reviewer`-agent vóór het committen. De eerste
+versie van de subkanalen-uitbreiding voegde tag 2 toe aan `Channel` zonder
+`PROTOCOL_VERSION` op te hogen, met als redenering dat het wire-decoderen additief en dus
+veilig was (`Channel` is een map, nieuwe velden krijgen `#[serde(default)]`). Dat klopte
+voor het decoderen, maar niet voor wat er daarna met de op gebeurde: `channel_to_blob` en
+`encode_channel` kenden alleen tag 0 (algemeen) en 1 (DM), en lieten elke andere tag —
+dus ook de nieuwe subkanaal-tag — stilzwijgend terugvallen op tag 0. Een subkanaal-op en
+een algemene op van dezelfde auteur met toevallig dezelfde `seq` (elk kanaal telt `seq`
+onafhankelijk, dus dat is een gewone samenloop, geen randgeval) kwamen bij een peer die de
+subkanaal-tag nog niet kende op **dezelfde primary key** in de `ops`-tabel terecht: welke
+van de twee won hing af van aankomstvolgorde, en de andere verdween voorgoed zonder fout of
+logregel. Hetzelfde gat zat in de bestandsoverdracht-header. Precies het patroon dat de
+1→2-bump (zie beslissing 10) ook al moest voorkomen — alleen ditmaal niet zichtbaar in het
+wire-formaat, maar in de lokale opslag eronder. Gefixt door `PROTOCOL_VERSION` alsnog naar 3
+op te hogen: een peer zonder subkanaalbegrip wordt nu bij de handshake netjes met
+`VersionMismatch` geweigerd, in plaats van dat de opslag stilletjes twee ops door elkaar
+haalt. Zie `docs/ARCHITECTURE.md`, sectie "Kanalen", "Protocolversie: 1 → 2, 2 → 3".
 
 **Botsende QUIC-verbindingen (fase 1).** Twee peers die tegelijk starten dialen elkaar
 tegelijk. Ik vergeleek de nieuwe verbinding met de bestaande — dat hangt af van
@@ -562,7 +609,8 @@ crates/store/src/lib.rs      ops/authors-tabellen op (author, channel, seq); ver
 crates/store/src/timeline.rs Message/FileEntry dragen channel; Edit/Delete matchen nu ook
                              target.channel == op.channel
 crates/app/src/chat.rs       stuur_op() routeert een DM naar alleen de geadresseerde; doorsturen
-                             filtert op op.channel.is_general()
+                             filtert op op.channel.is_public() (sinds fase 9: algemeen én
+                             subkanalen, alleen een DM is uitgezonderd)
 crates/app/src/files.rs      verzoek_ontvangen() weigert een DM-bestand aan iemand anders dan
                              de geadresseerde
 crates/app/src/ui.rs         actief_kanaal + DM-knop per peer met ongelezen-badge
@@ -587,6 +635,52 @@ derde peer krijgt (zie ook beslissing 10 hierboven).
 
 **Bewust niet gedaan:** groepskanalen (meer dan twee, maar niet iedereen) — `Channel` is
 al zo getagd dat dat later als nieuwe waarde bij kan zonder protocolbreuk, zie `TODO.md`.
+
+---
+
+## Hoe subkanalen onder het algemene kanaal in elkaar zitten (fase 9)
+
+```
+crates/proto/src/ids.rs      TopicId (nieuw, een Uuid-newtype); Channel kreeg tag 2 +
+                              topic: Option<TopicId>; is_public() = tag 0 || tag 2
+crates/proto/src/op.rs       OpKind::SetTopicTitle { id, title } (tag 20); visible_to()
+                              gebruikt nu is_public() in plaats van is_general()
+crates/proto/src/lib.rs      PROTOCOL_VERSION 2 → 3 — zie beslissing 16 en de bug hierboven
+crates/store/src/lib.rs      channel_to_blob/from_blob: tag 2 hergebruikt dezelfde 16-byte
+                              slot als een DM-peer (sluiten elkaar uit), dus geen
+                              schema-migratie nodig
+crates/store/src/timeline.rs Timeline.topics: HashMap<TopicId, String>, opgebouwd uit
+                              SetTopicTitle net als nicknames uit SetNick
+crates/net/src/filestream.rs encode_channel/decode_channel: tag 2 in de bestandsheader
+crates/app/src/chat.rs       zet_kanaal_titel() (aanmaken én hernoemen, zelfde op);
+                              ongelezen_topic: HashMap<TopicId, usize>, los van ongelezen_dm
+crates/app/src/engine.rs     UiCommand::MaakKanaal/HernoemKanaal/GelezenTopic;
+                              deelbestand_naam() kreeg een topic-tak (anders zou een
+                              subkanaal-bestand dezelfde tijdelijke naam kunnen krijgen als
+                              een algemeen bestand van dezelfde auteur met dezelfde seq)
+crates/app/src/ui.rs         Sidebar toont subkanalen onder "# Algemeen" (aanmaken/
+                              hernoemen/wisselen); hoort_bij_kanaal() kreeg een derde tak
+```
+
+**De kern staat in `docs/ARCHITECTURE.md`, sectie "Kanalen"**, inclusief waarom dit als
+`Channel::is_public()` naast `is_general()` is toegevoegd in plaats van `is_general()` zelf
+op te rekken, en de volledige uitleg van de protocolversie-bump.
+
+**Geen apart "kanaal aangemaakt"-bericht.** Zowel het aanmaken als het hernoemen van een
+subkanaal is dezelfde `SetTopicTitle`-op, last-writer-wins op `(lamport, author)` per
+`TopicId` — identiek aan hoe een bijnaam werkt. Er is dus ook geen "verwijder subkanaal":
+dat was niet gevraagd en is niet gebouwd, net zomin als een bijnaam ooit "verwijderd"
+wordt.
+
+**Wat hier het meest kon misgaan, en dus getest is:**
+- Dat een subkanaal, anders dan een DM, wél bij alle peers aankomt en via een derde peer
+  doorgestuurd wordt — `crates/store/tests/convergentie.rs::subkanaal_bereikt_alle_peers_net_als_algemeen_anders_dan_een_dm`.
+- Dat een subkanaal-titel en -bericht een herstart overleven, inclusief de blob-encodering
+  door de echte SQLite-opslag heen — `crates/store/tests/convergentie.rs::subkanaal_titel_en_bericht_overleven_een_herstart`.
+- Dat de UI een subkanaal-bericht niet met het algemene kanaal of een ander subkanaal door
+  elkaar haalt — `crates/app/src/ui.rs::kanaal_tests::subkanaal_toont_alleen_zijn_eigen_berichten`.
+- De kanaal-roundtrip van de bestandsoverdracht-header voor tag 2 —
+  `crates/net/src/filestream.rs::tests::kanaal_roundtrip`.
 
 ---
 
@@ -703,54 +797,16 @@ weergave.
 
 ## Wat nog nooit met een echte peer getest is
 
-Fase 1 is bevestigd tussen twee PC's over Tailscale. **Fase 2 t/m 6, en kanalen erna,
-niet.** Zie `docs/TESTPLAN.md` voor de testgevallen die daarvoor uitgevoerd moeten worden.
-
-Van kanalen (DM's) is de volledige keten — DM versturen, alleen bij de geadresseerde
-aankomen, nooit bij de derde peer, ook niet via doorsturen — al bevestigd met drie echte
-motoren over loopback-QUIC in volledige mesh (`crates/app/tests/chat_sync.rs`). Wat een
-tweede en derde machine daaraan toevoegen: of de DM-knop, het kanaal-wisselen en de
-ongelezen-badges in de UI in het echt doen wat ze beloven (net als bij screenshare en
-bestandsdeling kon dat hier niet met de hand getest worden), en of een DM tussen twee
-peers die elkaar tijdelijk niet rechtstreeks kunnen bereiken zich gedraagt zoals bedoeld
-— gewoon wachten tot ze weer rechtstreeks verbinden, niet via de derde peer.
-
-Van fase 6 is de volledige keten — aanbieden, syncen, aanvragen, streamen, hervatten,
-hashen — al bevestigd via `crates/app/tests/file_deling.rs` met twee echte motoren over
-loopback-QUIC, inclusief het geval waarin het bronbestand tussen aanbieden en downloaden
-van schijf verdwijnt. Wat een tweede machine daaraan toevoegt: een echt netwerk met echt
-pakketverlies tijdens een lopende overdracht (wordt dat netjes gemeld in plaats van
-oneindig "bezig" te blijven staan?), en of de bestandsdialoog en downloadknoppen in het
-echt doen wat ze beloven — net als bij screenshare kon dat hier niet met de hand getest
-worden.
-
-Fase 4 is op één machine wel volledig doorlopen, inclusief de UDP-weg over loopback en
-de motor met echte QUIC-verbindingen. Wat een tweede machine daaraan toevoegt: een echt
-netwerk met echt pakketverlies, een andere GPU (de RTX 2080 Super is de machine die de
-codeckeuze bepaalde), en een oordeel over hoe het voelt.
-
-Van desktop-audio is de opnamekant bevestigd op echte hardware — met geluid aan komen er
-pakketten uit, zonder geluid geen enkel. Dat het aan de andere kant ook *klinkt* is niet
-te controleren zonder tweede machine: op één PC tapt de loopback het geluid af dat de
-andere instantie net afspeelde.
-
-**Niet geverifieerd: de knoppen zelf.** De motor is via zijn commando's getest, maar op
-"Scherm delen…" en "bekijken" is nooit echt geklikt — in deze omgeving kan een script
-geen invoer naar het bureaublad sturen. Dat is dus het eerste om met de hand te doen.
-Hetzelfde geldt voor fase 5: het video-instellingenscherm en de overzichtstrook zijn
-alleen gecontroleerd op compileren, clippy en de bestaande ketentest/motortest (die
-blijven groen na de wijziging) — niet op hoe ze er in het echt uitzien.
-
-Van fase 7 is de tag-herkenning en de cursor-gebaseerde parsing die de autocomplete
-aandrijft gedekt met unit-tests in `crates/app/src/tags.rs` (woordgrens,
-hoofdletterongevoeligheid, waar de cursor precies staat). Twee lokale instanties starten en
-verbinden schoon, inclusief het versturen van `SetNick` bij opstart. **Niet geverifieerd,
-om dezelfde reden als bij eerdere fases:** het typen van `@` en de suggestielijst die
-verschijnt, Tab/Enter die daadwerkelijk de juiste naam invult zonder een tab-teken of
-nieuwe regel achter te laten, de highlight rond een getagd bericht, de niet-storenknop, en
-of een Windows-melding er in het echt ook zo uitziet als bedoeld. Dat moet Rick met de hand
-doen — bij voorkeur met minstens twee vensters tegelijk open, want het venster moet
-verborgen/geminimaliseerd zijn voordat er überhaupt een melding komt.
+**Fase 1 t/m 7, en kanalen (DM's) erna, zijn inmiddels allemaal door Rick met een echte
+tweede (en waar relevant derde) peer bevestigd** — zie `docs/TESTPLAN.md` voor de volledige
+lijst afgevinkte gevallen (2.1 t/m 2.9, 3.1 t/m 3.10, 4.1 t/m 4.12, 5.1 t/m 5.4, 6.1 t/m
+6.7, K.1 t/m K.6, 7.1 t/m 7.7). Dat dekt onder meer: of de DM-knop, het kanaal-wisselen en
+de ongelezen-badges in de UI echt doen wat ze beloven; of een DM tussen twee peers die
+elkaar tijdelijk niet rechtstreeks bereiken zich gedraagt zoals bedoeld; een echt netwerk
+met echt pakketverlies tijdens een lopende bestandsoverdracht; scherm delen op een andere
+GPU (de RTX 2080 Super); of desktop-audio aan de ontvangstkant ook echt klinkt; en het
+typen van `@`, de suggestielijst, de highlight, de niet-storenknop en een echte
+Windows-melding. **Alleen fase 8 (deels) en fase 9 (nog helemaal) niet — zie hieronder.**
 
 Van fase 8 zijn de bestaande geautomatiseerde ketentests (`file_deling.rs`, `chat_sync.rs`,
 `timeline.rs`, plus nieuwe unit-tests op `Files::verwijder_aanbod` en het verwijderen van een
@@ -770,3 +826,22 @@ een script hier niet sturen:** slepen-en-neerzetten vanuit de Verkenner, of een 
 en een miniatuur er in de tijdlijn ook zo uitzien als bedoeld tussen de berichten door, het
 nieuwe algemene Instellingenscherm, en de bevestigingsvraag bij "Verwijder alle
 afbeeldingen". Dat moet Rick met de hand doen.
+
+Van fase 9 (subkanalen onder het algemene kanaal) is de sync- en opslaglaag gedekt door
+nieuwe tests op store- en protocolniveau (zie "Hoe subkanalen onder het algemene kanaal in
+elkaar zitten" hierboven), en de `protocol-reviewer`-agent vond en de fix bevestigde de
+`PROTOCOL_VERSION`-noodzaak vóór het committen. Twee lokale instanties starten en verbinden
+schoon. **Niet geverifieerd, om dezelfde reden als bij eerdere fases:** het aanmaken en
+hernoemen van een subkanaal via de UI, of de sidebar-lijst en de ongelezen-badge per
+subkanaal er in het echt uitzien en bijwerken zoals bedoeld. Dat moet Rick met de hand doen.
+
+**Sidenote, los van fase 9: afbeeldingen downloaden zichzelf nu automatisch, voor
+iedereen.** Op verzoek van Rick tijdens dezelfde ronde: een `FileMeta`-op waarvan de naam er
+als afbeelding uitziet (`files::is_afbeelding`) triggert nu meteen een download zodra hij
+binnenkomt — zowel live als bij het inhalen van gemiste geschiedenis — in plaats van te
+wachten tot iemand op de downloadknop klikt. Alleen bestanden die je zelf aanbiedt worden
+overgeslagen (die staan al op schijf via `hash_en_bied_aan`). Elk ander bestandstype blijft
+gewoon achter de bestaande bevestigingswal staan: de kaart met downloadknop, precies zoals
+voorheen. Zie `Engine::op_mesh_event` in `crates/app/src/engine.rs`. **Niet geverifieerd:**
+of dit in de praktijk voelt zoals bedoeld — bijvoorbeeld of een handvol afbeeldingen tegelijk
+inhalen bij het opstarten niet hinderlijk aanvoelt. Dat moet Rick met de hand doen.

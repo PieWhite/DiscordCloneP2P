@@ -179,7 +179,7 @@ ops nummert, dus er zitten nooit gaten in.
 ```rust
 struct Op {
     author: Uuid,        // wie de op maakte
-    channel: Channel,    // algemeen, of een DM — zie "Kanalen" hieronder
+    channel: Channel,    // algemeen, een subkanaal, of een DM — zie "Kanalen" hieronder
     seq: u64,            // per (auteur, kanaal) monotoon, 1..N, geen gaten
     lamport: u64,        // voor totale ordening tussen auteurs
     wall_clock: i64,     // alleen voor weergave, nooit voor correctheid
@@ -193,6 +193,7 @@ enum OpKind {
     SetNick{ name: String },
     FileMeta{ name: String, size: u64, hash: [u8; 32] },
     // later: React, Reply — nieuwe varianten, geen migratie
+    SetTopicTitle{ id: TopicId, title: String },  // fase 9, zie "Kanalen"
 }
 ```
 
@@ -267,15 +268,18 @@ CREATE TABLE meta  (key TEXT PRIMARY KEY, value BLOB);  -- eigen uuid, lamport, 
 
 ## Kanalen
 
-Naast het algemene kanaal (iedereen ziet alles) bestaat een direct bericht (DM): een
-gesprek tussen de auteur van een op en precies één andere peer, die de rest van de mesh
-nooit te zien krijgt.
+Drie soorten. Naast het algemene kanaal (iedereen ziet alles) bestaat een subkanaal onder
+het algemene kanaal (fase 9: net zo publiek als "Algemeen" zelf, alleen met een eigen
+naam en een eigen berichten-/bestandenstroom — zie hieronder), en een direct bericht (DM):
+een gesprek tussen de auteur van een op en precies één andere peer, die de rest van de
+mesh nooit te zien krijgt.
 
 ```rust
 struct Channel {
-    tag: u8,             // 0 = algemeen, 1 = DM — als (tag, peer) op de draad, net als
-    peer: Option<Uuid>,  // StreamKind/FileOutcome, zodat een later kanaalsoort geen
-}                        // decodeerfout geeft bij een peer die hem nog niet kent
+    tag: u8,               // 0 = algemeen, 1 = DM, 2 = subkanaal — als (tag, peer, topic)
+    peer: Option<Uuid>,    // op de draad, net als StreamKind/FileOutcome, zodat een later
+    topic: Option<TopicId>,// kanaalsoort geen decodeerfout geeft bij een peer die hem nog
+}                          // niet kent. `peer` en `topic` sluiten elkaar uit (bepaald door tag).
 ```
 
 `Channel::dm(other)` betekent: dit is een bericht tussen `op.author` en `other`. Een
@@ -283,19 +287,43 @@ gesprek tussen A en B bestaat dus uit twee onafhankelijke opstromen — A's eige
 `(author=A, channel=Dm(B))`-reeks en B's `(author=B, channel=Dm(A))`-reeks — precies
 dezelfde opzet als bij het algemene kanaal, alleen niet gegeneraliseerd naar alle peers.
 
-### Protocolversie: 1 → 2
+`Channel::topic(id)` betekent: een subkanaal onder "Algemeen", met een willekeurige
+`TopicId` (een `Uuid`, gegenereerd bij het aanmaken) in plaats van een peer. Anders dan een
+DM is een subkanaal **niet** aan één auteur of geadresseerde gebonden — elke peer kan er in
+posten, en iedereen ziet het, met dezelfde `seq`-per-(auteur, kanaal)-telling als bij een
+DM of het algemene kanaal. `Channel::is_public()` (`tag == 0 || tag == 2`) is de sleutel die
+overal bepaalt of iets zich als "algemeen" gedraagt (zichtbaarheid, doorsturen, hersync) —
+alleen een DM is daarvan uitgezonderd. De titel van een subkanaal zit niet in `Channel`
+zelf, maar in een gewone op (`OpKind::SetTopicTitle { id, title }`, altijd op
+`Channel::GENERAL` geplaatst), last-writer-wins per `(lamport, author)`, precies zoals een
+bijnaam (`OpKind::SetNick`) — dat dekt zowel het aanmaken (eerste keer gezien) als het
+hernoemen (latere keer) zonder een apart "kanaal aangemaakt"-bericht.
 
-`VersionVector` en de bestandsoverdracht-header (`crates/net/src/filestream.rs`) veranderden
-allebei van vorm om het kanaal mee te dragen, op een manier die een oudere peer niet
-zomaar kan negeren — anders dan een nieuw `OpKind` of een nieuw `#[serde(default)]`-veld
-op een bestaande struct. Een peer zonder kanaalbegrip kan een per-(auteur, kanaal)
-version vector fundamenteel niet correct interpreteren (hij zou algemene en DM-entries
-door elkaar halen), en de bestandsheader kreeg 17 bytes extra die een oudere peer niet
-verwacht. Stilzwijgend laten mislukken (zoals bij een onbekende `ControlMsg`-tag) zou hier
-een corrupt gedownload bestand of een chat die nooit meer synchroniseert opleveren, zonder
-duidelijk signaal. Vandaar `PROTOCOL_VERSION` van 1 naar 2: de handshake wijst een peer op
-de oude versie af met de bestaande, nette `VersionMismatch`-status in plaats van dat er
-iets stilletjes fout gaat. Zie `crates/proto/src/lib.rs`.
+### Protocolversie: 1 → 2, 2 → 3
+
+**1 → 2**, bij de kanalen-uitbreiding (DM's): `VersionVector` en de bestandsoverdracht-
+header (`crates/net/src/filestream.rs`) veranderden allebei van vorm om het kanaal mee te
+dragen, op een manier die een oudere peer niet zomaar kan negeren — anders dan een nieuw
+`OpKind` of een nieuw `#[serde(default)]`-veld op een bestaande struct. Een peer zonder
+kanaalbegrip kan een per-(auteur, kanaal) version vector fundamenteel niet correct
+interpreteren (hij zou algemene en DM-entries door elkaar halen), en de bestandsheader
+kreeg 17 bytes extra die een oudere peer niet verwacht. Stilzwijgend laten mislukken (zoals
+bij een onbekende `ControlMsg`-tag) zou hier een corrupt gedownload bestand of een chat die
+nooit meer synchroniseert opleveren, zonder duidelijk signaal. Vandaar `PROTOCOL_VERSION`
+van 1 naar 2: de handshake wijst een peer op de oude versie af met de bestaande, nette
+`VersionMismatch`-status in plaats van dat er iets stilletjes fout gaat.
+
+**2 → 3**, bij subkanalen (fase 9): `Channel` kreeg tag 2 erbij. Het *wire*-decoderen
+daarvan is op zichzelf onschadelijk — `Channel` is een map, geen tuple, dus een oudere peer
+die tag 2 niet kent decodeert de op gewoon met `topic` als `None` genegeerd. Het echte
+probleem zat een laag dieper: `channel_to_blob` in `crates/store/src/lib.rs` en
+`encode_channel` in `crates/net/src/filestream.rs` kenden vóór deze bump alleen tag 0 en 1,
+en zouden een onbekende tag stilzwijgend op **dezelfde opslagsleutel als het algemene
+kanaal** aliasen — een botsing op dezelfde primary key (`author`, kanaal-blob, `seq`) met
+een échte algemene op van diezelfde auteur, met permanent dataverlies of een verkeerd
+geadresseerde bestandsoverdracht tot gevolg. Precies het patroon dat de 1→2-bump ook al
+moest voorkomen, hier alleen niet in de wire-vorm maar in de lokale opslag. Gevonden door de
+`protocol-reviewer`-agent vóór het committen, niet door een test. Zie `crates/proto/src/lib.rs`.
 
 ### Waarom `seq` per (auteur, kanaal) telt, niet per auteur
 
@@ -309,7 +337,8 @@ hij houdt helemaal geen boekhouding bij voor een kanaal dat hem niet aangaat.
 
 ### Zichtbaarheid: `VersionVector::visible_to(viewer)`
 
-Een (auteur, kanaal)-sleutel is zichtbaar voor `viewer` als het algemene kanaal is, of
+Een (auteur, kanaal)-sleutel is zichtbaar voor `viewer` als `channel.is_public()` is
+(het algemene kanaal of een subkanaal daaronder — beide voor iedereen), of
 `channel == Dm(viewer)`, of `viewer == author` (zodat een peer die eigen data kwijtraakte
 zijn eigen DM's terug kan krijgen van de ander in het gesprek). Dit filter wordt toegepast
 vóórdat er iets van de version vector naar een specifieke peer gaat — zowel wat we zelf
@@ -323,8 +352,10 @@ als vertrouwensgrens, zie `TODO.md`. Zou een derde peer een DM tussen twee ander
 doorsturen of bufferen (het mechanisme uit punt 3 hierboven, bedoeld voor gedeeltelijke
 connectiviteit), dan zou die derde peer de inhoud gewoon kunnen lezen. Daarom synchroniseren
 DM's uitsluitend rechtstreeks tussen de twee betrokkenen; het doorstuur- en
-periodieke-hersync-mechanisme is expliciet beperkt tot het algemene kanaal
-(`op.channel.is_general()`).
+periodieke-hersync-mechanisme is expliciet beperkt tot wat publiek is
+(`op.channel.is_public()`) — dat geldt voor het algemene kanaal én voor elk subkanaal
+daaronder, precies zoals een subkanaal ook verder overal hetzelfde behandeld wordt als het
+algemene kanaal.
 
 **Trade-off, bewust met de gebruiker afgesproken:** in een normale full-mesh (alle drie
 online) merk je hier niets van. Alleen als twee DM-partners elkaar niet rechtstreeks
@@ -347,11 +378,11 @@ privé aan één peer aangeboden worden. Twee gevolgen:
   ongeautoriseerde aanvraag is bewust hetzelfde `FileOutcome::NOT_AVAILABLE` als "bestaat
   niet": een apart "geweigerd"-antwoord zou juist bevestigen dát het bestand bestaat.
 - De bestandsoverdracht-header in `crates/net/src/filestream.rs` draagt sindsdien ook het
-  kanaal (16-byte peer-uuid + 1-byte tag + 16-byte kanaal-peer + 8-byte seq, 41 bytes in
-  plaats van 24): zonder dat zou een algemeen bestand en een DM-bestand van dezelfde
-  auteur met toevallig dezelfde `seq` niet van elkaar te onderscheiden zijn. Om dezelfde
-  reden draagt de tijdelijke `.part`-bestandsnaam op schijf (`crates/app/src/engine.rs`)
-  het kanaal in zijn naam.
+  kanaal (16-byte peer-uuid + 1-byte tag + 16-byte kanaal-peer-of-subkanaal-id + 8-byte
+  seq, 41 bytes in plaats van 24): zonder dat zou een algemeen bestand, een DM-bestand en
+  een bestand in een subkanaal van dezelfde auteur met toevallig dezelfde `seq` niet van
+  elkaar te onderscheiden zijn. Om dezelfde reden draagt de tijdelijke `.part`-bestandsnaam
+  op schijf (`crates/app/src/engine.rs`) het kanaal in zijn naam.
 
 ## Bestandsdeling
 

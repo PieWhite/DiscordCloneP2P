@@ -17,27 +17,28 @@ waarom hij er staat — als iets faalt is dat de aanwijzing waar je moet kijken.
 
 ## Fase 1 — Netwerklaag ✅ al bevestigd
 
-Al gedaan: twee PC's zagen elkaar over Tailscale. Deze twee zijn nog niet gedaan:
+Al gedaan: twee PC's zagen elkaar over Tailscale. Onderstaande twee zijn inmiddels ook
+door Rick met de hand bevestigd.
 
-**1.1 Herverbinden na wegvallen**
+**1.1 Herverbinden na wegvallen** ✅ bevestigd
 Sluit bij je vriend de app af. Jouw scherm moet binnen ~15 s "offline" tonen. Start hem
 weer; binnen enkele seconden moet hij vanzelf weer "online" staan zonder dat iemand iets
 doet. *Faalt dit, dan werkt de backoff-lus niet of blokkeert de firewall het opnieuw
 verbinden.*
 
-**1.2 Alle drie tegelijk**
+**1.2 Alle drie tegelijk** ✅ bevestigd
 Zodra de derde persoon meedoet: alle drie moeten elkaar zien. Niemand mag "andere
 identiteit dan verwacht" tonen. *Die melding betekent dat het koppelen van inkomende
 verbindingen misgaat — precies de bug die met twee peers onzichtbaar was.*
 
 ---
 
-## Fase 2 — Tekstchat
+## Fase 2 — Tekstchat ✅ volledig bevestigd door Rick
 
-**2.1 Bericht komt aan**
+**2.1 Bericht komt aan** ✅ bevestigd
 Stuur over en weer. Moet direct verschijnen.
 
-**2.2 Inhaalslag na offline — het belangrijkste geval**
+**2.2 Inhaalslag na offline — het belangrijkste geval** ✅ bevestigd
 1. Laat je vriend de app **afsluiten**.
 2. Stuur vijf berichten.
 3. Laat hem opstarten.
@@ -47,175 +48,178 @@ dat iemand iets doet. *Dit is de kern van fase 2. Ontbreekt er iets, dan liegt d
 vector; staat de volgorde anders, dan wordt er ergens op wall-clock gesorteerd in plaats
 van op lamport.*
 
-**2.3 Beide kanten tegelijk offline geweest**
+**2.3 Beide kanten tegelijk offline geweest** ✅ bevestigd
 Sluit allebei af. Start allebei op. Beide geschiedenissen moeten identiek zijn.
 
-**2.4 Overleeft herstart**
+**2.4 Overleeft herstart** ✅ bevestigd
 Sluit af en start opnieuw. Alle berichten moeten er nog staan.
 
-**2.5 Bewerken en verwijderen**
+**2.5 Bewerken en verwijderen** ✅ bevestigd
 Bewerk een eigen bericht → bij hem moet de tekst wijzigen met "(bewerkt)". Verwijder er
 een → moet bij hem verdwijnen. Bij zijn berichten mag jij die knoppen niet zien.
 
-**2.6 Melding op de achtergrond**
+**2.6 Melding op de achtergrond** ✅ bevestigd
 Minimaliseer of ga naar de tray. Laat hem iets sturen. Je hoort een geluidje en ziet een
 Windows-melding. *Blijft die uit, dan is de motor met de UI meegestopt — precies wat hij
 niet mag doen.*
 
-**2.7 Tray**
+**2.7 Tray** ✅ bevestigd
 Sluitknop → venster verdwijnt, app draait door. Dubbelklik op het tray-icoon → terug.
 Rechtermuisknop → Afsluiten → echt weg. Controleer daarna dat berichten die tijdens het
 "weg zijn" gestuurd zijn, alsnog binnenkomen.
 
-**2.8 Codeblok**
+**2.8 Codeblok** ✅ bevestigd
 Stuur iets met ``` eromheen. Moet als codeblok verschijnen.
 
-**2.9 Naam wijzigen**
+**2.9 Naam wijzigen** ✅ bevestigd
 Pas `display_name` aan in `config.toml`, herstart. Bij hem moet je nieuwe naam
 verschijnen zonder dat hij iets doet.
 
 ---
 
-## Fase 3 — Voice
+## Fase 3 — Voice ✅ volledig bevestigd door Rick
 
-**3.1 Gesprek opzetten**
+**3.1 Gesprek opzetten** ✅ bevestigd
 Klik allebei op **Deelnemen**. Je hoort elkaar. *Hoor je niets: zit hij ook echt in het
 gesprek (staat er een balkje onder zijn naam)? Laat de firewall UDP door op `media_port`?*
 
-**3.2 Vertraging**
+**3.2 Vertraging** ✅ bevestigd
 Tel om de beurt hardop. De vertraging moet nauwelijks merkbaar zijn — vergelijkbaar met
 Discord. *Voelt het traag, noteer hoeveel; dat stuurt of de jitterbuffer te diep staat.*
 
-**3.3 Open mic**
+**3.3 Open mic** ✅ bevestigd
 Wees stil. De ander mag geen achtergrondruis horen en jouw balkje moet leeg blijven.
 Praat weer: het moet meteen doorkomen, en het **eind van je zin mag niet afgekapt worden**.
 *Wordt het laatste woord ingeslikt, dan is de hangover te kort.*
 
-**3.4 Ruisonderdrukking**
+**3.4 Ruisonderdrukking** ✅ bevestigd
 Zet iets luidruchtigs aan (ventilator, toetsenbord). Hij hoort jou wel, de ruis niet of
 nauwelijks.
 
-**3.5 Mute en deafen**
+**3.5 Mute en deafen** ✅ bevestigd
 Mute → hij hoort je niet, jij hem wel. Deafen → jij hoort niets én hij hoort jou niet.
 
-**3.6 Volume per persoon**
+**3.6 Volume per persoon** ✅ bevestigd
 Schuif zijn volume omlaag; hij wordt zachter. Op nul hoor je hem niet meer.
 
-**3.7 Verlaten en opnieuw deelnemen**
+**3.7 Verlaten en opnieuw deelnemen** ✅ bevestigd
 Verlaat, klik meteen weer op Deelnemen. Moet gewoon werken. *Faalt dit met een fout over
 de mediapoort, dan is de wachtlus bij het opnieuw binden te kort.*
 
-**3.8 Met z'n drieën**
+**3.8 Met z'n drieën** ✅ bevestigd
 Zodra de derde meedoet: iedereen hoort iedereen, en je kunt aan de balkjes zien wie er
 praat. Als twee mensen tegelijk praten mag het niet vervormen.
 
-**3.9 Spreken tijdens gamen — de eis die bovenaan staat**
+**3.9 Spreken tijdens gamen — de eis die bovenaan staat** ✅ bevestigd
 Start een game, ga in gesprek. Let op je framerate. *Merkbare impact is een bug, geen
 compromis.* Noteer wat je ziet.
 
-**3.10 Iemand valt weg tijdens het gesprek**
+**3.10 Iemand valt weg tijdens het gesprek** ✅ bevestigd
 Trek bij je vriend de netwerkkabel eruit of sluit de app af. Jouw kant mag niet
 vastlopen of blijven kraken; hij verdwijnt gewoon uit het gesprek.
 
 ---
 
-## Fase 4 — Screenshare
+## Fase 4 — Screenshare ✅ volledig bevestigd door Rick
 
 Beeld werkt van begin tot eind. Op één machine is bevestigd: 1080p op 55-56 beelden per
 seconde, geen enkel beeld onderweg kwijt, scherp leesbare tekst, en 3,1 ms tussen
-opnemen en tonen in een debug-build. Wat een tweede machine daaraan toevoegt is een echt
-netwerk, een andere GPU, en een oordeel over hoe het voelt.
+opnemen en tonen in een debug-build. Wat een tweede machine daaraan toevoegt — een echt
+netwerk, een andere GPU, en een oordeel over hoe het voelt — is inmiddels ook bevestigd,
+zie 4.1 t/m 4.12 hieronder.
 
 Van desktop-audio is de opnamekant bevestigd: met geluid aan komen er pakketten uit,
-zonder geluid geen enkel. Of het aan de andere kant ook klínkt kan alleen met een tweede
-machine — op één PC tapt de loopback het geluid af dat de andere instantie net afspeelde.
+zonder geluid geen enkel. Of het aan de andere kant ook klínkt is met een tweede machine
+gecontroleerd (4.9) — op één PC tapt de loopback het geluid af dat de andere instantie net
+afspeelde, dus dat kon niet eerder.
 
-**4.1** Deel je scherm; hij ziet het. Cursor is zichtbaar.
-**4.2** Tekst en code zijn scherp leesbaar, geen wazige randen om gekleurde letters.
+**4.1** ✅ Deel je scherm; hij ziet het. Cursor is zichtbaar.
+**4.2** ✅ Tekst en code zijn scherp leesbaar, geen wazige randen om gekleurde letters.
 *Zijn ze grauw of juist te contrastrijk, dan staat het kleurbereik verkeerd; zie
 `crates/video/src/kleur.rs`.*
-**4.3** Glass-to-glass vertraging: zwaai met een venster en kijk hoeveel je achterloopt.
+**4.3** ✅ Glass-to-glass vertraging: zwaai met een venster en kijk hoeveel je achterloopt.
 *Lokaal gemeten zit er 3 ms tussen opnemen en tonen, dus alles wat je hier merkt komt van
 het netwerk of van de monitor zelf.*
-**4.4** Delen tijdens gamen mag je framerate niet merkbaar raken.
-**4.5** Niemand kijkt → geen CPU/GPU-verbruik en geen netwerkverkeer. *Kondig een bron
+**4.4** ✅ Delen tijdens gamen mag je framerate niet merkbaar raken.
+**4.5** ✅ Niemand kijkt → geen CPU/GPU-verbruik en geen netwerkverkeer. *Kondig een bron
 aan en laat hem staan zonder dat iemand op "bekijken" klikt. In de deelnemerslijst staat
 dan "niemand kijkt" met een grijze stip. Zie je toch verkeer of GPU-gebruik, dan is de
 belangrijkste eigenschap van deze fase stuk.*
-**4.6** Kijker sluit het venster en opent het opnieuw → beeld komt binnen een seconde
+**4.6** ✅ Kijker sluit het venster en opent het opnieuw → beeld komt binnen een seconde
 terug. *Bij het opnieuw openen wordt er om een keyframe gevraagd; blijft het venster
 zwart, dan komt dat verzoek niet aan of wordt het niet gehonoreerd.*
-**4.7** Venster delen in plaats van scherm; alleen dat venster is zichtbaar.
-**4.8** Twee mensen delen tegelijk; beide beelden zijn te zien.
-**4.9** Desktop-audio komt mee en is los in volume te regelen van de stemmen. *Jullie
+**4.7** ✅ Venster delen in plaats van scherm; alleen dat venster is zichtbaar.
+**4.8** ✅ Twee mensen delen tegelijk; beide beelden zijn te zien.
+**4.9** ✅ Desktop-audio komt mee en is los in volume te regelen van de stemmen. *Jullie
 moeten allebei in het gesprek zitten; het geluid gaat over de voice-verbinding mee.
 Zonder gesprek staat de knop uitgegrijsd. Zet ook de schuif op nul: dan hoor je zijn
 spel niet meer maar hem nog wel.*
-**4.10** Bij de peer met de RTX 2080 Super: werkt decoderen daar ook? *Dit is de machine
+**4.10** ✅ Bij de peer met de RTX 2080 Super: werkt decoderen daar ook? *Dit is de machine
 die de codeckeuze bepaalde.*
-**4.11** F11 of dubbelklik in het kijkvenster → beeldvullend, Escape of F11 → terug. Dit
+**4.11** ✅ F11 of dubbelklik in het kijkvenster → beeldvullend, Escape of F11 → terug. Dit
 mag geen resolutiewissel geven; draait er een game op datzelfde scherm, dan moet die
 gewoon doorlopen.
-**4.12** Deler valt weg terwijl er gekeken wordt (app afsluiten of kabel eruit). Het
+**4.12** ✅ Deler valt weg terwijl er gekeken wordt (app afsluiten of kabel eruit). Het
 kijkvenster mag niet vastlopen; het beeld bevriest en dat is genoeg.
 
 ---
 
-## Fase 5 — Screenshare uitbreiding
+## Fase 5 — Screenshare uitbreiding ✅ volledig bevestigd door Rick
 
 Venster-capture, meerdere bronnen tegelijk delen en meerdere streams tegelijk bekijken
 zaten al in fase 4 en zijn daar getest (4.7, 4.8). Dit zijn alleen de twee dingen die in
 fase 5 zijn toegevoegd.
 
-**5.1 Video-instellingen aanpassen**
+**5.1 Video-instellingen aanpassen** ✅ bevestigd
 Open "video-instellingen" in de statusbalk, zet de bitrate flink lager, klik toepassen
 terwijl je al aan het delen bent. Bij de kijker moet het beeld merkbaar minder scherp
 worden zonder dat de stream opnieuw opgezet hoeft te worden aan zijn kant. *Verandert er
 niets, dan herstart `herstart_lopende_delers` de deler niet echt.*
 
-**5.2 HEVC-waarschuwing**
+**5.2 HEVC-waarschuwing** ✅ bevestigd
 Zet de codec op HEVC in het instellingenscherm. Er moet een waarschuwing verschijnen dat
 niet iedereen dit kan decoderen. Deel een scherm; bij de peer met de RTX 2080 Super moet
 kijken **mislukken** met een foutmelding, niet een bevroren of grauw beeld.
 
-**5.3 Overzichtstrook**
+**5.3 Overzichtstrook** ✅ bevestigd
 Bekijk twee streams tegelijk (van dezelfde of verschillende peers). Boven de chat moet
 een strook verschijnen met een levend, klein beeld van allebei, met de titel eronder.
 Sluit een van de twee kijkvensters → zijn tegel verdwijnt uit de strook. Sluit de laatste
 → de hele strook verdwijnt.
-**5.4** Niemand bekijkt iets → de overzichtstrook neemt geen ruimte in. *Dit is dezelfde
+**5.4** ✅ Niemand bekijkt iets → de overzichtstrook neemt geen ruimte in. *Dit is dezelfde
 eigenschap als 4.5, maar dan voor de strook: hij hoort niet te bestaan als er niets te
 tonen is.*
 
 ---
 
-## Fase 6 — Bestandsdeling
+## Fase 6 — Bestandsdeling ✅ volledig bevestigd door Rick
 
 De volledige keten — aanbieden, syncen, aanvragen, streamen, hervatten, hashen — is al
 bevestigd met een geautomatiseerde test door de echte motor heen, over loopback-QUIC
 (`crates/app/tests/file_deling.rs`, geen GPU nodig, draait gewoon mee met `cargo test`).
-Wat een tweede machine daaraan toevoegt: een echt netwerk met echt pakketverlies, en of de
-bestandsdialoog en downloadknoppen in het echt doen wat ze beloven.
+Wat een tweede machine daaraan toevoegt — een echt netwerk met echt pakketverlies, en of de
+bestandsdialoog en downloadknoppen in het echt doen wat ze beloven — is inmiddels ook
+bevestigd, zie 6.1 t/m 6.7 hieronder.
 
-**6.1 Aanbieden komt aan zonder dat iemand downloadt**
+**6.1 Aanbieden komt aan zonder dat iemand downloadt** ✅ bevestigd
 Klik "Bestand delen…", kies een bestand. Bij je vriend moet het meteen in het
 bestandenpaneel verschijnen, met de juiste naam en grootte, zonder dat hij iets doet.
 *Dit is de kern van fase 6: het aanbod is een gewone oplog-op en moet zich dus precies zo
 gedragen als een chatbericht.*
 
-**6.2 Downloaden levert een identiek bestand op**
+**6.2 Downloaden levert een identiek bestand op** ✅ bevestigd
 Download het aangeboden bestand. Vergelijk het resultaat met het origineel (grootte,
 en bij twijfel een checksum met de hand). *Klopt de hash niet, dan had de test in
 `file_deling.rs` dat op deze machine ook al moeten laten zien — meld dat als een
 regressie, niet als iets dat alleen "in het echt" fout gaat.*
 
-**6.3 Groot bestand tijdens een gesprek en/of screenshare**
+**6.3 Groot bestand tijdens een gesprek en/of screenshare** ✅ bevestigd
 Deel iets van een paar honderd MB tot een paar GB terwijl je in gesprek bent of je scherm
 deelt. Spraak en beeld mogen geen hapering vertonen. *De bulkbytes gaan over een eigen
 QUIC-stream naast de control-stream — precies om dit te voorkomen. Merk je toch hapering,
 dan is dat een aanwijzing dat er ergens alsnog gedeeld verkeer optreedt.*
 
-**6.4 Hervatten na een onderbreking**
+**6.4 Hervatten na een onderbreking** ✅ bevestigd
 Start een download van een groter bestand, sluit tijdens de overdracht bij je vriend de
 app af (of trek de netwerkkabel eruit). Herstart hem en klik nogmaals downloaden (of
 "opnieuw proberen" als de status al op mislukt staat). De overdracht moet verdergaan
@@ -223,59 +227,60 @@ vanaf ongeveer waar hij was, niet vanaf 0. *Bevestig dit ook door te kijken of h
 tussentijdse `.part`-bestand in de downloadmap groter is dan 0 bytes vlak na de
 onderbreking.*
 
-**6.5 Aanbieder heeft het bestand niet meer**
+**6.5 Aanbieder heeft het bestand niet meer** ✅ bevestigd
 Bied een bestand aan, verwijder of verplaats het daarna van schijf bij de aanbieder, en
 probeer het dan bij de andere kant te downloaden. Moet netjes mislukken met een duidelijke
 status ("mislukt: ...") en een knop om het later opnieuw te proberen — geen hang op
 "bezig" die nooit meer verandert.
 
-**6.6 Twee bestanden tegelijk van dezelfde aanbieder**
+**6.6 Twee bestanden tegelijk van dezelfde aanbieder** ✅ bevestigd
 Bied twee verschillende bestanden aan en download ze allebei tegelijk. Beide moeten
 correct en compleet aankomen zonder dat de bytes door elkaar raken. *Dit test de header
 op de uni-stream die de twee overdrachten uit elkaar houdt.*
 
-**6.7 Downloadmap**
+**6.7 Downloadmap** ✅ bevestigd
 Controleer dat het gedownloade bestand terechtkomt in de map die `config.toml`'s
 `download_dir` aangeeft (of `<datamap>/downloads` als die leeg is), en dat "map openen"
 in de UI daadwerkelijk die map opent.
 
 ---
 
-## Kanalen (DM's)
+## Kanalen (DM's) ✅ volledig bevestigd door Rick
 
 De volledige keten — DM versturen, alleen bij de geadresseerde aankomen, nooit bij de
 derde peer ook niet via doorsturen — is al bevestigd met drie echte motoren over
 loopback-QUIC in volledige mesh (`crates/app/tests/chat_sync.rs`). Wat een tweede en
-derde machine daaraan toevoegen: of de knoppen in het echt doen wat ze beloven, en het
-geval waarin twee DM-partners elkaar niet rechtstreeks kunnen bereiken.
+derde machine daaraan toevoegen — of de knoppen in het echt doen wat ze beloven, en het
+geval waarin twee DM-partners elkaar niet rechtstreeks kunnen bereiken — is inmiddels ook
+bevestigd, zie K.1 t/m K.6 hieronder.
 
-**K.1 DM komt aan, alleen bij de geadresseerde**
+**K.1 DM komt aan, alleen bij de geadresseerde** ✅ bevestigd
 Klik bij je vriend op de DM-knop naast jouw naam en stuur iets. Bij jou moet het
 verschijnen zodra je op jouw beurt de DM-knop naast zijn naam opent. Bij de derde peer
 mag het **nergens** verschijnen — niet in het algemene kanaal, niet in een DM-venster met
 iemand anders. *Dit is de kern van deze uitbreiding: zie je het bericht toch bij de
 derde, dan lekt er iets in de kanaal-filtering.*
 
-**K.2 Ongelezen-badge**
+**K.2 Ongelezen-badge** ✅ bevestigd
 Laat je vriend je een DM sturen terwijl je in het algemene kanaal zit. Er moet een apart
 getal op zijn DM-knop verschijnen, los van de teller op "# Algemeen". Open de DM → de
 badge verdwijnt, het algemene kanaal blijft ongemoeid (en andersom).
 
-**K.3 Bewerken en verwijderen in een DM**
+**K.3 Bewerken en verwijderen in een DM** ✅ bevestigd
 Bewerk en verwijder een eigen DM-bericht. Moet bij de ander bijwerken, precies als in het
 algemene kanaal. Bij zijn berichten mag jij die knoppen niet zien.
 
-**K.4 Bestand delen in een DM**
+**K.4 Bestand delen in een DM** ✅ bevestigd
 Open een DM-venster en klik "Bestand delen…" daarbinnen. Het bestand moet alleen in dát
 DM-venster verschijnen bij de geadresseerde — niet in het algemene bestandenpaneel, en
 niet bij de derde peer. Download het bij de geadresseerde: moet identiek aankomen, net
 als bij fase 6.
 
-**K.5 Geschiedenis-inhaal geldt ook voor DM's**
+**K.5 Geschiedenis-inhaal geldt ook voor DM's** ✅ bevestigd
 Stuur een vriend een DM terwijl hij offline is. Laat hem opstarten: de DM moet er staan
 zodra jullie weer verbinden, zonder dat iemand iets doet.
 
-**K.6 DM tussen twee peers die elkaar niet rechtstreeks bereiken**
+**K.6 DM tussen twee peers die elkaar niet rechtstreeks bereiken** ✅ bevestigd
 Lastigste geval, alleen te proberen als je de mesh handmatig kunt opbreken (bijvoorbeeld
 met een firewallregel tussen twee van de drie machines): als A en B geen directe
 verbinding hebben maar allebei wel met C, dan mag een DM tussen A en B **niet** via C
@@ -287,55 +292,121 @@ stellen de inhoud te lezen, en dat is precies wat dit ontwerp voorkomt.*
 
 ---
 
-## Fase 7 — Tags, meldingen, niet storen, gebruikersnaam
+## Fase 7 — Tags, meldingen, niet storen, gebruikersnaam ✅ volledig bevestigd door Rick
 
 De tag-herkenning zelf (woordgrens, hoofdletterongevoeligheid, waar de cursor precies
 staat voor de autocomplete) is met unit-tests gedekt (`crates/app/src/tags.rs`). Wat
-alleen met de hand te controleren is: hoe het typen voelt, en of een Windows-melding er
-in het echt ook verschijnt — dat kan in deze omgeving niet automatisch getest worden.
+alleen met de hand te controleren was — hoe het typen voelt, en of een Windows-melding er
+in het echt ook verschijnt — is inmiddels ook bevestigd, zie 7.1 t/m 7.7 hieronder.
 
-**7.1 Autocomplete**
+**7.1 Autocomplete** ✅ bevestigd
 Typ `@` in de chatbox. Er moet een lijstje met peernamen verschijnen dat meefiltert
 terwijl je verder typt. Pijltjes omhoog/omlaag verplaatsen de markering, Tab of Enter
 vult de gemarkeerde naam in (met een spatie erachter) zonder dat er een tab-teken of een
 nieuwe regel achterblijft. Klikken op een suggestie moet hetzelfde doen.
 
-**7.2 Highlight bij een tag naar jezelf**
+**7.2 Highlight bij een tag naar jezelf** ✅ bevestigd
 Laat je vriend `@jouwnaam` in een bericht zetten. Dat bericht moet bij jou opvallen
 (gekleurd kader) tussen de rest van de geschiedenis, ook als je later terugscrollt. Een
 bericht met `@` gevolgd door iets dat niet op een bestaande naam lijkt (bijvoorbeeld
 `@Rickie` als jij `Rick` heet) mag **niet** highlighten.
 
-**7.3 Melding alleen bij een tag, en alleen als het venster verborgen is**
+**7.3 Melding alleen bij een tag, en alleen als het venster verborgen is** ✅ bevestigd
 Minimaliseer je venster. Laat je vriend eerst een gewoon bericht sturen (geen tag) — geen
 melding. Laat hem daarna `@jouwnaam` sturen — nu wel een Windows-melding met geluid.
 Herhaal met het venster **op de voorgrond**: ook met een tag mag er dan geen melding
 komen. *Dit dekt precies de twee voorwaarden uit fase 7: verborgen én getagd, niet
 "of".*
 
-**7.4 Geen melding voor ingehaalde geschiedenis**
+**7.4 Geen melding voor ingehaalde geschiedenis** ✅ bevestigd
 Sluit je app af. Laat je vriend een paar berichten sturen, waaronder eentje met
 `@jouwnaam`. Start je app weer op (venster mag gerust verborgen staan of naar de tray
 gaan). De ingehaalde berichten moeten gewoon verschijnen — inclusief de highlight op het
 getagde bericht — maar er mag **geen** Windows-melding voor komen. *Dit is het
 onderscheid tussen live binnenkomen en een inhaalslag; zie `docs/OVERDRACHT.md`.*
 
-**7.5 DM meldt zich ook alleen bij een tag**
+**7.5 DM meldt zich ook alleen bij een tag** ✅ bevestigd
 Stuur jezelf (via je vriend) een gewoon DM-bericht zonder tag terwijl je venster
 verborgen is — geen melding, ondanks dat het een DM is. Stuur daarna een DM mét
 `@jouwnaam` — wel een melding. *Bewust zo gekozen, zie beslissing 11 in
 `docs/OVERDRACHT.md`.*
 
-**7.6 Niet storen**
+**7.6 Niet storen** ✅ bevestigd
 Zet "niet storen" aan, minimaliseer, laat je vriend `@jouwnaam` sturen. Geen melding,
 geen geluid. Zet niet storen weer uit en herhaal — nu wel. Herstart de app: niet storen
 moet weer standaard uit staan.
 
-**7.7 Gebruikersnaam wijzigen**
+**7.7 Gebruikersnaam wijzigen** ✅ bevestigd
 Open het profielvenster, wijzig je naam, sla op. Bij jezelf verandert je naam meteen
 overal waar hij getoond wordt (deelnemerslijst, eigen berichten in de geschiedenis). Bij
 je vriend moet de nieuwe naam verschijnen zonder dat hij iets doet. Herstart je app: de
 nieuwe naam moet blijven staan (staat nu in `config.toml`).
+
+---
+
+## Fase 9 — Algemeen: subkanalen met een eigen titel
+
+Nieuw deze ronde, nog niet met een echte peer getest. De sync- en opslaglaag is gedekt
+door geautomatiseerde tests (`crates/store/tests/convergentie.rs`,
+`crates/proto/src/op.rs`, `crates/app/src/ui.rs`) en de `protocol-reviewer`-agent heeft de
+protocolwijziging vóór het committen gecontroleerd (zie `docs/OVERDRACHT.md`, beslissing
+16). Wat alleen met de hand te controleren is: of de UI voor het aanmaken, hernoemen en
+wisselen van een subkanaal in het echt doet wat hij belooft.
+
+**9.1 Subkanaal aanmaken verschijnt bij iedereen**
+Klik "+ nieuw kanaal" in de zijbalk onder "# Algemeen", geef het een titel. Bij je vriend
+moet het subkanaal vanzelf verschijnen in zijn zijbalk, met dezelfde titel, zonder dat hij
+iets doet. *Dit is de kern van fase 9: een subkanaal is net zo publiek als het algemene
+kanaal, dus moet zich hetzelfde verspreiden als een chatbericht.*
+
+**9.2 Berichten en bestanden blijven per subkanaal gescheiden**
+Stuur een bericht en deel een bestand in het subkanaal. Ze mogen niet verschijnen in "#
+Algemeen" of in een ander subkanaal, en andersom: iets uit "# Algemeen" hoort niet in het
+subkanaal thuis.
+
+**9.3 Ongelezen-badge per subkanaal**
+Laat je vriend iets in het subkanaal sturen terwijl jij naar "# Algemeen" kijkt. Er moet
+een apart getal op het subkanaal in de zijbalk verschijnen, los van de teller op "#
+Algemeen" en los van een eventuele DM-badge. Open het subkanaal → de badge verdwijnt, de
+andere tellers blijven ongemoeid.
+
+**9.4 Hernoemen verschijnt bij iedereen**
+Hernoem een bestaand subkanaal (potlood-knopje naast de titel terwijl je erin zit). Bij je
+vriend moet de nieuwe titel verschijnen zonder dat hij iets doet, en de geschiedenis van
+het subkanaal blijft gewoon staan.
+
+**9.5 Geschiedenis-inhaal geldt ook voor een subkanaal**
+Laat je vriend de app afsluiten, stuur intussen iets in een subkanaal, laat hem opstarten:
+het bericht moet er staan zodra jullie weer verbinden, zonder dat iemand iets doet — net
+als bij het algemene kanaal.
+
+**9.6 Een subkanaal profiteert wél van doorsturen (anders dan een DM)**
+Alleen te proberen met drie peers en een handmatig opgebroken mesh (zoals K.6): als A en C
+elkaar niet rechtstreeks bereiken maar allebei wel B, dan moet een bericht van A in een
+subkanaal bij C aankomen via B — in tegenstelling tot een DM. Komt het niet aan, dan is
+`Channel::is_public()` ergens niet toegepast waar `is_general()` eerder stond.
+
+---
+
+## Sidenote: afbeeldingen downloaden zichzelf automatisch
+
+Los van fase 9, op verzoek van Rick tijdens dezelfde ronde: een gedeelde afbeelding hoeft
+niet meer aangeklikt te worden om te downloaden — dat gebeurt nu voor iedereen vanzelf,
+zowel live als bij het inhalen van gemiste geschiedenis. Andere bestandstypen blijven
+gewoon achter de downloadknop staan, zoals nu al het geval is.
+
+**S.1 Afbeelding downloadt zichzelf**
+Deel een foto (png/jpg/gif/bmp). Bij je vriend moet de miniatuur vanzelf verschijnen,
+zonder dat hij op een downloadknop klikt.
+
+**S.2 Een gewoon bestand downloadt niet vanzelf**
+Deel iets dat geen afbeelding is (bijvoorbeeld een zip). Bij je vriend moet de kaart met
+downloadknop verschijnen zoals altijd — geen automatische download.
+
+**S.3 Ingehaalde afbeeldingen downloaden ook vanzelf**
+Sluit je vriend zijn app, deel intussen een paar foto's, laat hem opstarten: de
+miniaturen moeten er vanzelf staan zodra hij weer verbindt, net als bij een live gedeelde
+foto.
 
 ---
 
