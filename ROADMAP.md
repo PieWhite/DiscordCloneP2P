@@ -244,9 +244,18 @@ miniatuur zodra de bytes er staan (bij beide kanten), een eigen bestand of foto 
 verwijderen, en er is geen apart bestandenpaneel meer in de UI. Bevestigd met de volledige
 testsuite (`cargo test --workspace`, inclusief `crates/app/tests/file_deling.rs` en
 `crates/store/src/timeline.rs`), een protocol-reviewer-ronde over de store-wijziging, en twee
-lokale instanties die schoon opstarten en verbinden. **Niet geverifieerd, om dezelfde reden als
-bij eerdere fases:** het slepen zelf, het plakken vanaf een echt Windows-klembord, en hoe een
-miniatuur er in de tijdlijn daadwerkelijk uitziet — dat moet Rick met de hand doen.
+lokale instanties die schoon opstarten en verbinden.
+
+**Ctrl+V-plakken is met de hand bevestigd door Rick, na twee ronden.** Eerste poging (de
+check aan focus van de chatbox binden) loste het niet op; het logbestand liet zien dat
+`egui-winit` een Ctrl+V die het zelf als OS-plakopdracht herkent nooit als gewone
+toetsaanslag doorstuurt — bevat het klembord alleen een afbeelding (geen tekst om te
+plakken), dan komt er dus niets in `ctx.input()` terecht om op te reageren. Opgelost met
+`GetAsyncKeyState` (rechtstreeks bij Windows, langs egui's eigen toetsenbordvertaling om).
+Zie beslissing 15 in `docs/OVERDRACHT.md`.
+
+**Niet geverifieerd, om dezelfde reden als bij eerdere fases:** het slepen zelf, en hoe een
+miniatuur er in de tijdlijn daadwerkelijk uitziet — dat moet Rick nog met de hand doen.
 
 ### Fase 9 — DM: meerdere kanalen per peer met een eigen titel
 Eén DM met een peer moet meerdere losse, benoembare gesprekken kunnen bevatten

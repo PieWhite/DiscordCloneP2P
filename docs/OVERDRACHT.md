@@ -317,6 +317,10 @@ ingedrukt blijven. Bewust **wel** gebonden aan `ctx.input(|i| i.focused)`:
 heeft, dus zonder die check zou Ctrl+V in een andere toepassing hier ook een bestand
 aanbieden.
 
+**Door Rick bevestigd met een echte screenshot en het klembord van deze Windows-machine** —
+de enige manier waarop dit te testen was, want dit hele probleem zat in hoe Windows en egui
+onderling met het klembord omgaan, niet in iets dat een geautomatiseerde test kan simuleren.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -755,9 +759,14 @@ Van fase 8 zijn de bestaande geautomatiseerde ketentests (`file_deling.rs`, `cha
 `Snapshot` presenteert en hoe `timeline::build()` een bekende soort op interpreteert, niet de
 motor of de sync zelf. De store-wijziging is bovendien door de `protocol-reviewer`-agent
 gecontroleerd vóór het committen. Twee lokale instanties starten en verbinden schoon.
+
+**Ctrl+V-plakken is met de hand bevestigd door Rick** — pas na twee ronden, want het echte
+probleem (`egui-winit` dat de toetsaanslag zelf al inslikt vóórdat de app hem ziet, zie
+beslissing 15) was alleen op een echte Windows-machine met een echt klembord te vinden.
+Precies het soort fout dat in deze omgeving niet te simuleren was.
+
 **Niet geverifieerd, om dezelfde reden als bij eerdere fases — invoer naar het bureaublad kan
-een script hier niet sturen:** slepen-en-neerzetten vanuit de Verkenner, Ctrl+V met een echte
-afbeelding op het Windows-klembord (ook na de focus-fix), of een bestandskaart en een
-miniatuur er in de tijdlijn ook zo uitzien als bedoeld tussen de berichten door, het nieuwe
-algemene Instellingenscherm, en de bevestigingsvraag bij "Verwijder alle afbeeldingen". Dat
-moet Rick met de hand doen.
+een script hier niet sturen:** slepen-en-neerzetten vanuit de Verkenner, of een bestandskaart
+en een miniatuur er in de tijdlijn ook zo uitzien als bedoeld tussen de berichten door, het
+nieuwe algemene Instellingenscherm, en de bevestigingsvraag bij "Verwijder alle
+afbeeldingen". Dat moet Rick met de hand doen.
