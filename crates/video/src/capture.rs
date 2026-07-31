@@ -67,53 +67,6 @@ pub struct Bron {
     pub handle: isize,
 }
 
-/// De verversingsfrequentie van het scherm waar deze bron op staat, of `None` als
-/// Windows het niet weet.
-///
-/// De deler heeft dit nodig om zijn tempo op een heel aantal schermbeelden vast te
-/// klikken; zie [`crate::deler`]. Uit de aankomsttijden van de opname valt dit **niet** af
-/// te leiden: WGC levert in stoten en dan meet je 500 Hz op een scherm van 165.
-pub fn verversing_van(bron: &Bron) -> Option<u32> {
-    // SAFETY: de handle komt uit onze eigen enumeratie; alle uitvoerstructs zijn
-    // volledig geïnitialiseerd met hun verplichte maatvelden.
-    unsafe {
-        let mon = match bron.soort {
-            BronSoort::Monitor => HMONITOR(bron.handle as *mut _),
-            BronSoort::Venster => windows::Win32::Graphics::Gdi::MonitorFromWindow(
-                HWND(bron.handle as *mut _),
-                windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
-            ),
-        };
-
-        let mut info = MONITORINFOEXW {
-            monitorInfo: windows::Win32::Graphics::Gdi::MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        if !GetMonitorInfoW(mon, &mut info.monitorInfo).as_bool() {
-            return None;
-        }
-
-        let mut modus = windows::Win32::Graphics::Gdi::DEVMODEW {
-            dmSize: std::mem::size_of::<windows::Win32::Graphics::Gdi::DEVMODEW>() as u16,
-            ..Default::default()
-        };
-        let ok = windows::Win32::Graphics::Gdi::EnumDisplaySettingsW(
-            windows::core::PCWSTR(info.szDevice.as_ptr()),
-            windows::Win32::Graphics::Gdi::ENUM_CURRENT_SETTINGS,
-            &mut modus,
-        );
-        // 0 en 1 betekenen "standaardfrequentie van de hardware" en zeggen dus niets.
-        if ok.as_bool() && modus.dmDisplayFrequency > 1 {
-            Some(modus.dmDisplayFrequency)
-        } else {
-            None
-        }
-    }
-}
-
 /// Of dit Windows schermopname überhaupt toestaat. Op Windows 11 altijd; we vragen het
 /// omdat een nette melding beter is dan een onbegrijpelijke fout verderop.
 pub fn ondersteund() -> bool {

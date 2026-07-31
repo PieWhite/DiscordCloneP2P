@@ -132,10 +132,6 @@ struct VideoConcept {
     codec: String,
     fps: u32,
     bitrate_mbit: f32,
-    /// Verversingsfrequenties van de schermen van deze machine, één keer opgehaald bij
-    /// het openen. Alleen om te tonen wat het gevraagde tempo hier werkelijk wordt —
-    /// alleen hele delers van de verversing geven gelijkmatig beeld.
-    scherm_hz: Vec<u32>,
 }
 
 impl App {
@@ -680,21 +676,10 @@ impl App {
     /// weergave, en door `ui/settings.rs` zelf na "Toepassen"/"Annuleren" op het
     /// Video-tabblad om een verse kopie te tonen.
     fn open_instellingen(&mut self) {
-        // Eén keer opsommen, niet elke frame: dit vraagt Windows naar alle schermen.
-        let mut scherm_hz: Vec<u32> = fitcom_video::beschikbare_bronnen()
-            .unwrap_or_default()
-            .iter()
-            .filter(|b| b.soort == fitcom_video::BronSoort::Monitor)
-            .filter_map(fitcom_video::capture::verversing_van)
-            .collect();
-        scherm_hz.sort_unstable();
-        scherm_hz.dedup();
-
         self.instellingen = Some(VideoConcept {
             codec: self.snap.video.codec.clone(),
             fps: self.snap.video.fps,
             bitrate_mbit: self.snap.video.bitrate as f32 / 1_000_000.0,
-            scherm_hz,
         });
     }
 }

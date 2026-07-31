@@ -149,7 +149,7 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     let mut nulpunten: Option<(i64, i64)> = None;
     let mut vorige_tijd: i64 = -1;
 
-    let mut pacer = Pacer::nieuw(cfg.fps, crate::capture::verversing_van(&cfg.bron));
+    let mut pacer = Pacer::nieuw(cfg.fps);
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
@@ -157,7 +157,6 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
             continue;
         };
         meter.opgenomen += 1;
-        pacer.tel();
 
         // Staat er meer klaar, dan liepen we achter en is alles behalve het laatste oud
         // nieuws. Het verste beeld coderen scheelt precies die achterstand aan
@@ -166,7 +165,6 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         while let Some(nieuwer) = capture.volgende_frame(Duration::ZERO) {
             opname = nieuwer;
             meter.opgenomen += 1;
-            pacer.tel();
         }
 
         if !pacer.laat_door(Instant::now()) {
@@ -257,135 +255,58 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
 /// encoder telt die in beelden, dus meer beelden per seconde is ook meer keyframes per
 /// seconde, elk een stoot van honderden kilobytes.
 ///
-/// # Waarom er geteld wordt en niet geklokt
+/// # Waarom een tijdraster genoeg is, en de verversing er niet toe doet
 ///
-/// Uit 144 Hz zijn geen gelijkmatige 60 beelden per seconde te halen: 144 ÷ 60 is 2,4 en
-/// je kunt geen 2,4 schermbeelden overslaan. Vraag je er toch zestig, dan krijg je er
-/// zestig, met afstanden die springen tussen 13,9 en 20,8 ms. Het *aantal* klopt en het
-/// **oogt toch als haperen**, en dat is precies waarom elk onderzoek naar fps en bitrate
-/// hier langs is gelopen. De kijker heeft geen jitterbuffer voor beeld — die toont elk
-/// beeld zodra het compleet is — dus die ongelijkheid komt onverdund op het scherm.
+/// Er is hier een tijd lang geprobeerd om het tempo vast te klikken op een heel aantal
+/// schermbeelden, omdat uit 144 Hz geen gelijkmatige 60 per seconde te halen zijn:
+/// 144 ÷ 60 is 2,4. Dat leverde 48 op, en het was een omweg om een probleem dat ergens
+/// anders zat.
 ///
-/// De verleiding is dan om een eigen tijdraster van 1/fps aan te houden en te kijken welk
-/// opgenomen beeld daar het dichtst bij zit. **Dat werkt niet**, om twee redenen die
-/// allebei fundamenteel zijn en niet weg te tunen:
+/// **Ongelijk opgenomen beeld dat ongelijk wordt getoond is niet fout — dat is juist.**
+/// Veranderde het scherm op moment t, dan hoort dat beeld op moment t te verschijnen. De
+/// kijker doet dat sinds [`crate::kijker::Weergaveklok`]; hij plant op de tijdstempel in
+/// plaats van te tonen zodra er iets binnenkomt. Haperen ontstaat door het *verschil*
+/// tussen opnametijd en weergavetijd, niet door ongelijkheid op zich.
 ///
-/// - Twee rasters die niet in elkaar passen geven een zweving. Dat is de ongelijkheid
-///   hierboven; je verplaatst hem hooguit.
-/// - Een scherm dat "144 Hz" heet loopt in werkelijkheid op 143,98. Ons raster loopt dus
-///   langzaam weg van dat van het scherm en slaat om de zoveel tijd een beeld over of
-///   dubbel. Eén hapering per anderhalve minuut, en geen enkel getal in de config maakt
-///   dat weg.
+/// Wat dan overblijft is één eis: **vaak genoeg bemonsteren**. Neem je 48 monsters van een
+/// filmpje met 60 beelden, dan gooi je er twaalf per seconde weg, en dát zie je — hoe
+/// gelijkmatig die 48 ook staan. Vastklikken op de verversing maakte het dus actief
+/// erger: dat is precies de regel die 48 van 60 pakt.
 ///
-/// Daarom houden we hier helemaal geen eigen klok. **De schermbeelden zijn de klok**: we
-/// nemen er elk N-de, met N het kleinste hele getal dat onder het gevraagde tempo
-/// uitkomt. Op 144 Hz met `fps = 60` is dat elk derde beeld: 48 per seconde, precies één
-/// schermperiode maal drie uit elkaar, wat de echte verversing ook mag zijn. Gelijkmatige
-/// 48 ziet er beter uit dan ongelijkmatige 60. Op 180 Hz (drie keer 60) verandert er
-/// niets en houd je 60.
+/// Dus: een gelijkmatig tijdraster van 1/fps, het verste beeld dat er op dat moment is,
+/// en de echte opnametijd erop. Zet `fps` hoger dan het tempo van wat je deelt en er gaat
+/// niets verloren.
 ///
-/// Twee dingen die geen van beide met tellen te vangen zijn, en in de tests staan:
+/// Twee valkuilen, allebei in de tests hieronder vastgelegd:
 ///
-/// - Levert de bron mínder dan het doeltempo — een rustig scherm geeft geen beelden —
-///   dan mag er niets weg. De tijdregel laat alles door zodra we onder het doel zitten.
-/// - Kent Windows de verversing niet, dan valt hij terug op een tijdraster met de oude
-///   ongelijkheid. Beter dan gokken naar een N die er niet is.
+/// 1. De volgende deadline telt op bij de *vorige*, niet bij `nu`. Bij `nu` rondt elk
+///    interval naar boven af op een schermperiode en zakt 144 Hz naar 48 in plaats van 60.
+/// 2. Bij een achterstand schuift de deadline naar `nu` en niet naar `nu + interval`.
+///    Anders raak je beelden kwijt die je juist wilde hebben: staat het scherm stil en
+///    komt er daarna een tweetal beelden vlak achter elkaar, dan is dat tweede het verste
+///    en gooi je dat weg terwijl je onder het doeltempo zit.
 struct Pacer {
-    /// Neem elk N-de opgenomen beeld. `None` als de verversing onbekend is; dan is de
-    /// tijdregel het enige dat overblijft.
-    elke: Option<u32>,
-    /// Het gevraagde tempo. Zitten we daaronder, dan gaat alles door.
-    doel: Duration,
-    sinds_laatste: Instant,
-    teller: u32,
-}
-
-/// Elk hoeveelste schermbeeld er verstuurd wordt om onder `fps` te blijven.
-///
-/// Twee procent speling voordat we naar boven afronden. Zonder dat wordt 180 Hz, waar
-/// drie schermbeelden exact 60 per seconde zijn, door een afrondingsrest van een
-/// nanoseconde alsnog elk vierde beeld en dus 45.
-fn elke_hoeveelste(fps: u32, scherm_hz: u32) -> u32 {
-    let ondergrens = u64::from(scherm_hz) * 98 / 100;
-    ondergrens.div_ceil(u64::from(fps.max(1))).max(1) as u32
-}
-
-/// Wat er van `fps` overblijft op een scherm van `scherm_hz`.
-///
-/// Alleen hele delers van de verversing geven gelijkmatig beeld, dus het gevraagde tempo
-/// is een bovengrens en niet een belofte. Op 144 Hz levert 60 er 48 op en 72 er 72. De UI
-/// laat dit zien bij de schuifregelaar, zodat je niet hoeft te raden waarom je iets
-/// anders krijgt dan je instelde.
-pub fn haalbaar_tempo(fps: u32, scherm_hz: u32) -> u32 {
-    if scherm_hz == 0 {
-        return fps;
-    }
-    scherm_hz / elke_hoeveelste(fps, scherm_hz)
+    interval: Duration,
+    deadline: Instant,
 }
 
 impl Pacer {
-    /// `scherm_hz` komt van [`crate::capture::verversing_van`].
-    fn nieuw(fps: u32, scherm_hz: Option<u32>) -> Self {
-        let doel = Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1)));
-        let elke = scherm_hz
-            .filter(|hz| *hz > 0)
-            .map(|hz| elke_hoeveelste(fps, hz));
-
-        tracing::info!(
-            scherm_hz = scherm_hz.unwrap_or(0),
-            gevraagd_fps = fps,
-            elk_hoeveelste_beeld = elke.unwrap_or(0),
-            beelden_per_s = match (scherm_hz, elke) {
-                (Some(hz), Some(n)) => hz / n,
-                _ => fps,
-            },
-            "opnametempo bepaald"
-        );
-
+    fn nieuw(fps: u32) -> Self {
         Self {
-            elke,
-            doel,
-            sinds_laatste: Instant::now() - doel,
-            teller: 0,
+            interval: Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1))),
+            deadline: Instant::now(),
         }
     }
 
-    /// Eén opgenomen beeld gezien. WGC levert er precies één per verversing van het
-    /// scherm, dus dit telt schermbeelden — ook de beelden die daarna worden overgeslagen
-    /// omdat er een verser exemplaar klaarstond. Juist die tellen mee: ze zijn wel
-    /// degelijk langsgekomen.
-    fn tel(&mut self) {
-        self.teller += 1;
-    }
-
-    /// Of dit beeld gecodeerd en verstuurd wordt.
     fn laat_door(&mut self, nu: Instant) -> bool {
-        let Some(n) = self.elke else {
-            // Geen bekende verversing, dus niets te tellen. Terug naar een tijdraster,
-            // met de valkuil die daarbij hoort: de volgende deadline telt op bij de
-            // vórige en niet bij `nu`, anders rondt elk interval naar boven af op een
-            // schermperiode en zakt 144 Hz naar 48 in plaats van 60. Bij een achterstand
-            // schuift hij naar `nu` zodat er geen stoot achteraan komt.
-            if nu < self.sinds_laatste {
-                return false;
-            }
-            self.sinds_laatste += self.doel;
-            if self.sinds_laatste + self.doel < nu {
-                self.sinds_laatste = nu;
-            }
-            return true;
-        };
-
-        // Onder het doeltempo mag niets weg: een rustig scherm levert minder beelden dan
-        // gevraagd en daar hoort de teller niet op te wachten.
-        let onder_het_doel = nu.saturating_duration_since(self.sinds_laatste) >= self.doel;
-
-        if self.teller >= n || onder_het_doel {
-            self.teller = 0;
-            self.sinds_laatste = nu;
-            return true;
+        if nu < self.deadline {
+            return false;
         }
-        false
+        self.deadline += self.interval;
+        if self.deadline + self.interval < nu {
+            self.deadline = nu;
+        }
+        true
     }
 }
 
@@ -459,76 +380,52 @@ mod tests {
 
     /// Speelt een scherm van `bron_hz` af en levert de tijdstippen van de doorgelaten
     /// beelden. Dit is de enige manier om aan de pacer te rekenen zonder scherm.
-    fn speel_af(doel_fps: u32, bron_hz: u64, seconden: u64) -> (Instant, Vec<Instant>) {
-        speel_af_echt(doel_fps, bron_hz, bron_hz as f64, seconden)
-    }
-
-    /// Zoals [`speel_af`], maar de frequentie die Windows meldt (`gemeld_hz`) en die het
-    /// scherm werkelijk loopt (`echt_hz`) mogen verschillen.
-    fn speel_af_echt(
-        doel_fps: u32,
-        gemeld_hz: u64,
-        echt_hz: f64,
-        seconden: u64,
-    ) -> (Instant, Vec<Instant>) {
-        let mut pacer = Pacer::nieuw(doel_fps, Some(gemeld_hz as u32));
+    fn speel_af(doel_fps: u32, bron_hz: u64, seconden: u64) -> Vec<Instant> {
+        let mut pacer = Pacer::nieuw(doel_fps);
         let begin = Instant::now();
-        let stap = Duration::from_secs_f64(1.0 / echt_hz);
+        let stap = Duration::from_nanos(1_000_000_000 / bron_hz);
+        pacer.deadline = begin;
 
-        let mut door = Vec::new();
-        for n in 0..(echt_hz * seconden as f64) as u64 {
-            let nu = begin + stap.mul_f64(n as f64);
-            pacer.tel();
-            if pacer.laat_door(nu) {
-                door.push(nu);
-            }
-        }
-        (begin, door)
+        (0..bron_hz * seconden)
+            .map(|n| begin + stap * (n as u32))
+            .filter(|nu| pacer.laat_door(*nu))
+            .collect()
     }
 
-    /// Standaardafwijking van de afstand tussen opeenvolgende beelden, in milliseconden.
-    /// Dit getal is waar het om gaat: het aantal beelden kan kloppen terwijl dit hoog is,
-    /// en dan ziet het er alsnog uit als haperen.
-    fn spreiding_ms(door: &[Instant]) -> f64 {
-        let intervallen: Vec<f64> = door
-            .windows(2)
-            .map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1000.0)
-            .collect();
-        let gem = intervallen.iter().sum::<f64>() / intervallen.len() as f64;
-        (intervallen.iter().map(|i| (i - gem).powi(2)).sum::<f64>() / intervallen.len() as f64)
-            .sqrt()
-    }
-
-    /// Hoeveel beelden er doorheen komen als de opname op `bron_hz` aanlevert.
+    /// Hoeveel beelden er per seconde doorheen komen als de opname op `bron_hz` levert.
     fn door_bij(doel_fps: u32, bron_hz: u64, seconden: u64) -> u32 {
-        speel_af(doel_fps, bron_hz, seconden).1.len() as u32
+        speel_af(doel_fps, bron_hz, seconden).len() as u32 / seconden as u32
     }
 
     #[test]
-    fn beelden_staan_gelijkmatig_uit_elkaar_op_elke_verversing() {
-        // Dit is de test die ertoe doet. Ongelijkmatige 60 beelden per seconde zien er
-        // uit als haperen terwijl elke fps-meting zegt dat het goed gaat — precies wat
-        // het onderzoek naar de screenshare-hapering zo lang heeft opgehouden. Zonder
-        // vastklikken op de schermperiode staat 144 Hz hier op 3,4 ms.
+    fn het_doeltempo_wordt_gehaald_op_elke_verversing() {
+        // De valkuil: rekende de deadline vanaf `nu`, dan rondt elk interval naar boven
+        // af op een schermperiode en houd je op 144 Hz 48 over in plaats van 60.
+        //
+        // Dat die zestig niet precies even ver uit elkaar staan is géén probleem meer:
+        // ze dragen hun echte opnametijd en de kijker plant daarop. Wat wél telt is dat
+        // er niet stiekem beelden verdwijnen, want elk gemist beeld is er een die de
+        // kijker nooit ziet.
         for hz in [120u64, 144, 165, 180, 240] {
-            let (_, door) = speel_af(60, hz, 10);
-            let spreiding = spreiding_ms(&door);
+            let door = door_bij(60, hz, 10);
             assert!(
-                spreiding < 0.5,
-                "op {hz} Hz staan de beelden {spreiding:.2} ms ongelijk uit elkaar"
+                (59..=61).contains(&door),
+                "op {hz} Hz komen er {door} per seconde door; verwacht 60"
             );
         }
     }
 
     #[test]
-    fn het_tempo_klikt_vast_op_een_heel_aantal_schermbeelden() {
-        // 144 ÷ 60 is 2,4 en je kunt geen 2,4 schermbeelden overslaan. Elk derde beeld
-        // is 48 per seconde: minder dan gevraagd, maar wél gelijkmatig. Boven het
-        // doeltempo uitkomen mag nooit, want dat is bitrate die niemand gevraagd heeft.
-        for (hz, verwacht) in [(120u64, 60u32), (144, 48), (165, 55), (180, 60), (240, 60)] {
-            let door = door_bij(60, hz, 10) / 10;
-            assert_eq!(door, verwacht, "op {hz} Hz");
-            assert!(door <= 60, "op {hz} Hz gaat {door} boven het doeltempo");
+    fn nooit_meer_dan_gevraagd() {
+        // Boven het doeltempo uitkomen is bitrate die niemand gevraagd heeft.
+        for hz in [120u64, 144, 165, 180, 240, 360] {
+            for fps in [30u32, 60, 72, 90] {
+                let door = door_bij(fps, hz, 5);
+                assert!(
+                    door <= fps + 1,
+                    "{fps} fps gevraagd op {hz} Hz, maar er komen er {door} door"
+                );
+            }
         }
     }
 
@@ -536,96 +433,27 @@ mod tests {
     fn onder_het_doeltempo_gaat_alles_door() {
         // Een rustig scherm levert minder dan 60 beelden per seconde. Daar hoort niets
         // van weggegooid te worden.
-        assert_eq!(door_bij(60, 12, 5), 60, "12 Hz moet volledig doorgaan");
-        assert_eq!(door_bij(60, 30, 5), 150, "30 Hz moet volledig doorgaan");
+        assert_eq!(door_bij(60, 12, 5), 12, "12 Hz moet volledig doorgaan");
+        assert_eq!(door_bij(60, 30, 5), 30, "30 Hz moet volledig doorgaan");
     }
 
     #[test]
-    fn een_achterstand_levert_een_beeld_op_en_geen_stoot() {
-        // Zo werkt `deel_lus` als hij niet bijblijft: hij trekt de opnamewachtrij leeg,
-        // telt alles wat langskwam, en codeert alleen het verste beeld. Er mag dan één
-        // beeld uit komen — een stoot van bijna identieke beelden is verspilde bitrate en
-        // levert de kijker niets.
-        let mut pacer = Pacer::nieuw(60, Some(144));
+    fn na_stilstand_geen_stoot_beelden() {
+        // Vijf seconden niets, en dan tien beelden binnen een milliseconde. De
+        // achterstand inhalen met een piek is precies wat we niet willen: dat is een
+        // stoot bijna identieke beelden op de draad.
+        let mut pacer = Pacer::nieuw(60);
         let begin = Instant::now();
-        pacer.tel();
+        pacer.deadline = begin;
         assert!(pacer.laat_door(begin));
 
-        let na = begin + Duration::from_millis(70);
-        for _ in 0..10 {
-            pacer.tel();
-        }
-        assert!(pacer.laat_door(na), "het verste beeld moet er wel uit");
-        assert_eq!(
-            pacer.teller, 0,
-            "de teller hoort na het versturen leeg te zijn"
-        );
-    }
-
-    #[test]
-    fn een_scherm_dat_niet_precies_op_zijn_nominale_frequentie_loopt() {
-        // Dít is waarom er geteld wordt en niet geklokt. Een scherm dat "144 Hz" heet
-        // loopt in de praktijk op 143,98. Een eigen tijdraster van 1/60 s loopt daar
-        // langzaam van weg en slaat om de anderhalve minuut een beeld over of dubbel —
-        // één hapering, telkens weer, en geen getal in de config maakt dat weg.
-        //
-        // Tellen kan dat niet overkomen: elk derde schermbeeld is elk derde schermbeeld,
-        // wat de klok van dat scherm ook doet. Een halve minuut lang, waarin een raster
-        // allang was doorgeschoven.
-        let (_, door) = speel_af_echt(60, 144, 143.98, 30);
-        let spreiding = spreiding_ms(&door);
-        assert!(
-            spreiding < 0.01,
-            "{spreiding:.4} ms ongelijk op een scherm dat 143,98 loopt terwijl Windows \
-             144 meldt; dan zit er alsnog een eigen klok in"
-        );
-        assert!(
-            (1430..=1450).contains(&door.len()),
-            "{} beelden in 30 seconden; verwacht er 30 × 48",
-            door.len()
-        );
-    }
-
-    #[test]
-    fn wat_de_ui_toont_klopt_met_wat_de_pacer_doet() {
-        // `haalbaar_tempo` staat onder de schuifregelaar in de instellingen. Wijkt dat
-        // af van wat de pacer werkelijk doet, dan liegt de UI — en juist daar ging het
-        // eerder mis: mensen zetten 60 en kregen 48 zonder te weten waarom.
-        for (hz, fps, verwacht) in [
-            (144u32, 60u32, 48u32),
-            (144, 72, 72),
-            (144, 144, 144),
-            (165, 60, 55),
-            (165, 72, 55),
-            (165, 82, 82),
-            (180, 60, 60),
-            (240, 60, 60),
-            (60, 60, 60),
-            // Meer vragen dan het scherm maakt kan niet; dan is elk beeld het maximum.
-            (144, 240, 144),
-        ] {
-            assert_eq!(haalbaar_tempo(fps, hz), verwacht, "{fps} fps op {hz} Hz");
-            assert_eq!(
-                door_bij(fps, u64::from(hz), 10) / 10,
-                verwacht,
-                "de pacer doet iets anders dan de UI belooft bij {fps} fps op {hz} Hz"
-            );
-        }
-    }
-
-    #[test]
-    fn zonder_bekende_verversing_valt_hij_terug_op_de_tijd() {
-        // Windows weet de frequentie niet. Dan is er geen N om te tellen en houden we het
-        // gevraagde tempo aan, mét de ongelijkmatigheid. Nooit méér dan gevraagd.
-        let mut pacer = Pacer::nieuw(60, None);
-        let begin = Instant::now();
-        let stap = Duration::from_nanos(1_000_000_000 / 144);
-        let door = (0..144 * 5)
-            .filter(|n| pacer.laat_door(begin + stap * *n))
+        let na = begin + Duration::from_secs(5);
+        let door = (0..10)
+            .filter(|n| pacer.laat_door(na + Duration::from_micros(100 * n)))
             .count();
         assert!(
-            (285..=305).contains(&door),
-            "{door} beelden in 5 seconden; verwacht er rond de 300"
+            door <= 2,
+            "{door} van de 10 beelden uit één stoot doorgelaten"
         );
     }
 

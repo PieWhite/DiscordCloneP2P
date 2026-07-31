@@ -661,17 +661,14 @@ beeld vast — 17 ms op 60 fps. Die pijplijndiepte telt in beelden en niet in ti
 verklaart waarom de ketentest op een stilstaand bureaublad 100 ms meet: bij 10 beelden per
 seconde is één beeld achterstand 100 ms. Op een bewegend scherm is het 17 ms.
 
-### De asymmetrie verklaard: 144 en 165 Hz zijn geen veelvoud van 60
+### Het spoor van de verversingsfrequentie, en waarom het een omweg was
 
-Na bovenstaande drie fixes hapert het bij peer 2 nog steeds. Wat nooit verklaard was: het
-gebeurt maar één kant op. Peer 2 deelt op 180 Hz en hapert niet, Rick deelt op 144 en 165
-Hz en wel. Dat werd afgeserveerd met "refresh rate is het niet, want peer 2 zit hoger" —
-maar het gaat niet om hoog, het gaat om **deelbaarheid**. 180 ÷ 60 = 3. 144 ÷ 60 = 2,4.
-165 ÷ 60 = 2,75.
+Na bovenstaande drie fixes hapert het nog steeds. Wat nooit verklaard was: het gebeurt maar
+één kant op. Peer 2 deelt op 180 Hz en hapert niet; Rick deelt op 144 en 165 Hz en wel.
+180 ÷ 60 = 3, maar 144 ÷ 60 = 2,4 en 165 ÷ 60 = 2,75.
 
-Je kunt geen 2,4 schermbeelden overslaan. Vraag je 60 beelden per seconde van een scherm
-van 144 Hz, dan krijg je er precies zestig, met afstanden die springen tussen 13,9 en 20,8
-ms. Gemeten door de pacer met synthetische tijden (`deler.rs`, unittest):
+Uit 144 Hz zijn geen gelijkmatige zestig beelden per seconde te halen. Je krijgt er wel
+zestig, met afstanden die springen tussen 13,9 en 20,8 ms:
 
 ```
 120 Hz -> 60/s, spreiding 0.00 ms
@@ -681,20 +678,16 @@ ms. Gemeten door de pacer met synthetische tijden (`deler.rs`, unittest):
 240 Hz -> 60/s, spreiding 0.24 ms
 ```
 
-**Het aantal beelden klopt en het oogt toch als haperen.** Daarom is elk onderzoek naar
-fps en bitrate hier langsgelopen: die getallen zeiden allemaal dat het goed ging. En de
-kijker heeft geen jitterbuffer voor beeld — audio wel (`audio/src/jitter.rs`, vandaar dat
-het geluid al goed was) — dus die ongelijkheid komt onverdund op het scherm.
+Dat leidde tot een pacer die het tempo vastklikte op een heel aantal schermbeelden: op
+144 Hz elk derde, dus 48 per seconde. **Dat was een omweg, en hij is weer weg.** De reden
+staat hieronder: het probleem zat niet in de verzendtiming maar in het ontbreken van een
+weergaveklok. Zodra die er is, is ongelijk verzonden beeld geen probleem meer — en is
+vastklikken zelfs schadelijk, want 48 monsters van een filmpje met 60 beelden gooit er
+twaalf per seconde weg.
 
-Opgelost door het interval vast te klikken op een heel aantal schermperiodes. Op 144 Hz
-wordt dat elk derde beeld: 48 per seconde, exact 20,8 ms uit elkaar. **Gelijkmatige 48 ziet
-er beter uit dan ongelijkmatige 60.** Wil je er meer, zet `fps` in de config dan op een
-deler van je verversing (72 op 144 Hz, 55 op 165 Hz) — dat blijft gelijkmatig.
-
-De verversing komt uit `capture::verversing_van` (`EnumDisplaySettingsW`). **Niet schatten
-uit de aankomsttijden van de opname**: dat is geprobeerd en WGC levert in stoten, dus je
-meet 200 tot 1000 Hz op een scherm van 144 en het tempo staat elke halve seconde ergens
-anders — erger dan de kwaal.
+Wat van dit spoor overeind blijft: het is een goede verklaring van de asymmetrie in de
+*oude* situatie, en de meetmethode (spreiding in plaats van fps) is wat het onderzoek
+verder hielp.
 
 ### De echte oorzaak: er was geen weergaveklok
 
@@ -737,10 +730,10 @@ Twee dingen om te weten bij het afstellen:
   beeld dat een paar milliseconden later binnenkomt al te laat en zijn we terug bij
   tonen-zodra-het-kan.
 - De klok maakt de *reis* onzichtbaar, niet de bemonstering. Neem je 48 beelden per seconde
-  van een filmpje dat er zestig heeft, dan blijft dat 60→48-judder, net als film op een
-  60 Hz-scherm. Zet `fps` daarom **boven** het tempo van wat je deelt: op 144 Hz is dat 72
-  (elk tweede schermbeeld), en dan wordt elk beeld van een filmpje van 60 minstens één keer
-  bemonsterd.
+  van een filmpje dat er zestig heeft, dan gooi je er twaalf per seconde weg en dát zie je,
+  hoe gelijkmatig die 48 ook staan. Zet `fps` daarom gelijk aan of boven het tempo van wat
+  je deelt. De verversingsfrequentie van je scherm doet er níét toe — dat was de omweg
+  hierboven.
 
 **Nog open, uit het eerdere onderzoek en hier niet aangeraakt:** de heraankondiging na een
 herverbinding die niet opnieuw intekent (wit kijkvenster, geen foutmelding), en

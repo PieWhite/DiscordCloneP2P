@@ -165,33 +165,11 @@ impl super::App {
 
             ui.label(egui::RichText::new("Beelden per seconde").strong());
             ui.add(egui::Slider::new(&mut concept.fps, 15..=240));
-            // Alleen hele delers van de verversing geven gelijkmatig beeld: uit 144 Hz
-            // zijn geen gelijkmatige 60 te halen, want 144 ÷ 60 is 2,4. Je krijgt er dan
-            // wel zestig, maar ongelijk verdeeld, en dat ziet eruit als haperen. Daarom
-            // is dit een bovengrens en geen belofte — en daarom staat hier wat het op
-            // deze machine wordt, zodat niemand hoeft te raden.
-            if concept.scherm_hz.is_empty() {
-                ui.small(
-                    "Bovengrens. Alleen hele delers van je verversing geven gelijkmatig beeld.",
-                );
-            } else {
-                let per_scherm: Vec<String> = concept
-                    .scherm_hz
-                    .iter()
-                    .map(|hz| {
-                        format!(
-                            "{hz} Hz → {}",
-                            fitcom_video::haalbaar_tempo(concept.fps, *hz)
-                        )
-                    })
-                    .collect();
-                ui.small(format!("Wordt op je schermen: {}", per_scherm.join(", ")));
-                ui.small(
-                    "Alleen hele delers van de verversing geven gelijkmatig beeld, dus dit \
-                     is een bovengrens. Deel je een filmpje van 60, zet dit dan hóger dan \
-                     60 — anders mis je beelden en oogt het schokkerig.",
-                );
-            }
+            ui.small(
+                "Zet dit gelijk aan of hoger dan het tempo van wat je deelt: een filmpje \
+                 van 60 bemonster je met 60 of meer, anders mis je beelden. Hoger kost \
+                 evenredig meer bitrate.",
+            );
             ui.add_space(10.0);
 
             ui.label(egui::RichText::new("Bitrate").strong());
