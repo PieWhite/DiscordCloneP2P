@@ -661,6 +661,41 @@ beeld vast — 17 ms op 60 fps. Die pijplijndiepte telt in beelden en niet in ti
 verklaart waarom de ketentest op een stilstaand bureaublad 100 ms meet: bij 10 beelden per
 seconde is één beeld achterstand 100 ms. Op een bewegend scherm is het 17 ms.
 
+### De asymmetrie verklaard: 144 en 165 Hz zijn geen veelvoud van 60
+
+Na bovenstaande drie fixes hapert het bij peer 2 nog steeds. Wat nooit verklaard was: het
+gebeurt maar één kant op. Peer 2 deelt op 180 Hz en hapert niet, Rick deelt op 144 en 165
+Hz en wel. Dat werd afgeserveerd met "refresh rate is het niet, want peer 2 zit hoger" —
+maar het gaat niet om hoog, het gaat om **deelbaarheid**. 180 ÷ 60 = 3. 144 ÷ 60 = 2,4.
+165 ÷ 60 = 2,75.
+
+Je kunt geen 2,4 schermbeelden overslaan. Vraag je 60 beelden per seconde van een scherm
+van 144 Hz, dan krijg je er precies zestig, met afstanden die springen tussen 13,9 en 20,8
+ms. Gemeten door de pacer met synthetische tijden (`deler.rs`, unittest):
+
+```
+120 Hz -> 60/s, spreiding 0.00 ms
+144 Hz -> 60/s, spreiding 3.40 ms   <- Rick
+165 Hz -> 60/s, spreiding 2.62 ms   <- Rick
+180 Hz -> 60/s, spreiding 0.32 ms   <- peer 2
+240 Hz -> 60/s, spreiding 0.24 ms
+```
+
+**Het aantal beelden klopt en het oogt toch als haperen.** Daarom is elk onderzoek naar
+fps en bitrate hier langsgelopen: die getallen zeiden allemaal dat het goed ging. En de
+kijker heeft geen jitterbuffer voor beeld — audio wel (`audio/src/jitter.rs`, vandaar dat
+het geluid al goed was) — dus die ongelijkheid komt onverdund op het scherm.
+
+Opgelost door het interval vast te klikken op een heel aantal schermperiodes. Op 144 Hz
+wordt dat elk derde beeld: 48 per seconde, exact 20,8 ms uit elkaar. **Gelijkmatige 48 ziet
+er beter uit dan ongelijkmatige 60.** Wil je er meer, zet `fps` in de config dan op een
+deler van je verversing (72 op 144 Hz, 55 op 165 Hz) — dat blijft gelijkmatig.
+
+De verversing komt uit `capture::verversing_van` (`EnumDisplaySettingsW`). **Niet schatten
+uit de aankomsttijden van de opname**: dat is geprobeerd en WGC levert in stoten, dus je
+meet 200 tot 1000 Hz op een scherm van 144 en het tempo staat elke halve seconde ergens
+anders — erger dan de kwaal.
+
 **Nog open, uit het eerdere onderzoek en hier niet aangeraakt:** de heraankondiging na een
 herverbinding die niet opnieuw intekent (wit kijkvenster, geen foutmelding), en
 `quinn_udp: sendmsg error 10040` op datagrammen boven de tun-MTU van 1280. Die twee gaan
