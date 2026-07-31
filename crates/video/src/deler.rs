@@ -300,17 +300,36 @@ struct Pacer {
     teller: u32,
 }
 
+/// Elk hoeveelste schermbeeld er verstuurd wordt om onder `fps` te blijven.
+///
+/// Twee procent speling voordat we naar boven afronden. Zonder dat wordt 180 Hz, waar
+/// drie schermbeelden exact 60 per seconde zijn, door een afrondingsrest van een
+/// nanoseconde alsnog elk vierde beeld en dus 45.
+fn elke_hoeveelste(fps: u32, scherm_hz: u32) -> u32 {
+    let ondergrens = u64::from(scherm_hz) * 98 / 100;
+    ondergrens.div_ceil(u64::from(fps.max(1))).max(1) as u32
+}
+
+/// Wat er van `fps` overblijft op een scherm van `scherm_hz`.
+///
+/// Alleen hele delers van de verversing geven gelijkmatig beeld, dus het gevraagde tempo
+/// is een bovengrens en niet een belofte. Op 144 Hz levert 60 er 48 op en 72 er 72. De UI
+/// laat dit zien bij de schuifregelaar, zodat je niet hoeft te raden waarom je iets
+/// anders krijgt dan je instelde.
+pub fn haalbaar_tempo(fps: u32, scherm_hz: u32) -> u32 {
+    if scherm_hz == 0 {
+        return fps;
+    }
+    scherm_hz / elke_hoeveelste(fps, scherm_hz)
+}
+
 impl Pacer {
     /// `scherm_hz` komt van [`crate::capture::verversing_van`].
     fn nieuw(fps: u32, scherm_hz: Option<u32>) -> Self {
         let doel = Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1)));
-        let elke = scherm_hz.filter(|hz| *hz > 0).map(|hz| {
-            // Twee procent speling voordat we naar boven afronden. Zonder dat wordt
-            // 180 Hz, waar drie schermbeelden exact 60 per seconde zijn, door een
-            // afrondingsrest van een nanoseconde alsnog elk vierde beeld en dus 45.
-            let ondergrens = u64::from(hz) * 98 / 100;
-            (ondergrens.div_ceil(u64::from(fps.max(1))).max(1)) as u32
-        });
+        let elke = scherm_hz
+            .filter(|hz| *hz > 0)
+            .map(|hz| elke_hoeveelste(fps, hz));
 
         tracing::info!(
             scherm_hz = scherm_hz.unwrap_or(0),
@@ -565,6 +584,33 @@ mod tests {
             "{} beelden in 30 seconden; verwacht er 30 × 48",
             door.len()
         );
+    }
+
+    #[test]
+    fn wat_de_ui_toont_klopt_met_wat_de_pacer_doet() {
+        // `haalbaar_tempo` staat onder de schuifregelaar in de instellingen. Wijkt dat
+        // af van wat de pacer werkelijk doet, dan liegt de UI — en juist daar ging het
+        // eerder mis: mensen zetten 60 en kregen 48 zonder te weten waarom.
+        for (hz, fps, verwacht) in [
+            (144u32, 60u32, 48u32),
+            (144, 72, 72),
+            (144, 144, 144),
+            (165, 60, 55),
+            (165, 72, 55),
+            (165, 82, 82),
+            (180, 60, 60),
+            (240, 60, 60),
+            (60, 60, 60),
+            // Meer vragen dan het scherm maakt kan niet; dan is elk beeld het maximum.
+            (144, 240, 144),
+        ] {
+            assert_eq!(haalbaar_tempo(fps, hz), verwacht, "{fps} fps op {hz} Hz");
+            assert_eq!(
+                door_bij(fps, u64::from(hz), 10) / 10,
+                verwacht,
+                "de pacer doet iets anders dan de UI belooft bij {fps} fps op {hz} Hz"
+            );
+        }
     }
 
     #[test]

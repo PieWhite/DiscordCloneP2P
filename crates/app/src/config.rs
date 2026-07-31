@@ -67,6 +67,10 @@ pub struct VideoConfig {
     #[serde(default = "default_codec")]
     pub codec: String,
 
+    /// Bovengrens, geen belofte: er wordt elk N-de schermbeeld verstuurd met N een heel
+    /// getal, want alleen hele delers van de verversing geven gelijkmatig beeld. Op
+    /// 144 Hz levert 60 dus 48 op en 72 er 72. Zie `fitcom_video::haalbaar_tempo` en
+    /// `docs/OVERDRACHT.md`.
     #[serde(default = "default_fps")]
     pub fps: u32,
 
