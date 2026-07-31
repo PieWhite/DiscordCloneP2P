@@ -9,15 +9,44 @@
 //! ```text
 //! cargo test -p fitcom-video --test keten -- --ignored --nocapture
 //! ```
+//!
+//! # Als debugmiddel
+//!
+//! Deler en kijker schrijven elk een meterregel per seconde; die komen hier op de
+//! console. Dit is de snelste manier om aan screenshare te meten zonder tweede machine.
+//! Instelbaar zonder opnieuw te bouwen:
+//!
+//! ```text
+//! $env:KETEN_SECONDEN = 30; $env:KETEN_BITRATE = 8000000; $env:KETEN_FPS = 60
+//! ```
+//!
+//! **Twee dingen die deze opstelling niet nadoet.** Het kijkvenster staat op hetzelfde
+//! scherm dat gedeeld wordt, dus de kijker filmt zichzelf: dat geeft veel meer beweging
+//! dan een echte deler ooit heeft, en dus een hogere bitrate. En loopback heeft geen
+//! MTU van 1280, geen jitter en geen verlies op de lijn. Verlies dat je hier ziet komt
+//! van buffers aan deze kant, niet van het netwerk.
 
 use fitcom_video::capture::{afmeting_van, BronSoort};
 use fitcom_video::{beschikbare_bronnen, deel, kijk, Codec, D3dContext, DelerConfig, KijkerConfig};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
+fn env_u32(naam: &str, standaard: u32) -> u32 {
+    std::env::var(naam)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(standaard)
+}
+
 #[test]
 #[ignore = "vereist een echt scherm en een GPU"]
 fn scherm_komt_via_udp_in_het_venster_terecht() {
+    // Zonder abonnee gaan de meterregels van deler en kijker nergens heen.
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .try_init();
+
     let d3d = D3dContext::new().expect("D3D11");
     let scherm = beschikbare_bronnen()
         .expect("bronnen")
@@ -51,8 +80,8 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             stream_id: 1,
             bron: scherm,
             codec: Codec::H264,
-            fps: 60,
-            bitrate: 25_000_000,
+            fps: env_u32("KETEN_FPS", 60),
+            bitrate: env_u32("KETEN_BITRATE", 25_000_000),
         },
         vec![doel],
     )
@@ -60,7 +89,7 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
 
     // Een paar seconden laten lopen, niet stoppen bij het eerste beeld: pas over meer
     // beelden zie je of de keten blijft draaien of na een paar frames vastloopt.
-    let duur = Duration::from_secs(5);
+    let duur = Duration::from_secs(u64::from(env_u32("KETEN_SECONDEN", 5)));
     let tot = Instant::now() + duur;
     while Instant::now() < tot {
         std::thread::sleep(Duration::from_millis(100));

@@ -196,7 +196,15 @@ fn kijk_lus(
     let mut laatste_pomp = Instant::now();
     let mut laatste_miniatuur = Instant::now() - MINIATUUR_INTERVAL;
 
+    // Eigen ijkpunten voor de meter: `laatste_incompleet` hierboven stuurt het
+    // keyframe-herstel aan en wordt alleen bijgewerkt als een beeld compleet werd. De
+    // meter moet elke verandering zien, ook die van beelden die nooit afkwamen.
+    let mut meter = Meter::nieuw(cfg.stream_id);
+    let (mut gemeten_incompleet, mut gemeten_verworpen) = (0u64, 0u64);
+
     while !gedeeld.stop.load(Ordering::Relaxed) {
+        meter.tik();
+
         // Het venster bedienen mag niet bij elk pakket: bij 1080p60 zijn dat er
         // duizenden per seconde en dan doen we niets anders meer.
         if laatste_pomp.elapsed() >= Duration::from_millis(8) {
@@ -208,6 +216,7 @@ fn kijk_lus(
 
         if wacht_op_keyframe && laatst_gevraagd.elapsed() >= KEYFRAME_PAUZE {
             laatst_gevraagd = Instant::now();
+            meter.keyframe_verzoeken += 1;
             let _ = events.try_send(KijkerEvent::KeyframeNodig);
         }
 
@@ -224,8 +233,17 @@ fn kijk_lus(
         if header.stream_id != cfg.stream_id || van.ip() != cfg.afzender {
             continue;
         }
+        meter.fragmenten += 1;
+        meter.bytes += (fitcom_proto::MEDIA_HEADER_LEN + payload.len()) as u64;
 
-        let Some(frame) = samensteller.push(&header, payload) else {
+        let klaar = samensteller.push(&header, payload);
+
+        meter.incompleet += samensteller.incompleet - gemeten_incompleet;
+        meter.verworpen += samensteller.verworpen - gemeten_verworpen;
+        gemeten_incompleet = samensteller.incompleet;
+        gemeten_verworpen = samensteller.verworpen;
+
+        let Some(frame) = klaar else {
             continue;
         };
 
@@ -251,12 +269,18 @@ fn kijk_lus(
         }
 
         let tijd_hns = naar_hns(frame.timestamp);
-        match decoder.decode(&frame.data, tijd_hns) {
+        let voor_decode = Instant::now();
+        let uit_decoder = decoder.decode(&frame.data, tijd_hns);
+        meter.decode_us += voor_decode.elapsed().as_micros() as u64;
+        match uit_decoder {
             Ok(Some(beeld)) => {
+                let voor_toon = Instant::now();
                 if let Err(e) = venster.toon(&beeld) {
                     tracing::error!(error = %format!("{e:#}"), "beeld tonen mislukt");
                     break;
                 }
+                meter.toon_us += voor_toon.elapsed().as_micros() as u64;
+                meter.getoond += 1;
                 gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
                 meet_vertraging(gedeeld, tijd_hns);
 
@@ -281,6 +305,70 @@ fn kijk_lus(
                 wacht_op_keyframe = true;
             }
         }
+    }
+}
+
+/// De tegenhanger van de meter bij de deler: één regel per seconde, op `info`.
+///
+/// Dit is de kant die de deler niet kan zien. `incompleet` boven nul betekent dat er
+/// fragmenten onderweg sneuvelen; `keyframe_verzoeken` telt hoe vaak we de deler daarom
+/// om een nieuw keyframe vragen. Lopen die twee samen op, dan zit je in de lus waarbij
+/// elk keyframe een burst is die zelf weer verlies veroorzaakt.
+struct Meter {
+    stream_id: u32,
+    sinds: Instant,
+    fragmenten: u32,
+    bytes: u64,
+    getoond: u32,
+    incompleet: u64,
+    verworpen: u64,
+    keyframe_verzoeken: u32,
+    decode_us: u64,
+    toon_us: u64,
+}
+
+impl Meter {
+    fn nieuw(stream_id: u32) -> Self {
+        Self {
+            stream_id,
+            sinds: Instant::now(),
+            fragmenten: 0,
+            bytes: 0,
+            getoond: 0,
+            incompleet: 0,
+            verworpen: 0,
+            keyframe_verzoeken: 0,
+            decode_us: 0,
+            toon_us: 0,
+        }
+    }
+
+    fn tik(&mut self) {
+        let dt = self.sinds.elapsed();
+        if dt < Duration::from_secs(1) {
+            return;
+        }
+        let s = dt.as_secs_f64();
+        let per_beeld = |us: u64| {
+            if self.getoond == 0 {
+                0.0
+            } else {
+                (us as f64 / self.getoond as f64 / 100.0).round() / 10.0
+            }
+        };
+        tracing::info!(
+            stream = self.stream_id,
+            getoond_fps = (self.getoond as f64 / s).round() as u32,
+            mbit = ((self.bytes as f64 * 8.0 / s / 1e5).round() / 10.0),
+            frag_per_s = (self.fragmenten as f64 / s).round() as u32,
+            incompleet = self.incompleet,
+            verworpen = self.verworpen,
+            keyframe_verzoeken = self.keyframe_verzoeken,
+            decode_ms = per_beeld(self.decode_us),
+            toon_ms = per_beeld(self.toon_us),
+            "kijker"
+        );
+        *self = Meter::nieuw(self.stream_id);
     }
 }
 

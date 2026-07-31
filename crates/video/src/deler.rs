@@ -144,11 +144,14 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     let payload_type = cfg.codec.payload_type();
     let begin = klok_nulpunt();
     let mut seq: u32 = 0;
+    let mut meter = Meter::nieuw(cfg.stream_id, cfg.bron.naam.clone());
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
+        meter.tik();
         let Some(beeld) = capture.volgende_frame(FRAME_WACHT) else {
             continue;
         };
+        meter.opgenomen += 1;
 
         if gedeeld.keyframe_gevraagd.swap(false, Ordering::Relaxed) {
             encoder.vraag_keyframe();
@@ -178,6 +181,10 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         }
 
         for pakket in pakketten {
+            meter.verstuurd += 1;
+            meter.keyframes += u32::from(pakket.keyframe);
+            meter.grootste = meter.grootste.max(pakket.data.len());
+
             let tijdstempel = naar_klok(pakket.tijd_hns);
             for (header, stuk) in headers_voor(
                 cfg.stream_id,
@@ -188,8 +195,11 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
                 &pakket.data,
             ) {
                 seq = seq.wrapping_add(1);
+                meter.fragmenten += 1;
+                meter.bytes += (fitcom_proto::MEDIA_HEADER_LEN + stuk.len()) as u64;
                 for &kijker in &kijkers {
                     if let Err(e) = socket.stuur(kijker, &header, stuk) {
+                        meter.niet_verstuurd += 1;
                         tracing::debug!(%kijker, error = %e, "videofragment niet verstuurd");
                     }
                 }
@@ -199,6 +209,63 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     }
 
     Ok(())
+}
+
+/// Eén regel per seconde per stream, op `info`. Zonder deze getallen blijft elke
+/// uitspraak over haperend beeld een gok: opnemen, coderen en versturen zijn alle drie
+/// verdachte, en alleen de verhouding ertussen wijst de dader aan.
+///
+/// Let op `niet_verstuurd`: dat zijn fragmenten die de socket weigerde. Boven nul is de
+/// verzendkant de bron van het verlies, niet de lijn.
+struct Meter {
+    stream_id: u32,
+    bron: String,
+    sinds: Instant,
+    opgenomen: u32,
+    verstuurd: u32,
+    keyframes: u32,
+    fragmenten: u32,
+    bytes: u64,
+    grootste: usize,
+    niet_verstuurd: u32,
+}
+
+impl Meter {
+    fn nieuw(stream_id: u32, bron: String) -> Self {
+        Self {
+            stream_id,
+            bron,
+            sinds: Instant::now(),
+            opgenomen: 0,
+            verstuurd: 0,
+            keyframes: 0,
+            fragmenten: 0,
+            bytes: 0,
+            grootste: 0,
+            niet_verstuurd: 0,
+        }
+    }
+
+    fn tik(&mut self) {
+        let dt = self.sinds.elapsed();
+        if dt < Duration::from_secs(1) {
+            return;
+        }
+        let s = dt.as_secs_f64();
+        tracing::info!(
+            stream = self.stream_id,
+            bron = %self.bron,
+            opgenomen_fps = (self.opgenomen as f64 / s).round() as u32,
+            verstuurd_fps = (self.verstuurd as f64 / s).round() as u32,
+            mbit = ((self.bytes as f64 * 8.0 / s / 1e5).round() / 10.0),
+            keyframes = self.keyframes,
+            grootste_kb = self.grootste / 1024,
+            frag_per_s = (self.fragmenten as f64 / s).round() as u32,
+            niet_verstuurd = self.niet_verstuurd,
+            "deler"
+        );
+        *self = Meter::nieuw(self.stream_id, std::mem::take(&mut self.bron));
+    }
 }
 
 /// Van de 100-nanoseconden-klok van Media Foundation naar de 90 kHz-klok op de draad.

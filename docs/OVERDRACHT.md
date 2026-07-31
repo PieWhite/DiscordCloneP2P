@@ -583,6 +583,67 @@ cargo test -p fitcom-video --test keten     -- --ignored --nocapture   # de beel
 cargo test -p fitcom      --test stream_deling -- --ignored --nocapture # via de motor
 ```
 
+### Screenshare meten zonder tweede machine
+
+`deler.rs` en `kijker.rs` schrijven elk **één `info`-regel per seconde per stream**. Dat
+is het enige gereedschap dat uitspraken over haperend beeld boven het gokniveau tilt:
+opnemen, coderen en versturen zijn alle drie verdachte, en alleen de verhouding ertussen
+wijst de dader aan.
+
+```
+deler   opgenomen_fps verstuurd_fps mbit keyframes grootste_kb frag_per_s niet_verstuurd
+kijker  getoond_fps mbit frag_per_s incompleet verworpen keyframe_verzoeken decode_ms toon_ms
+```
+
+`niet_verstuurd` telt fragmenten die de socket weigerde — boven nul zit het verlies aan
+de verzendkant, niet op de lijn. `incompleet` en `keyframe_verzoeken` die samen oplopen
+betekenen de lus waarin elk keyframe zelf een burst is die weer verlies veroorzaakt.
+
+Twee manieren om eraan te komen, allebei op één PC:
+
+```
+KETEN_SECONDEN=30 KETEN_BITRATE=8000000 cargo test -p fitcom-video --test keten -- --ignored --nocapture
+.\scripts\run-peers.ps1 -Count 2   →   .\scripts\run-peers.ps1 -Logs
+```
+
+De ketentest is de snelle lus; twee instanties met `-Logs` is de echte app, waarbij je in
+de UI een **venster** deelt en niet een monitor — een monitor delen zet het kijkvenster
+in zijn eigen opname en dat vervalst elke bitrate-meting.
+
+**Wat loopback niet nadoet:** geen MTU van 1280, geen jitter, geen verlies op de lijn.
+`quinn_udp: sendmsg error 10040` gaat lokaal dus nooit af. En encoder plus decoder op
+dezelfde GPU is extra last die een echte deler niet heeft. Hapering die je lokaal ziet is
+geen bewijs; hapering die je lokaal *niet* ziet ook niet.
+
+### Meting van 2026-07-31: waarom er 2 à 4 keyframes per seconde uitgaan
+
+Eerste run met de meters, 1920×1080, budget 8 Mbit:
+
+```
+deler  opgenomen_fps=188 verstuurd_fps=188 mbit=16.6 keyframes=3 grootste_kb=260
+kijker getoond_fps=189  incompleet=0 verworpen=0 keyframe_verzoeken=0
+```
+
+Twee dingen staan hier zwart op wit:
+
+1. **`deel_lus` doet niets met `cfg.fps`.** WGC levert op monitortempo, de 60 uit de
+   config gaat alleen naar `MF_MT_FRAME_RATE` van de encoder. Op een 144-165 Hz-scherm
+   gaat er dus ruim 3× zoveel de draad op, en de bitrate loopt navenant over budget.
+2. **De keyframes komen niet van de kijker.** `keyframe_verzoeken=0` en de deler stuurt er
+   toch 3 per seconde. De GOP-lengte wordt nergens gezet (`codec.rs` zet alleen
+   `MF_LOW_LATENCY`), dus de driver kiest — en die telt in *frames*, niet in seconden.
+   174 beelden gedeeld door 3 keyframes is ~58: een standaard-GOP van 60 frames. Bij 60
+   fps zou dat 1 keyframe per seconde zijn.
+
+Punt 1 veroorzaakt punt 2. Bij 260 kB per keyframe is 3/s alleen al ~6 Mbit, en die burst
+is 242 fragmenten achter elkaar tegen een ontvangbuffer die op de Windows-standaard van
+64 kB staat (`net/src/media.rs` zet `SO_RCVBUF` nergens). Dat is de keyframe-storm uit het
+eerdere onderzoek, nu gereproduceerd op één machine zonder een enkel verloren pakket.
+
+Volgorde van aanpakken: frame pacing in `deel_lus`, dan opnieuw meten, dan pas GOP en
+`SO_RCVBUF`. Bij het pacen telt de deadline op bij de *vorige* deadline en niet bij `nu` —
+anders rondt elk interval af op een monitorperiode en zakt 144 Hz naar 48 fps.
+
 ### Miniaturen voor de overzichtstrook (fase 5)
 `kijker.rs` stuurt elke 500 ms een `KijkerEvent::Miniatuur` met een verkleind BGRA-beeld,
 afgeleid van het net getoonde frame via `D3dContext::lees_bgra_miniatuur` (gerichte

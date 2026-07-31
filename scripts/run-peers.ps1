@@ -4,6 +4,7 @@
 #   .\scripts\run-peers.ps1              # 2 instanties
 #   .\scripts\run-peers.ps1 -Count 3     # 3 instanties, volledige mesh
 #   .\scripts\run-peers.ps1 -Stop        # alles afsluiten
+#   .\scripts\run-peers.ps1 -Logs        # per instantie een venster met de meterregels
 #
 # De datamappen komen in .\.localpeers\ en worden bij elke start opnieuw opgebouwd,
 # zodat je nooit met een halve staat van een vorige run zit.
@@ -11,7 +12,8 @@
 param(
     [int]$Count = 2,
     [switch]$Stop,
-    [switch]$Release
+    [switch]$Release,
+    [switch]$Logs
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +26,28 @@ if ($Stop) {
     if ($null -eq $procs) { Write-Host "Er draait niets."; exit 0 }
     $procs | Stop-Process -Force
     Write-Host "$($procs.Count) instantie(s) gestopt."
+    exit 0
+}
+
+# Eén venster per instantie met alleen de meterregels van deler en kijker. Los aan te
+# roepen terwijl er al instanties draaien; dit start of stopt niets.
+function Start-LogVensters {
+    $dirs = Get-ChildItem $peerRoot -Directory -ErrorAction SilentlyContinue
+    if (-not $dirs) { Write-Host "Geen .localpeers-mappen; start eerst instanties."; return }
+    foreach ($d in $dirs) {
+        $logDir = Join-Path $d.FullName "logs"
+        $cmd = "`$f = Get-ChildItem '$logDir\*.log' | Sort-Object LastWriteTime | Select-Object -Last 1;" +
+               "Write-Host '$($d.Name)' -ForegroundColor Cyan;" +
+               "Get-Content `$f.FullName -Wait -Tail 0 | Select-String 'deler|kijker'"
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmd | Out-Null
+    }
+    Write-Host "$($dirs.Count) logvenster(s) geopend."
+}
+
+if ($Logs -and -not $Stop) {
+    # Instanties schrijven hun eerste regels pas na een paar honderd milliseconden.
+    if (-not (Test-Path $peerRoot)) { throw "Nog niets gestart: draai eerst zonder -Logs." }
+    Start-LogVensters
     exit 0
 }
 
@@ -73,5 +97,6 @@ for ($i = 0; $i -lt $Count; $i++) {
 }
 
 Write-Host ""
-Write-Host "Logs:  Get-Content $peerRoot\peer1\logs\*.log -Wait"
-Write-Host "Stop:  .\scripts\run-peers.ps1 -Stop"
+Write-Host "Meters: .\scripts\run-peers.ps1 -Logs   (venster per instantie)"
+Write-Host "Ruw:    Get-Content $peerRoot\peer1\logs\*.log -Wait"
+Write-Host "Stop:   .\scripts\run-peers.ps1 -Stop"

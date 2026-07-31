@@ -1742,6 +1742,7 @@ dependencies = [
  "fitcom-net",
  "fitcom-proto",
  "tracing",
+ "tracing-subscriber",
  "windows 0.62.2",
 ]
 
