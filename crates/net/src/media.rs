@@ -18,6 +18,17 @@ use std::time::Duration;
 /// bytes en videofragmenten zitten onder de MTU.
 pub const MAX_PAKKET: usize = 1500;
 
+/// Windows geeft een UDP-socket standaard 64 kB ontvangbuffer. Een keyframe van 1080p is
+/// 100 tot 260 kB en gaat in ruim tweehonderd fragmenten achter elkaar de deur uit; de
+/// ontvanger zit op dat moment in `decode` en `toon` en leest dus even niet. Met 64 kB
+/// overleeft daar ongeveer een kwart van — gemeten in `tests/burst.rs`, op loopback, waar
+/// onderweg niets kwijt kan raken. Eén gemist fragment maakt het hele keyframe
+/// onbruikbaar, de kijker vraagt een nieuw keyframe, en de volgende stoot sneuvelt net zo.
+///
+/// 1 MB is ruim vier keyframes. Groter is geen gratis winst: wat hier in de rij staat is
+/// beeld dat al te laat is, en de samensteller gooit oude frames toch weg.
+const ONTVANGBUFFER: usize = 1024 * 1024;
+
 pub struct MediaSocket {
     sock: UdpSocket,
 }
@@ -30,6 +41,14 @@ impl MediaSocket {
             .with_context(|| format!("UDP-poort {port} binden"))?;
         // Zonder timeout kan een wachtende thread niet meer worden afgesloten.
         sock.set_read_timeout(Some(Duration::from_millis(200)))?;
+
+        // Mislukken mag: een kleinere buffer is trager, geen fout. Wél melden, want dan
+        // is dit de eerste verdachte zodra beeld begint te haperen.
+        let s2 = socket2::SockRef::from(&sock);
+        if let Err(e) = s2.set_recv_buffer_size(ONTVANGBUFFER) {
+            tracing::warn!(error = %e, "ontvangbuffer vergroten mislukt");
+        }
+
         Ok(Self { sock })
     }
 

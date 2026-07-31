@@ -1706,6 +1706,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "rustls",
+ "socket2",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

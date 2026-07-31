@@ -602,20 +602,24 @@ betekenen de lus waarin elk keyframe zelf een burst is die weer verlies veroorza
 Twee manieren om eraan te komen, allebei op één PC:
 
 ```
+cargo test -p fitcom-video --test encoder_gedrag -- --ignored --nocapture
 KETEN_SECONDEN=30 KETEN_BITRATE=8000000 cargo test -p fitcom-video --test keten -- --ignored --nocapture
 .\scripts\run-peers.ps1 -Count 2   →   .\scripts\run-peers.ps1 -Logs
 ```
 
-De ketentest is de snelle lus; twee instanties met `-Logs` is de echte app, waarbij je in
-de UI een **venster** deelt en niet een monitor — een monitor delen zet het kijkvenster
-in zijn eigen opname en dat vervalst elke bitrate-meting.
+`encoder_gedrag` is de enige waar je aan kunt *rekenen*: vast patroon, vast tempo, geen
+scherm nodig. De ketentest deelt het echte bureaublad en is dus nooit twee keer hetzelfde
+— een stilstaand scherm levert vier beelden per seconde en een bewegend spel tweehonderd.
+Gebruik hem om te zien dát de keten loopt, niet om twee runs te vergelijken. Twee
+instanties met `-Logs` is de echte app; deel daar een **venster** en geen monitor, want
+een monitor zet het kijkvenster in zijn eigen opname.
 
 **Wat loopback niet nadoet:** geen MTU van 1280, geen jitter, geen verlies op de lijn.
 `quinn_udp: sendmsg error 10040` gaat lokaal dus nooit af. En encoder plus decoder op
 dezelfde GPU is extra last die een echte deler niet heeft. Hapering die je lokaal ziet is
 geen bewijs; hapering die je lokaal *niet* ziet ook niet.
 
-### Meting van 2026-07-31: waarom er 2 à 4 keyframes per seconde uitgaan
+### Onderzoek 2026-07-31: de keyframe-storm, gevonden en opgelost op één machine
 
 Eerste run met de meters, 1920×1080, budget 8 Mbit:
 
@@ -624,25 +628,44 @@ deler  opgenomen_fps=188 verstuurd_fps=188 mbit=16.6 keyframes=3 grootste_kb=260
 kijker getoond_fps=189  incompleet=0 verworpen=0 keyframe_verzoeken=0
 ```
 
-Twee dingen staan hier zwart op wit:
+**De hoofdoorzaak is de ontvangbuffer van de kijker.** `crates/net/tests/burst.rs` stuurt
+242 fragmenten — één keyframe van 1080p — achter elkaar naar een socket waarvan de lezer
+even bezig is, precies zoals de kijker tijdens `decode` en `toon`. Van de 242 kwamen er
+**59** aan. Dat is geen toeval: 59 × 1116 bytes is 64 kB, de standaard-`SO_RCVBUF` van
+Windows. Eén gemist fragment maakt het hele keyframe onbruikbaar, dus de kijker vraagt een
+nieuw keyframe, en die stoot sneuvelt op exact dezelfde manier. Dat is de zichzelf in
+stand houdende lus uit het eerdere onderzoek, hier gereproduceerd **op loopback, waar
+onderweg niets kwijt kan raken**. Het netwerk had er nooit iets mee te maken.
 
-1. **`deel_lus` doet niets met `cfg.fps`.** WGC levert op monitortempo, de 60 uit de
-   config gaat alleen naar `MF_MT_FRAME_RATE` van de encoder. Op een 144-165 Hz-scherm
-   gaat er dus ruim 3× zoveel de draad op, en de bitrate loopt navenant over budget.
-2. **De keyframes komen niet van de kijker.** `keyframe_verzoeken=0` en de deler stuurt er
-   toch 3 per seconde. De GOP-lengte wordt nergens gezet (`codec.rs` zet alleen
-   `MF_LOW_LATENCY`), dus de driver kiest — en die telt in *frames*, niet in seconden.
-   174 beelden gedeeld door 3 keyframes is ~58: een standaard-GOP van 60 frames. Bij 60
-   fps zou dat 1 keyframe per seconde zijn.
+Drie dingen gerepareerd, elk met de meting die hem aanwees:
 
-Punt 1 veroorzaakt punt 2. Bij 260 kB per keyframe is 3/s alleen al ~6 Mbit, en die burst
-is 242 fragmenten achter elkaar tegen een ontvangbuffer die op de Windows-standaard van
-64 kB staat (`net/src/media.rs` zet `SO_RCVBUF` nergens). Dat is de keyframe-storm uit het
-eerdere onderzoek, nu gereproduceerd op één machine zonder een enkel verloren pakket.
+1. **Ontvangbuffer op 1 MB** (`net/src/media.rs`). Daarmee komen alle 242 aan. Groter is
+   geen gratis winst: wat daar in de rij staat is beeld dat al te laat is.
+2. **Frame pacing** (`deler.rs::Pacer`). `opgenomen_fps == verstuurd_fps` liet zien dat
+   `cfg.fps` nergens werd gebruikt; WGC levert op monitortempo. Op 144-165 Hz ging er ruim
+   3× zoveel de draad op. Twee valkuilen zitten in de unittests vastgelegd: de deadline
+   telt op bij de vórige deadline (anders zakt 144 Hz naar 48 fps in plaats van 60), en
+   bij achterstand schuift hij naar `nu` en niet naar `nu + interval` (anders gooi je
+   onder het doeltempo alsnog beelden weg). De deler trekt daarna de opnamewachtrij leeg
+   en codeert alleen het verste beeld — de rest is al te laat.
+3. **GOP expliciet op 2 seconden** (`codec.rs`). De keyframes kwamen niet van de kijker:
+   `keyframe_verzoeken=0` en er gingen er toch 3 per seconde uit. De driver koos, en die
+   telt in *beelden*, niet in seconden — 60, wat bij een deler die niet paceert neerkomt
+   op 3/s. **`MF_MT_MAX_KEYFRAME_SPACING` op het uitvoertype doet niets bij de
+   NVIDIA-MFT**, en `CODECAPI_AVEncMPVGOPSize` werkt alleen als je hem vóór
+   `SetOutputType` zet. Verkeerd gezet meldt hij niets en blijft het gewoon 1/s.
 
-Volgorde van aanpakken: frame pacing in `deel_lus`, dan opnieuw meten, dan pas GOP en
-`SO_RCVBUF`. Bij het pacen telt de deadline op bij de *vorige* deadline en niet bij `nu` —
-anders rondt elk interval af op een monitorperiode en zakt 144 Hz naar 48 fps.
+Na afloop, gemeten met `tests/encoder_gedrag.rs` (vast patroon, vast tempo, geen scherm
+nodig): 0,5 keyframes/s, 3,4 Mbit op een budget van 8, en de encoder houdt precies **één**
+beeld vast — 17 ms op 60 fps. Die pijplijndiepte telt in beelden en niet in tijd, en dat
+verklaart waarom de ketentest op een stilstaand bureaublad 100 ms meet: bij 10 beelden per
+seconde is één beeld achterstand 100 ms. Op een bewegend scherm is het 17 ms.
+
+**Nog open, uit het eerdere onderzoek en hier niet aangeraakt:** de heraankondiging na een
+herverbinding die niet opnieuw intekent (wit kijkvenster, geen foutmelding), en
+`quinn_udp: sendmsg error 10040` op datagrammen boven de tun-MTU van 1280. Die twee gaan
+over verbindingen die wegvallen, niet over haperend beeld, en geen van beide is op
+loopback te reproduceren.
 
 ### Miniaturen voor de overzichtstrook (fase 5)
 `kijker.rs` stuurt elke 500 ms een `KijkerEvent::Miniatuur` met een verkleind BGRA-beeld,

@@ -31,6 +31,14 @@ use windows::Win32::Media::MediaFoundation::*;
 /// 100-nanoseconden-eenheden: de tijdrekening van Media Foundation.
 pub const HNS_PER_SEC: i64 = 10_000_000;
 
+/// Zoveel seconden tussen twee periodieke keyframes.
+///
+/// Een keyframe van 1080p is 100 tot 300 kB en gaat in één stoot van honderden fragmenten
+/// de socket in; hoe minder vaak dat gebeurt, hoe beter. Dit is een vangnet, geen
+/// hersteltijd: een kijker die de draad kwijt is vraagt zelf om een keyframe
+/// ([`Encoder::vraag_keyframe`]) en wacht hier dus niet op.
+const GOP_SECONDEN: u32 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
     H264,
@@ -156,6 +164,21 @@ impl Encoder {
 
         let frame_duur = HNS_PER_SEC / i64::from(cfg.fps.max(1));
 
+        // De GOP-lengte moet vóór `SetOutputType`: daarna staat de encoder vast en neemt
+        // de NVIDIA-MFT hem niet meer aan. Zie het bestandscommentaar van
+        // `tests/encoder_gedrag.rs` voor de meting.
+        let codec_api: Option<ICodecAPI> = transform.cast().ok();
+        if let Some(api) = &codec_api {
+            // SAFETY: de variant is een VT_UI4 zoals de codec-API verwacht.
+            unsafe {
+                let waarde =
+                    windows::Win32::System::Variant::VARIANT::from(cfg.fps.max(1) * GOP_SECONDEN);
+                if let Err(e) = api.SetValue(&CODECAPI_AVEncMPVGOPSize, &waarde) {
+                    tracing::warn!(error = %e, "GOP-lengte instellen mislukt; de driver kiest zelf");
+                }
+            }
+        }
+
         // Uitvoertype eerst: de encoder wil weten wat hij moet maken voordat hij zegt
         // welke invoer daarbij past.
         // SAFETY: alle types worden volledig ingevuld voordat ze gezet worden.
@@ -168,6 +191,10 @@ impl Encoder {
             uit.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, mf::pak(1, 1))?;
             uit.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
             uit.SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 0)?;
+            // De gedocumenteerde MF-manier om de keyframe-afstand te zetten. De
+            // NVIDIA-MFT doet er niets mee — daarvoor staat de codec-API hieronder — maar
+            // een andere encoder kijkt er wel naar, en fout kan het nooit staan.
+            uit.SetUINT32(&MF_MT_MAX_KEYFRAME_SPACING, cfg.fps.max(1) * GOP_SECONDEN)?;
             transform
                 .SetOutputType(0, &uit, 0)
                 .context("uitvoertype instellen")?;
@@ -183,7 +210,6 @@ impl Encoder {
                 .context("invoertype instellen")?;
         }
 
-        let codec_api: Option<ICodecAPI> = transform.cast().ok();
         let events: IMFMediaEventGenerator = transform
             .cast()
             .context("encoder levert geen gebeurtenissen; asynchrone MFT verwacht")?;

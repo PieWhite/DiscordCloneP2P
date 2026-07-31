@@ -322,8 +322,7 @@ impl super::App {
                                                         egui::Align::Center,
                                                     ),
                                                     |ui| {
-                                                        if ui.small_button("verwijder").clicked()
-                                                        {
+                                                        if ui.small_button("verwijder").clicked() {
                                                             te_verwijderen = Some(msg.id);
                                                         }
                                                         if ui.small_button("bewerk").clicked() {
