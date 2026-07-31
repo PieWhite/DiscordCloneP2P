@@ -145,12 +145,15 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     let begin = klok_nulpunt();
     let mut seq: u32 = 0;
     let mut meter = Meter::nieuw(cfg.stream_id, cfg.bron.naam.clone());
+    // Het nulpunt van de opnameklok naast dat van de onze, gezet bij het eerste beeld.
+    let mut nulpunten: Option<(i64, i64)> = None;
+    let mut vorige_tijd: i64 = -1;
 
     let mut pacer = Pacer::nieuw(cfg.fps, crate::capture::verversing_van(&cfg.bron));
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
-        let Some(mut beeld) = capture.volgende_frame(FRAME_WACHT) else {
+        let Some(mut opname) = capture.volgende_frame(FRAME_WACHT) else {
             continue;
         };
         meter.opgenomen += 1;
@@ -161,7 +164,7 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         // vertraging, en de beelden ertussen zou de kijker toch nooit los zien — maar ze
         // tellen wel mee, want het zijn schermbeelden die echt langs zijn gekomen.
         while let Some(nieuwer) = capture.volgende_frame(Duration::ZERO) {
-            beeld = nieuwer;
+            opname = nieuwer;
             meter.opgenomen += 1;
             pacer.tel();
         }
@@ -174,8 +177,26 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
             encoder.vraag_keyframe();
         }
 
-        let tijd_hns = (begin.elapsed().as_nanos() / 100) as i64;
-        let pakketten = match encoder.encode(&beeld, tijd_hns) {
+        // De tijd van de *opname*, niet van nu. Onze lus komt er een wisselend aantal
+        // milliseconden later aan toe, en die vertraging hoort niet in de tijdstempel
+        // terecht te komen: de kijker plant zijn weergave hierop, dus elke
+        // onnauwkeurigheid die we hier instoppen ziet hij terug als haperen.
+        //
+        // Het nulpunt van de opname-API is willekeurig, dus we leggen het bij het eerste
+        // beeld naast het onze. Beide klokken komen van dezelfde QPC en lopen dus niet
+        // uit elkaar; alleen het nulpunt verschilt.
+        let (opname_nul, ons_nul) = *nulpunten.get_or_insert_with(|| {
+            (
+                opname.opgenomen_hns,
+                (begin.elapsed().as_nanos() / 100) as i64,
+            )
+        });
+        // Strikt oplopend: gelijke tijdstempels plakt de ontvanger tot één beeld aan
+        // elkaar. De opnametijden lopen al op, dit is de vangnetregel.
+        let tijd_hns = (ons_nul + (opname.opgenomen_hns - opname_nul)).max(vorige_tijd + 1);
+        vorige_tijd = tijd_hns;
+
+        let pakketten = match encoder.encode(&opname.textuur, tijd_hns) {
             Ok(p) => p,
             Err(e) => {
                 // Eén mislukt beeld is geen reden om te stoppen met delen; de encoder

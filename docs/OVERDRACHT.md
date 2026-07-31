@@ -696,6 +696,52 @@ uit de aankomsttijden van de opname**: dat is geprobeerd en WGC levert in stoten
 meet 200 tot 1000 Hz op een scherm van 144 en het tempo staat elke halve seconde ergens
 anders — erger dan de kwaal.
 
+### De echte oorzaak: er was geen weergaveklok
+
+Het vastklikken op de verversing hielp, maar het bleef aan de zendkant sleutelen. Wat er
+werkelijk ontbrak: **de kijker deed niets met de tijdstempel.** Hij toonde elk beeld zodra
+het compleet was. Daarmee bepaalt de *reis* wanneer een beeld op het scherm komt —
+netwerk, planning van threads, hoe vol de ontvangbuffer net zat — en niet het moment
+waarop het is opgenomen. Gelijkmatig opgenomen beeld komt er dan ongelijkmatig uit, zonder
+dat er één beeld verloren gaat en met een fps-teller die netjes zestig meldt.
+
+Audio had dit al (`crates/audio/src/jitter.rs`). Video niet. Dat verschil is precies
+waarom het geluid vloeiend was terwijl het beeld schokte.
+
+En de zender maakte het erger: de tijdstempel kwam van `begin.elapsed()` op het moment van
+*encoderen*, niet van het moment van opnemen. De planningsjitter van onze eigen lus zat er
+dus al in voordat het pakket de deur uit ging.
+
+Beide gerepareerd:
+
+- `capture::Opgenomen` draagt nu `SystemRelativeTime` van de opname-API mee, en `deler.rs`
+  zet die op de draad — het nulpunt van die klok wordt bij het eerste beeld naast het onze
+  gelegd. Beide komen van dezelfde QPC, dus ze lopen niet uit elkaar.
+- `kijker::Weergaveklok` plant elk beeld op `basis + verstreken + 30 ms`. `basis` is het
+  **minimum** van `aankomst − verstreken` over een venster van twee emmers van 2 s: het
+  beeld dat er het snelst over deed had de minste reistijd en bepaalt dus de beste
+  schatting van hoe de twee klokken zich verhouden. Een gemiddelde zou met elke vertraging
+  meelopen. Er wordt niets gesynchroniseerd tussen de machines — dat zou een tijdserver
+  vragen die we niet hebben en niet willen.
+
+Een unittest voert 300 beelden aan die gelijkmatig zijn opgenomen maar er tussen 4 en 26 ms
+over deden. Zonder klok staat dat zo op het scherm; met klok is de spreiding **< 0,01 ms**.
+
+De meter van de kijker meldt nu `spreiding_ms`: de standaardafwijking van de afstand tussen
+twee getoonde beelden. **Dat is het getal dat zegt of het hapert** — `getoond_fps` kan
+kloppen terwijl dit hoog staat, en dan schokt het.
+
+Twee dingen om te weten bij het afstellen:
+
+- `WEERGAVE_VOORSPRONG` (30 ms) is de knop. Kleiner is minder vertraging maar dan is elk
+  beeld dat een paar milliseconden later binnenkomt al te laat en zijn we terug bij
+  tonen-zodra-het-kan.
+- De klok maakt de *reis* onzichtbaar, niet de bemonstering. Neem je 48 beelden per seconde
+  van een filmpje dat er zestig heeft, dan blijft dat 60→48-judder, net als film op een
+  60 Hz-scherm. Zet `fps` daarom **boven** het tempo van wat je deelt: op 144 Hz is dat 72
+  (elk tweede schermbeeld), en dan wordt elk beeld van een filmpje van 60 minstens één keer
+  bemonsterd.
+
 **Nog open, uit het eerdere onderzoek en hier niet aangeraakt:** de heraankondiging na een
 herverbinding die niet opnieuw intekent (wit kijkvenster, geen foutmelding), en
 `quinn_udp: sendmsg error 10040` op datagrammen boven de tun-MTU van 1280. Die twee gaan

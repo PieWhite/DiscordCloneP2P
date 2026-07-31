@@ -202,8 +202,54 @@ fn kijk_lus(
     let mut meter = Meter::nieuw(cfg.stream_id);
     let (mut gemeten_incompleet, mut gemeten_verworpen) = (0u64, 0u64);
 
+    let mut klok = Weergaveklok::nieuw();
+    let mut uitvouwer = Uitvouwer::default();
+    let mut wachtrij: std::collections::VecDeque<(Instant, crate::fragment::Frame)> =
+        std::collections::VecDeque::new();
+    let mut korte_timeout = false;
+
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
+
+        // Wacht er beeld op zijn beurt, dan moet de lus fijner tikken dan de 8 ms die
+        // voor een leeg venster prima is — anders komt elk beeld tot 8 ms te laat en is
+        // de hele planning voor niets geweest.
+        let wil_kort = !wachtrij.is_empty();
+        if wil_kort != korte_timeout {
+            korte_timeout = wil_kort;
+            let _ = socket.zet_timeout(if wil_kort {
+                Duration::from_millis(1)
+            } else {
+                ONTVANG_TIMEOUT
+            });
+        }
+
+        // Alles waarvan de tijd gekomen is decoderen; alleen het laatste tonen. Meer dan
+        // één tegelijk betekent dat we achterlopen, en dan is de nieuwste de juiste.
+        while wachtrij
+            .front()
+            .is_some_and(|(op, _)| *op <= Instant::now())
+        {
+            let (_, frame) = wachtrij.pop_front().expect("net gezien");
+            let laatste_die_toe_was = !wachtrij
+                .front()
+                .is_some_and(|(op, _)| *op <= Instant::now());
+            if !toon_beeld(
+                &mut decoder,
+                &mut venster,
+                d3d,
+                gedeeld,
+                events,
+                &mut meter,
+                &mut laatste_miniatuur,
+                &frame,
+                laatste_die_toe_was,
+            ) {
+                decoder.spoel();
+                wacht_op_keyframe = true;
+                laatst_gevraagd = Instant::now() - KEYFRAME_PAUZE;
+            }
+        }
 
         // Het venster bedienen mag niet bij elk pakket: bij 1080p60 zijn dat er
         // duizenden per seconde en dan doen we niets anders meer.
@@ -268,43 +314,198 @@ fn kijk_lus(
             wacht_op_keyframe = false;
         }
 
-        let tijd_hns = naar_hns(frame.timestamp);
-        let voor_decode = Instant::now();
-        let uit_decoder = decoder.decode(&frame.data, tijd_hns);
-        meter.decode_us += voor_decode.elapsed().as_micros() as u64;
-        match uit_decoder {
-            Ok(Some(beeld)) => {
-                let voor_toon = Instant::now();
-                if let Err(e) = venster.toon(&beeld) {
-                    tracing::error!(error = %format!("{e:#}"), "beeld tonen mislukt");
-                    break;
-                }
-                meter.toon_us += voor_toon.elapsed().as_micros() as u64;
-                meter.getoond += 1;
-                gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
-                meet_vertraging(gedeeld, tijd_hns);
+        // Niet meteen tonen: inplannen op de tijd waarop dit beeld is opgenomen. Dat is
+        // het verschil tussen "zo snel mogelijk" en "op tijd", en alleen het tweede ziet
+        // eruit als vloeiend.
+        let toon_op = klok.plan(uitvouwer.uitvouwen(frame.timestamp), Instant::now());
+        wachtrij.push_back((toon_op, frame));
 
-                if laatste_miniatuur.elapsed() >= MINIATUUR_INTERVAL {
-                    laatste_miniatuur = Instant::now();
-                    match maak_miniatuur(d3d, &beeld) {
-                        Ok(m) => {
-                            let _ = events.try_send(KijkerEvent::Miniatuur(m));
-                        }
-                        Err(e) => {
-                            tracing::debug!(error = %format!("{e:#}"), "miniatuur maken mislukt");
-                        }
+        if wachtrij.len() > MAX_WACHTEND {
+            // De klok is ergens weggesprongen — deler herstart, stream opnieuw begonnen.
+            // Opnieuw ijken en wat er ligt tonen; achterlopen heeft geen zin.
+            tracing::info!(stream = cfg.stream_id, "weergaveklok opnieuw geijkt");
+            klok.opnieuw_ijken();
+            let nu = Instant::now();
+            for (op, _) in wachtrij.iter_mut() {
+                *op = nu;
+            }
+        }
+    }
+}
+
+/// Decodeert één beeld en toont het, tenzij er nog een verser exemplaar achteraan staat.
+/// Levert `false` op als de decoder struikelde; dan is een nieuw keyframe het herstel.
+#[allow(clippy::too_many_arguments)]
+fn toon_beeld(
+    decoder: &mut Decoder,
+    venster: &mut Venster,
+    d3d: &D3dContext,
+    gedeeld: &Arc<Gedeeld>,
+    events: &Sender<KijkerEvent>,
+    meter: &mut Meter,
+    laatste_miniatuur: &mut Instant,
+    frame: &crate::fragment::Frame,
+    tonen: bool,
+) -> bool {
+    let tijd_hns = naar_hns(frame.timestamp);
+    let voor_decode = Instant::now();
+    let uit_decoder = decoder.decode(&frame.data, tijd_hns);
+    meter.decode_us += voor_decode.elapsed().as_micros() as u64;
+
+    match uit_decoder {
+        Ok(Some(beeld)) => {
+            // Elk beeld gaat wél door de decoder — die heeft ze nodig als referentie voor
+            // de volgende — maar alleen het laatste dat aan de beurt was gaat het scherm
+            // op. De rest zou je toch niet zien.
+            if !tonen {
+                return true;
+            }
+            let voor_toon = Instant::now();
+            if let Err(e) = venster.toon(&beeld) {
+                tracing::error!(error = %format!("{e:#}"), "beeld tonen mislukt");
+                return true;
+            }
+            meter.toon_us += voor_toon.elapsed().as_micros() as u64;
+            meter.toonde(voor_toon);
+            gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
+            meet_vertraging(gedeeld, tijd_hns);
+
+            if laatste_miniatuur.elapsed() >= MINIATUUR_INTERVAL {
+                *laatste_miniatuur = Instant::now();
+                match maak_miniatuur(d3d, &beeld) {
+                    Ok(m) => {
+                        let _ = events.try_send(KijkerEvent::Miniatuur(m));
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %format!("{e:#}"), "miniatuur maken mislukt");
                     }
                 }
             }
-            Ok(None) => {}
-            Err(e) => {
-                // Een beschadigd beeld laat de decoder struikelen. Opnieuw beginnen bij
-                // het volgende keyframe is hier het herstel, niet stoppen.
-                tracing::warn!(error = %format!("{e:#}"), "beeld decoderen mislukt");
-                decoder.spoel();
-                wacht_op_keyframe = true;
+            true
+        }
+        Ok(None) => true,
+        Err(e) => {
+            // Een beschadigd beeld laat de decoder struikelen. Opnieuw beginnen bij het
+            // volgende keyframe is hier het herstel, niet stoppen.
+            tracing::warn!(error = %format!("{e:#}"), "beeld decoderen mislukt");
+            false
+        }
+    }
+}
+
+/// Hoeveel voorsprong we nemen op de weergave.
+///
+/// Dit is de prijs voor gelijkmatig beeld: een beeld dat eerder klaar is dan zijn beurt
+/// wacht even. Te klein en elk beeld dat een paar milliseconden later binnenkomt is al te
+/// laat, en dan zijn we terug bij tonen-zodra-het-kan. Te groot en je kijkt naar het
+/// verleden. Op een tailnet met 9 ms heen en weer is dit ruim; bij zichtbare vertraging is
+/// dit de knop.
+const WEERGAVE_VOORSPRONG: Duration = Duration::from_millis(30);
+
+/// Zoveel beelden mogen er hoogstens wachten. Meer betekent dat de klok ergens is
+/// weggesprongen — een herstart van de deler, een stream die opnieuw begint — en dan is
+/// opnieuw ijken beter dan een halve seconde achterlopen.
+const MAX_WACHTEND: usize = 16;
+
+/// Wanneer een binnengekomen beeld getoond moet worden.
+///
+/// # Waarom dit er moet zijn
+///
+/// De tijdstempel op de draad zegt wanneer het beeld is *opgenomen*. Zonder deze klok
+/// toont de kijker elk beeld zodra het compleet is, en dan bepaalt de reis — netwerk,
+/// planning van threads, hoe vol de ontvangbuffer net zat — wanneer het op het scherm
+/// komt. Beelden die gelijkmatig zijn opgenomen komen dan ongelijkmatig in beeld, en dat
+/// is precies wat je ziet als haperen, ook als er geen enkel beeld verloren gaat en de
+/// teller keurig zestig per seconde meldt.
+///
+/// Audio heeft dit al (`fitcom-audio::jitter`), video niet. Dat verschil is de reden dat
+/// het geluid vloeiend was terwijl het beeld schokte.
+///
+/// # Hoe de twee klokken aan elkaar geknoopt worden
+///
+/// De deler en de kijker delen geen klok en gaan die ook niet synchroniseren — dat zou
+/// een tijdserver vragen die we niet hebben en niet willen. Wat wel kan: het beeld dat er
+/// het *snelst* over deed, deed er de minste reistijd over, en dat beeld bepaalt dus de
+/// beste schatting van hoe de twee klokken zich verhouden. Vandaar het minimum van
+/// `aankomst − verstreken` over een venster, en niet het gemiddelde: dat zou meelopen met
+/// elke vertraging.
+///
+/// Het venster loopt door in twee emmers, zodat een eenmalige uitschieter er vanzelf weer
+/// uit valt en een klok die langzaam wegloopt gevolgd wordt.
+struct Weergaveklok {
+    eerste_ts: Option<u64>,
+    huidig_min: Option<Instant>,
+    vorig_min: Option<Instant>,
+    emmer_begin: Instant,
+}
+
+/// Na zoveel tijd schuift de lopende emmer door. Twee emmers samen zijn dus het venster
+/// waarover het minimum genomen wordt.
+const EMMER: Duration = Duration::from_secs(2);
+
+impl Weergaveklok {
+    fn nieuw() -> Self {
+        Self {
+            eerste_ts: None,
+            huidig_min: None,
+            vorig_min: None,
+            emmer_begin: Instant::now(),
+        }
+    }
+
+    fn opnieuw_ijken(&mut self) {
+        *self = Self::nieuw();
+    }
+
+    /// `ts` is de uitgevouwen tijdstempel van de draad in 90 kHz-tikken.
+    fn plan(&mut self, ts: u64, aangekomen: Instant) -> Instant {
+        let eerste = *self.eerste_ts.get_or_insert(ts);
+        let verstreken = Duration::from_nanos(ts.saturating_sub(eerste) * 1_000_000_000 / 90_000);
+
+        // Waar het nulpunt van de deler ligt op onze klok, als dit beeld er niets over
+        // gedaan had.
+        let kandidaat = aangekomen - verstreken;
+
+        if self.emmer_begin.elapsed() >= EMMER {
+            self.emmer_begin = Instant::now();
+            self.vorig_min = self.huidig_min.take();
+        }
+        self.huidig_min = Some(match self.huidig_min {
+            Some(m) => m.min(kandidaat),
+            None => kandidaat,
+        });
+
+        let basis = match (self.huidig_min, self.vorig_min) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => kandidaat,
+        };
+
+        basis + verstreken + WEERGAVE_VOORSPRONG
+    }
+}
+
+/// Vouwt de 32-bits tijdstempel van de draad uit naar een doorlopende teller.
+///
+/// Op 90 kHz loopt hij elke dertien uur om. Dat is zeldzaam en juist daarom gevaarlijk:
+/// zonder dit springt de planning er een halve dag naast en staat het beeld stil.
+#[derive(Default)]
+struct Uitvouwer {
+    hoog: u64,
+    vorige: Option<u32>,
+}
+
+impl Uitvouwer {
+    fn uitvouwen(&mut self, ts: u32) -> u64 {
+        if let Some(v) = self.vorige {
+            // Een sprong terug over meer dan de helft van het bereik is een omloop, geen
+            // beeld dat te laat is.
+            if v > ts && v - ts > u32::MAX / 2 {
+                self.hoog += 1;
             }
         }
+        self.vorige = Some(ts);
+        (self.hoog << 32) | u64::from(ts)
     }
 }
 
@@ -325,6 +526,14 @@ struct Meter {
     keyframe_verzoeken: u32,
     decode_us: u64,
     toon_us: u64,
+    /// Afstanden tussen twee getoonde beelden, als som en som-van-kwadraten in
+    /// milliseconden. Daar komt de standaardafwijking uit, en **dat is het getal dat
+    /// zegt of het hapert**: het aantal beelden per seconde kan kloppen terwijl ze
+    /// ongelijk uit elkaar staan, en dan ziet het er alsnog uit als schokken.
+    vorige_toon: Option<Instant>,
+    afstand_som: f64,
+    afstand_som_kwadraat: f64,
+    afstanden: u32,
 }
 
 impl Meter {
@@ -340,7 +549,32 @@ impl Meter {
             keyframe_verzoeken: 0,
             decode_us: 0,
             toon_us: 0,
+            vorige_toon: None,
+            afstand_som: 0.0,
+            afstand_som_kwadraat: 0.0,
+            afstanden: 0,
         }
+    }
+
+    /// Eén beeld op het scherm gezet.
+    fn toonde(&mut self, nu: Instant) {
+        if let Some(vorige) = self.vorige_toon {
+            let ms = nu.duration_since(vorige).as_secs_f64() * 1000.0;
+            self.afstand_som += ms;
+            self.afstand_som_kwadraat += ms * ms;
+            self.afstanden += 1;
+        }
+        self.vorige_toon = Some(nu);
+        self.getoond += 1;
+    }
+
+    fn spreiding_ms(&self) -> f64 {
+        if self.afstanden < 2 {
+            return 0.0;
+        }
+        let n = f64::from(self.afstanden);
+        let gem = self.afstand_som / n;
+        (self.afstand_som_kwadraat / n - gem * gem).max(0.0).sqrt()
     }
 
     fn tik(&mut self) {
@@ -359,6 +593,7 @@ impl Meter {
         tracing::info!(
             stream = self.stream_id,
             getoond_fps = (self.getoond as f64 / s).round() as u32,
+            spreiding_ms = (self.spreiding_ms() * 100.0).round() / 100.0,
             mbit = ((self.bytes as f64 * 8.0 / s / 1e5).round() / 10.0),
             frag_per_s = (self.fragmenten as f64 / s).round() as u32,
             incompleet = self.incompleet,
@@ -368,7 +603,11 @@ impl Meter {
             toon_ms = per_beeld(self.toon_us),
             "kijker"
         );
+        let vorige_toon = self.vorige_toon;
         *self = Meter::nieuw(self.stream_id);
+        // De afstand over de secondegrens heen telt gewoon door; anders mis je juist de
+        // hapering die precies daar valt.
+        self.vorige_toon = vorige_toon;
     }
 }
 
@@ -419,6 +658,85 @@ fn maak_miniatuur(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Een reis die elke keer anders lang duurt: netwerk, planning van threads, een
+    /// ontvangbuffer die net vol zat. Vaste reeks, zodat de test elke keer hetzelfde doet.
+    const REISTIJD_MS: [u64; 10] = [4, 11, 5, 19, 4, 7, 26, 4, 9, 13];
+
+    #[test]
+    fn gelijkmatig_opgenomen_beeld_wordt_gelijkmatig_getoond() {
+        // Dit is waar het allemaal om draait. De deler neemt keurig op 60 beelden per
+        // seconde op; onderweg wordt die regelmaat verpest. Toont de kijker zodra een
+        // beeld compleet is, dan staan ze op het scherm zoals ze aankwamen — met
+        // uitschieters van 20 ms, en dát is wat je ziet als haperen. Plant hij op de
+        // tijdstempel, dan komt de regelmaat van de opname terug.
+        let mut klok = Weergaveklok::nieuw();
+        let begin = Instant::now();
+        let stap_ticks = 90_000 / 60;
+
+        let gepland: Vec<Instant> = (0..300u64)
+            .map(|n| {
+                let ts = n * stap_ticks;
+                let ideaal = begin + Duration::from_nanos(n * 1_000_000_000 / 60);
+                let aangekomen =
+                    ideaal + Duration::from_millis(REISTIJD_MS[n as usize % REISTIJD_MS.len()]);
+                klok.plan(ts, aangekomen)
+            })
+            .collect();
+
+        let afstanden: Vec<f64> = gepland
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1000.0)
+            .collect();
+        let gem = afstanden.iter().sum::<f64>() / afstanden.len() as f64;
+        let spreiding = (afstanden.iter().map(|a| (a - gem).powi(2)).sum::<f64>()
+            / afstanden.len() as f64)
+            .sqrt();
+
+        assert!(
+            spreiding < 0.01,
+            "{spreiding:.3} ms ongelijk terwijl de opname gelijkmatig was; de reistijd \
+             lekt door naar het scherm"
+        );
+        assert!(
+            (16.6..=16.7).contains(&gem),
+            "gemiddeld {gem:.2} ms tussen twee beelden; verwacht 16,67"
+        );
+    }
+
+    #[test]
+    fn een_beeld_dat_te_laat_is_wordt_niet_vooruit_gepland() {
+        // Eén beeld doet er veel langer over dan de rest. Dat mag de klok niet meeslepen:
+        // het minimum over het venster blijft staan, dus de rest houdt zijn plek.
+        let mut klok = Weergaveklok::nieuw();
+        let begin = Instant::now();
+        let stap = Duration::from_nanos(1_000_000_000 / 60);
+
+        let eerste = klok.plan(0, begin);
+        let tweede = klok.plan(1500, begin + stap + Duration::from_millis(200));
+        let derde = klok.plan(3000, begin + stap * 2);
+
+        assert_eq!(
+            derde.duration_since(eerste).as_millis(),
+            33,
+            "het derde beeld hoort twee stappen na het eerste te staan"
+        );
+        assert!(
+            tweede < derde,
+            "de volgorde moet kloppen, ook als er eentje laat is"
+        );
+    }
+
+    #[test]
+    fn de_tijdstempel_mag_omlopen() {
+        // Op 90 kHz gebeurt dat elke dertien uur. Zonder uitvouwen springt de planning
+        // er een halve dag naast en staat het beeld stil.
+        let mut u = Uitvouwer::default();
+        assert_eq!(u.uitvouwen(u32::MAX - 1), u64::from(u32::MAX - 1));
+        assert_eq!(u.uitvouwen(u32::MAX), u64::from(u32::MAX));
+        assert_eq!(u.uitvouwen(3), (1u64 << 32) + 3, "dit is een omloop");
+        assert_eq!(u.uitvouwen(9), (1u64 << 32) + 9);
+    }
 
     #[test]
     fn tijdstempel_overleeft_de_heen_en_terugweg() {

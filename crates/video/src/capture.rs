@@ -44,6 +44,21 @@ pub enum BronSoort {
     Venster,
 }
 
+/// Een opgenomen beeld met de tijd waarop het gemaakt is.
+///
+/// Die tijd is `SystemRelativeTime` van de opname-API: wanneer het beeld op het scherm
+/// stond, niet wanneer onze lus eraan toekwam. Dat verschil is het hele punt. Zet je er
+/// je eigen "nu" op, dan draagt de tijdstempel de planning van onze thread in plaats van
+/// de timing van het origineel, en dan kan de kijker nooit meer reconstrueren hoe het
+/// bewoog. Zie [`crate::kijker`], waar hij ermee gepresenteerd wordt.
+#[derive(Clone)]
+pub struct Opgenomen {
+    pub textuur: ID3D11Texture2D,
+    /// 100-nanoseconden-eenheden op de klok van de opname-API. Alleen verschillen
+    /// hiertussen zeggen iets; het nulpunt is willekeurig.
+    pub opgenomen_hns: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bron {
     pub naam: String,
@@ -323,14 +338,16 @@ impl Capture {
         self.afmeting
     }
 
-    /// Wacht op het volgende beeld en levert onze eigen textuur op.
+    /// Wacht op het volgende beeld en levert onze eigen textuur op, met de tijd waarop
+    /// de opname hem maakte.
     ///
     /// `None` betekent dat er binnen de tijd niets kwam. Dat is normaal: een venster
     /// dat niet verandert levert geen frames, en dan is er ook niets te versturen.
-    pub fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<ID3D11Texture2D> {
+    pub fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<Opgenomen> {
         self.signaal.recv_timeout(timeout).ok()?;
 
         let frame = self.pool.TryGetNextFrame().ok()?;
+        let opgenomen_hns = frame.SystemRelativeTime().ok()?.Duration;
         let grootte = frame.ContentSize().ok()?;
         let nieuw = (grootte.Width.max(1) as u32, grootte.Height.max(1) as u32);
 
@@ -356,7 +373,10 @@ impl Capture {
         unsafe { self.d3d.context.CopyResource(&self.doel, &bron) };
         let _ = frame.Close();
 
-        Some(self.doel.clone())
+        Some(Opgenomen {
+            textuur: self.doel.clone(),
+            opgenomen_hns,
+        })
     }
 
     fn herbouw(&mut self, nieuw: (u32, u32), grootte: SizeInt32) -> Result<()> {
