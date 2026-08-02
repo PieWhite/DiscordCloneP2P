@@ -51,24 +51,13 @@ fn fasen(d3d: &D3dContext) -> Vec<ID3D11Texture2D> {
         .collect()
 }
 
-#[test]
-#[ignore = "vereist een GPU met een hardware-encoder"]
-fn keyframe_afstand_komt_uit_de_config_en_niet_van_de_driver() {
-    // Dit is de meting die het keyframe-onderzoek beslist. De driver telt zijn GOP in
-    // beelden; wij willen weten dat wij hem in seconden vastzetten. Twee seconden bij 60
-    // fps is één keyframe per 120 beelden.
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_target(false)
-        .try_init();
-
-    let d3d = D3dContext::new().expect("D3D11");
-    let beelden = fasen(&d3d);
-
+/// Codeert `aantal` beelden en telt wat eruit komt.
+fn meet(d3d: &D3dContext, codec: Codec, aantal: usize) -> (usize, usize, usize, usize) {
+    let beelden = fasen(d3d);
     let mut encoder = Encoder::new(
-        &d3d,
+        d3d,
         &EncoderConfig {
-            codec: Codec::H264,
+            codec,
             breedte: BREEDTE,
             hoogte: HOOGTE,
             fps: FPS,
@@ -77,9 +66,7 @@ fn keyframe_afstand_komt_uit_de_config_en_niet_van_de_driver() {
     )
     .expect("encoder");
 
-    let aantal = 360usize; // zes seconden op 60 fps
     let (mut keyframes, mut pakketten, mut bytes, mut grootste) = (0usize, 0usize, 0usize, 0usize);
-
     for n in 0..aantal {
         let tijd = (n as i64) * HNS_PER_SEC / i64::from(FPS);
         for p in encoder
@@ -92,23 +79,48 @@ fn keyframe_afstand_komt_uit_de_config_en_niet_van_de_driver() {
             keyframes += usize::from(p.keyframe);
         }
     }
+    (keyframes, pakketten, bytes, grootste)
+}
 
+#[test]
+#[ignore = "vereist een GPU met een hardware-encoder"]
+fn keyframe_afstand_komt_uit_de_config_en_niet_van_de_driver() {
+    // Dit is de meting die het keyframe-onderzoek beslist. De driver telt zijn GOP in
+    // beelden; wij willen weten dat wij hem in seconden vastzetten. Tien seconden bij 60
+    // fps is één keyframe per 600 beelden.
+    //
+    // Beide codecs, want het zijn twee losse transforms en niets garandeert dat de
+    // NVIDIA HEVC-MFT dezelfde instelling aanneemt als de H.264-MFT. Rick's eigen config
+    // stond op HEVC toen de haperingen gemeten werden.
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .try_init();
+
+    let d3d = D3dContext::new().expect("D3D11");
+    let aantal = 900usize; // vijftien seconden op 60 fps
     let seconden = aantal as f64 / f64::from(FPS);
-    println!(
-        "{pakketten} beelden, {keyframes} keyframes ({:.1}/s), {:.1} Mbit/s op een budget van {:.1}, grootste beeld {} kB",
-        keyframes as f64 / seconden,
-        bytes as f64 * 8.0 / seconden / 1e6,
-        f64::from(BITRATE) / 1e6,
-        grootste / 1024
-    );
 
-    // Zes seconden op één keyframe per twee seconden: drie, plus die van de start. Meer
-    // dan vijf betekent dat de driver zijn eigen afstand aanhoudt en dat elke stoot van
-    // honderden kilobytes vaker komt dan afgesproken.
-    assert!(
-        (2..=5).contains(&keyframes),
-        "{keyframes} keyframes in {seconden:.0} seconden; verwacht er 3 à 4"
-    );
+    for codec in [Codec::H264, Codec::Hevc] {
+        let (keyframes, pakketten, bytes, grootste) = meet(&d3d, codec, aantal);
+        println!(
+            "{}: {pakketten} beelden, {keyframes} keyframes ({:.2}/s), {:.1} Mbit/s op een budget van {:.1}, grootste beeld {} kB",
+            codec.naam(),
+            keyframes as f64 / seconden,
+            bytes as f64 * 8.0 / seconden / 1e6,
+            f64::from(BITRATE) / 1e6,
+            grootste / 1024
+        );
+
+        // Vijftien seconden op één keyframe per tien: die van de start plus één. Meer dan
+        // drie betekent dat de driver zijn eigen afstand aanhoudt, en dan komt de stoot
+        // van honderden kilobytes vaker dan afgesproken.
+        assert!(
+            (1..=3).contains(&keyframes),
+            "{}: {keyframes} keyframes in {seconden:.0} seconden; verwacht er 2",
+            codec.naam()
+        );
+    }
 }
 
 #[test]

@@ -200,13 +200,25 @@ fn kijk_lus(
     // keyframe-herstel aan en wordt alleen bijgewerkt als een beeld compleet werd. De
     // meter moet elke verandering zien, ook die van beelden die nooit afkwamen.
     let mut meter = Meter::nieuw(cfg.stream_id);
-    let (mut gemeten_incompleet, mut gemeten_verworpen) = (0u64, 0u64);
+    let (mut gemeten_incompleet, mut gemeten_verworpen, mut gemeten_hersteld) = (0u64, 0u64, 0u64);
 
     let mut klok = Weergaveklok::nieuw();
     let mut uitvouwer = Uitvouwer::default();
-    let mut wachtrij: std::collections::VecDeque<(Instant, crate::fragment::Frame)> =
+    let mut wachtrij: std::collections::VecDeque<(Instant, Instant, crate::fragment::Frame)> =
         std::collections::VecDeque::new();
     let mut korte_timeout = false;
+
+    let begin = Instant::now();
+    let mut spoor = crate::spoor::Spoor::nieuw(
+        &format!("kijker-{}", cfg.stream_id),
+        "getoond_ms,ts90k,aankomst_ms,gepland_ms,keyframe,bytes,decode_us,toon_us,mini_us,wachtrij,incompleet",
+    );
+    let mut verlies = crate::spoor::Spoor::nieuw(
+        &format!("verlies-{}", cfg.stream_id),
+        "ms,verwacht_seq,gekregen_seq,gemist,ts90k,keyframe,frag_index,stil_us",
+    );
+    let mut vorige_seq: Option<u32> = None;
+    let mut vorig_pakket = Instant::now();
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
@@ -228,12 +240,19 @@ fn kijk_lus(
         // één tegelijk betekent dat we achterlopen, en dan is de nieuwste de juiste.
         while wachtrij
             .front()
-            .is_some_and(|(op, _)| *op <= Instant::now())
+            .is_some_and(|(op, _, _)| *op <= Instant::now())
         {
-            let (_, frame) = wachtrij.pop_front().expect("net gezien");
+            let (gepland, aankomst, frame) = wachtrij.pop_front().expect("net gezien");
             let laatste_die_toe_was = !wachtrij
                 .front()
-                .is_some_and(|(op, _)| *op <= Instant::now());
+                .is_some_and(|(op, _, _)| *op <= Instant::now());
+            let sporen = Sporen {
+                begin,
+                gepland,
+                aankomst,
+                wachtrij: wachtrij.len(),
+                incompleet: samensteller.incompleet,
+            };
             if !toon_beeld(
                 &mut decoder,
                 &mut venster,
@@ -244,6 +263,8 @@ fn kijk_lus(
                 &mut laatste_miniatuur,
                 &frame,
                 laatste_die_toe_was,
+                &mut spoor,
+                &sporen,
             ) {
                 decoder.spoel();
                 wacht_op_keyframe = true;
@@ -282,12 +303,35 @@ fn kijk_lus(
         meter.fragmenten += 1;
         meter.bytes += (fitcom_proto::MEDIA_HEADER_LEN + payload.len()) as u64;
 
+        // Gaten in `seq` zijn het enige harde bewijs van verlies: de deler telt hem per
+        // fragment door, dus een sprong betekent dat er iets tussenuit is.
+        if let Some(v) = vorige_seq {
+            let verwacht = v.wrapping_add(1);
+            if header.seq != verwacht {
+                crate::spoor::spoor!(
+                    verlies,
+                    "{:.3},{verwacht},{},{},{},{},{},{}",
+                    Instant::now().duration_since(begin).as_secs_f64() * 1000.0,
+                    header.seq,
+                    header.seq.wrapping_sub(verwacht),
+                    header.timestamp,
+                    u8::from(header.is_keyframe()),
+                    header.frag_index,
+                    vorig_pakket.elapsed().as_micros() as u64
+                );
+            }
+        }
+        vorige_seq = Some(header.seq);
+        vorig_pakket = Instant::now();
+
         let klaar = samensteller.push(&header, payload);
 
         meter.incompleet += samensteller.incompleet - gemeten_incompleet;
         meter.verworpen += samensteller.verworpen - gemeten_verworpen;
+        meter.hersteld += samensteller.hersteld - gemeten_hersteld;
         gemeten_incompleet = samensteller.incompleet;
         gemeten_verworpen = samensteller.verworpen;
+        gemeten_hersteld = samensteller.hersteld;
 
         let Some(frame) = klaar else {
             continue;
@@ -307,6 +351,10 @@ fn kijk_lus(
             }
         }
 
+        if frame.keyframe {
+            tracing::debug!(stream = cfg.stream_id, "keyframe ontvangen");
+        }
+
         if wacht_op_keyframe {
             if !frame.keyframe {
                 continue;
@@ -317,8 +365,9 @@ fn kijk_lus(
         // Niet meteen tonen: inplannen op de tijd waarop dit beeld is opgenomen. Dat is
         // het verschil tussen "zo snel mogelijk" en "op tijd", en alleen het tweede ziet
         // eruit als vloeiend.
-        let toon_op = klok.plan(uitvouwer.uitvouwen(frame.timestamp), Instant::now());
-        wachtrij.push_back((toon_op, frame));
+        let aankomst = Instant::now();
+        let toon_op = klok.plan(uitvouwer.uitvouwen(frame.timestamp), aankomst);
+        wachtrij.push_back((toon_op, aankomst, frame));
 
         if wachtrij.len() > MAX_WACHTEND {
             // De klok is ergens weggesprongen — deler herstart, stream opnieuw begonnen.
@@ -326,11 +375,28 @@ fn kijk_lus(
             tracing::info!(stream = cfg.stream_id, "weergaveklok opnieuw geijkt");
             klok.opnieuw_ijken();
             let nu = Instant::now();
-            for (op, _) in wachtrij.iter_mut() {
+            for (op, _, _) in wachtrij.iter_mut() {
                 *op = nu;
             }
         }
     }
+
+    if let Some(s) = spoor.as_mut() {
+        s.klaar();
+    }
+    if let Some(s) = verlies.as_mut() {
+        s.klaar();
+    }
+}
+
+/// Alleen voor het diagnostische spoor: wat er over dit beeld te vertellen valt buiten
+/// het beeld zelf.
+struct Sporen {
+    begin: Instant,
+    gepland: Instant,
+    aankomst: Instant,
+    wachtrij: usize,
+    incompleet: u64,
 }
 
 /// Decodeert één beeld en toont het, tenzij er nog een verser exemplaar achteraan staat.
@@ -346,11 +412,15 @@ fn toon_beeld(
     laatste_miniatuur: &mut Instant,
     frame: &crate::fragment::Frame,
     tonen: bool,
+    spoor: &mut Option<crate::spoor::Spoor>,
+    sporen: &Sporen,
 ) -> bool {
     let tijd_hns = naar_hns(frame.timestamp);
     let voor_decode = Instant::now();
     let uit_decoder = decoder.decode(&frame.data, tijd_hns);
-    meter.decode_us += voor_decode.elapsed().as_micros() as u64;
+    let decode_us = voor_decode.elapsed().as_micros() as u64;
+    meter.decode_us += decode_us;
+    let mut mini_us = 0u64;
 
     match uit_decoder {
         Ok(Some(beeld)) => {
@@ -365,13 +435,15 @@ fn toon_beeld(
                 tracing::error!(error = %format!("{e:#}"), "beeld tonen mislukt");
                 return true;
             }
-            meter.toon_us += voor_toon.elapsed().as_micros() as u64;
+            let toon_us = voor_toon.elapsed().as_micros() as u64;
+            meter.toon_us += toon_us;
             meter.toonde(voor_toon);
             gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
             meet_vertraging(gedeeld, tijd_hns);
 
             if laatste_miniatuur.elapsed() >= MINIATUUR_INTERVAL {
                 *laatste_miniatuur = Instant::now();
+                let voor_mini = Instant::now();
                 match maak_miniatuur(d3d, &beeld) {
                     Ok(m) => {
                         let _ = events.try_send(KijkerEvent::Miniatuur(m));
@@ -380,7 +452,20 @@ fn toon_beeld(
                         tracing::debug!(error = %format!("{e:#}"), "miniatuur maken mislukt");
                     }
                 }
+                mini_us = voor_mini.elapsed().as_micros() as u64;
             }
+            crate::spoor::spoor!(
+                spoor,
+                "{:.3},{},{:.3},{:.3},{},{},{decode_us},{toon_us},{mini_us},{},{}",
+                voor_toon.duration_since(sporen.begin).as_secs_f64() * 1000.0,
+                frame.timestamp,
+                sporen.aankomst.duration_since(sporen.begin).as_secs_f64() * 1000.0,
+                sporen.gepland.duration_since(sporen.begin).as_secs_f64() * 1000.0,
+                u8::from(frame.keyframe),
+                frame.data.len(),
+                sporen.wachtrij,
+                sporen.incompleet
+            );
             true
         }
         Ok(None) => true,
@@ -401,6 +486,11 @@ fn toon_beeld(
 /// verleden. Op een tailnet met 9 ms heen en weer is dit ruim; bij zichtbare vertraging is
 /// dit de knop.
 const WEERGAVE_VOORSPRONG: Duration = Duration::from_millis(30);
+
+/// Diagnostisch: boven dit gat tussen twee getoonde beelden loggen we meteen, in plaats
+/// van te wachten op de per-seconde `spreiding_ms`. Voor het uitzoeken van de periodieke
+/// microhapering — die aggregatie verbergt precies wanneer en hoe vaak het gebeurt.
+const GROTE_SPRONG_MS: f64 = 40.0;
 
 /// Zoveel beelden mogen er hoogstens wachten. Meer betekent dat de klok ergens is
 /// weggesprongen — een herstart van de deler, een stream die opnieuw begint — en dan is
@@ -523,6 +613,10 @@ struct Meter {
     getoond: u32,
     incompleet: u64,
     verworpen: u64,
+    /// Verloren fragmenten die uit de pariteit teruggerekend zijn. Elk daarvan zou
+    /// zonder pariteit een bevroren beeld van rond de honderd milliseconde geweest zijn,
+    /// dus dit is het getal dat zegt of dat werkt. Zie `crate::fragment`.
+    hersteld: u64,
     keyframe_verzoeken: u32,
     decode_us: u64,
     toon_us: u64,
@@ -546,6 +640,7 @@ impl Meter {
             getoond: 0,
             incompleet: 0,
             verworpen: 0,
+            hersteld: 0,
             keyframe_verzoeken: 0,
             decode_us: 0,
             toon_us: 0,
@@ -563,6 +658,13 @@ impl Meter {
             self.afstand_som += ms;
             self.afstand_som_kwadraat += ms * ms;
             self.afstanden += 1;
+            if ms > GROTE_SPRONG_MS {
+                tracing::warn!(
+                    stream = self.stream_id,
+                    gap_ms = (ms * 10.0).round() / 10.0,
+                    "grote sprong tussen twee getoonde beelden"
+                );
+            }
         }
         self.vorige_toon = Some(nu);
         self.getoond += 1;
@@ -598,6 +700,7 @@ impl Meter {
             frag_per_s = (self.fragmenten as f64 / s).round() as u32,
             incompleet = self.incompleet,
             verworpen = self.verworpen,
+            hersteld = self.hersteld,
             keyframe_verzoeken = self.keyframe_verzoeken,
             decode_ms = per_beeld(self.decode_us),
             toon_ms = per_beeld(self.toon_us),

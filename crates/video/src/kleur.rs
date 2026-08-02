@@ -70,7 +70,9 @@ impl Kleurruimte {
 }
 
 pub struct Kleuromzetter {
-    d3d: D3dContext,
+    // Ongebruikt na constructie, maar moet blijven leven zolang de omzetter bestaat:
+    // de D3D-handles hieronder zijn tegen dit apparaat gemaakt.
+    _d3d: D3dContext,
     video: ID3D11VideoDevice,
     context: ID3D11VideoContext,
     enumerator: ID3D11VideoProcessorEnumerator,
@@ -167,7 +169,7 @@ impl Kleuromzetter {
         }
 
         Ok(Self {
-            d3d: d3d.clone(),
+            _d3d: d3d.clone(),
             video,
             context,
             enumerator,
@@ -251,12 +253,6 @@ impl Kleuromzetter {
         }
         self.views.push((bron.clone(), slice, view.clone()));
         Ok(view)
-    }
-
-    /// Het apparaat waarop deze omzetter werkt, zodat de aanroeper er texturen bij kan
-    /// maken die op hetzelfde apparaat leven.
-    pub fn d3d(&self) -> &D3dContext {
-        &self.d3d
     }
 }
 

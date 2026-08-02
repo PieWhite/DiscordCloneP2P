@@ -77,37 +77,18 @@ impl super::App {
                 }
 
                 ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-                voice_cmd = self.voice_bediening(ui);
-
-                ui.add_space(8.0);
-                let (cmd, openen) = self.deel_bediening(ui);
-                stream_cmd = cmd;
-                bronnen_openen = openen;
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
-                if let Some(aan) = self.eigen_mini_kaart(ui) {
-                    niet_storen_wijziging = Some(aan);
-                }
+                (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging) =
+                    self.zijbalk_onderkant(ui);
             });
 
-        if let Some(cmd) = voice_cmd {
-            self.stuur(cmd);
-        }
-        if let Some(cmd) = stream_cmd {
-            self.stuur(cmd);
-        }
-        if bronnen_openen {
-            self.open_bronkeuze();
-        }
+        self.verwerk_zijbalk_onderkant(
+            voice_cmd,
+            stream_cmd,
+            bronnen_openen,
+            niet_storen_wijziging,
+        );
         if let Some(id) = naar_dm {
             self.wissel_kanaal(Channel::dm(id));
-        }
-        if let Some(aan) = niet_storen_wijziging {
-            self.stuur(crate::engine::UiCommand::NietStoren(aan));
         }
     }
 

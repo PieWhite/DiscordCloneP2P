@@ -309,6 +309,7 @@ impl Streams {
             ),
             ControlMsg::StreamUnsubscribe(u) => (Vec::new(), self.uitgetekend(van, u.stream_id)),
             ControlMsg::RequestKeyframe(k) => {
+                tracing::debug!(peer = ?van, stream = k.stream_id, "keyframe gevraagd door kijker");
                 (Vec::new(), self.keyframe_gevraagd(van, k.stream_id))
             }
             _ => (Vec::new(), Vec::new()),

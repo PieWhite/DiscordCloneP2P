@@ -29,6 +29,38 @@ pub const MAX_PAKKET: usize = 1500;
 /// beeld dat al te laat is, en de samensteller gooit oude frames toch weg.
 const ONTVANGBUFFER: usize = 1024 * 1024;
 
+/// Zet de timerresolutie van dit proces op één milliseconde.
+///
+/// Zonder dit tikt Windows op 15,6 ms, en dat is precies de resolutie die je terugkrijgt
+/// bij `set_read_timeout` en `thread::sleep` — ongeacht wat je vraagt. Gemeten op
+/// 2026-08-02: een gevraagde leestimeout van 1, 2 én 8 ms duurde alle drie 15,6 ms.
+///
+/// Dat sloopt de weergaveklok van de kijker. Die plant elk beeld op het moment waarop het
+/// is opgenomen, maar de lus die dat moet uitvoeren kwam alleen wakker als er een pakket
+/// binnenviel of als de grove tik afliep — en dus werd elk beeld getoond op het moment dat
+/// het *volgende* beeld binnenkwam. Gemeten gevolg: gemiddeld 5,8 ms te laat, gelijkmatig
+/// verdeeld over een hele beeldtijd. De hele klok deed daardoor niets.
+///
+/// Sinds Windows 10 2004 werkt dit per proces en niet meer systeembreed, dus een game
+/// naast ons merkt er niets van. Er staat geen `timeEndPeriod` tegenover: Windows ruimt
+/// dat bij het afsluiten van het proces zelf op, en de enige plek waar dit vandaan komt is
+/// het openen van een mediasocket — dus zodra er beeld of geluid loopt.
+fn zorg_voor_fijne_timer() {
+    static EEN_KEER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    EEN_KEER.get_or_init(|| {
+        // SAFETY: `timeBeginPeriod` neemt alleen een getal aan en heeft geen
+        // voorwaarden; falen meldt hij met een foutcode die we hier niet kunnen
+        // repareren en die alleen betekent dat de tik grof blijft.
+        let uitkomst = unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+        if uitkomst != 0 {
+            tracing::warn!(
+                code = uitkomst,
+                "timerresolutie niet op 1 ms te zetten; beeld zal onregelmatiger tonen"
+            );
+        }
+    });
+}
+
 pub struct MediaSocket {
     sock: UdpSocket,
 }
@@ -37,6 +69,9 @@ impl MediaSocket {
     /// Bindt op alle interfaces. Poort 0 laat het besturingssysteem kiezen, wat handig
     /// is voor tests.
     pub fn bind(port: u16) -> Result<Self> {
+        // Vóór de timeout hieronder: anders is die 15,6 ms in plaats van 200.
+        zorg_voor_fijne_timer();
+
         let sock = UdpSocket::bind(("0.0.0.0", port))
             .with_context(|| format!("UDP-poort {port} binden"))?;
         // Zonder timeout kan een wachtende thread niet meer worden afgesloten.

@@ -741,6 +741,102 @@ herverbinding die niet opnieuw intekent (wit kijkvenster, geen foutmelding), en
 over verbindingen die wegvallen, niet over haperend beeld, en geen van beide is op
 loopback te reproduceren.
 
+### Onderzoek 2026-08-02: de periodieke microhapering, gevonden en gerepareerd
+
+Rick meldde: beeld ziet er glad uit, en dan om de vijf à zes seconden één korte stotter.
+Alle eerdere ronden zochten in de verkeerde hoek omdat de meters het wegmiddelen — een
+`spreiding_ms` over een seconde met zestig beelden verstopt één beeld dat 150 ms te laat
+is, en `incompleet=1` in een logregel ziet eruit als ruis.
+
+**Nieuw gereedschap, en de enige reden dat dit gevonden is.** `crates/video/tests/hapering.rs`
+zet een eigen venster op dat op een exact tijdraster van 60 Hz van inhoud wisselt en stuurt
+dat door de échte deler en kijker. Alles wat er ongelijkmatig uitkomt hebben wij toegevoegd.
+`crates/video/src/spoor.rs` schrijft daarbij één CSV-regel per beeld aan beide kanten (aan
+via `FITCOM_SPOOR=<map>`). Zonder die twee blijft elke uitspraak hierover een gok.
+
+**Wat er aan de hand was, in twee losse oorzaken.**
+
+1. **Eén verloren UDP-fragment kostte 70 tot 156 ms bevroren beeld.** Niet omdat dat ene
+   beeld weg is — dat is 17 ms — maar omdat `kijk_lus` daarna de decoder spoelt en élk
+   volgend beeld weggooit tot er een keyframe is, dat eerst aangevraagd moet worden en dan
+   honderden kilobytes groot is. Bij 1400 fragmenten per seconde is 0,013% verlies al
+   genoeg voor een bevriezing per vijf seconden, en dat is een doodgewoon internetpad.
+   *Niet* spoelen is trouwens erger: gemeten met de flush uit gaven dezelfde verliezen
+   gaten van 1,2 tot 1,9 seconde, want de decoder levert daarna stil niets meer tot de
+   volgende IDR. Doodlopend spoor.
+
+2. **Elke gevraagde timeout duurde 15,6 ms.** De kijkerlus zet zijn leestimeout op 1 ms
+   zodra er een beeld op zijn beurt staat, maar Windows tikt standaard op 15,6 ms en
+   rondt daarheen af — gemeten: 1, 2 én 8 ms duurden alle drie 15,6 ms. Gevolg: de lus
+   kwam alleen wakker als er een pakket binnenviel, dus elk beeld werd getoond op het
+   moment dat het *vólgende* binnenkwam. **De weergaveklok deed daardoor helemaal niets**;
+   gemeten 5,8 ms te laat, gelijkmatig verdeeld over een hele beeldtijd, en 5% van de
+   beelden kwam nooit op het scherm. Gefixt met `timeBeginPeriod(1)` vanuit
+   `MediaSocket::bind` (`crates/net/src/media.rs`), vastgelegd in
+   `crates/net/tests/leestimeout.rs`.
+
+**Wat er gebouwd is.**
+
+- **Pariteitsfragment per beeld** (`fragment.rs`, `MediaHeader::FLAG_PARITEIT`): de XOR van
+  alle stukken, met de lengte erin verweven zodat ook het kortere laatste stuk terug te
+  rekenen is. Eén gat repareert zichzelf ter plekke — geen verzoek, geen wachten, geen
+  keyframe. Twee of meer gaten volgen het oude pad. Kost 6,4% meer fragmenten.
+  **`PROTOCOL_VERSION` 4 → 5**, want een oudere ontvanger stopt dat fragment als gewoon
+  stuk in zijn samensteller en komt op één te veel uit: dan verschijnt er van die deler
+  helemaal geen beeld meer.
+- **`GOP_SECONDEN` 2 → 10** (`codec.rs`). Een keyframe is 33 tot 57× een gewoon beeld
+  (371 kB tegen 6 kB op 1080p) en dat is niet te temmen — zie het doodlopende spoor
+  hieronder — dus blijft alleen: minder vaak. Scheelt bijna een vijfde van het bitrate-
+  budget en 5× zoveel stoten.
+- **Verzendtempo** (`deler.rs`): een emmer met een gat op twintig keer het budget, met
+  48 kB speling. Een gewoon beeld wacht nooit; een keyframe wordt over ongeveer één
+  beeldtijd gespreid in plaats van in 1,7 ms de socket in gestampt (momentaan 1,75 Gbit/s).
+- **Keyframe-verzoeken van de 100 ms-tik af** (`engine.rs`): `lees_kijkers` is
+  `lees_kijker` geworden, gevoed door een doorgeefthread per kijkvenster die rechtstreeks
+  in de select-lus valt. Die 100 ms zat in elke bevriezing.
+- **`VersionMismatch` heeft een eigen tekst in de UI** (`ui/widgets.rs`). Zag er eerst uit
+  als gewoon "offline", en met een protocolbump op komst is dat precies de verwarring die
+  je niet wilt.
+
+**Gemeten resultaat, 150 seconden, dezelfde bron, loopback:**
+
+| | vóór | na |
+|---|---|---|
+| beelden die nooit getoond werden | 5,0% | 0,0% |
+| spreiding tussen getoonde beelden | sd 7,44 ms | sd 2,74 ms |
+| grootste gat | 137,3 ms | 31,7 ms |
+| gaten boven 40 ms | 3 | **0** |
+| te laat t.o.v. eigen planning | 5,80 ms | 1,06 ms |
+| keyframes | 78 | 15 |
+| verloren fragmenten | 3 (alle 3 een bevriezing) | 32 (alle 32 hersteld, `kapot=0`) |
+
+Die 32 verliezen in 150 seconden zijn er één per 4,7 seconden — precies de cadans die Rick
+beschreef, en nu allemaal onzichtbaar.
+
+**Wat overblijft**, en waarschijnlijk inherent is: de tijdstempel op de draad is de
+*compositietijd* van de deler, niet het moment waarop de inhoud veranderde. Voor 60 Hz-
+inhoud op een 165 Hz-scherm levert dat afstanden van 18,2 en 12,1 ms op in een verhouding
+3:1, en de kijker speelt dat getrouw na. Dat is de hele resterende sd van 2,7 ms. Er is
+geen goedkope manier om te weten wanneer de inhoud écht veranderde — WGC geeft die
+informatie niet — en de tijdstempels naar een vast raster afronden zou echte, onregelmatige
+beweging (een game) juist gaan uitsmeren.
+
+**Doodlopende sporen uit deze ronde, niet opnieuw proberen:**
+- *De piek van een keyframe met de encoder begrenzen.* `CODECAPI_AVEncCommonRateControlMode`,
+  `-MeanBitRate`, `-BufferSize` en `-MaxBitRate` geven allemaal `S_OK` op de NVIDIA-MFT en
+  veranderen geen byte, zowel vóór als ná `SetOutputType`, op H.264 én HEVC, op drie
+  resoluties. Zelfde categorie als `MF_MT_MAX_KEYFRAME_SPACING`.
+- *Het wisselen van de leestimeout in `kijk_lus` als oorzaak van verlies.* Loopback
+  verliest altijd het eerste datagram van een stoot na een stilte (negen van de negen);
+  kale UDP zonder onze code doet exact hetzelfde, met en zonder dat wisselen. Een
+  eigenschap van de Windows-loopbackstack, geen bug van ons.
+- *Niet spoelen bij verlies.* Zie oorzaak 1 hierboven: erger, niet beter.
+
+**Let op bij het uitrollen.** De protocolbump betekent dat alle drie de peers tegelijk over
+moeten. Een peer op protocolversie 4 wordt bij de handshake afgewezen vóórdat er een
+sessie draait, dus de automatische update van fase 11 kan hier niet overheen helpen — die
+heeft een werkende verbinding nodig. Handmatig bijwerken bij alle drie.
+
 ### Miniaturen voor de overzichtstrook (fase 5)
 `kijker.rs` stuurt elke 500 ms een `KijkerEvent::Miniatuur` met een verkleind BGRA-beeld,
 afgeleid van het net getoonde frame via `D3dContext::lees_bgra_miniatuur` (gerichte

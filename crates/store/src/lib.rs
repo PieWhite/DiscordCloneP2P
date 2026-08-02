@@ -42,7 +42,7 @@ pub use timeline::{FileEntry, Message, Timeline};
 
 // Doorgeven zodat de app niet ook nog een directe afhankelijkheid op `proto` nodig heeft
 // voor de types die overal in de chat-code voorkomen.
-pub use fitcom_proto::{OpId, VersionVector as SyncState};
+pub use fitcom_proto::OpId;
 
 /// Opgehoogd van 1 naar 2 toen `seq` per (auteur, kanaal) ging tellen in plaats van per
 /// auteur alleen (DM's). **Wel een migratiepad**: `migreer_v1_naar_v2` zet een bestaande

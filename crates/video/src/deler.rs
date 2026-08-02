@@ -29,6 +29,23 @@ use std::time::{Duration, Instant};
 /// moeten gaan. Een stilstaand scherm levert geen frames, en dat is geen fout.
 const FRAME_WACHT: Duration = Duration::from_millis(100);
 
+/// Hoeveel sneller dan het bitrate-budget er momentaan verstuurd mag worden.
+///
+/// Gemeten op 2026-08-02: een keyframe van 1080p is 371 kB tegen 6 kB voor een gewoon
+/// beeld, en ging er als 346 datagrammen achter elkaar uit in 1,7 ms — momentaan
+/// 1,75 Gbit/s op een budget van 8 Mbit/s. Zo'n stoot is precies wat een echt
+/// internetpad laat druppelen, en elk gedruppeld pakket kostte honderd milliseconde
+/// bevroren beeld.
+///
+/// Twintig keer het budget laat een gewoon beeld ongemoeid (die past in de speling
+/// hieronder) en spreidt een keyframe over ongeveer één beeldtijd in plaats van over
+/// niets. Lager zou het keyframe zelf te laat maken; hoger is geen spreiding meer.
+const PIEK_FACTOR: u32 = 20;
+
+/// Zoveel bytes mogen er hoe dan ook aaneengesloten de deur uit voordat er geremd wordt.
+/// Ruim boven een gewoon beeld, zodat de spreiding alleen keyframes raakt.
+const SPELING_BYTES: u64 = 48 * 1024;
+
 /// De tijdrekening op de draad voor video, zoals in `docs/ARCHITECTURE.md`.
 const KLOK_HZ: i64 = 90_000;
 
@@ -150,6 +167,13 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     let mut vorige_tijd: i64 = -1;
 
     let mut pacer = Pacer::nieuw(cfg.fps);
+    let mut tempo = Verzendtempo::nieuw(cfg.bitrate, Instant::now());
+
+    let spoor_begin = Instant::now();
+    let mut spoor = crate::spoor::Spoor::nieuw(
+        &format!("deler-{}", cfg.stream_id),
+        "opgenomen_ms,binnen_ms,verstuurd_ms,gedropt,tijd_hns,bytes,keyframe,encode_us,stuur_us",
+    );
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
@@ -162,10 +186,13 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         // nieuws. Het verste beeld coderen scheelt precies die achterstand aan
         // vertraging, en de beelden ertussen zou de kijker toch nooit los zien — maar ze
         // tellen wel mee, want het zijn schermbeelden die echt langs zijn gekomen.
+        let mut gedropt = 0u32;
         while let Some(nieuwer) = capture.volgende_frame(Duration::ZERO) {
             opname = nieuwer;
             meter.opgenomen += 1;
+            gedropt += 1;
         }
+        let binnen = Instant::now();
 
         if !pacer.laat_door(Instant::now()) {
             continue;
@@ -194,6 +221,7 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         let tijd_hns = (ons_nul + (opname.opgenomen_hns - opname_nul)).max(vorige_tijd + 1);
         vorige_tijd = tijd_hns;
 
+        let voor_encode = Instant::now();
         let pakketten = match encoder.encode(&opname.textuur, tijd_hns) {
             Ok(p) => p,
             Err(e) => {
@@ -216,10 +244,13 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
             continue;
         }
 
+        let encode_us = voor_encode.elapsed().as_micros() as u64;
+
         for pakket in pakketten {
             meter.verstuurd += 1;
             meter.keyframes += u32::from(pakket.keyframe);
             meter.grootste = meter.grootste.max(pakket.data.len());
+            let voor_stuur = Instant::now();
 
             let tijdstempel = naar_klok(pakket.tijd_hns);
             for (header, stuk) in headers_voor(
@@ -232,19 +263,91 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
             ) {
                 seq = seq.wrapping_add(1);
                 meter.fragmenten += 1;
-                meter.bytes += (fitcom_proto::MEDIA_HEADER_LEN + stuk.len()) as u64;
+                let op_de_draad = fitcom_proto::MEDIA_HEADER_LEN + stuk.len();
+                meter.bytes += op_de_draad as u64;
+
+                // Spreiden in plaats van stoten: zie `Verzendtempo`. Een gewoon beeld
+                // wacht hier nooit.
+                let wacht = tempo.wachttijd(Instant::now(), op_de_draad * kijkers.len());
+                if !wacht.is_zero() {
+                    meter.geremd_us += wacht.as_micros() as u64;
+                    std::thread::sleep(wacht);
+                }
+
                 for &kijker in &kijkers {
-                    if let Err(e) = socket.stuur(kijker, &header, stuk) {
+                    if let Err(e) = socket.stuur(kijker, &header, &stuk) {
                         meter.niet_verstuurd += 1;
                         tracing::debug!(%kijker, error = %e, "videofragment niet verstuurd");
                     }
                 }
             }
             gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
+            crate::spoor::spoor!(
+                spoor,
+                "{:.3},{:.3},{:.3},{gedropt},{},{},{},{encode_us},{}",
+                (opname.opgenomen_hns - nulpunten.map(|n| n.0).unwrap_or(0)) as f64 / 10_000.0,
+                binnen.duration_since(spoor_begin).as_secs_f64() * 1000.0,
+                voor_stuur.duration_since(spoor_begin).as_secs_f64() * 1000.0,
+                pakket.tijd_hns,
+                pakket.data.len(),
+                u8::from(pakket.keyframe),
+                voor_stuur.elapsed().as_micros() as u64
+            );
         }
     }
 
+    if let Some(s) = spoor.as_mut() {
+        s.klaar();
+    }
     Ok(())
+}
+
+/// Houdt de momentane verzendsnelheid onder een plafond, zonder een gewoon beeld op te
+/// houden.
+///
+/// Een emmer met een gat: elke byte kost tijd, en zolang de achterstand binnen de speling
+/// blijft wordt er niet gewacht. Een beeld van dertien fragmenten past helemaal in de
+/// speling en gaat dus net zo hard de deur uit als voorheen; een keyframe van
+/// driehonderd fragmenten wordt gespreid.
+///
+/// Er wordt pas gewacht zodra het de moeite waard is ([`MIN_WACHT`]) — anders zou er per
+/// pakket vijftig microseconde gepauzeerd worden, en dat is op Windows niet te slapen
+/// maar wel te verspillen aan wachtlussen.
+struct Verzendtempo {
+    per_byte: Duration,
+    speling: Duration,
+    /// Tot wanneer alles wat tot nu toe aangeboden is de draad op gaat.
+    klaar: Instant,
+}
+
+/// Korter dan dit niet wachten: dan kost het pauzeren meer dan het oplevert.
+const MIN_WACHT: Duration = Duration::from_millis(1);
+
+impl Verzendtempo {
+    fn nieuw(bitrate: u32, nu: Instant) -> Self {
+        let bytes_per_s = u64::from(bitrate.max(1)) / 8 * u64::from(PIEK_FACTOR);
+        let per_byte = Duration::from_nanos(1_000_000_000 / bytes_per_s.max(1));
+        Self {
+            per_byte,
+            speling: per_byte * SPELING_BYTES as u32,
+            klaar: nu,
+        }
+    }
+
+    /// Hoelang er gewacht moet worden voordat deze bytes de deur uit mogen. Boekt ze
+    /// meteen in, dus precies één keer aanroepen per pakket.
+    fn wachttijd(&mut self, nu: Instant, bytes: usize) -> Duration {
+        if self.klaar < nu {
+            self.klaar = nu;
+        }
+        let achterstand = self.klaar.saturating_duration_since(nu + self.speling);
+        self.klaar += self.per_byte * bytes as u32;
+        if achterstand >= MIN_WACHT {
+            achterstand
+        } else {
+            Duration::ZERO
+        }
+    }
 }
 
 /// Houdt het aantal beelden per seconde op `cfg.fps`.
@@ -327,6 +430,8 @@ struct Meter {
     bytes: u64,
     grootste: usize,
     niet_verstuurd: u32,
+    /// Hoeveel er in deze seconde gewacht is om de stoot van een keyframe te spreiden.
+    geremd_us: u64,
 }
 
 impl Meter {
@@ -342,6 +447,7 @@ impl Meter {
             bytes: 0,
             grootste: 0,
             niet_verstuurd: 0,
+            geremd_us: 0,
         }
     }
 
@@ -361,6 +467,7 @@ impl Meter {
             grootste_kb = self.grootste / 1024,
             frag_per_s = (self.fragmenten as f64 / s).round() as u32,
             niet_verstuurd = self.niet_verstuurd,
+            geremd_ms = self.geremd_us / 1000,
             "deler"
         );
         *self = Meter::nieuw(self.stream_id, std::mem::take(&mut self.bron));
@@ -454,6 +561,60 @@ mod tests {
         assert!(
             door <= 2,
             "{door} van de 10 beelden uit één stoot doorgelaten"
+        );
+    }
+
+    #[test]
+    fn een_gewoon_beeld_wordt_nooit_opgehouden() {
+        // De spreiding is er voor keyframes. Zou hij een gewoon beeld van een paar
+        // fragmenten ook remmen, dan kost hij vertraging op elk beeld in plaats van op
+        // één per tien seconden.
+        let mut tempo = Verzendtempo::nieuw(8_000_000, Instant::now());
+        let nu = Instant::now();
+        for beeld in 0..600 {
+            // Twintig fragmenten, ruim boven de mediaan van veertien kB per beeld.
+            let moment = nu + Duration::from_nanos(beeld * 1_000_000_000 / 60);
+            for _ in 0..20 {
+                assert!(
+                    tempo.wachttijd(moment, 1116).is_zero(),
+                    "een gewoon beeld hoort er zonder wachten uit te gaan"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn een_keyframe_wordt_gespreid_over_ongeveer_een_beeldtijd() {
+        // 371 kB ging er eerst in 1,7 ms uit: momentaan 1,75 Gbit/s op een budget van
+        // 8 Mbit/s. Dat is de stoot die op een echt pad verlies veroorzaakt.
+        let begin = Instant::now();
+        let mut tempo = Verzendtempo::nieuw(8_000_000, begin);
+        let mut nu = begin;
+        let mut gewacht = Duration::ZERO;
+        for _ in 0..(371 * 1024 / 1116) {
+            let w = tempo.wachttijd(nu, 1116);
+            gewacht += w;
+            nu += w;
+        }
+        assert!(
+            (Duration::from_millis(10)..=Duration::from_millis(30)).contains(&gewacht),
+            "een keyframe werd over {gewacht:?} gespreid; verwacht rond een beeldtijd"
+        );
+    }
+
+    #[test]
+    fn na_een_stille_periode_mag_er_weer_vol_gestuurd_worden() {
+        // De emmer loopt leeg als er niets verstuurd wordt. Zonder dat zou een deler die
+        // even niets te doen had daarna alsnog geremd worden.
+        let begin = Instant::now();
+        let mut tempo = Verzendtempo::nieuw(8_000_000, begin);
+        for _ in 0..400 {
+            tempo.wachttijd(begin, 1116);
+        }
+        let later = begin + Duration::from_secs(1);
+        assert!(
+            tempo.wachttijd(later, 1116).is_zero(),
+            "na een seconde stilte hoort de speling weer vol te zijn"
         );
     }
 

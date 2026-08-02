@@ -160,14 +160,41 @@ offset  size  veld
 4       4     seq         u32  monotoon per stream
 8       4     timestamp   u32  90 kHz voor video, 48 kHz voor audio
 12      1     payload_type u8  (0=opus, 1=hevc, 2=h264)
-13      1     flags       u8   bit0 = keyframe, bit1 = laatste fragment van frame
+13      1     flags       u8   bit0 = keyframe, bit1 = laatste fragment, bit2 = pariteit
 14      2     frag_index  u16
 ```
 
-Videoframes worden gefragmenteerd op ~1200 byte payload (onder Tailscale's MTU).
+Videoframes worden gefragmenteerd op 1100 byte payload (onder Tailscale's MTU).
 Een frame is compleet als alle fragmenten 0..n binnen zijn met bit1 gezet op de laatste.
 Incomplete frames worden gedropt; bij verlies van een keyframe vraagt de ontvanger via
 control om een nieuwe IDR.
+
+#### Het pariteitsfragment (bit2)
+
+Achter elk videobeeld gaat één extra fragment aan met de XOR van alle stukken, elk
+voorafgegaan door zijn eigen lengte en aangevuld tot 1100 bytes. Zijn `frag_index` is het
+*aantal* stukken in plaats van een plek erin, zodat de ontvanger weet hoeveel hij er hoort
+te hebben ook als juist het stuk met bit1 zoek is. Mist er precies één fragment, dan rekent
+de ontvanger het terug — inclusief zijn lengte, want die zit in de XOR. Bij twee of meer
+gaten gebeurt er niets en volgt het oude pad: keyframe vragen.
+
+**Waarom dit er is.** Gemeten op 2026-08-02 met een gecontroleerde bron
+(`crates/video/tests/hapering.rs`): één verloren fragment kostte **70 tot 156 ms bevroren
+beeld**. Niet omdat dat ene beeld weg was — dat is 17 ms — maar omdat de kijker daarna zijn
+decoder spoelt en alles weggooit tot er een nieuw keyframe is, dat hij eerst moet aanvragen
+en dat honderden kilobytes groot is. Bij 1400 fragmenten per seconde is 0,013% verlies —
+gewoon voor een internetpad — al genoeg voor een bevriezing per vijf seconden. Verreweg de
+meeste verliesmomenten zijn precies één fragment groot, en daarvoor is een terugweg over
+het netwerk absurd duur.
+
+Kost één pakket per beeld: gemeten +6,4% fragmenten en +6,6% bytes.
+
+**Doorgemeten alternatief dat níét werkt:** de piek van een keyframe met de encoder
+begrenzen. `CODECAPI_AVEncCommonRateControlMode`, `-MeanBitRate`, `-BufferSize` en
+`-MaxBitRate` geven allemaal `S_OK` op de NVIDIA-MFT en veranderen geen byte, zowel vóór
+als ná `SetOutputType`, op H.264 én HEVC. Een keyframe blijft 33 tot 57× een gewoon beeld.
+Wat wél kan: minder vaak (`GOP_SECONDEN` staat daarom op 10, niet op 2) en de stoot
+spreiden (`deler::Verzendtempo`).
 
 De `timestamp` van een videopakket komt uit het sample van de encoder, niet uit "nu" op
 het moment van versturen. Fragmenten horen bij elkaar dóórdat ze dezelfde tijdstempel
@@ -310,7 +337,7 @@ bericht, want elke peer mag een subkanaal aanmaken/hernoemen en dus ook verwijde
 een latere `SetTopicTitle` alsnog van de `DeleteTopic`, dan komt het subkanaal terug — net
 zo'n gewone laatste-schrijver-wint-uitkomst als bij een bijnaam.
 
-### Protocolversie: 1 → 2, 2 → 3, 3 → 4
+### Protocolversie: 1 → 2, 2 → 3, 3 → 4, 4 → 5
 
 **1 → 2**, bij de kanalen-uitbreiding (DM's): `VersionVector` en de bestandsoverdracht-
 header (`crates/net/src/filestream.rs`) veranderden allebei van vorm om het kanaal mee te
@@ -347,6 +374,13 @@ zichzelf onschadelijk (map-encoded, onbekend bericht wordt genegeerd), maar hore
 dezelfde bump: een peer zonder update-begrip verstuurt toch nooit een `UpdateRequest`, dus
 beide kanten van de functionaliteit vallen sowieso samen. Zie "Automatische updates"
 hieronder. Geverifieerd door de `protocol-reviewer`-agent vóór het committen.
+
+**4 → 5**, bij het pariteitsfragment voor video (zie "Media" hierboven): een oudere
+ontvanger kent bit2 niet, stopt dat fragment als gewoon stuk in zijn samensteller en komt
+dan op één stuk *te veel* uit — waarna `Reassembler::compleet()` nooit meer waar wordt en
+er van die deler helemaal geen beeld meer verschijnt. Stilzwijgend kapot in plaats van een
+nette `VersionMismatch`, precies de klasse fout die de eerdere bumps ook moesten
+voorkomen.
 
 ### Waarom `seq` per (auteur, kanaal) telt, niet per auteur
 

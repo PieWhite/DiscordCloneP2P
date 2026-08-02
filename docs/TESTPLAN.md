@@ -513,6 +513,52 @@ de peer verbonden blijft. Herstart de oude peer: het aanbod mag dan wél weer ve
 
 ---
 
+## Fase 12 — periodieke microhapering bij screenshare (2026-08-02)
+
+Alles hieronder is op één machine gemeten en gerepareerd (zie `docs/OVERDRACHT.md`,
+"Onderzoek 2026-08-02"). Wat daar niet te controleren viel is of het verlies op een écht
+internetpad dezelfde vorm heeft — daar zit ook verlies van twee of meer fragmenten tegelijk
+in, en dat repareert de pariteit niet.
+
+**Vóóraf, en dit is geen optie:** `PROTOCOL_VERSION` ging van 4 naar 5. **Alle drie de
+peers moeten dezelfde build draaien.** Een peer op de oude versie wordt bij de handshake
+geweigerd vóórdat er een sessie draait, dus de automatische update van fase 11 kan hier
+niet overheen helpen. Zie 12.5.
+
+**12.1 De hapering zelf is weg**
+Deel een venster met een filmpje erin, laat het minstens een paar minuten lopen en kijk aan
+de andere kant. Het gaat om precies één ding: die korte stotter om de vijf à zes seconden.
+*Als hij er nog is: hoe vaak, en gebeurt het aan beide kanten?*
+
+**12.2 De meter aan de kijkkant vertelt of het werkt**
+Zet `FITCOM_LOG=info` (standaard) en kijk in `data\logs\` naar de `kijker`-regels. Wat je
+wilt zien: `hersteld` af en toe boven nul, en `incompleet` en `keyframe_verzoeken` op nul.
+*Loopt `incompleet` op terwijl `hersteld` nul blijft, dan raakt er meer dan één fragment
+per beeld zoek en helpt de pariteit niet — stuur die regels door.*
+
+**12.3 Het beeld is niet trager geworden**
+Het pariteitsfragment en de spreiding kosten allebei iets. Het moet niet merkbaar later
+zijn dan voorheen als je met de muis ergens naar wijst op een gedeeld scherm. *Voelt het
+traag: dat is `WEERGAVE_VOORSPRONG` in `kijker.rs`, nu 30 ms.*
+
+**12.4 Aanhaken duurt niet langer**
+`GOP_SECONDEN` staat van 2 op 10. Een nieuwe kijker vraagt zelf om een keyframe, dus het
+venster hoort net zo snel beeld te tonen als voorheen. *Blijft het venster seconden zwart
+bij het openen, dan komt dat verzoek niet aan.*
+
+**12.5 Een peer op de oude versie is als zodanig herkenbaar**
+Laat één peer bewust de oude build draaien. In het deelnemerspaneel hoort daar nu
+"andere versie (protocol 4, wij 5)" te staan en niet gewoon "offline". *Staat er offline,
+dan ga je het netwerk zitten uitzoeken terwijl er niets mis is met het netwerk.*
+
+**12.6 Naast een draaiende game**
+`MediaSocket::bind` zet de timerresolutie van dit proces op 1 ms zodra er beeld of geluid
+loopt. Sinds Windows 10 2004 werkt dat per proces, dus een game hoort er niets van te
+merken — maar dat is een aanname uit documentatie, geen meting. *Deel je scherm terwijl je
+gamet en kijk of de frametimes van de game er anders uitzien dan voorheen.*
+
+---
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

@@ -47,15 +47,6 @@ pub fn avatar_square(
     response
 }
 
-/// Kleine gekleurde stip — status van een peer, los van een avatar.
-pub fn status_dot(ui: &mut egui::Ui, color: Color32, diameter: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(diameter), Sense::hover());
-    if ui.is_rect_visible(rect) {
-        ui.painter()
-            .circle_filled(rect.center(), diameter / 2.0, color);
-    }
-}
-
 /// Statusstip als badge rechtsonder aan een net getekend avatar-vierkant, met een
 /// kleine "uitsparing" in de achtergrondkleur eromheen zodat hij los oogt van het
 /// avatar erachter — zoals de mockup's ledenlijst.
@@ -209,6 +200,13 @@ pub fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str) {
 pub fn describe(status: &PeerStatus) -> (Color32, String) {
     match status {
         PeerStatus::Online { .. } => (theme::STATUS_ONLINE, "online".into()),
+        // Apart van "offline", want het is geen storing en wachten helpt niet: één van
+        // beiden moet bijwerken. Als dit er als gewoon offline uitziet ga je het
+        // netwerk zitten uitzoeken terwijl er niets mis is met het netwerk.
+        PeerStatus::VersionMismatch { theirs, ours } => (
+            theme::STATUS_OFFLINE,
+            format!("andere versie (protocol {theirs}, wij {ours})"),
+        ),
         _ => (theme::STATUS_OFFLINE, "offline".into()),
     }
 }

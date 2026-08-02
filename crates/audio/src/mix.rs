@@ -87,7 +87,7 @@ impl Resampler {
         }
     }
 
-    pub fn nodig(&self) -> bool {
+    fn nodig(&self) -> bool {
         self.van != self.naar
     }
 

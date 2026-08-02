@@ -227,6 +227,7 @@ pub fn spawn(
     let (snap_tx, snap_rx) = watch::channel(Arc::new(Snapshot::default()));
     let voorgrond = Arc::new(AtomicBool::new(true));
     let (file_tx, file_rx) = mpsc::channel(64);
+    let (kijker_tx, kijker_rx) = mpsc::unbounded_channel();
 
     // `config_path` staat altijd direct in de datamap (zie `main.rs`), dus dat is ook de
     // basis voor de standaard downloadmap zolang de gebruiker er niets voor gekozen heeft.
@@ -286,6 +287,8 @@ pub fn spawn(
         update_verwachting_tx: watch::channel(None).0,
         file_tx,
         file_rx,
+        kijker_tx,
+        kijker_rx,
         fout: None,
         niet_storen: false,
         snap_tx,
@@ -358,6 +361,11 @@ struct Engine {
     /// Voor het klonen naar bestandstaken toe; `file_rx` is waar de motor op wacht.
     file_tx: mpsc::Sender<FileEvent>,
     file_rx: mpsc::Receiver<FileEvent>,
+    /// Wat de kijkvensters melden. Bewust *niet* op de tik: een keyframe-verzoek dat
+    /// honderd milliseconde blijft liggen is honderd milliseconde bevroren beeld bij de
+    /// kijker, en dat was de helft van de gemeten hapering. Zie `lees_kijker`.
+    kijker_tx: mpsc::UnboundedSender<(PeerId, u32, KijkerEvent)>,
+    kijker_rx: mpsc::UnboundedReceiver<(PeerId, u32, KijkerEvent)>,
 
     fout: Option<String>,
     /// Zie `Snapshot::niet_storen`.
@@ -428,11 +436,14 @@ impl Engine {
                 ev = self.file_rx.recv() => if let Some(ev) = ev {
                     self.op_file_event(ev);
                 },
+                // `None` kan niet gebeuren zolang de motor zelf `kijker_tx` vasthoudt.
+                ev = self.kijker_rx.recv() => if let Some((eigenaar, stream_id, ev)) = ev {
+                    self.lees_kijker(eigenaar, stream_id, ev);
+                },
                 _ = ticker.tick() => {
                     let verbonden: Vec<PeerId> = self.verbonden.keys().copied().collect();
                     let r = self.chat.tick(&verbonden);
                     self.verwerk(r);
-                    self.lees_kijkers();
                 }
             }
 
@@ -1100,37 +1111,51 @@ impl Engine {
             .streams
             .kijker_draait(eigenaar, stream_id, handle.poort);
         self.stuur_alles(cmds);
+
+        // Meldingen van het kijkvenster meteen de motorlus in laten vallen. Het venster
+        // leeft op een eigen thread met een crossbeam-kanaal, en tokio kan daar niet op
+        // wachten — vandaar dit ene doorgeefluik, dat vanzelf ophoudt zodra de kijker
+        // stopt en zijn kant van het kanaal loslaat.
+        let door = self.kijker_tx.clone();
+        let ontvangen = handle.events.clone();
+        std::thread::Builder::new()
+            .name(format!("fitcom-kijkerpost-{stream_id}"))
+            .spawn(move || {
+                while let Ok(ev) = ontvangen.recv() {
+                    if door.send((eigenaar, stream_id, ev)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .context("doorgeefthread voor kijkermeldingen starten")?;
+
         self.kijkers.insert((eigenaar, stream_id), handle);
         Ok(())
     }
 
-    /// Haalt op wat de kijkvensters te melden hebben: gesloten vensters en verzoeken
-    /// om een keyframe. Gebeurt op de tik, want de motor mag hier niet op wachten.
-    fn lees_kijkers(&mut self) {
-        let mut gesloten = Vec::new();
-        let mut keyframes = Vec::new();
-
-        for (&(eigenaar, stream_id), kijker) in &self.kijkers {
-            while let Ok(ev) = kijker.events.try_recv() {
-                match ev {
-                    KijkerEvent::Gesloten => gesloten.push((eigenaar, stream_id)),
-                    KijkerEvent::KeyframeNodig => keyframes.push((eigenaar, stream_id)),
-                    KijkerEvent::Miniatuur(m) => {
-                        self.miniaturen.insert((eigenaar, stream_id), m);
-                    }
-                }
+    /// Eén melding van een kijkvenster: gesloten, een keyframe nodig, of een nieuwe
+    /// miniatuur.
+    ///
+    /// Komt binnen via de select-lus en niet op de tik. Dat verschil is niet cosmetisch:
+    /// een kijker die een fragment mist toont geen enkel beeld meer tot er een keyframe
+    /// is, dus elke milliseconde die het verzoek hier blijft liggen is een milliseconde
+    /// bevroren beeld aan de andere kant. Op de tik was dat tot honderd milliseconde —
+    /// de helft van de gemeten hapering. Zie `crates/video/src/fragment.rs`.
+    fn lees_kijker(&mut self, eigenaar: PeerId, stream_id: u32, ev: KijkerEvent) {
+        match ev {
+            KijkerEvent::KeyframeNodig => {
+                let cmds = self.streams.vraag_keyframe(eigenaar, stream_id);
+                self.stuur_alles(cmds);
             }
-        }
-
-        for (eigenaar, stream_id) in keyframes {
-            let cmds = self.streams.vraag_keyframe(eigenaar, stream_id);
-            self.stuur_alles(cmds);
-        }
-        for (eigenaar, stream_id) in gesloten {
-            self.miniaturen.remove(&(eigenaar, stream_id));
-            let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
-            self.stuur_alles(cmds);
-            self.voer_uit(acties);
+            KijkerEvent::Miniatuur(m) => {
+                self.miniaturen.insert((eigenaar, stream_id), m);
+            }
+            KijkerEvent::Gesloten => {
+                self.miniaturen.remove(&(eigenaar, stream_id));
+                let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
         }
     }
 
@@ -1598,6 +1623,14 @@ fn unieke_bestandsnaam(dir: &Path, naam: &str) -> PathBuf {
     unreachable!("dir.join blijft nieuwe paden opleveren")
 }
 
+/// Blake3-hash van een heel bestand, synchroon. Alleen aanroepen vanuit `spawn_blocking`.
+fn blake3_hash_bestand(pad: &Path) -> std::io::Result<(u64, [u8; 32])> {
+    let mut bestand = std::fs::File::open(pad)?;
+    let mut hasher = blake3::Hasher::new();
+    let grootte = std::io::copy(&mut bestand, &mut hasher)?;
+    Ok((grootte, *hasher.finalize().as_bytes()))
+}
+
 /// Leest een lokaal bestand, hasht het, en meldt het resultaat terug zodat de motor het
 /// als `FileMeta`-op kan vastleggen. Op een losse taak: bij een groot bestand kan dit
 /// seconden duren, en dat mag de UI niet blokkeren.
@@ -1616,10 +1649,7 @@ async fn hash_en_bied_aan(
     let naam_voor_taak = naam.clone();
     let resultaat =
         tokio::task::spawn_blocking(move || -> std::io::Result<(u64, [u8; 32], PathBuf)> {
-            let mut bestand = std::fs::File::open(&leespad)?;
-            let mut hasher = blake3::Hasher::new();
-            let grootte = std::io::copy(&mut bestand, &mut hasher)?;
-            let hash = *hasher.finalize().as_bytes();
+            let (grootte, hash) = blake3_hash_bestand(&leespad)?;
 
             // Een afbeelding krijgt een eigen, content-adresseerbare kopie in
             // `pictures_dir` — daar leest de UI straks een miniatuur van, op precies
@@ -1854,13 +1884,7 @@ async fn update_upload_taak(
     };
 
     let leespad = pad.clone();
-    let gehasht = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, [u8; 32])> {
-        let mut bestand = std::fs::File::open(&leespad)?;
-        let mut hasher = blake3::Hasher::new();
-        let grootte = std::io::copy(&mut bestand, &mut hasher)?;
-        Ok((grootte, *hasher.finalize().as_bytes()))
-    })
-    .await;
+    let gehasht = tokio::task::spawn_blocking(move || blake3_hash_bestand(&leespad)).await;
 
     let (grootte, hash) = match gehasht {
         Ok(Ok(v)) => v,
@@ -1998,14 +2022,10 @@ async fn download_update_bytes(
     drop(bestand);
 
     let te_hashen = deelpad.clone();
-    let klopt = tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
-        let mut bestand = std::fs::File::open(&te_hashen)?;
-        let mut hasher = blake3::Hasher::new();
-        std::io::copy(&mut bestand, &mut hasher)?;
-        Ok(*hasher.finalize().as_bytes() == verwachte_hash)
-    })
-    .await
-    .context("hash-taak afgebroken")??;
+    let (_, hash) = tokio::task::spawn_blocking(move || blake3_hash_bestand(&te_hashen))
+        .await
+        .context("hash-taak afgebroken")??;
+    let klopt = hash == verwachte_hash;
 
     if !klopt {
         let _ = tokio::fs::remove_file(&deelpad).await;
@@ -2074,14 +2094,10 @@ async fn download_bytes(
     // kopie in het geheugen.
     let te_hashen = deelpad.clone();
     let verwacht = entry.hash;
-    let klopt = tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
-        let mut bestand = std::fs::File::open(&te_hashen)?;
-        let mut hasher = blake3::Hasher::new();
-        std::io::copy(&mut bestand, &mut hasher)?;
-        Ok(*hasher.finalize().as_bytes() == verwacht)
-    })
-    .await
-    .context("hash-taak afgebroken")??;
+    let (_, hash) = tokio::task::spawn_blocking(move || blake3_hash_bestand(&te_hashen))
+        .await
+        .context("hash-taak afgebroken")??;
+    let klopt = hash == verwacht;
 
     if !klopt {
         let _ = tokio::fs::remove_file(&deelpad).await;

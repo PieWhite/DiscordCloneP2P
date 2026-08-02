@@ -8,6 +8,7 @@ pub mod fragment;
 pub mod kijker;
 pub mod kleur;
 pub mod mf;
+pub mod spoor;
 pub mod venster;
 
 pub use capture::{beschikbare_bronnen, Bron, BronSoort};

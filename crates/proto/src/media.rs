@@ -10,6 +10,14 @@ pub const MEDIA_HEADER_LEN: usize = 16;
 /// overhead, dus we blijven ruim onder de gebruikelijke 1280.
 pub const MAX_MEDIA_PAYLOAD: usize = 1100;
 
+/// Lengte van de payload van een pariteitsfragment: twee bytes voor de lengte van het
+/// stuk dat het vervangt, daarna de bytes zelf.
+///
+/// De lengte gaat mee door de XOR heen in plaats van er apart bij: dan levert het
+/// herstel niet alleen de inhoud van het ontbrekende fragment op maar ook hoe lang het
+/// was, en is het laatste (kortere) fragment geen apart geval.
+pub const PARITEIT_PAYLOAD_LEN: usize = MAX_MEDIA_PAYLOAD + 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct PayloadType(pub u8);
@@ -42,6 +50,12 @@ impl MediaHeader {
     /// Laatste fragment van dit frame. Zonder deze vlag weet de ontvanger niet
     /// wanneer een frame compleet is, want fragmenten kunnen door elkaar aankomen.
     pub const FLAG_LAST_FRAGMENT: u8 = 0b0000_0010;
+    /// Geen beelddata maar de XOR van alle fragmenten van dit beeld, zodat één
+    /// verloren fragment ter plekke te herstellen is in plaats van met een nieuw
+    /// keyframe. Zijn `frag_index` is het *aantal* fragmenten, niet een plek erin —
+    /// zo weet de ontvanger hoeveel stukken hij hoort te hebben, ook als juist het
+    /// laatste (dat [`Self::FLAG_LAST_FRAGMENT`] draagt) zoek is.
+    pub const FLAG_PARITEIT: u8 = 0b0000_0100;
 
     pub fn is_keyframe(&self) -> bool {
         self.flags & Self::FLAG_KEYFRAME != 0
@@ -49,6 +63,10 @@ impl MediaHeader {
 
     pub fn is_last_fragment(&self) -> bool {
         self.flags & Self::FLAG_LAST_FRAGMENT != 0
+    }
+
+    pub fn is_pariteit(&self) -> bool {
+        self.flags & Self::FLAG_PARITEIT != 0
     }
 
     pub fn write_to(&self, out: &mut [u8; MEDIA_HEADER_LEN]) {

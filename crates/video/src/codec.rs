@@ -33,11 +33,18 @@ pub const HNS_PER_SEC: i64 = 10_000_000;
 
 /// Zoveel seconden tussen twee periodieke keyframes.
 ///
-/// Een keyframe van 1080p is 100 tot 300 kB en gaat in één stoot van honderden fragmenten
-/// de socket in; hoe minder vaak dat gebeurt, hoe beter. Dit is een vangnet, geen
-/// hersteltijd: een kijker die de draad kwijt is vraagt zelf om een keyframe
-/// ([`Encoder::vraag_keyframe`]) en wacht hier dus niet op.
-const GOP_SECONDEN: u32 = 2;
+/// Dit is een vangnet, geen hersteltijd: wie aanhaakt of de draad kwijt is vraagt zelf om
+/// een keyframe ([`Encoder::vraag_keyframe`]), over een betrouwbare QUIC-verbinding, en
+/// wacht hier dus niet op.
+///
+/// **Stond op 2, en dat was duur.** Gemeten op 2026-08-02 bij 1080p op een budget van
+/// 8 Mbit/s: een keyframe is 371 kB tegen 6 kB voor een gewoon beeld — 57×. Elke twee
+/// seconden was dat 1,5 Mbit/s, bijna een vijfde van het hele budget, plus een stoot van
+/// 346 datagrammen die op een echt internetpad zelf verlies veroorzaakt. Die piek is niet
+/// te temmen: `CODECAPI_AVEncCommonRateControlMode`, `-MeanBitRate`, `-BufferSize` en
+/// `-MaxBitRate` geven allemaal `S_OK` op de NVIDIA-MFT en veranderen geen byte, zowel
+/// vóór als ná `SetOutputType`. Dus blijft alleen: minder vaak.
+const GOP_SECONDEN: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {

@@ -115,23 +115,50 @@ impl super::App {
                 }
 
                 ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(8.0);
-                voice_cmd = self.voice_bediening(ui);
-
-                ui.add_space(8.0);
-                let (cmd, openen) = self.deel_bediening(ui);
-                stream_cmd = cmd;
-                bronnen_openen = openen;
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
-                if let Some(aan) = self.eigen_mini_kaart(ui) {
-                    niet_storen_wijziging = Some(aan);
-                }
+                (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging) =
+                    self.zijbalk_onderkant(ui);
             });
 
+        self.verwerk_zijbalk_onderkant(
+            voice_cmd,
+            stream_cmd,
+            bronnen_openen,
+            niet_storen_wijziging,
+        );
+        if let Some(kanaal) = kanaal_wissel {
+            self.wissel_kanaal(kanaal);
+        }
+    }
+
+    /// Voice-/scherm-delen-bediening en eigen mini-kaart onderaan de zijbalk — zelfde
+    /// blok in `kanaal_zijbalk` en `dms.rs`'s `dm_zijbalk`, alleen de lijst erboven
+    /// verschilt.
+    pub(super) fn zijbalk_onderkant(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> (Option<UiCommand>, Option<UiCommand>, bool, Option<bool>) {
+        ui.separator();
+        ui.add_space(8.0);
+        let voice_cmd = self.voice_bediening(ui);
+
+        ui.add_space(8.0);
+        let (stream_cmd, bronnen_openen) = self.deel_bediening(ui);
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        let niet_storen_wijziging = self.eigen_mini_kaart(ui);
+
+        (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging)
+    }
+
+    pub(super) fn verwerk_zijbalk_onderkant(
+        &mut self,
+        voice_cmd: Option<UiCommand>,
+        stream_cmd: Option<UiCommand>,
+        bronnen_openen: bool,
+        niet_storen_wijziging: Option<bool>,
+    ) {
         if let Some(cmd) = voice_cmd {
             self.stuur(cmd);
         }
@@ -140,9 +167,6 @@ impl super::App {
         }
         if bronnen_openen {
             self.open_bronkeuze();
-        }
-        if let Some(kanaal) = kanaal_wissel {
-            self.wissel_kanaal(kanaal);
         }
         if let Some(aan) = niet_storen_wijziging {
             self.stuur(UiCommand::NietStoren(aan));

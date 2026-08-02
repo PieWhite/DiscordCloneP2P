@@ -13,7 +13,10 @@ pub mod op;
 pub use appversion::is_newer;
 pub use control::{ControlMsg, StreamKind};
 pub use ids::{Channel, OpId, PeerId, TopicId};
-pub use media::{MediaHeader, PayloadType, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN, VOICE_STREAM_ID};
+pub use media::{
+    MediaHeader, PayloadType, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN, PARITEIT_PAYLOAD_LEN,
+    VOICE_STREAM_ID,
+};
 pub use op::{Op, OpKind, VersionVector};
 
 /// Verhoog dit alleen bij een breuk die niet met `#[serde(default)]` of het negeren
@@ -46,7 +49,16 @@ pub use op::{Op, OpKind, VersionVector};
 /// zijn op zichzelf onschadelijk (map-encoded, nieuw bericht wordt genegeerd), maar horen
 /// bij dezelfde bump omdat een oudere peer een `UpdateRequest` toch nooit kan versturen.
 /// Zie `docs/ARCHITECTURE.md`, sectie "Automatische updates".
-pub const PROTOCOL_VERSION: u32 = 4;
+///
+/// 4 → 5 bij het pariteitsfragment voor video (`MediaHeader::FLAG_PARITEIT`): achter elk
+/// videobeeld gaat nu een extra fragment aan met de XOR van alle stukken, zodat één
+/// verloren fragment ter plekke te herstellen is. Een oudere ontvanger kent de vlag niet,
+/// stopt dat fragment als gewoon stuk in zijn samensteller en komt dan op één stuk *te
+/// veel* uit — waarna `Reassembler::compleet()` nooit meer waar wordt en er van die deler
+/// helemaal geen beeld meer verschijnt. Dat is precies de klasse fout die de eerdere bumps
+/// ook moesten voorkomen: stilzwijgend kapot in plaats van een nette `VersionMismatch`.
+/// Zie `docs/ARCHITECTURE.md`, sectie "Media (UDP, onbetrouwbaar)".
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Bovengrens voor een control-frame. Grote sync-antwoorden worden opgeknipt door de
 /// netwerklaag, zodat we hier bij normaal gebruik nooit tegenaan lopen.
