@@ -12,6 +12,7 @@ use eframe::egui;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     Account,
+    Geluid,
     Video,
     Opslag,
     Over,
@@ -30,6 +31,7 @@ impl super::App {
                 ui.add_space(8.0);
                 for (tab, label) in [
                     (SettingsTab::Account, "Account"),
+                    (SettingsTab::Geluid, "Geluid"),
                     (SettingsTab::Video, "Video"),
                     (SettingsTab::Opslag, "Opslag"),
                     (SettingsTab::Over, "Over"),
@@ -48,6 +50,7 @@ impl super::App {
                 .inner_margin(egui::Margin::symmetric(20, 0))
                 .show(ui, |ui| match self.settings_tab {
                     SettingsTab::Account => self.instellingen_account(ui),
+                    SettingsTab::Geluid => self.instellingen_geluid(ui),
                     SettingsTab::Video => self.instellingen_video(ui),
                     SettingsTab::Opslag => self.instellingen_opslag(ui),
                     SettingsTab::Over => self.instellingen_over(ui),
@@ -134,6 +137,66 @@ impl super::App {
                 self.stuur(UiCommand::NietStoren(niet_storen));
             }
         });
+    }
+
+    /// Microfoon- en weergavekeuze, plus een meter op je eigen microfoon.
+    ///
+    /// De meter is het punt van dit scherm: hij toont wat er daadwerkelijk verstuurd
+    /// wordt. Slaat hij uit terwijl je niets zegt, dan neemt je "microfoon" het geluid
+    /// van deze pc op — een loopback-apparaat (Stereo Mix, VB-Cable, Voicemeeter) of
+    /// speakers die je mic weer inpikt. Er zit geen echo-onderdrukking in de keten, dus
+    /// dat gaat één op één naar de anderen toe.
+    fn instellingen_geluid(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Geluid");
+        ui.add_space(6.0);
+
+        if self.audio_apparaten.is_none() {
+            match crate::engine::audio_apparaten() {
+                Ok(lijsten) => self.audio_apparaten = Some(lijsten),
+                Err(e) => {
+                    ui.colored_label(theme::STATUS_DND, format!("apparaten opvragen: {e:#}"));
+                    return;
+                }
+            }
+        }
+        let (invoer, uitvoer) = self.audio_apparaten.clone().unwrap_or_default();
+
+        let mut keuze_in = self.snap.input_device.clone();
+        let mut keuze_uit = self.snap.output_device.clone();
+
+        ui.label(egui::RichText::new("Microfoon").strong());
+        apparaat_keuze(ui, "invoerapparaat", &invoer, &mut keuze_in);
+        ui.add_space(10.0);
+
+        ui.label(egui::RichText::new("Weergave").strong());
+        apparaat_keuze(ui, "uitvoerapparaat", &uitvoer, &mut keuze_uit);
+        ui.small("Ook waar het gedeelde bureaubladgeluid vanaf getapt wordt.");
+        ui.add_space(4.0);
+
+        if ui.button("Lijst vernieuwen").clicked() {
+            self.audio_apparaten = None;
+        }
+
+        if keuze_in != self.snap.input_device || keuze_uit != self.snap.output_device {
+            self.stuur(UiCommand::ZetGeluidsapparaten(keuze_in, keuze_uit));
+        }
+
+        ui.add_space(20.0);
+        widgets::section_label(ui, "Microfoontest");
+        ui.add_space(8.0);
+        if self.snap.voice.actief {
+            widgets::niveaubalk(ui, self.snap.voice.eigen_niveau);
+            ui.add_space(4.0);
+            ui.small(
+                "De balk beweegt alleen als er ook daadwerkelijk iets naar de anderen \
+                 gaat. Slaat hij uit terwijl jij niets zegt — bij muziek, een spel of \
+                 als iemand anders praat — dan neemt dit apparaat het geluid van je pc \
+                 op in plaats van alleen jou. Kies dan een ander apparaat of gebruik een \
+                 koptelefoon; er zit geen echo-onderdrukking in.",
+            );
+        } else {
+            ui.small("Neem deel aan het gesprek om je microfoon te testen.");
+        }
     }
 
     /// Codec/fps/bitrate. Bewerkt een kopie (`self.instellingen`, gevuld door
@@ -232,5 +295,36 @@ impl super::App {
         ui.add_space(6.0);
         ui.small(format!("id {}", &self.mij.to_string()[..8]));
         ui.small(format!("poort {}", self.control_port));
+    }
+}
+
+/// Uitklaplijst met apparaten, met "Standaardapparaat" (`None`) als eerste keuze.
+///
+/// `None` betekent hetzelfde als in de config: laat Windows kiezen. Staat een eerder
+/// gekozen apparaat er niet meer tussen (hernoemd, losgekoppeld), dan komt hij als
+/// gemarkeerde regel onderaan te staan — anders zou de lijst een keuze tonen die
+/// stilzwijgend niet gebruikt wordt.
+fn apparaat_keuze(ui: &mut egui::Ui, id: &str, namen: &[String], keuze: &mut Option<String>) {
+    const STANDAARD: &str = "Standaardapparaat (Windows)";
+
+    egui::ComboBox::from_id_salt(id)
+        .width(380.0)
+        .selected_text(keuze.clone().unwrap_or_else(|| STANDAARD.to_string()))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(keuze, None, STANDAARD);
+            for naam in namen {
+                ui.selectable_value(keuze, Some(naam.clone()), naam);
+            }
+        });
+
+    if let Some(naam) = keuze.clone() {
+        if !namen.contains(&naam) {
+            ui.small(
+                egui::RichText::new(
+                    "Dit apparaat is er nu niet; de app gebruikt zolang het standaardapparaat.",
+                )
+                .color(theme::STATUS_CONNECTING),
+            );
+        }
     }
 }

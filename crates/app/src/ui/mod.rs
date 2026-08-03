@@ -84,6 +84,11 @@ pub struct App {
     /// video-instellingen om in te bewerken, zodat "annuleren" niets hoeft terug te
     /// draaien — geldt alleen voor de video-sectie van het scherm.
     instellingen: Option<VideoConcept>,
+    /// Namen van de beschikbare microfoons en weergaveapparaten, opgehaald zodra het
+    /// Geluid-tabblad voor het eerst getoond wordt. `None` = nog niet opgehaald; de
+    /// "Vernieuwen"-knop zet hem terug op `None` zodat een net ingeplugde headset
+    /// verschijnt.
+    audio_apparaten: Option<(Vec<String>, Vec<String>)>,
     /// Staat de bevestigingsvraag voor "Verwijder alle afbeeldingen" open? Los van
     /// `instellingen`, zodat annuleren van de bevestiging het instellingenscherm zelf
     /// niet sluit.
@@ -169,6 +174,7 @@ impl App {
             naar_tray,
             bronkeuze: None,
             instellingen: None,
+            audio_apparaten: None,
             bevestig_verwijder_afbeeldingen: false,
             profiel: None,
             nieuw_kanaal_titel: None,

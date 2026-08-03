@@ -126,6 +126,10 @@ pub struct Snapshot {
     pub eigen_streams: Vec<EigenStreamView>,
     pub streams: Vec<StreamView>,
     pub video: VideoConfig,
+    /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
+    /// instellingenscherm: de sessie leest dit bij het starten uit de config.
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
     pub files: Vec<FileView>,
     pub ongelezen: usize,
     /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
@@ -173,6 +177,10 @@ pub enum UiCommand {
     /// meteen mee — die worden herstart met de nieuwe instellingen — en voor nieuw
     /// gestarte bronnen vanzelf, want die lezen `cfg.video` bij het starten.
     ZetVideoInstellingen(VideoConfig),
+    /// Microfoon en weergaveapparaat, `None` = het Windows-standaardapparaat. De
+    /// apparaten worden bij het openen van de voice-sessie gekozen, dus een lopend
+    /// gesprek wordt hiervoor kort herstart.
+    ZetGeluidsapparaten(Option<String>, Option<String>),
     /// Een lokaal bestand kiezen en aanbieden aan de anderen (of aan één DM-partner).
     /// Hashen gebeurt op de motor: bij een groot bestand kan dat te lang duren om de UI
     /// op te laten wachten.
@@ -1220,6 +1228,22 @@ impl Engine {
                 }
                 self.herstart_lopende_delers();
             }
+            UiCommand::ZetGeluidsapparaten(invoer, uitvoer) => {
+                self.cfg.input_device = invoer;
+                self.cfg.output_device = uitvoer;
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    tracing::warn!(error = %format!("{e:#}"), "geluidsapparaten niet opgeslagen");
+                    self.fout = Some(format!("instellingen opslaan: {e:#}"));
+                }
+                // De apparaten worden één keer gekozen, bij het openen van de sessie
+                // (`fitcom_audio::start`). Zit je in een gesprek, dan is opnieuw openen
+                // de enige manier om te wisselen; `bind_met_geduld` vangt op dat de
+                // mediapoort nog even bezet is.
+                if self.voice.is_some() {
+                    self.verlaten();
+                    self.deelnemen();
+                }
+            }
             UiCommand::StopDelen(id) => {
                 let was_scherm = self.bronnen.remove(&id).is_some();
                 let (cmds, acties) = self.streams.stop_delen(id);
@@ -1553,6 +1577,8 @@ impl Engine {
             eigen_streams,
             streams,
             video: self.cfg.video.clone(),
+            input_device: self.cfg.input_device.clone(),
+            output_device: self.cfg.output_device.clone(),
             files,
             ongelezen: self.chat.ongelezen,
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
