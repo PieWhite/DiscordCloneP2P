@@ -43,15 +43,21 @@ impl super::App {
                     ui.input_mut(|i| i.events.retain(|e| !is_tag_toets(e)));
                 }
 
-                let knop = if self.bewerkt.is_some() {
-                    "opslaan"
+                let (knop_tekst, knop_symbool) = if self.bewerkt.is_some() {
+                    ("opslaan", "\u{2713}")
                 } else {
-                    "versturen"
+                    ("versturen", "\u{27A1}")
                 };
 
+                // Links het "+"-icoon voor een bijlage, rechts versturen — zoals
+                // Discord's invoerbalk, in plaats van de tekstknoppen die dit
+                // voorheen waren.
                 let (mut output, verstuur_geklikt, bestand_geklikt) = ui
                     .horizontal(|ui| {
-                        let breedte = (ui.available_width() - 90.0 - 30.0).max(80.0);
+                        let bestand = widgets::icon_button(ui, "\u{2795}")
+                            .on_hover_text("bestand delen")
+                            .clicked();
+                        let breedte = (ui.available_width() - 40.0).max(80.0);
                         let output = egui::TextEdit::multiline(&mut self.invoer)
                             .desired_rows(1)
                             .desired_width(breedte)
@@ -60,11 +66,9 @@ impl super::App {
                                  een bestand)",
                             )
                             .show(ui);
-                        let bestand = ui
-                            .button("\u{1F4CE}")
-                            .on_hover_text("bestand delen")
+                        let geklikt = widgets::icon_button(ui, knop_symbool)
+                            .on_hover_text(knop_tekst)
                             .clicked();
-                        let geklikt = ui.button(knop).clicked();
                         (output, geklikt, bestand)
                     })
                     .inner;

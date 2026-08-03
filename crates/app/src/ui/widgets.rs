@@ -8,7 +8,7 @@
 
 use super::theme;
 use eframe::egui;
-use egui::{Color32, Sense, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Sense, Stroke, Vec2};
 use fitcom_net::PeerStatus;
 use fitcom_proto::PeerId;
 
@@ -124,27 +124,66 @@ pub fn pill_tab(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response
     ui.add(knop)
 }
 
-/// Vierkante 40×40 icoonknop voor de rail: accent-getint en -omrand als geselecteerd,
-/// anders een gedempt vierkant — zoals de mockup's DM-/server-/instellingen-knoppen.
+/// Ronde 44×44 icoonknop voor de serverrail — net als Discord's servercirkels: gevuld
+/// met de accentkleur als geselecteerd, anders een gedempte cirkel. De accentstreep
+/// links ervan (de mockup's selectie-indicator) tekent `rail::teken_indicator` erbij,
+/// want die heeft de geretourneerde `Response.rect` nodig.
 pub fn rail_button(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
     let kleur = if selected {
-        theme::ACCENT
+        theme::ON_ACCENT
     } else {
         theme::TEXT_MUTED
     };
-    let knop = egui::Button::new(egui::RichText::new(text).size(13.0).strong().color(kleur))
-        .min_size(Vec2::splat(40.0))
-        .corner_radius(theme::ROUNDING)
+    let knop = egui::Button::new(egui::RichText::new(text).size(15.0).strong().color(kleur))
+        .min_size(Vec2::splat(44.0))
+        .corner_radius(CornerRadius::same(22))
         .fill(if selected {
-            theme::ACCENT.gamma_multiply(0.22)
+            theme::ACCENT
         } else {
             theme::BG_SIDEBAR
         })
-        .stroke(if selected {
-            Stroke::new(1.0_f32, theme::ACCENT)
+        .stroke(Stroke::NONE);
+    ui.add(knop)
+}
+
+/// Compacte 32×32 icoonknop voor de gebruikersbalk (mic/headphone/niet storen/tandwiel)
+/// onderaan de zijbalk: doorzichtig en gedempt in rust, rood gevuld als "aan" (gedempt/
+/// gedeafend/niet storen), grijzer en niet klikbaar als `enabled` false is — zoals
+/// Discord's mic/headphone-iconen, die ook alleen tijdens een gesprek iets doen.
+pub fn icon_toggle(ui: &mut egui::Ui, active: bool, enabled: bool, symbol: &str) -> egui::Response {
+    let kleur = if !enabled {
+        // `ui.add_enabled` dimt zelf al met een lagere dekking — hier gewoon de
+        // normale gedempte tekstkleur, anders is het icoon nauwelijks nog te zien.
+        theme::TEXT_MUTED
+    } else if active {
+        theme::STATUS_DND
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    let knop = egui::Button::new(egui::RichText::new(symbol).size(16.0).color(kleur))
+        .min_size(Vec2::splat(34.0))
+        .corner_radius(theme::ROUNDING)
+        .fill(if active {
+            theme::STATUS_DND.gamma_multiply(0.18)
         } else {
-            Stroke::NONE
-        });
+            Color32::TRANSPARENT
+        })
+        .stroke(Stroke::NONE);
+    ui.add_enabled(enabled, knop)
+}
+
+/// Zelfde vormtaal als `icon_toggle`, maar zonder aan/uit-status — voor knoppen die
+/// altijd hetzelfde doen (instellingen-tandwiel, bijlage toevoegen, versturen).
+pub fn icon_button(ui: &mut egui::Ui, symbol: &str) -> egui::Response {
+    let knop = egui::Button::new(
+        egui::RichText::new(symbol)
+            .size(16.0)
+            .color(theme::TEXT_PRIMARY),
+    )
+    .min_size(Vec2::splat(34.0))
+    .corner_radius(theme::ROUNDING)
+    .fill(Color32::TRANSPARENT)
+    .stroke(Stroke::NONE);
     ui.add(knop)
 }
 
@@ -207,7 +246,7 @@ pub fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str, scherm_live: bool) 
 }
 
 /// Rode "LIVE"-pil, zoals de mockup's aandacht-trekkende badges.
-fn live_badge(ui: &mut egui::Ui) {
+pub fn live_badge(ui: &mut egui::Ui) {
     egui::Frame::new()
         .fill(theme::STATUS_DND)
         .corner_radius(theme::ROUNDING_PILL)

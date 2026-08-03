@@ -24,6 +24,7 @@ impl super::App {
         let mut bronnen_openen = false;
         let mut kanaal_wissel: Option<Channel> = None;
         let mut niet_storen_wijziging: Option<bool> = None;
+        let mut instellingen_openen = false;
 
         egui::SidePanel::left("kanalen")
             .resizable(false)
@@ -33,89 +34,101 @@ impl super::App {
                 ui.heading("Kanalen");
                 ui.add_space(8.0);
 
-                let algemeen_label = if self.snap.ongelezen > 0 {
-                    format!("# Algemeen ({})", self.snap.ongelezen)
-                } else {
-                    "# Algemeen".to_string()
-                };
-                if ui
-                    .selectable_label(self.actief_kanaal.is_general(), algemeen_label)
-                    .clicked()
-                {
-                    kanaal_wissel = Some(Channel::GENERAL);
-                }
-
-                let mut topics: Vec<(TopicId, String)> = self
-                    .snap
-                    .timeline
-                    .topics
-                    .iter()
-                    .map(|(id, titel)| (*id, titel.clone()))
-                    .collect();
-                // Alfabetisch, met het id als tiebreaker: zonder een vaste sortering
-                // zou de volgorde per peer kunnen verschillen (`HashMap`-iteratie is
-                // niet gegarandeerd gelijk), terwijl de inhoud van `topics` bij
-                // iedereen wel identiek is.
-                topics.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
-
-                for (id, titel) in &topics {
-                    let ongelezen = self.snap.ongelezen_topic.get(id).copied().unwrap_or(0);
-                    let label = if ongelezen > 0 {
-                        format!("# {titel} ({ongelezen})")
-                    } else {
-                        format!("# {titel}")
-                    };
-                    let actief = self.actief_kanaal.topic_id() == Some(*id);
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(actief, label).clicked() {
-                            kanaal_wissel = Some(Channel::topic(*id));
-                        }
-                        if actief
-                            && ui
-                                .small_button("\u{270E}")
-                                .on_hover_text("hernoemen")
-                                .clicked()
+                // Bewust begrensd: zonder dit duwt een lange kanalenlijst de
+                // gebruikersbalk onderaan het paneel uit (zie
+                // `App::zijbalk_onderkant_hoogte`). De lijst zelf scrollt dan gewoon.
+                let lijst_hoogte =
+                    (ui.available_height() - self.zijbalk_onderkant_hoogte()).max(60.0);
+                egui::ScrollArea::vertical()
+                    .max_height(lijst_hoogte)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let algemeen_label = if self.snap.ongelezen > 0 {
+                            format!("# Algemeen ({})", self.snap.ongelezen)
+                        } else {
+                            "# Algemeen".to_string()
+                        };
+                        if ui
+                            .selectable_label(self.actief_kanaal.is_general(), algemeen_label)
+                            .clicked()
                         {
-                            self.kanaal_hernoemen = Some((*id, titel.clone()));
+                            kanaal_wissel = Some(Channel::GENERAL);
                         }
-                        if actief
-                            && ui
-                                .small_button("\u{1F5D1}")
-                                .on_hover_text("verwijderen")
-                                .clicked()
-                        {
-                            self.bevestig_verwijder_kanaal = Some(*id);
+
+                        let mut topics: Vec<(TopicId, String)> = self
+                            .snap
+                            .timeline
+                            .topics
+                            .iter()
+                            .map(|(id, titel)| (*id, titel.clone()))
+                            .collect();
+                        // Alfabetisch, met het id als tiebreaker: zonder een vaste
+                        // sortering zou de volgorde per peer kunnen verschillen
+                        // (`HashMap`-iteratie is niet gegarandeerd gelijk), terwijl de
+                        // inhoud van `topics` bij iedereen wel identiek is.
+                        topics.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+                        for (id, titel) in &topics {
+                            let ongelezen = self.snap.ongelezen_topic.get(id).copied().unwrap_or(0);
+                            let label = if ongelezen > 0 {
+                                format!("# {titel} ({ongelezen})")
+                            } else {
+                                format!("# {titel}")
+                            };
+                            let actief = self.actief_kanaal.topic_id() == Some(*id);
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(actief, label).clicked() {
+                                    kanaal_wissel = Some(Channel::topic(*id));
+                                }
+                                if actief
+                                    && ui
+                                        .small_button("\u{270E}")
+                                        .on_hover_text("hernoemen")
+                                        .clicked()
+                                {
+                                    self.kanaal_hernoemen = Some((*id, titel.clone()));
+                                }
+                                if actief
+                                    && ui
+                                        .small_button("\u{1F5D1}")
+                                        .on_hover_text("verwijderen")
+                                        .clicked()
+                                {
+                                    self.bevestig_verwijder_kanaal = Some(*id);
+                                }
+                            });
+                        }
+
+                        let mut nieuw_kanaal_aanmaken = false;
+                        let mut nieuw_kanaal_annuleren = false;
+                        if let Some(concept) = &mut self.nieuw_kanaal_titel {
+                            ui.horizontal(|ui| {
+                                let veld = ui.add(
+                                    egui::TextEdit::singleline(concept).desired_width(120.0),
+                                );
+                                let enter = veld.has_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if (ui.small_button("aanmaken").clicked() || enter)
+                                    && !concept.trim().is_empty()
+                                {
+                                    nieuw_kanaal_aanmaken = true;
+                                } else if ui.small_button("\u{2715}").clicked() {
+                                    nieuw_kanaal_annuleren = true;
+                                }
+                            });
+                        } else if ui.small_button("+ nieuw kanaal").clicked() {
+                            self.nieuw_kanaal_titel = Some(String::new());
+                        }
+                        if nieuw_kanaal_aanmaken {
+                            let titel = self.nieuw_kanaal_titel.take().unwrap();
+                            self.stuur(UiCommand::MaakKanaal(titel.trim().to_string()));
+                        } else if nieuw_kanaal_annuleren {
+                            self.nieuw_kanaal_titel = None;
                         }
                     });
-                }
-
-                let mut nieuw_kanaal_aanmaken = false;
-                let mut nieuw_kanaal_annuleren = false;
-                if let Some(concept) = &mut self.nieuw_kanaal_titel {
-                    ui.horizontal(|ui| {
-                        let veld = ui.add(egui::TextEdit::singleline(concept).desired_width(120.0));
-                        let enter =
-                            veld.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (ui.small_button("aanmaken").clicked() || enter)
-                            && !concept.trim().is_empty()
-                        {
-                            nieuw_kanaal_aanmaken = true;
-                        } else if ui.small_button("\u{2715}").clicked() {
-                            nieuw_kanaal_annuleren = true;
-                        }
-                    });
-                } else if ui.small_button("+ nieuw kanaal").clicked() {
-                    self.nieuw_kanaal_titel = Some(String::new());
-                }
-                if nieuw_kanaal_aanmaken {
-                    let titel = self.nieuw_kanaal_titel.take().unwrap();
-                    self.stuur(UiCommand::MaakKanaal(titel.trim().to_string()));
-                } else if nieuw_kanaal_annuleren {
-                    self.nieuw_kanaal_titel = None;
-                }
 
                 ui.add_space(4.0);
-                (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging) =
+                (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging, instellingen_openen) =
                     self.zijbalk_onderkant(ui);
             });
 
@@ -124,32 +137,52 @@ impl super::App {
             stream_cmd,
             bronnen_openen,
             niet_storen_wijziging,
+            instellingen_openen,
         );
         if let Some(kanaal) = kanaal_wissel {
             self.wissel_kanaal(kanaal);
         }
     }
 
-    /// Voice-/scherm-delen-bediening en eigen mini-kaart onderaan de zijbalk — zelfde
+    /// Voice-status, scherm-delen en de gebruikersbalk onderaan de zijbalk — zelfde
     /// blok in `kanaal_zijbalk` en `dms.rs`'s `dm_zijbalk`, alleen de lijst erboven
-    /// verschilt.
+    /// verschilt. De lijst erboven is al begrensd op `zijbalk_onderkant_hoogte`, dus dit
+    /// tekent gewoon van boven naar beneden door — geen bottom-anchoring meer nodig.
     pub(super) fn zijbalk_onderkant(
         &mut self,
         ui: &mut egui::Ui,
-    ) -> (Option<UiCommand>, Option<UiCommand>, bool, Option<bool>) {
+    ) -> (
+        Option<UiCommand>,
+        Option<UiCommand>,
+        bool,
+        Option<bool>,
+        bool,
+    ) {
         ui.separator();
-        ui.add_space(8.0);
-        let voice_cmd = self.voice_bediening(ui);
-
-        ui.add_space(8.0);
+        ui.add_space(10.0);
+        self.voice_sectie(ui);
+        let mut voice_cmd = self.voice_bediening(ui);
+        ui.add_space(10.0);
         let (stream_cmd, bronnen_openen) = self.deel_bediening(ui);
-
         ui.add_space(10.0);
         ui.separator();
-        ui.add_space(6.0);
-        let niet_storen_wijziging = self.eigen_mini_kaart(ui);
+        ui.add_space(10.0);
+        let (mute_wijziging, deafen_wijziging, niet_storen_wijziging, instellingen_openen) =
+            self.gebruiker_balk(ui);
+        if let Some(aan) = mute_wijziging {
+            voice_cmd = Some(UiCommand::Mute(aan));
+        }
+        if let Some(aan) = deafen_wijziging {
+            voice_cmd = Some(UiCommand::Deafen(aan));
+        }
 
-        (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging)
+        (
+            voice_cmd,
+            stream_cmd,
+            bronnen_openen,
+            niet_storen_wijziging,
+            instellingen_openen,
+        )
     }
 
     pub(super) fn verwerk_zijbalk_onderkant(
@@ -158,6 +191,7 @@ impl super::App {
         stream_cmd: Option<UiCommand>,
         bronnen_openen: bool,
         niet_storen_wijziging: Option<bool>,
+        instellingen_openen: bool,
     ) {
         if let Some(cmd) = voice_cmd {
             self.stuur(cmd);
@@ -171,6 +205,10 @@ impl super::App {
         if let Some(aan) = niet_storen_wijziging {
             self.stuur(UiCommand::NietStoren(aan));
         }
+        if instellingen_openen {
+            self.open_instellingen();
+            self.view = super::AppView::Settings;
+        }
     }
 
     /// Wie er meedoet: status, of ze in het gesprek zitten, en wat ze delen. Losstaand
@@ -179,7 +217,6 @@ impl super::App {
     /// ruimte.
     fn leden_zijbalk(&mut self, ctx: &egui::Context) {
         let mut volume_wijziging: Option<(PeerId, f32)> = None;
-        let mut stream_cmds: Vec<UiCommand> = Vec::new();
 
         egui::SidePanel::right("leden")
             .resizable(false)
@@ -226,93 +263,12 @@ impl super::App {
                         }
                     }
 
-                    // Wat deze peer deelt, direct onder zijn naam: daar zoek je het.
-                    // Bureaubladgeluid is geen eigen knop meer: "bekijken" schakelt hem
-                    // mee aan en "sluiten" mee uit, want dat is één en dezelfde stream
-                    // aan de delende kant (zie `engine.rs`'s `deel_bureaubladgeluid`).
-                    if let Some(id) = p.peer_id {
-                        let geluid: Option<_> = self
-                            .snap
-                            .streams
-                            .iter()
-                            .find(|s| s.eigenaar == id && s.is_geluid)
-                            .cloned();
-                        let videos: Vec<_> = self
-                            .snap
-                            .streams
-                            .iter()
-                            .filter(|s| s.eigenaar == id && !s.is_geluid)
-                            .collect();
-                        let videos_bekeken = videos.iter().filter(|s| s.kijken).count();
-
-                        for s in &videos {
-                            ui.horizontal(|ui| {
-                                let label = ui.small(&s.titel);
-                                label.on_hover_text(format!("{}×{}", s.breedte, s.hoogte));
-                            });
-
-                            // Flink groter dan een `small_button`: dit is de actie die je
-                            // vanuit de ledenlijst wilt kunnen vinden zonder te zoeken.
-                            let knop = if s.kijken { "sluiten" } else { "bekijken" };
-                            let geklikt = ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(knop).size(14.0).strong(),
-                                    )
-                                    .min_size(egui::vec2(0.0, 30.0)),
-                                )
-                                .clicked();
-                            if geklikt {
-                                if s.kijken {
-                                    stream_cmds.push(UiCommand::StopKijken(id, s.stream_id));
-                                    // Alleen het geluid mee uitzetten als dit de laatste
-                                    // video was die je van deze peer bekeek.
-                                    if videos_bekeken == 1 {
-                                        if let Some(g) = &geluid {
-                                            if g.kijken {
-                                                stream_cmds
-                                                    .push(UiCommand::StopKijken(id, g.stream_id));
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    stream_cmds.push(UiCommand::Kijken(id, s.stream_id));
-                                    if let Some(g) = &geluid {
-                                        if !g.kijken {
-                                            stream_cmds.push(UiCommand::Kijken(id, g.stream_id));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Meegedeeld geluid staat los van de stem: je wilt zijn spel
-                        // zachter kunnen zetten zonder hem te dempen.
-                        if let Some(g) = &geluid {
-                            if g.kijken {
-                                let mut vol = g.volume;
-                                if ui
-                                    .add(
-                                        egui::Slider::new(&mut vol, 0.0..=2.0)
-                                            .show_value(false)
-                                            .text("geluid"),
-                                    )
-                                    .changed()
-                                {
-                                    stream_cmds.push(UiCommand::StreamVolume(id, g.stream_id, vol));
-                                }
-                            }
-                        }
-                    }
                     ui.add_space(6.0);
                 }
             });
 
         if let Some((id, vol)) = volume_wijziging {
             self.stuur(UiCommand::Volume(id, vol));
-        }
-        for cmd in stream_cmds {
-            self.stuur(cmd);
         }
     }
 }

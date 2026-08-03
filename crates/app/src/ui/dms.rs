@@ -23,6 +23,7 @@ impl super::App {
         let mut bronnen_openen = false;
         let mut naar_dm: Option<PeerId> = None;
         let mut niet_storen_wijziging: Option<bool> = None;
+        let mut instellingen_openen = false;
 
         egui::SidePanel::left("dms")
             .resizable(false)
@@ -32,52 +33,61 @@ impl super::App {
                 ui.heading("Directe berichten");
                 ui.add_space(8.0);
 
-                if self.snap.peers.is_empty() {
-                    ui.weak("Nog geen peers ingesteld.");
-                    ui.small("Zet de tailnet-adressen van de anderen in config.toml.");
-                }
+                // Zelfde begrenzing als `channels.rs`'s kanalenlijst: anders duwt een
+                // lange peer-lijst de gebruikersbalk onderaan het paneel uit.
+                let lijst_hoogte =
+                    (ui.available_height() - self.zijbalk_onderkant_hoogte()).max(60.0);
+                egui::ScrollArea::vertical()
+                    .max_height(lijst_hoogte)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.snap.peers.is_empty() {
+                            ui.weak("Nog geen peers ingesteld.");
+                            ui.small("Zet de tailnet-adressen van de anderen in config.toml.");
+                        }
 
-                for p in &self.snap.peers {
-                    let Some(id) = p.peer_id else { continue };
-                    let naam = self
-                        .snap
-                        .timeline
-                        .nicknames
-                        .get(&id)
-                        .cloned()
-                        .unwrap_or_else(|| p.label.clone());
-                    let ongelezen = self.snap.ongelezen_dm.get(&id).copied().unwrap_or(0);
-                    let label = if ongelezen > 0 {
-                        format!("{naam} ({ongelezen})")
-                    } else {
-                        naam.clone()
-                    };
-                    let actief = self.actief_kanaal.dm_peer() == Some(id);
+                        for p in &self.snap.peers {
+                            let Some(id) = p.peer_id else { continue };
+                            let naam = self
+                                .snap
+                                .timeline
+                                .nicknames
+                                .get(&id)
+                                .cloned()
+                                .unwrap_or_else(|| p.label.clone());
+                            let ongelezen = self.snap.ongelezen_dm.get(&id).copied().unwrap_or(0);
+                            let label = if ongelezen > 0 {
+                                format!("{naam} ({ongelezen})")
+                            } else {
+                                naam.clone()
+                            };
+                            let actief = self.actief_kanaal.dm_peer() == Some(id);
 
-                    ui.horizontal(|ui| {
-                        let avatar_kleur = widgets::kleur_van(id);
-                        let avatar = widgets::avatar_square(
-                            ui,
-                            &widgets::initialen(&naam),
-                            avatar_kleur,
-                            28.0,
-                        );
-                        let (status_kleur, _) = widgets::describe(&p.status);
-                        widgets::status_badge(
-                            ui.painter(),
-                            avatar.rect,
-                            status_kleur,
-                            theme::BG_SIDEBAR,
-                        );
-                        if ui.selectable_label(actief, label).clicked() {
-                            naar_dm = Some(id);
+                            ui.horizontal(|ui| {
+                                let avatar_kleur = widgets::kleur_van(id);
+                                let avatar = widgets::avatar_square(
+                                    ui,
+                                    &widgets::initialen(&naam),
+                                    avatar_kleur,
+                                    28.0,
+                                );
+                                let (status_kleur, _) = widgets::describe(&p.status);
+                                widgets::status_badge(
+                                    ui.painter(),
+                                    avatar.rect,
+                                    status_kleur,
+                                    theme::BG_SIDEBAR,
+                                );
+                                if ui.selectable_label(actief, label).clicked() {
+                                    naar_dm = Some(id);
+                                }
+                            });
+                            ui.add_space(4.0);
                         }
                     });
-                    ui.add_space(4.0);
-                }
 
                 ui.add_space(8.0);
-                (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging) =
+                (voice_cmd, stream_cmd, bronnen_openen, niet_storen_wijziging, instellingen_openen) =
                     self.zijbalk_onderkant(ui);
             });
 
@@ -86,6 +96,7 @@ impl super::App {
             stream_cmd,
             bronnen_openen,
             niet_storen_wijziging,
+            instellingen_openen,
         );
         if let Some(id) = naar_dm {
             self.wissel_kanaal(Channel::dm(id));

@@ -276,11 +276,20 @@ impl App {
         }
     }
 
-    /// Eigen avatar, naam, aanwezigheidsstatus en de "niet storen"-toggle — identiek
-    /// onderaan zowel de Kanalen- als de DM-zijbalk (`ui/channels.rs`, `ui/dms.rs`),
-    /// dus hier één keer getekend in plaats van tweemaal gedupliceerd. Levert de
-    /// nieuwe "niet storen"-waarde als die net gewijzigd is.
-    fn eigen_mini_kaart(&mut self, ui: &mut egui::Ui) -> Option<bool> {
+    /// Discord-achtige balk onderaan zowel de Kanalen- als de DM-zijbalk (`ui/channels.rs`,
+    /// `ui/dms.rs`): eigen avatar/naam/status links, en rechts een compacte rij
+    /// icoonknoppen (mic-mute, headphone-deafen, niet storen, instellingen-tandwiel) —
+    /// zoals Discord's balk, in plaats van de losse tekstknoppen die dit voorheen waren.
+    ///
+    /// Mute/deafen werken alleen tijdens een actief gesprek (zie `engine.rs`'s
+    /// `UiCommand::Mute`/`Deafen`), dus die twee knoppen zijn buiten een gesprek zichtbaar
+    /// maar uitgeschakeld in plaats van verborgen — net als in de echte Discord-client.
+    ///
+    /// Levert (mute-wijziging, deafen-wijziging, niet-storen-wijziging, instellingen-
+    /// tandwiel aangeklikt) — de aanroeper stuurt de eerste drie als commando en opent
+    /// bij de vierde de Instellingen-weergave, want binnen deze functie is `self` al
+    /// onveranderlijk geleend door de paneelsluiting.
+    fn gebruiker_balk(&mut self, ui: &mut egui::Ui) -> (Option<bool>, Option<bool>, Option<bool>, bool) {
         let eigen = self
             .snap
             .timeline
@@ -294,11 +303,17 @@ impl App {
         } else {
             theme::STATUS_ONLINE
         };
+
+        let mut mute_wijziging = None;
+        let mut deafen_wijziging = None;
+        let mut niet_storen_wijziging = None;
+        let mut instellingen_openen = false;
+
         ui.horizontal(|ui| {
-            let avatar = widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 32.0);
+            let avatar = widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 36.0);
             widgets::status_badge(ui.painter(), avatar.rect, status_kleur, theme::BG_SIDEBAR);
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(&eigen).strong().color(eigen_kleur));
+                ui.label(egui::RichText::new(&eigen).strong().size(14.0));
                 ui.small(
                     egui::RichText::new(if self.snap.niet_storen {
                         "Niet storen"
@@ -308,16 +323,36 @@ impl App {
                     .color(status_kleur),
                 );
             });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::icon_toggle(ui, false, true, "\u{2699}")
+                    .on_hover_text("Instellingen")
+                    .clicked()
+                {
+                    instellingen_openen = true;
+                }
+                if widgets::icon_toggle(ui, self.snap.niet_storen, true, "\u{1F515}")
+                    .on_hover_text("Niet storen")
+                    .clicked()
+                {
+                    niet_storen_wijziging = Some(!self.snap.niet_storen);
+                }
+                let v = &self.snap.voice;
+                if widgets::icon_toggle(ui, v.deafened, v.actief, "\u{1F3A7}")
+                    .on_hover_text("Deafen")
+                    .clicked()
+                {
+                    deafen_wijziging = Some(!v.deafened);
+                }
+                if widgets::icon_toggle(ui, v.muted, v.actief, "\u{1F3A4}")
+                    .on_hover_text("Mute")
+                    .clicked()
+                {
+                    mute_wijziging = Some(!v.muted);
+                }
+            });
         });
 
-        let mut niet_storen_wijziging = None;
-        ui.horizontal(|ui| {
-            ui.small("niet storen");
-            let mut niet_storen = self.snap.niet_storen;
-            if widgets::toggle_switch(ui, &mut niet_storen).changed() {
-                niet_storen_wijziging = Some(niet_storen);
-            }
-        });
         if self.snap.voice.actief {
             let niveau = if self.snap.voice.muted {
                 0.0
@@ -326,7 +361,8 @@ impl App {
             };
             widgets::niveaubalk(ui, niveau);
         }
-        niet_storen_wijziging
+
+        (mute_wijziging, deafen_wijziging, niet_storen_wijziging, instellingen_openen)
     }
 
     /// Levert `true` als er deze frame niets meer getekend hoeft te worden.
@@ -638,43 +674,200 @@ impl App {
         }
     }
 
+    /// Compacte statusstrook boven de gebruikersbalk — Discord's "verbonden met
+    /// spraakkanaal"-balk. Mute/deafen staan niet meer hier maar als icoonknoppen in
+    /// `gebruiker_balk`; dit is alleen nog verbinden/verlaten.
+    ///
     /// Levert het commando dat de gebruiker aanklikte terug in plaats van het meteen
     /// te versturen: binnen de paneelsluiting is `self` al onveranderlijk geleend.
     fn voice_bediening(&self, ui: &mut egui::Ui) -> Option<UiCommand> {
         let v = &self.snap.voice;
 
         if !v.actief {
-            if self.snap.peers.iter().any(|p| p.in_voice) {
-                ui.small(
-                    egui::RichText::new("er is een gesprek bezig").color(theme::STATUS_ONLINE),
-                );
-                ui.add_space(2.0);
-            }
-            ui.label(egui::RichText::new("Deelnemen aan voicechannel").strong());
-            ui.add_space(4.0);
+            // Wie er al in het gesprek zit staat hieronder in `voice_sectie` — hier dus
+            // geen aparte hint-tekst meer nodig.
             return ui
-                .add_sized([ui.available_width(), 28.0], egui::Button::new("Deelnemen"))
+                .add_sized(
+                    [ui.available_width(), 36.0],
+                    egui::Button::new(
+                        egui::RichText::new("\u{1F3A4} Deelnemen aan spraakkanaal").size(13.0),
+                    ),
+                )
                 .clicked()
                 .then_some(UiCommand::VoiceDeelnemen);
         }
 
         let mut cmd = None;
-        ui.horizontal(|ui| {
-            if ui.selectable_label(v.muted, "mute").clicked() {
-                cmd = Some(UiCommand::Mute(!v.muted));
-            }
-            if ui.selectable_label(v.deafened, "deafen").clicked() {
-                cmd = Some(UiCommand::Deafen(!v.deafened));
-            }
-        });
-        ui.add_space(4.0);
-        if ui
-            .add_sized([ui.available_width(), 24.0], egui::Button::new("Verlaten"))
-            .clicked()
-        {
-            cmd = Some(UiCommand::VoiceVerlaten);
-        }
+        egui::Frame::new()
+            .fill(theme::BG_CARD)
+            .corner_radius(theme::ROUNDING)
+            .inner_margin(egui::Margin::symmetric(10, 9))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::STATUS_ONLINE, "\u{1F3A4}");
+                    ui.label(
+                        egui::RichText::new("Spraakverbinding actief")
+                            .size(13.0)
+                            .color(theme::STATUS_ONLINE),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::icon_button(ui, "\u{260E}")
+                            .on_hover_text("Verlaten")
+                            .clicked()
+                        {
+                            cmd = Some(UiCommand::VoiceVerlaten);
+                        }
+                    });
+                });
+            });
         cmd
+    }
+
+    /// Wie er in het gesprek zit of iets deelt, met een "LIVE"-badge en een
+    /// "bekijken"-knop ernaast — zoals Discord's ledenlijst onder een spraakkanaal.
+    /// Vervangt de permanente "bekijken"/"sluiten"-knoppen die dit voorheen in de
+    /// rechter ledenlijst waren: dezelfde commando's, alleen nu hier gegroepeerd.
+    ///
+    /// Bij meer dan één videostream van dezelfde peer (zeldzaam: multi-monitor) stuurt
+    /// de knop alleen de eerste — geen ruimte voor een rij per stream in deze balk.
+    ///
+    /// Toont niets (dus ook geen lege ruimte) als niemand in gesprek is of deelt.
+    fn voice_sectie(&mut self, ui: &mut egui::Ui) {
+        let relevant: Vec<_> = self
+            .snap
+            .peers
+            .iter()
+            .filter(|p| {
+                p.in_voice
+                    || p.peer_id.is_some_and(|id| {
+                        self.snap
+                            .streams
+                            .iter()
+                            .any(|s| s.eigenaar == id && !s.is_geluid)
+                    })
+            })
+            .cloned()
+            .collect();
+        if relevant.is_empty() {
+            return;
+        }
+
+        for p in &relevant {
+            let Some(id) = p.peer_id else { continue };
+            let naam = self.naam_van(id);
+            let video = self
+                .snap
+                .streams
+                .iter()
+                .find(|s| s.eigenaar == id && !s.is_geluid)
+                .cloned();
+
+            let mut geklikt = false;
+            ui.horizontal(|ui| {
+                let avatar_kleur = widgets::kleur_van(id);
+                let avatar =
+                    widgets::avatar_square(ui, &widgets::initialen(&naam), avatar_kleur, 30.0);
+                if p.in_voice {
+                    widgets::status_badge(
+                        ui.painter(),
+                        avatar.rect,
+                        theme::STATUS_ONLINE,
+                        theme::BG_SIDEBAR,
+                    );
+                }
+                ui.label(egui::RichText::new(&naam).size(13.0).color(avatar_kleur));
+                if let Some(s) = &video {
+                    widgets::live_badge(ui);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let tekst = if s.kijken { "sluiten" } else { "bekijken" };
+                        geklikt = ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(tekst).size(12.0))
+                                    .min_size(egui::vec2(0.0, 24.0)),
+                            )
+                            .clicked();
+                    });
+                }
+            });
+            if geklikt {
+                if let Some(s) = &video {
+                    self.stuur_kijk_toggle(id, s.stream_id, s.kijken);
+                }
+            }
+            ui.add_space(6.0);
+        }
+        ui.add_space(2.0);
+    }
+
+    /// Geschatte hoogte van `zijbalk_onderkant`'s inhoud, zodat de kanalen-/DM-lijst
+    /// erboven precies genoeg kan inschikken (zie `channels.rs`/`dms.rs`) — anders duwt
+    /// een langere lijst de gebruikersbalk het paneel uit in plaats van andersom.
+    ///
+    /// ponytail: harde schatting per rij i.p.v. een echte meting (egui kent geen
+    /// two-pass layout zonder moeite); als een rij ooit van hoogte verandert, hier ook
+    /// aanpassen. Ruim naar boven afgerond — een paar losse pixels lege ruimte is
+    /// onschuldig, te weinig ruimte duwt de balk weer van het scherm af.
+    fn zijbalk_onderkant_hoogte(&self) -> f32 {
+        let voice_leden = self
+            .snap
+            .peers
+            .iter()
+            .filter(|p| {
+                p.in_voice
+                    || p.peer_id.is_some_and(|id| {
+                        self.snap
+                            .streams
+                            .iter()
+                            .any(|s| s.eigenaar == id && !s.is_geluid)
+                    })
+            })
+            .count();
+
+        let mut h = 26.0; // bovenste separator + ruimte eromheen
+        h += if self.snap.voice.actief { 54.0 } else { 44.0 }; // strook/knop
+        if voice_leden > 0 {
+            h += voice_leden as f32 * 44.0 + 8.0;
+        }
+        h += 54.0; // "Scherm delen…"-knop + ruimte
+        h += 25.0; // onderste separator + ruimte
+        h += 76.0; // gebruikersbalk + boven-/onderkant-marge
+        if self.snap.voice.actief {
+            h += 12.0; // niveaubalk
+        }
+        h
+    }
+
+    /// Video bekijken/sluiten koppelt automatisch het bijbehorende bureaubladgeluid mee
+    /// aan/uit — zie `engine.rs`'s `deel_bureaubladgeluid`. Alleen uitzetten als dit de
+    /// laatste video van deze peer was die je bekeek.
+    fn stuur_kijk_toggle(&self, id: PeerId, video_stream: u32, kijkt: bool) {
+        let geluid = self
+            .snap
+            .streams
+            .iter()
+            .find(|s| s.eigenaar == id && s.is_geluid)
+            .cloned();
+
+        if kijkt {
+            self.stuur(UiCommand::StopKijken(id, video_stream));
+            let nog_een_video = self.snap.streams.iter().any(|s| {
+                s.eigenaar == id && !s.is_geluid && s.stream_id != video_stream && s.kijken
+            });
+            if !nog_een_video {
+                if let Some(g) = &geluid {
+                    if g.kijken {
+                        self.stuur(UiCommand::StopKijken(id, g.stream_id));
+                    }
+                }
+            }
+        } else {
+            self.stuur(UiCommand::Kijken(id, video_stream));
+            if let Some(g) = &geluid {
+                if !g.kijken {
+                    self.stuur(UiCommand::Kijken(id, g.stream_id));
+                }
+            }
+        }
     }
 
     /// Vult een verse bewerkkopie van de huidige video-instellingen. Aangeroepen door
