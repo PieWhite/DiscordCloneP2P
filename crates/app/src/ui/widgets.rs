@@ -173,7 +173,11 @@ pub fn niveaubalk(ui: &mut egui::Ui, niveau: f32) {
 }
 
 /// Peer-rij met avatar (initialen + statusbadge), naam en statustekst.
-pub fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str) {
+///
+/// `scherm_live`: peer deelt op dit moment zijn scherm — zet een rode "LIVE"-pil
+/// naast de naam, want dat is precies het signaal dat verder in de rij (het kleine
+/// streamlabel eronder) makkelijk over het hoofd wordt gezien.
+pub fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str, scherm_live: bool) {
     let (kleur, tekst) = describe(&p.status);
 
     ui.horizontal(|ui| {
@@ -189,12 +193,33 @@ pub fn peer_row(ui: &mut egui::Ui, p: &PeerView, naam: &str) {
                 .peer_id
                 .map(kleur_van)
                 .unwrap_or(ui.visuals().text_color());
-            ui.label(egui::RichText::new(naam).strong().color(naam_kleur));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(naam).strong().color(naam_kleur));
+                if scherm_live {
+                    live_badge(ui);
+                }
+            });
             ui.small(egui::RichText::new(tekst).color(kleur));
         });
     })
     .response
     .on_hover_text(&p.address);
+}
+
+/// Rode "LIVE"-pil, zoals de mockup's aandacht-trekkende badges.
+fn live_badge(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(theme::STATUS_DND)
+        .corner_radius(theme::ROUNDING_PILL)
+        .inner_margin(egui::Margin::symmetric(6, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("LIVE")
+                    .size(10.0)
+                    .strong()
+                    .color(Color32::WHITE),
+            );
+        });
 }
 
 pub fn describe(status: &PeerStatus) -> (Color32, String) {

@@ -179,7 +179,7 @@ impl super::App {
     /// ruimte.
     fn leden_zijbalk(&mut self, ctx: &egui::Context) {
         let mut volume_wijziging: Option<(PeerId, f32)> = None;
-        let mut stream_cmd: Option<UiCommand> = None;
+        let mut stream_cmds: Vec<UiCommand> = Vec::new();
 
         egui::SidePanel::right("leden")
             .resizable(false)
@@ -201,7 +201,13 @@ impl super::App {
                         .and_then(|id| self.snap.timeline.nicknames.get(&id))
                         .cloned()
                         .unwrap_or_else(|| p.label.clone());
-                    widgets::peer_row(ui, p, &naam);
+                    let scherm_live = p.peer_id.is_some_and(|id| {
+                        self.snap
+                            .streams
+                            .iter()
+                            .any(|s| s.eigenaar == id && !s.is_geluid)
+                    });
+                    widgets::peer_row(ui, p, &naam, scherm_live);
 
                     if in_gesprek && p.in_voice {
                         widgets::niveaubalk(ui, p.niveau);
@@ -221,38 +227,70 @@ impl super::App {
                     }
 
                     // Wat deze peer deelt, direct onder zijn naam: daar zoek je het.
+                    // Bureaubladgeluid is geen eigen knop meer: "bekijken" schakelt hem
+                    // mee aan en "sluiten" mee uit, want dat is één en dezelfde stream
+                    // aan de delende kant (zie `engine.rs`'s `deel_bureaubladgeluid`).
                     if let Some(id) = p.peer_id {
-                        for s in self.snap.streams.iter().filter(|s| s.eigenaar == id) {
+                        let geluid: Option<_> = self
+                            .snap
+                            .streams
+                            .iter()
+                            .find(|s| s.eigenaar == id && s.is_geluid)
+                            .cloned();
+                        let videos: Vec<_> = self
+                            .snap
+                            .streams
+                            .iter()
+                            .filter(|s| s.eigenaar == id && !s.is_geluid)
+                            .collect();
+                        let videos_bekeken = videos.iter().filter(|s| s.kijken).count();
+
+                        for s in &videos {
                             ui.horizontal(|ui| {
-                                ui.small(if s.is_geluid {
-                                    "\u{1F50A}"
-                                } else {
-                                    "\u{1F5B5}"
-                                });
                                 let label = ui.small(&s.titel);
-                                if !s.is_geluid {
-                                    label.on_hover_text(format!("{}×{}", s.breedte, s.hoogte));
-                                }
+                                label.on_hover_text(format!("{}×{}", s.breedte, s.hoogte));
                             });
 
-                            let knop = match (s.is_geluid, s.kijken) {
-                                (true, true) => "niet meer luisteren",
-                                (true, false) => "meeluisteren",
-                                (false, true) => "sluiten",
-                                (false, false) => "bekijken",
-                            };
-                            if ui.small_button(knop).clicked() {
-                                stream_cmd = Some(if s.kijken {
-                                    UiCommand::StopKijken(id, s.stream_id)
+                            // Flink groter dan een `small_button`: dit is de actie die je
+                            // vanuit de ledenlijst wilt kunnen vinden zonder te zoeken.
+                            let knop = if s.kijken { "sluiten" } else { "bekijken" };
+                            let geklikt = ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(knop).size(14.0).strong(),
+                                    )
+                                    .min_size(egui::vec2(0.0, 30.0)),
+                                )
+                                .clicked();
+                            if geklikt {
+                                if s.kijken {
+                                    stream_cmds.push(UiCommand::StopKijken(id, s.stream_id));
+                                    // Alleen het geluid mee uitzetten als dit de laatste
+                                    // video was die je van deze peer bekeek.
+                                    if videos_bekeken == 1 {
+                                        if let Some(g) = &geluid {
+                                            if g.kijken {
+                                                stream_cmds
+                                                    .push(UiCommand::StopKijken(id, g.stream_id));
+                                            }
+                                        }
+                                    }
                                 } else {
-                                    UiCommand::Kijken(id, s.stream_id)
-                                });
+                                    stream_cmds.push(UiCommand::Kijken(id, s.stream_id));
+                                    if let Some(g) = &geluid {
+                                        if !g.kijken {
+                                            stream_cmds.push(UiCommand::Kijken(id, g.stream_id));
+                                        }
+                                    }
+                                }
                             }
+                        }
 
-                            // Meegedeeld geluid staat los van de stem: je wilt zijn
-                            // spel zachter kunnen zetten zonder hem te dempen.
-                            if s.is_geluid && s.kijken {
-                                let mut vol = s.volume;
+                        // Meegedeeld geluid staat los van de stem: je wilt zijn spel
+                        // zachter kunnen zetten zonder hem te dempen.
+                        if let Some(g) = &geluid {
+                            if g.kijken {
+                                let mut vol = g.volume;
                                 if ui
                                     .add(
                                         egui::Slider::new(&mut vol, 0.0..=2.0)
@@ -261,8 +299,7 @@ impl super::App {
                                     )
                                     .changed()
                                 {
-                                    stream_cmd =
-                                        Some(UiCommand::StreamVolume(id, s.stream_id, vol));
+                                    stream_cmds.push(UiCommand::StreamVolume(id, g.stream_id, vol));
                                 }
                             }
                         }
@@ -274,7 +311,7 @@ impl super::App {
         if let Some((id, vol)) = volume_wijziging {
             self.stuur(UiCommand::Volume(id, vol));
         }
-        if let Some(cmd) = stream_cmd {
+        for cmd in stream_cmds {
             self.stuur(cmd);
         }
     }
