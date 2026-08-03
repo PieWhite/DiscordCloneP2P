@@ -277,9 +277,9 @@ impl App {
     }
 
     /// Discord-achtige balk onderaan zowel de Kanalen- als de DM-zijbalk (`ui/channels.rs`,
-    /// `ui/dms.rs`): eigen avatar/naam/status links, en rechts een compacte rij
-    /// icoonknoppen (mic-mute, headphone-deafen, niet storen, instellingen-tandwiel) —
-    /// zoals Discord's balk, in plaats van de losse tekstknoppen die dit voorheen waren.
+    /// `ui/dms.rs`): boven avatar/naam/status, daaronder — op dezelfde hoogte als de
+    /// foto, niet naast de naam — een rij icoonknoppen (mic-mute, headphone-deafen,
+    /// niet storen, instellingen-tandwiel).
     ///
     /// Mute/deafen werken alleen tijdens een actief gesprek (zie `engine.rs`'s
     /// `UiCommand::Mute`/`Deafen`), dus die twee knoppen zijn buiten een gesprek zichtbaar
@@ -310,7 +310,7 @@ impl App {
         let mut instellingen_openen = false;
 
         ui.horizontal(|ui| {
-            let avatar = widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 36.0);
+            let avatar = widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 32.0);
             widgets::status_badge(ui.painter(), avatar.rect, status_kleur, theme::BG_SIDEBAR);
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new(&eigen).strong().size(14.0));
@@ -323,34 +323,35 @@ impl App {
                     .color(status_kleur),
                 );
             });
+        });
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::icon_toggle(ui, false, true, "\u{2699}")
-                    .on_hover_text("Instellingen")
-                    .clicked()
-                {
-                    instellingen_openen = true;
-                }
-                if widgets::icon_toggle(ui, self.snap.niet_storen, true, "\u{1F515}")
-                    .on_hover_text("Niet storen")
-                    .clicked()
-                {
-                    niet_storen_wijziging = Some(!self.snap.niet_storen);
-                }
-                let v = &self.snap.voice;
-                if widgets::icon_toggle(ui, v.deafened, v.actief, "\u{1F3A7}")
-                    .on_hover_text("Deafen")
-                    .clicked()
-                {
-                    deafen_wijziging = Some(!v.deafened);
-                }
-                if widgets::icon_toggle(ui, v.muted, v.actief, "\u{1F3A4}")
-                    .on_hover_text("Mute")
-                    .clicked()
-                {
-                    mute_wijziging = Some(!v.muted);
-                }
-            });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if widgets::icon_toggle(ui, false, true, "\u{2699}")
+                .on_hover_text("Instellingen")
+                .clicked()
+            {
+                instellingen_openen = true;
+            }
+            if widgets::icon_toggle(ui, self.snap.niet_storen, true, "\u{1F515}")
+                .on_hover_text("Niet storen")
+                .clicked()
+            {
+                niet_storen_wijziging = Some(!self.snap.niet_storen);
+            }
+            let v = &self.snap.voice;
+            if widgets::icon_toggle(ui, v.deafened, v.actief, "\u{1F3A7}")
+                .on_hover_text("Deafen")
+                .clicked()
+            {
+                deafen_wijziging = Some(!v.deafened);
+            }
+            if widgets::icon_toggle(ui, v.muted, v.actief, "\u{1F3A4}")
+                .on_hover_text("Mute")
+                .clicked()
+            {
+                mute_wijziging = Some(!v.muted);
+            }
         });
 
         if self.snap.voice.actief {
@@ -688,7 +689,7 @@ impl App {
             // geen aparte hint-tekst meer nodig.
             return ui
                 .add_sized(
-                    [ui.available_width(), 36.0],
+                    [ui.available_width(), 32.0],
                     egui::Button::new(
                         egui::RichText::new("\u{1F3A4} Deelnemen aan spraakkanaal").size(13.0),
                     ),
@@ -701,7 +702,7 @@ impl App {
         egui::Frame::new()
             .fill(theme::BG_CARD)
             .corner_radius(theme::ROUNDING)
-            .inner_margin(egui::Margin::symmetric(10, 9))
+            .inner_margin(egui::Margin::symmetric(10, 7))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::STATUS_ONLINE, "\u{1F3A4}");
@@ -766,7 +767,7 @@ impl App {
             ui.horizontal(|ui| {
                 let avatar_kleur = widgets::kleur_van(id);
                 let avatar =
-                    widgets::avatar_square(ui, &widgets::initialen(&naam), avatar_kleur, 30.0);
+                    widgets::avatar_square(ui, &widgets::initialen(&naam), avatar_kleur, 26.0);
                 if p.in_voice {
                     widgets::status_badge(
                         ui.painter(),
@@ -794,7 +795,7 @@ impl App {
                     self.stuur_kijk_toggle(id, s.stream_id, s.kijken);
                 }
             }
-            ui.add_space(6.0);
+            ui.add_space(4.0);
         }
         ui.add_space(2.0);
     }
@@ -823,14 +824,14 @@ impl App {
             })
             .count();
 
-        let mut h = 26.0; // bovenste separator + ruimte eromheen
-        h += if self.snap.voice.actief { 54.0 } else { 44.0 }; // strook/knop
+        let mut h = 22.0; // bovenste separator + ruimte eromheen
+        h += if self.snap.voice.actief { 48.0 } else { 38.0 }; // strook/knop
         if voice_leden > 0 {
-            h += voice_leden as f32 * 44.0 + 8.0;
+            h += voice_leden as f32 * 40.0 + 8.0;
         }
-        h += 54.0; // "Scherm delen…"-knop + ruimte
-        h += 25.0; // onderste separator + ruimte
-        h += 76.0; // gebruikersbalk + boven-/onderkant-marge
+        h += 46.0; // "Scherm delen…"-knop + ruimte
+        h += 22.0; // onderste separator + ruimte
+        h += 82.0; // gebruikersbalk (foto+naam, en de icoonrij eronder) + marge
         if self.snap.voice.actief {
             h += 12.0; // niveaubalk
         }

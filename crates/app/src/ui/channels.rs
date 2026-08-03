@@ -159,14 +159,14 @@ impl super::App {
         bool,
     ) {
         ui.separator();
-        ui.add_space(10.0);
+        ui.add_space(6.0);
         self.voice_sectie(ui);
         let mut voice_cmd = self.voice_bediening(ui);
-        ui.add_space(10.0);
+        ui.add_space(6.0);
         let (stream_cmd, bronnen_openen) = self.deel_bediening(ui);
-        ui.add_space(10.0);
+        ui.add_space(6.0);
         ui.separator();
-        ui.add_space(10.0);
+        ui.add_space(6.0);
         let (mute_wijziging, deafen_wijziging, niet_storen_wijziging, instellingen_openen) =
             self.gebruiker_balk(ui);
         if let Some(aan) = mute_wijziging {
