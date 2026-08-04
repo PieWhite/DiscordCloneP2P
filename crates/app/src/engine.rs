@@ -2,11 +2,12 @@
 //!
 //! # Waarom dit niet in de UI zit
 //!
-//! egui werkt zijn frames alleen bij zolang het venster zichtbaar is. Zat de chat- en
-//! sync-lus in `update()`, dan stopt de synchronisatie zodra je minimaliseert of naar
+//! Een venster tekent niet zolang het verborgen of geminimaliseerd is. Zat de chat- en
+//! sync-lus in de weergavelus, dan stopt de synchronisatie zodra je minimaliseert of naar
 //! de tray gaat — precies het moment waarop je een melding zou willen krijgen dat er
 //! iemand iets zegt. Voor een app die naast een game moet kunnen draaien is dat het
-//! verkeerde gedrag.
+//! verkeerde gedrag. Dat gold voor egui en geldt onverkort voor de webview die het
+//! sinds fase 12 is.
 //!
 //! De UI leest daarom alleen nog een momentopname en stuurt commando's terug. Zij mag
 //! stilvallen zonder dat er iets misgaat.

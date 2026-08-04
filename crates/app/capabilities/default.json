@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Everything the main window is allowed to ask of the core. No plugins: file dialogs stay on the Rust side through rfd, which was already a dependency.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-hide",
+    "core:webview:allow-internal-toggle-devtools"
+  ]
+}

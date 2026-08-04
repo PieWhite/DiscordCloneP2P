@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         Err(e) => tracing::warn!(error = %format!("{e:#}"), "geluidsapparaten niet op te vragen"),
     }
 
-    // eframe wil de hoofdthread. Tokio krijgt daarom een eigen runtime op
+    // De vensterlus wil de hoofdthread. Tokio krijgt daarom een eigen runtime op
     // achtergrondthreads; de UI praat er via kanalen mee, nooit via locks.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -101,9 +101,6 @@ fn main() -> Result<()> {
 
     // De motor draait op de tokio-runtime, niet op de UI-thread: chat en synchronisatie
     // moeten doorlopen terwijl het venster geminimaliseerd is of naar de tray staat.
-    let naam = cfg.display_name.clone();
-    let poort = cfg.control_port;
-    let naar_tray = cfg.minimize_to_tray;
     let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
     let pictures_dir = config::resolve_pictures_dir(&data_dir);
 
@@ -112,60 +109,26 @@ fn main() -> Result<()> {
         tracing::warn!(error = %format!("{e:#}"), "autostart instellen mislukt");
     }
 
+    // De motor bezit de config vanaf hier; de UI leest er alleen vaste waarden uit
+    // (poorten, weergavenaam, autostart) en krijgt daarom een kopie.
+    let cfg_voor_ui = cfg.clone();
+
     let engine = {
         let _enter = runtime.enter();
         engine::spawn(mesh, store, cfg, config_path).context("motor starten")?
     };
 
-    let app = ui::App::new(
+    // Het venster: Tauri v2 op WebView2. Eigen titelbalk volgens het ontwerp, dus de
+    // OS-decoraties staan uit (`tauri.conf.json`). Alles eromheen — tray, vensterhandle,
+    // gebeurtenissen — zit in `ui::run`.
+    ui::run(
         engine,
         identity.peer_id,
-        naam,
-        poort,
-        data_dir,
+        &cfg_voor_ui,
         downloads_dir,
         pictures_dir,
-        naar_tray,
         runtime,
-    );
-
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 640.0])
-            .with_min_inner_size([560.0, 400.0])
-            .with_title("FitCommunication")
-            // Eigen titelbalk (`ui/titlebar.rs`) volgens het ontwerp, dus de
-            // OS-decoraties (titelbalk + rand) staan uit.
-            .with_decorations(false),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "FitCommunication",
-        native_options,
-        Box::new(move |cc| {
-            ui::theme::apply(&cc.egui_ctx);
-
-            // Het venster onthouden zodat de tray-thread het kan tonen en verbergen
-            // ook wanneer egui niet tekent.
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            match cc.window_handle().map(|h| h.as_raw()) {
-                Ok(RawWindowHandle::Win32(w)) => tray::onthoud_venster(w.hwnd.get()),
-                _ => {
-                    tracing::warn!("venster-handle niet gevonden; tray kan het venster niet tonen")
-                }
-            }
-
-            // Het icoon moet in leven blijven, anders verdwijnt het meteen uit de tray.
-            match tray::start() {
-                Ok(t) => std::mem::forget(t),
-                Err(e) => tracing::warn!(error = %format!("{e:#}"), "tray-icoon starten mislukt"),
-            }
-
-            Ok(Box::new(app))
-        }),
     )
-    .map_err(|e| anyhow::anyhow!("venster starten: {e}"))
 }
 
 /// Logt naar een dagelijks roterend bestand in `<data>/logs` en naar de console.

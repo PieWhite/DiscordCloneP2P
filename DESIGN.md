@@ -646,13 +646,50 @@ online sit at `opacity: .62` and come back to full on hover.
   product invariant 1, so the Tauri build must bundle Archivo and JetBrains Mono locally and
   keep the same family names and weights (400/500/600/700 and 400/500).
 
-### Recorded gaps in the comp (fix in the reproduction, don't copy)
-- **Two mechanisms for one signal.** The speaking ring is gated by `[data-speaking="true"]` in the
-  voice panel and by the presence of the `.speak-ring` class in the member list. One state, two
-  switches; pick one in the reproduction.
-- **The icon set is 29 symbols, not the 43 the brief anticipated.** All 29 are referenced; the set
-  is complete for this surface, but a new surface will need drawings, not substitutes.
-- **Fonts are remote in the comp.** See the last Don't: the shipping build bundles them.
+### Recorded gaps in the comp — all three closed in the shipped frontend
+
+These were recorded against `design/main-window.html`. `crates/app/frontend/` is the built
+reproduction and fixes all three; the comp itself is untouched, so this list stays as the
+record of what not to copy back.
+
+- **Two mechanisms for one signal.** *Closed.* The speaking ring was gated by
+  `[data-speaking="true"]` in the voice panel and by the presence of the `.speak-ring` class in
+  the member list. Both places now carry the class and both are gated on the attribute, so the
+  speaking level from the engine flips exactly one thing.
+- **The icon set is 29 symbols, not the 43 the brief anticipated.** *Closed as a system, not as a
+  count.* The set is still 29 and still complete for this surface; what was missing was the rule
+  it was drawn to. That rule is now written above the `<defs>` block in
+  `crates/app/frontend/index.html`: 24×24 grid, 1.5 stroke, round caps and joins, `currentColor`
+  only, one visual weight, a toggled state ships as a pair sharing a silhouette plus the same
+  slash, and the size is set by the caller. A new surface needs drawings that follow it, not a
+  near-enough substitute from this set.
+- **Fonts are remote in the comp.** *Closed.* Archivo and JetBrains Mono ship as four woff2 files
+  in `crates/app/frontend/fonts/`, declared in `fonts/faces.css`. Both families are variable, so
+  one file per subset (latin, latin-ext) covers every weight the system uses instead of the eight
+  byte-identical files a naive download produces. Product invariant 1 is "zero servers": the
+  shipping build must never fetch a font.
+
+### Where the shipped frontend departs from the comp, and why
+
+The comp is the reproduction target and the CSS is taken from it verbatim. Five things
+nevertheless differ, each because the comp had no engine behind it:
+
+- **Peer identity hues are `av-1`/`av-2`/`av-3`, not `av-r`/`av-s`/`av-j`.** The comp hardcoded
+  one class per demo peer. Peers come from configuration, so the hue is an index assigned by
+  position in the sorted set of known peer ids — stable for the life of the install, and
+  collision-free for three, which hashing the id was not.
+- **No packet-loss figure in the status bar.** The comp shows `0.4% loss` beside the RTT. The
+  engine measures RTT and does not measure loss, and "derive every state string from real state"
+  outranks reproducing a number there is no source for. The RTT stays.
+- **"Last seen 22:14, 3 August" is only shown when it is true.** The time is observed while the
+  process runs and is not persisted, so a peer who has not been up since this start reads plain
+  "Offline" instead of a made-up time.
+- **The code block's header carries the fence info string**, not a fixed filename, and its Copy
+  button works. A bare fence gets the header with the word `code`.
+- **Four surfaces the comp did not have to draw**: the share-source picker, the two text prompts
+  for sub-channels, in-place message editing, and the engine's own error line. All four are built
+  from the tokens above and reuse the comp's own components; they are in the one marked section at
+  the bottom of `app.css`.
 
 Three gaps recorded in the first pass are now closed in the artifact and are documented above as
 system values rather than as defects: `--focus` no longer dangles (the slider thumb declares its

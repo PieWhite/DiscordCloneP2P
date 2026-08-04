@@ -8,7 +8,7 @@ Hoe we bouwen. Requirements staan in `SPEC.md`.
 | Laag | Keuze | Waarom |
 |---|---|---|
 | Taal | Rust 1.86, MSVC | Toolchain staat al; geen .NET SDK aanwezig; één statische exe; geen GC-pauzes in de audiopijplijn |
-| UI | **Tauri v2** (WebView2) — *besloten, nog niet gebouwd; code is nu nog `eframe`/`egui`* | Ontwerpplafond: egui kan geen echte typografie, ritme of gelaagdheid, CSS wel. Tekent alleen bij verandering in plaats van 4 fps polling. Zie `PRODUCT.md` → `## Stack` |
+| UI | **Tauri v2** (WebView2), sinds fase 12 | Ontwerpplafond: egui kon geen echte typografie, ritme of gelaagdheid, CSS wel. Tekent alleen bij verandering in plaats van 4 fps polling. Zie `PRODUCT.md` → `## Stack` |
 | Async | `tokio` | Standaard, past bij quinn |
 | Control/chat | `quinn` (QUIC) | Betrouwbaar, meerdere onafhankelijke streams over één verbinding, geen head-of-line blocking tussen berichttypes, ruimte voor bulk file transfer later |
 | Media | `tokio::net::UdpSocket` | Retransmits zijn schadelijk voor realtime audio/video |
@@ -32,12 +32,13 @@ De UI is een pure weergave: hij leest een `watch`-momentopname (`Snapshot`) en s
 `UiCommand`'s terug over kanalen. Geen enkele beslissing over netwerk of opslag staat in de
 weergavelaag, en er staat geen state in die verloren gaat als het venster niet tekent.
 
-**Dat is niet alleen netjes, het is de reden dat de stackwissel naar Tauri haalbaar is.**
-Gemeten vóór dat besluit: buiten `crates/app/src/ui/` komt egui alleen voor in
-doc-commentaar — geen enkele API-aanroep in `proto`, `store`, `net`, `audio` of `video`.
-Te vervangen valt dus alleen `crates/app/src/ui/` (13 modules, 2.979 regels) en de
-vensterbootstrap in `main.rs`; `Snapshot`/`UiCommand` worden Tauri-commands en -events.
-Laat die grens intact — hem opgeven maakt een volgende wissel weer duur.
+**Dat is niet alleen netjes, het is de reden dat de stackwissel naar Tauri haalbaar
+was.** Gemeten vóór dat besluit en opnieuw erna: buiten `crates/app/src/ui/` komt egui
+alleen voor in doc-commentaar — geen enkele API-aanroep in `proto`, `store`, `net`, `audio`
+of `video`. Te vervangen viel dus alleen `crates/app/src/ui/` en de vensterbootstrap in
+`main.rs`. `Snapshot`/`UiCommand` zijn Tauri-commands en -events geworden: `ui/state.rs`
+vertaalt de momentopname naar JSON, `ui/commands.rs` vertaalt IPC-aanroepen terug naar een
+`UiCommand`. Laat die grens intact — hem opgeven maakt een volgende wissel weer duur.
 
 ### Waarom video in een apart venster
 Elke stream krijgt een eigen Win32-venster met eigen D3D11 swapchain, op een eigen thread
@@ -53,9 +54,9 @@ conclusie wordt sterker in plaats van zwakker: het hete videopad raakt de UI-sta
 
 Wat de UI wél nodig heeft is de overzichtstrook met verkleinde live beelden (fase 5): elke
 500 ms een GPU-naar-CPU-downscale (`D3dContext::lees_bgra_miniatuur`), buiten het
-eigenlijke weergavepad om. Dat is nu een egui-textuur en heeft na de migratie een nieuw
-transport nodig (event of custom protocol naar een canvas). Bij 2 fps en een kleine
-afmeting is dat verwaarloosbaar, maar het is werk dat nu gratis is.
+eigenlijke weergavepad om. Dat was een egui-textuur en is sinds fase 12 een
+`thumbnail`-event met een revisienummer plus een `thumb://`-protocol dat de PNG aan een
+gewone `<img>` serveert. Bij 2 fps en een kleine afmeting verwaarloosbaar.
 
 Het venster houdt zijn gewone rand: zonder rand valt hij niet te verplaatsen, te
 vergroten of te sluiten zonder eigen hit-testing, en dat is nergens voor nodig.
@@ -701,6 +702,7 @@ crates/
 `proto` en `store` hebben geen Windows- of hardware-afhankelijkheden en zijn daarom
 volledig unit-testbaar. Daar zit de subtiele logica, dus daar zitten de tests.
 
-**`crates/app/src/ui/` is de enige map met een UI-toolkit erin** (nu egui, wordt Tauri).
+**`crates/app/src/ui/` is de enige map met een UI-toolkit erin** (Tauri v2, plus
+`crates/app/frontend/`).
 De vijf crates erboven weten niet welke toolkit er gebruikt wordt en dat moet zo blijven —
 zie "De grens tussen UI en de rest".

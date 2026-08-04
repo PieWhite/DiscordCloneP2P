@@ -3,13 +3,22 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-08-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 11,
-automatische updates tussen peers).
+Laatst bijgewerkt: 2026-08-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
+de UI-stack van egui naar Tauri v2).
 
-**Wat er nu speelt:** de UI-stack gaat van egui naar **Tauri v2**, en het ontwerp wordt
-daarbij visueel opnieuw gedaan. Besloten, **nog niet uitgevoerd** — de code is nu nog egui.
-Lees beslissing 19 hieronder vóór je iets aan de UI doet, en `PRODUCT.md` (nieuw) voor de
-productcontext en de prijs van dat besluit.
+**Wat er net gebeurd is:** de weergavelaag is **uitgevoerd** in Tauri v2 op WebView2, naar
+de goedgekeurde comp `design/main-window.html`. Er is geen egui meer in de repo behalve in
+doc-commentaar. Lees beslissing 19 en 20 hieronder vóór je iets aan de UI doet, en
+`PRODUCT.md` voor de productcontext en de prijs van dat besluit.
+
+**Waar de UI nu staat:**
+
+```
+crates/app/src/ui/mod.rs       Vensterbootstrap, tray, de drie events, thumb://-protocol
+crates/app/src/ui/state.rs     Snapshot → JSON (de ene plek waar Nederlands Engels wordt)
+crates/app/src/ui/commands.rs  IPC-aanroep → UiCommand
+crates/app/frontend/           index.html + app.css + app.js + fonts/ (in de exe gebakken)
+```
 
 ---
 
@@ -30,6 +39,7 @@ productcontext en de prijs van dat besluit.
 | 9 — Algemeen: subkanalen met een eigen titel | ✅ af, nog niet met een echte peer getest | volledige testsuite blijft groen (nieuwe tests in `crates/proto`, `crates/store`, `crates/app/src/ui.rs`) + `protocol-reviewer`-agent vóór het committen + twee lokale instanties starten en verbinden schoon; zie `docs/TESTPLAN.md`, fase 9 |
 | 10 — Resoluties, bitrate, gecombineerd delen | ✅ af, **nog niet met echte hardware getest** | bugfix heeft een regressietest (`crates/app/src/streams.rs`); resolutie bleek al parametrisch (audit, geen codewijziging); bitrate is een configwaarde; wasapi-exclude-route + terugval compileert en start schoon in twee lokale instanties, maar het capturen/uitsluiten zelf kan alleen met echte speakers/koptelefoon gecontroleerd worden — zie `docs/TESTPLAN.md`, fase 10 |
 | 11 — Automatische updates tussen peers | ✅ af, **nog niet met een echt versieverschil getest** | volledige testsuite blijft groen (nieuwe tests in `crates/proto`: `Hello`-veld, `is_newer`, `UpdateRequest`/`UpdateResponse`-roundtrip; `crates/app/src/updates.rs`: 12 unit-tests op de pure beslislogica) + `protocol-reviewer`-agent vóór het committen (protocolversie 3→4) + twee lokale instanties starten en verbinden schoon; een echt versieverschil, het bevestigingsvenster en het toepassen door `fitcom-updater.exe` kan alleen met een tweede, oudere build getest worden — zie `docs/TESTPLAN.md`, fase 11 |
+| 12 — UI-stack naar Tauri v2 | ✅ af, **de media- en sleep/plak-paden nog niet met echte hardware getest** | volledige testsuite blijft groen (de vier `hoort_bij_kanaal`-tests zijn meeverhuisd naar `ui/state.rs` als `belongs_to_channel`); app gebouwd, gestart en gescreenshot tegen `design/shots/` op 1440×900; `cargo clippy --all-targets` schoon; idle-CPU gemeten, zie fase 12 in `ROADMAP.md` |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -73,7 +83,7 @@ crates/audio/   Voice: jitterbuffer, mixer, Opus, cpal-sessie.
 crates/video/   Screenshare: fragmentatie, D3D11, WGC-capture, MF-encoder en -decoder,
                 kleuromzetting, weergavevenster, deler- en kijker-thread.
 crates/app/     lib + binary. engine.rs is de motor; streams.rs beslist over
-                screenshare; ui.rs is een pure weergave.
+                screenshare; ui/ is een pure weergave (Tauri v2 + frontend/).
 ```
 
 De belangrijkste structurele regel: **`proto` en `store` bevatten geen Windows- of
@@ -300,11 +310,12 @@ de vraag.
 
 ### 15. Ctrl+V via `GetAsyncKeyState`, niet via egui's eigen toetsenbordevents (fase 8)
 
-> **Vervalt bij de Tauri-migratie (beslissing 19).** Deze hele omweg bestaat alleen omdat
-> `egui-winit` de plakopdracht opslokt vóórdat de app hem ziet; een webview krijgt een echt
-> `paste`-event met de afbeelding erin. Blijft hier staan omdat de onderliggende les — welke
-> laag het OS-klembord bezit, en dat een logbestand dat sneller aanwijst dan raden — nog
-> steeds geldt. Niet naar de nieuwe stack overzetten.
+> **Vervallen in fase 12 (beslissing 19), de code is weg.** Deze hele omweg bestond alleen
+> omdat `egui-winit` de plakopdracht opslokte vóórdat de app hem zag; de webview krijgt een
+> echt `paste`-event met de afbeelding erin, dat via `offer_pasted_image` in dezelfde
+> aanbiedflow terechtkomt als een gesleept of gekozen bestand. Blijft hier staan omdat de
+> onderliggende les — welke laag het OS-klembord bezit, en dat een logbestand dat sneller
+> aanwijst dan raden — nog steeds geldt. Niet terughalen.
 
 De focus-fix uit beslissing 12 loste Ctrl+V niet op — Rick meldde dat het nog steeds niet
 werkte. Het logbestand (met `FITCOM_LOG=debug`) liet zien dat `egui_winit::clipboard` zelf
@@ -420,12 +431,11 @@ Het updater-procesje (`fitcom-updater.exe`) is bewust een tweede binary in hetze
 pakt `src/bin/*.rs` vanzelf op, en een aparte crate voor iets dat alleen wacht, hernoemt en
 herstart zou alleen extra `Cargo.toml`-boekhouding zijn zonder een echt voordeel.
 
-### 19. UI-stack van egui naar Tauri v2, en visueel opnieuw beginnen (na fase 11)
+### 19. UI-stack van egui naar Tauri v2, en visueel opnieuw beginnen (fase 12)
 
-**Nog niet uitgevoerd.** Dit is een besluit, geen verslag van gebouwd werk — alle UI-code
-in `crates/app/src/ui/` is op het moment van schrijven nog egui. Ga niet op zoek naar
-Tauri-code, en bouw geen nieuwe UI in egui zonder te overleggen: dat is werk dat direct
-weggegooid wordt.
+**Uitgevoerd op 2026-08-04**, dezelfde dag als het besluit. Wat hieronder staat is de
+onderbouwing; hoe het geworden is staat onder "Hoe de weergavelaag in elkaar zit"
+verderop en in `ROADMAP.md`, fase 12.
 
 `docs/SPEC.md` legde "Rust + egui/eframe" vast, en dat was vier jaar techstack-keuzes lang
 de goede afweging: alles in één proces, snel te bouwen, laag idle-verbruik. Wat er niet in
@@ -505,6 +515,76 @@ blijft staan op Ricks expliciete keuze: die is uitgeprobeerd en je vindt alles b
 
 Volledige onderbouwing en de productcontext eromheen staan in `PRODUCT.md` (nieuw, sectie
 `## Stack`).
+
+### 20. De UI-taal wordt Engels — maar alleen wat in fase 12 herschreven werd (fase 12)
+
+`PRODUCT.md` had de UI-taal expliciet als onbeslist staan, met drie mogelijke omvangen:
+alleen zichtbare strings, de nieuwe frontend erbij, of ook de Rust-identifiers en de docs.
+Voorgelegd aan Rick bij het begin van fase 12, omdat de weergavelaag toch helemaal
+opnieuw geschreven werd en het daar dus gratis was. **Rick koos Engels, zonder beperking.**
+
+Wat dat concreet geworden is:
+
+- **De hele weergavelaag is Engels.** Alle zichtbare strings (dat stond al zo in de comp),
+  én de Rust-identifiers in `crates/app/src/ui/` — `UiState`, `belongs_to_channel`,
+  `timeline_of`, `PeerState`, `Presence`. De JSON-veldnamen die de frontend leest ook.
+- **De vertaling zit op één plek: `ui/state.rs`.** Daar wordt `Snapshot.ongelezen` tot
+  `unread`, `eigen_streams` tot `own_streams`, `niet_storen` tot `do_not_disturb`. Eén
+  bestand, niet uitgesmeerd.
+- **De motor en de vier andere crates zijn níét hernoemd.** Dat is geen halfheid maar de
+  harde randvoorwaarde van deze fase: `proto`, `store`, `net`, `audio` en `video` blijven
+  onaangeroerd, en `engine.rs`/`streams.rs`/`files.rs` meebeslepen in een repo-brede
+  hernoeming zou een diff van duizenden regels zijn die niets met de stackwissel te maken
+  heeft en elke `git blame` op de subtiele sync-logica onleesbaar maakt.
+- **De docs blijven Nederlands.** Ze zijn een gesprek met Rick, niet een API.
+
+Een repo-brede hernoeming van de resterende Nederlandse identifiers is daarmee toegestaan
+maar niet gedaan. Wie hem alsnog wil: dat is eigen werk met een eigen commit, niet iets om
+en passant mee te nemen.
+
+---
+
+## Hoe de weergavelaag in elkaar zit
+
+```
+crates/app/src/ui/mod.rs       Vensterbootstrap (Tauri v2 + WebView2), tray-koppeling,
+                               de drie events, en het thumb://-protocol.
+crates/app/src/ui/state.rs     Snapshot → UiState (JSON). Puur, met eigen tests.
+crates/app/src/ui/commands.rs  Eén #[tauri::command] per UiCommand-variant.
+crates/app/frontend/           index.html, app.css, app.js, fonts/. Door tauri-build in
+                               de exe gebakken; er staat geen dist-map naast fitcom.exe.
+```
+
+**Drie soorten verkeer, bewust gescheiden.** Dat is de kern van waarom dit in rust
+goedkoper is dan egui, niet duurder:
+
+| Event | Tempo | Wat |
+|---|---|---|
+| `state` | alleen bij een echte wijziging | Alles structureels. De motor publiceert zijn `Snapshot` op een vaste tik, maar `ui/mod.rs` serialiseert en **vergelijkt met de vorige**; is hij gelijk, dan gaat er niets de brug over. |
+| `meters` | 4 Hz, en alleen als hij verandert | Spreekniveau en RTT — de twee dingen die bewegen terwijl je er alleen naar kijkt. De frontend werkt hiermee attributen bij; er wordt geen paneel hertekend. |
+| `thumbnail` | 2 Hz per bekeken stream | Alleen een sleutel plus een revisienummer. De PNG zelf komt over `thumb://` als een gewone `<img>`. |
+
+RTT en spreekniveau staan daarom **niet** in `UiState`: zaten ze erin, dan zou elke tik
+een verschil opleveren en zou de vergelijking hierboven niets meer tegenhouden. Datzelfde
+geldt voor "laatst gezien", dat alleen meegaat voor een peer die *niet* online is.
+
+**Gemeten in rust op deze machine** (debug-build, één peer geconfigureerd en offline, geen
+gesprek): 31 ms processortijd over 60 seconden voor het hele procesboompje — fitcom plus
+zijn zes WebView2-processen — oftewel 0,05% van één kern. Het geheugen is wél duurder:
+381 MB werkset voor dat hele boompje, tegen de tientallen MB's die egui gebruikte. Dat is
+de eerlijke prijs van een webview en hij was in `PRODUCT.md` niet expliciet benoemd; hij
+is de moeite waard omdat invariant 4 over processortijd naast een game gaat, niet over
+werkgeheugen, en 381 MB is op deze machines geen schaars goed.
+
+**De tijdlijn rijdt niet mee in `state`.** Hij is het enige onbegrensde deel van de staat,
+en een hele geschiedenis over de IPC-brug duwen bij elke wijziging zou precies de winst
+hierboven weggooien. In plaats daarvan draagt `state` een `timeline_revision` (opgehoogd
+zodra de oplog een nieuwe `Arc<Timeline>` oplevert) en haalt de frontend het open gesprek
+op met `get_timeline`.
+
+**Beslissing 15 is vervallen.** De `GetAsyncKeyState`-omweg voor Ctrl+V is weg: de webview
+krijgt een echt `paste`-event met de bytes van de afbeelding erin, en die gaan via
+`offer_pasted_image` naar dezelfde aanbiedflow als een gesleept of gekozen bestand.
 
 ---
 
@@ -624,6 +704,20 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
 
 - **Een draaiende `fitcom.exe` blokkeert `cargo build`** met "Toegang geweigerd
   (os error 5)". Altijd eerst `.\scripts\run-peers.ps1 -Stop`.
+- **`backgroundColor` in `tauri.conf.json` sloopt het venster op deze machine.** Met
+  `"backgroundColor": "#0E1013"` erin weigert WebView2 te starten:
+  `failed to create webview: WebView2 error: WindowsError(HRESULT(0x80070057))` — "de
+  parameter is onjuist" — en dan draait de app wel maar krijg je nooit een venster te
+  zien. Zonder die sleutel start hij gewoon. De reden om hem te willen (geen witte flits
+  bij het openen) is anders opgelost: het venster staat op `"visible": false` en de
+  frontend roept `ready` aan zodra hij getekend heeft.
+- **De frontend heeft géén bouwstap.** `crates/app/frontend/` is gewone HTML, CSS en JS
+  zonder bundler; `tauri-build` bakt de map in de exe. `cargo build` bouwt dus nog steeds
+  de hele app en er is geen Node nodig — anders dan `PRODUCT.md` bij het besluit
+  verwachtte. Een frontendwijziging vereist wel opnieuw bouwen: de assets zitten in de
+  binary, niet ernaast.
+- **`crates/app/icons/icon.ico` moet bestaan**, anders weigert `tauri-build` met
+  "`icons/icon.ico` not found". Het bestand is het merkteken uit de titelbalk.
 - **`cmake` is nodig om te bouwen** (libopus). Staat portable in
   `%USERPROFILE%\tools\cmake-4.4.0-windows-x86_64\bin`, op het gebruikers-PATH.
   `.cargo/config.toml` zet `CMAKE_POLICY_VERSION_MINIMUM=3.5` omdat de meegeleverde
@@ -939,10 +1033,15 @@ heeft een werkende verbinding nodig. Handmatig bijwerken bij alle drie.
 `kijker.rs` stuurt elke 500 ms een `KijkerEvent::Miniatuur` met een verkleind BGRA-beeld,
 afgeleid van het net getoonde frame via `D3dContext::lees_bgra_miniatuur` (gerichte
 GPU→CPU-downscale, geen volledige framekopie). De motor bewaart de laatste per
-`(PeerId, stream_id)` in `Engine::miniaturen` en publiceert hem mee in de `Snapshot`. De
-UI cachet zelf een `egui::TextureHandle` per stream en vergelijkt op de `Arc`-pointer van
-de data, niet op de inhoud — zo wordt een ongewijzigde miniatuur niet elke frame opnieuw
-naar de GPU geüpload.
+`(PeerId, stream_id)` in `Engine::miniaturen` en publiceert hem mee in de `Snapshot`.
+
+**Het transport naar de UI is in fase 12 vervangen.** Waar de egui-UI een
+`egui::TextureHandle` per stream cachete, kijkt `ui/mod.rs` nu elke 500 ms of de
+`Arc`-pointer van de data veranderd is (dezelfde vergelijking, dezelfde reden: op de
+pointer en niet op de inhoud), codeert alleen dan een PNG, en stuurt een
+`thumbnail`-event met een sleutel en een revisienummer. De frontend zet dat als
+`thumb://localhost/<peer>-<stream>?<revisie>` op een gewone `<img>`; het protocol serveert
+de bytes. Geen base64 in de JSON en geen canvas dat gevoed moet worden.
 
 **Dit raakt het echte weergavepad niet.** De swapchain van het kijkvenster blijft het
 gedecodeerde beeld rechtstreeks tonen; de miniatuur is een aftakking ernaast, niet een
@@ -1189,6 +1288,15 @@ elke start weer uit.
 ---
 
 ## Hoe chat-verrijking (bestanden inline, plakken) in elkaar zit
+
+> **De UI-kant hieronder is verslag, geen beschrijving meer.** `crates/app/src/ui.rs`
+> bestaat niet meer; fase 12 verving die laag. Wat er nu voor in de plaats staat:
+> `ui/state.rs::timeline_of` voegt berichten en bestanden samen op dezelfde
+> `(lamport, author)`-sleutel, en de drie invoerwegen komen samen in `offer_path`
+> (`ui/commands.rs`) — de bestandsdialoog via `pick_and_offer_file`, slepen-en-neerzetten
+> via Tauri's `DragDrop`-event, en plakken via het echte `paste`-event van de webview.
+> De rest van deze sectie — waarom `lamport` op `Message` en `FileEntry` zit, en waarom
+> het pad van een afbeelding uit zijn inhoudshash volgt — geldt onverkort.
 
 ```
 crates/store/src/timeline.rs   Message en FileEntry kregen een lamport-veld (sorteersleutel

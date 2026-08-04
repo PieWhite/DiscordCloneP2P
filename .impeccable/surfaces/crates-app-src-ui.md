@@ -65,10 +65,18 @@ conventie is dat de enige plek waar het verschil gemaakt wordt: uitlijning die k
 dichtheid, statusovergangen die niet springen, een tijdlijn die na duizend berichten nog
 ritme heeft, en toetsenbordgedrag dat nergens hapert.
 
-## Onopgeloste beslissingen
+## Beslist (fase 12, 2026-08-04)
 
-- **UI-taal.** Nederlands of Engels voor de nieuwe weergavelaag. De laag wordt toch helemaal
-  opnieuw geschreven, dus dit is nu gratis en later niet. Zie `PRODUCT.md`.
-- **Het palet.** De teal `#3ABFC0` en de vijf grijze lagen uit `ui/theme.rs` zijn geen
-  vastgelegde waarden; alleen de soort wereld ligt vast.
-- **Typografie.** Nog niet gekozen. Operate-modus wordt goed gediend door workhorse-faces.
+- **UI-taal: Engels** voor de weergavelaag, de zichtbare strings én de Rust-identifiers in
+  `crates/app/src/ui/`. De motor en de vier andere crates blijven Nederlands; de vertaling
+  zit op één plek, `ui/state.rs`. Zie `docs/OVERDRACHT.md`, beslissing 20.
+- **Het palet ligt vast** in `DESIGN.md` en `.impeccable/design.json`: zes bijna-zwarte
+  lagen, één hairline-waarde, één getunede teal `#2FB3AE`, presence en danger als
+  gescheiden families.
+- **Typografie: Archivo** voor alles wat UI is, **JetBrains Mono** voor code en voor elk
+  gemeten getal. Beide lokaal gebundeld in `crates/app/frontend/fonts/` — remote laden
+  botst met invariant 1.
+
+De gebouwde uitvoering staat in `crates/app/frontend/`; de goedgekeurde comp
+`design/main-window.html` blijft de reproductiedoelstelling en `design/shots/` de
+vergelijkingsbeelden.

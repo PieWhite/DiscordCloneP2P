@@ -49,29 +49,39 @@ irrelevant; een codec die misschien niet werkt bij je vriend is dat niet.
 Zie `docs/SPEC.md` voor de gemeten onderbouwing.
 
 ## UI-stack
-**Besloten op 2026-08-04: de weergavelaag gaat van egui naar Tauri v2 (WebView2).**
-De migratie is nog **niet** uitgevoerd — alle UI-code in `crates/app/src/ui/` is nu nog
-egui. Ga er dus niet van uit dat er Tauri-code staat, en bouw nieuwe UI niet in egui
-zonder te overleggen: dat is werk dat direct weggegooid wordt.
+**Tauri v2 op WebView2.** Uitgevoerd in fase 12 (2026-08-04), ter vervanging van egui.
 
-- **De vijf niet-UI-crates blijven onaangeroerd.** `proto`, `store`, `net`, `audio` en
+```
+crates/app/src/ui/mod.rs       Vensterbootstrap, tray, events, thumb://-protocol
+crates/app/src/ui/state.rs     Snapshot → UiState (JSON)
+crates/app/src/ui/commands.rs  IPC → UiCommand
+crates/app/frontend/           index.html, app.css, app.js, fonts/ — in de exe gebakken
+```
+
+- **De vijf niet-UI-crates zijn onaangeroerd.** `proto`, `store`, `net`, `audio` en
   `video` bevatten geen enkele egui-aanroep (alleen doc-commentaar dat het noemt).
-  Gemeten vóór het besluit. Houd dat zo.
-- **Alleen `crates/app/src/ui/` (13 modules, 2.979 regels) en de vensterbootstrap in
-  `main.rs` worden vervangen.**
-- **De `Snapshot`/`UiCommand`-grens is de reden dat dit haalbaar is.** De UI leest een
-  momentopname en stuurt commando's terug over kanalen; die grens wordt Tauri-commands en
-  -events. Hem opgeven maakt een volgende stackwissel weer duur.
-- **Het pop-out kijkvenster blijft een eigen Win32-venster met eigen D3D11-swapchain.**
-  Het hete videopad raakt de UI-stack nergens, en dat argument wordt met een webview
-  sterker in plaats van zwakker.
+  Houd dat zo, en introduceer er ook geen Tauri.
+- **De `Snapshot`/`UiCommand`-grens staat er nog en blijft staan.** De UI leest een
+  momentopname en stuurt commando's terug; dat is de reden dat deze wissel goedkoop was.
+  Hem opgeven maakt een volgende weer duur.
+- **Drie events, bewust gescheiden.** `state` alleen bij een echte wijziging (er wordt
+  geserialiseerd en met de vorige vergeleken), `meters` op 4 Hz voor spreekniveau en RTT,
+  `thumbnail` op 2 Hz voor de streamstrook. Zet niets in `UiState` dat elke tik verandert:
+  dan stuurt de app in rust weer tien events per seconde.
+- **Het pop-out kijkvenster is een eigen Win32-venster met eigen D3D11-swapchain.**
+  Het hete videopad raakt de UI-stack nergens.
 - **Niet naar de fixed-version WebView2-runtime** (~180 MB) — dat sloopt "losse exe in
   een zip". Evergreen zit standaard in Windows 11 en alle drie draaien Windows 11.
-- **Visueel opnieuw ontwerpen.** Het teal-op-donkergrijs in `ui/theme.rs` is geen
-  vertrekpunt meer maar anti-referentie. Donker blijft wél een eis (avondgebruik).
+- **`design/main-window.html` is de reproductiedoelstelling**, `design/shots/` zijn de
+  19 gerenderde toestanden om tegen te vergelijken, en `DESIGN.md` +
+  `.impeccable/design.json` zijn het ontwerpsysteem. Een kleurwaarde of radius die niet
+  uit een token komt is een bug. Fonts worden lokaal gebundeld — nooit van een CDN, dat
+  botst met invariant 1.
+- **UI-taal is Engels** voor de weergavelaag en alles wat daar nieuw geschreven wordt; de
+  motor en de andere crates blijven Nederlands. De vertaling zit in `ui/state.rs`.
 
 Volledige onderbouwing en de expliciet benoemde kosten staan in `PRODUCT.md`, sectie
-`## Stack`. Draai dit niet terug zonder die eerst te lezen.
+`## Stack`, en `docs/OVERDRACHT.md`, beslissing 19 en 20.
 
 ## Bouwvereisten
 Naast Rust + MSVC is `cmake` nodig: libopus wordt vanuit broncode meegebouwd. Op deze
@@ -82,8 +92,10 @@ toegevoegd aan het gebruikers-PATH.
 `audiopus_sys` meekomt is uit 2021 en zijn CMakeLists vraagt om een minimumversie die
 CMake 4 niet meer zonder meer accepteert.
 
-Ná de Tauri-migratie komt daar een frontend-bouwstap bij (Node) en is `cargo build` niet
-meer genoeg om de hele app te bouwen. Nu nog niet.
+**Geen Node en geen frontend-bouwstap.** De frontend is gewone HTML/CSS/JS zonder bundler;
+`tauri-build` bakt `crates/app/frontend/` in de exe. `cargo build` bouwt dus nog steeds de
+hele app. Wel opnieuw bouwen na een frontendwijziging — de assets zitten ín de binary.
+`crates/app/icons/icon.ico` moet bestaan, anders weigert `tauri-build`.
 
 ## Commando's
 ```

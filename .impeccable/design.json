@@ -654,9 +654,9 @@
       }
     ],
     "gaps": [
-      "The speaking ring is gated by [data-speaking=\"true\"] in the voice panel and by the .speak-ring class in the member list: one state, two switches.",
-      "Fonts load from fonts.googleapis.com in the comp. The Tauri build must bundle Archivo and JetBrains Mono locally (product invariant 1).",
-      "The icon set is 29 symbols; all are referenced, but a new surface will need new drawings rather than substitutes."
+      "CLOSED in crates/app/frontend/: the speaking ring was gated two ways (the [data-speaking] attribute in the voice panel, the .speak-ring class in the member list). Both places now carry the class and both are gated on the attribute.",
+      "CLOSED in crates/app/frontend/fonts/: Archivo and JetBrains Mono ship as four local woff2 files (latin + latin-ext per family, both variable). Product invariant 1 is zero servers; the shipping build never fetches a font.",
+      "CLOSED as a system in crates/app/frontend/index.html: the icon set is still 29 symbols, but the rules they are drawn to are now written above the <defs> block (24x24 grid, 1.5 stroke, round caps and joins, currentColor only, one visual weight, toggled states as a pair sharing a silhouette plus the same slash, size set by the caller). A new surface needs drawings that follow it, not a substitute from this set."
     ],
     "radii": [
       {

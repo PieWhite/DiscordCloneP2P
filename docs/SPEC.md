@@ -153,11 +153,11 @@ matige verbinding.
 
 ### Proces
 - Techstack: **Rust-kern + Tauri v2 (WebView2) voor de weergave.** Oorspronkelijk
-  egui/eframe; op 2026-08-04 omgedraaid omdat het ontwerpplafond van egui te laag bleek.
-  De migratie is nog niet uitgevoerd. De vijf niet-UI-crates (`proto`, `store`, `net`,
-  `audio`, `video`) blijven onaangeroerd — die bevatten geen egui-aanroepen. Volledige
-  onderbouwing en de kosten (WebView2 als Windows-component, tweede taal, nieuw transport
-  voor de miniaturenstrook) staan in `PRODUCT.md`, sectie `## Stack`.
+  egui/eframe; op 2026-08-04 omgedraaid omdat het ontwerpplafond van egui te laag bleek, en
+  diezelfde dag uitgevoerd (fase 12). De vijf niet-UI-crates (`proto`, `store`, `net`,
+  `audio`, `video`) zijn onaangeroerd gebleven — die bevatten geen egui-aanroepen.
+  Volledige onderbouwing en de kosten (WebView2 als Windows-component, tweede taal,
+  geheugen, nieuw transport voor de miniaturenstrook) staan in `PRODUCT.md`, `## Stack`.
 - Kleine commits per afgeronde stap, direct op `main`.
 - Tests waar ze het werk aantoonbaar sneller/veiliger maken (protocol, sync, jitterbuffer).
   Geen testdekking als doel op zich. Media handmatig testen met peer 2.

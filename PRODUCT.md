@@ -19,20 +19,22 @@ desktop
 
 ## Stack
 
-**Rust-kern + Tauri v2-weergave.** Besloten 2026-08-04, ter vervanging van egui/eframe.
+**Rust-kern + Tauri v2-weergave.** Besloten én uitgevoerd 2026-08-04, ter vervanging van
+egui/eframe. Zie `ROADMAP.md`, fase 12, en `docs/OVERDRACHT.md`, beslissing 19 en 20.
 
-Wat blijft: **de vijf niet-UI-crates onaangeroerd** — `proto`, `store`, `net`, `audio`,
-`video`. Gemeten vóór het besluit: buiten `crates/app/src/ui/` komt egui daar alleen voor
-in *doc-commentaar*; geen enkele API-aanroep. De hele wire-protocol-, sync-, voice- en
-screensharelaag staat dus buiten deze wissel.
+Wat gebleven is: **de vijf niet-UI-crates onaangeroerd** — `proto`, `store`, `net`,
+`audio`, `video`. Gemeten vóór het besluit en opnieuw erna: buiten `crates/app/src/ui/`
+komt egui daar alleen voor in *doc-commentaar*; geen enkele API-aanroep. De hele
+wire-protocol-, sync-, voice- en screensharelaag stond en staat buiten deze wissel.
 
-Wat vervangen wordt: `crates/app/src/ui/` (13 modules, 2.979 regels) en de
-vensterbootstrap in `main.rs` (~40 regels).
+Wat vervangen is: `crates/app/src/ui/` (was 13 egui-modules, 2.979 regels; nu drie
+Rust-modules plus `crates/app/frontend/`) en de vensterbootstrap in `main.rs`.
 
-Waarom dit goedkoop kan: de UI is al een pure weergave die een `Snapshot` leest en
-`UiCommand`'s terugstuurt over kanalen (`crates/app/src/ui/mod.rs`, `engine.rs`). Die grens
-wordt Tauri-commands en -events — grotendeels een mechanische vertaling. **Die grens is de
-reden dat dit haalbaar is; hem opgeven maakt een volgende stackwissel weer duur.**
+Waarom dit goedkoop kon: de UI was al een pure weergave die een `Snapshot` leest en
+`UiCommand`'s terugstuurt over kanalen. Die grens is Tauri-commands en -events geworden en
+staat er nog: `ui/state.rs` vertaalt de `Snapshot` naar JSON, `ui/commands.rs` vertaalt
+IPC-aanroepen terug naar `UiCommand`. **Die grens is de reden dat dit haalbaar was; hem
+opgeven maakt een volgende stackwissel weer duur.**
 
 Waarom Tauri en niet iets anders:
 
@@ -57,11 +59,17 @@ Wat dit kost, expliciet, zodat een latere sessie het niet als vergissing leest:
   standaardcodec kostte. Verschil: WebView2 zit standaard in Windows 11 en alle drie de
   machines draaien Windows 11. Zwakkere versie van dat probleem, geen herhaling. **Niet
   overstappen op de fixed-version runtime** — dat is ~180 MB en sloopt "losse exe in een zip".
-- **Een tweede taal in de repo**, en een frontend-bouwstap naast `cargo build`.
-- **De miniaturenstrook heeft een nieuw transport nodig.** Die krijgt nu elke 500 ms een
-  BGRA-downscale rechtstreeks in een egui-textuur (`D3dContext::lees_bgra_miniatuur`). Naar
-  een webview moet dat via een event of custom protocol naar een canvas. Bij 2 fps en een
-  kleine afmeting is dat verwaarloosbaar, maar het is werk dat nu gratis is.
+- **Een tweede taal in de repo.** De verwachte frontend-bouwstap is er níét gekomen: de
+  frontend is gewone HTML, CSS en JS zonder bundler, en `tauri-build` bakt de map in de
+  exe. `cargo build` bouwt dus nog steeds de hele app en er is geen Node nodig.
+- **Geheugen.** In rust gemeten op de dev-PC: 381 MB werkset voor het hele procesboompje
+  (de app plus zes WebView2-processen), tegen tientallen MB's met egui. Processortijd is
+  juist omlaag gegaan (31 ms over 60 seconden, 0,05% van één kern), en invariant 4 gaat
+  over wat een game merkt — dat is de processor, niet het werkgeheugen.
+- **De miniaturenstrook heeft een nieuw transport gekregen.** Was een BGRA-downscale
+  rechtstreeks in een egui-textuur; is nu een `thumbnail`-event met een revisienummer plus
+  een `thumb://`-protocol dat de PNG serveert aan een gewone `<img>`. Bij 2 fps en een
+  kleine afmeting verwaarloosbaar, maar het was werk dat eerst gratis was.
 - **Het pop-out kijkvenster blijft native en verandert niet.** Het argument ervoor wordt
   zelfs sterker: eframe rendeerde via wgpu op DX12 en een gedecodeerde D3D11-textuur daarin
   krijgen vroeg al `wgpu-hal`-interop (`docs/ARCHITECTURE.md`); in een webview is dat
@@ -172,15 +180,17 @@ Vastliggende technische randvoorwaarden die ontwerpwerk niet mag omzeilen:
   picturesmap staan in `config.toml`. Video-instellingen, gebruikersnaam en
   microfoon/weergave zitten wél in het Instellingen-venster.
 
-### Expliciet onbeslist
+### Beslist in fase 12
 
-- **UI-taal.** De UI, de documentatie en de code-identifiers (`deler`, `kijker`, `venster`,
-  `Actie`, …) zijn nu Nederlands. Rick geeft aan dat **Engels beter zou zijn**, maar dat is
-  nog geen genomen beslissing en de omvang is niet bepaald: alleen zichtbare UI-strings, de
-  nieuwe frontend erbij, of ook de Rust-identifiers en de docs. Er is geen vertaallaag en
-  i18n is geen doel — het gaat om één taalkeuze, niet om meertaligheid. De Tauri-migratie is
-  het natuurlijke moment om dit voor de weergavelaag te beslissen, want die wordt toch
-  helemaal opnieuw geschreven. Niet stilzwijgend één kant op oplossen.
+- **UI-taal: Engels.** Voorgelegd aan Rick bij het begin van fase 12 en zonder beperking
+  goedgekeurd. Uitgevoerd voor alles wat die fase herschreef: de zichtbare strings (die
+  stonden al zo in de comp) én de Rust-identifiers en JSON-veldnamen in
+  `crates/app/src/ui/`. De vertaling zit op één plek, `ui/state.rs`. De motor en de vier
+  andere crates zijn **niet** hernoemd — dat viel buiten de fase, en een repo-brede
+  hernoeming van `deler`, `kijker`, `venster` en `Actie` is toegestaan maar is eigen werk
+  met een eigen commit. De docs blijven Nederlands: die zijn een gesprek, geen API. Er is
+  geen vertaallaag en i18n is nog steeds geen doel. Zie `docs/OVERDRACHT.md`,
+  beslissing 20.
 
 ## Brand Commitments
 
@@ -204,20 +214,18 @@ Dit is dus een **commitment, geen compromis**, en toekomstig werk behandelt het 
   eigenzinnigheid die er alsnog in gesmokkeld wordt. Icoonrail → kanaal/DM-lijst → tijdlijn
   → ledenlijst. Ronde avatars, kanaalitems als lijstrijen, één accentkleur, donkere
   kolommen. Wie van Discord komt moet het blind kunnen bedienen.
-- **De kwaliteitslat is Discord en Slack.** Hun afwerkingsniveau is de meetlat: dat is waar
-  het werk aan afgemeten wordt, niet aan wat er nu in egui staat.
-- **Niet "anti-referentie" meer.** Ik heb dat woord eerder in dit bestand gebruikt toen de
-  richting nog open stond. Het is nu onjuist: `crates/app/src/ui/theme.rs` is een vroege,
-  laag-fidelity uitvoering van precies de richting die nu gekozen is. Het is een vertrekpunt
-  met een te lage afwerking, geen doodlopende weg.
-- **Het palet zelf blijft open.** Rick heeft bij de stackwissel voor visueel opnieuw doen
-  gekozen; de teal `#3ABFC0` en de vijf grijze lagen zijn geen vastgelegde waarden. Wat
-  vastligt is de *soort* wereld, niet de exacte kleuren.
+- **De kwaliteitslat is Discord en Slack.** Hun afwerkingsniveau is de meetlat.
+- **Het oude egui-thema was geen anti-referentie**, maar een vroege, laag-fidelity
+  uitvoering van precies deze richting. Het is in fase 12 vervangen, niet verworpen.
+- **Het palet ligt nu wél vast.** De oude teal `#3ABFC0` en de vijf grijze lagen zijn
+  vervangen door de zes lagen en de getunede teal `#2FB3AE` uit `DESIGN.md`. Wat daar staat
+  is opgeschreven uit de gebouwde comp, niet vooraf bedacht.
 - **De informatiestructuur blijft staan**, op Ricks expliciete keuze — de vier zones zijn
-  uitgeprobeerd en je vindt alles blind. Materiaal, typografie, kleur, dichtheid, ritme en
-  motion zijn vrij binnen de conventie.
+  uitgeprobeerd en je vindt alles blind.
 
-`DESIGN.md` wordt aan het eind van de bouw geschreven, uit de gebouwde wereld, niet vooraf.
+`DESIGN.md` is aan het eind van de bouw geschreven, uit de gebouwde wereld. De comp
+`design/main-window.html` en de 19 toestanden in `design/shots/` zijn de reproductie­doelen
+waartegen de Tauri-frontend gebouwd is.
 
 ## Evidence on Hand
 
