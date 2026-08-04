@@ -441,6 +441,19 @@ hygiene. The settings pane declares `display: grid`, which outranks the `hidden`
 without the override the hidden pane stayed a grid item and stole 245px of height from the four
 real columns. Any component with an explicit `display` needs this to exist.
 
+**The Zero-Floor Rule.** A grid track that holds text is `minmax(0, 1fr)`, never `1fr` and never
+the implicit `auto`. Both of those carry a min-content floor, so a track inside a fixed-width
+column is free to grow past it — and a column with no `overflow` then spills its content under
+the neighbour that paints on top. The channel column did exactly that: a fifteen-character
+display name made the voice panel 262px wide inside a 240px column, and the three self toggles
+slid out of the sidebar and vanished behind the timeline. The demo names in the comp were short
+enough that it never showed. With a floor of 0 the row can shrink, the name ellipsises, and the
+controls stay put — which is the right order: **the label gives way, never the target.**
+Everything in a fixed column that pairs a control with a label needs both halves of this: the
+zero floor on the track, and `flex: none` on the controls so they cannot be squeezed instead.
+This is the same failure as the volume slider's mandatory `min-width: 0` under Inputs — one
+family, two places it has already bitten.
+
 ## Elevation & Depth
 
 Depth is tonal first. The six ground layers plus one hairline value do all the structural

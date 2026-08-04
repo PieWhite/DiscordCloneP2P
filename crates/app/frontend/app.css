@@ -292,6 +292,13 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: grid;
+  /* minmax(0, 1fr), not the implicit `auto` track: an `auto` track sizes to its
+     max-content and is allowed to grow past the 240px column it sits in. A display name
+     of about fifteen characters did exactly that — the voice panel became 262px wide and
+     its three toggles slid out from under the sidebar and disappeared behind the
+     timeline, which paints on top. The floor of 0 lets the row shrink so the name
+     ellipsises instead. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 44px 1fr auto;
   min-height: 0;
 }
@@ -475,8 +482,8 @@ input, textarea { font: inherit; color: inherit; }
 }
 .self-id { min-width: 0; flex: 1; }
 .self-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.self-sub { font-size: 11px; color: var(--text-dim); }
-.self-actions { display: flex; gap: 2px; }
+.self-sub { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.self-actions { display: flex; gap: 2px; flex: none; }
 
 .self-btn {
   width: 28px; height: 28px;
@@ -986,7 +993,7 @@ input, textarea { font: inherit; color: inherit; }
 
 .mem {
   display: grid;
-  grid-template-columns: 32px 1fr;
+  grid-template-columns: 32px minmax(0, 1fr);
   gap: 9px;
   padding: 6px 6px 7px;
   border-radius: var(--r-md);
@@ -1127,7 +1134,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
 
 .settings {
   display: grid;
-  grid-template-columns: 208px 1fr;
+  grid-template-columns: 208px minmax(0, 1fr);
   min-height: 0;
   background: var(--bg-canvas);
 }

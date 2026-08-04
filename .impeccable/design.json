@@ -914,6 +914,10 @@
         "name": "The Whole-Shadow Rule",
         "body": "A shadow is used as a whole token or not at all. Its alpha is inseparable from its offset and blur, so there is no shadow colour token to reach for and no way to pair one shadow's darkness with another's geometry. Adding a fifth shadow means adding a fifth job, not a fifth size.",
         "section": "elevation"
+      },
+      {
+        "name": "The Zero-Floor Rule",
+        "text": "A grid track that holds text is minmax(0, 1fr), never 1fr and never the implicit auto: both carry a min-content floor, so a track inside a fixed-width column can grow past it and spill under the neighbour that paints on top. Found in the shipped frontend, where a fifteen-character display name made the voice panel 262px wide inside the 240px channel column and pushed the three self toggles behind the timeline. Pair the zero floor with flex: none on the controls, so the label gives way and the target never does."
       }
     ],
     "dos": [
