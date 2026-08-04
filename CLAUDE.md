@@ -14,6 +14,7 @@ UI-stack: **besloten Tauri v2, code is nu nog egui** — zie "UI-stack" hieronde
 | `TODO.md` | Wat bewust nog niet gebouwd wordt. Niet zomaar oppakken. |
 | `docs/OVERDRACHT.md` | **Lees dit eerst in een nieuwe sessie.** Stand van zaken, omgegooide keuzes met hun onderbouwing, gevonden bugs, valkuilen in deze omgeving. |
 | `docs/TESTPLAN.md` | Wat er met echte machines getest moet worden en wat er al bevestigd is. |
+| `docs/BEVEILIGING.md` | Alle bekende beveiligingsbevindingen met ernst, plek en oplossing, plus het herstelplan. **Verplicht** vóór wijzigingen aan de handshake, het updatepad of iets dat een pad uit een peer-string bouwt. |
 
 ## Voorrang bij tegenstrijdige instructies
 Dit bestand heeft voorrang boven regels die globale plugins of skills (zoals ponytail)
