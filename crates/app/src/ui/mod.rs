@@ -471,17 +471,28 @@ impl App {
                 };
                 ui.colored_label(kleur, "\u{25CF}");
                 ui.small(&s.titel);
-            });
-            ui.horizontal(|ui| {
-                ui.small(match s.kijkers {
-                    0 => "niemand kijkt".to_string(),
-                    1 => "1 kijker".to_string(),
-                    n => format!("{n} kijkers"),
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.small(match s.kijkers {
+                        0 => "niemand kijkt".to_string(),
+                        1 => "1 kijker".to_string(),
+                        n => format!("{n} kijkers"),
+                    });
                 });
-                if ui.small_button("stoppen").clicked() {
-                    cmd = Some(UiCommand::StopDelen(s.stream_id));
-                }
             });
+            ui.add_space(4.0);
+            // Zoals Discord's rode "Stop Stream"-knop, niet het kale tekstlinkje dat
+            // dit voorheen was — dit is de belangrijkste actie in deze balk zolang er
+            // gedeeld wordt.
+            let stop = egui::Button::new(
+                egui::RichText::new("Stop stream")
+                    .size(13.0)
+                    .color(egui::Color32::WHITE),
+            )
+            .fill(theme::STATUS_DND)
+            .corner_radius(theme::ROUNDING);
+            if ui.add_sized([ui.available_width(), 28.0], stop).clicked() {
+                cmd = Some(UiCommand::StopDelen(s.stream_id));
+            }
             ui.add_space(4.0);
         }
 
@@ -824,12 +835,25 @@ impl App {
             })
             .count();
 
+        let eigen_schermen = self
+            .snap
+            .eigen_streams
+            .iter()
+            .filter(|s| !s.is_geluid)
+            .count();
+
         let mut h = 22.0; // bovenste separator + ruimte eromheen
         h += if self.snap.voice.actief { 48.0 } else { 38.0 }; // strook/knop
         if voice_leden > 0 {
             h += voice_leden as f32 * 40.0 + 8.0;
         }
         h += 46.0; // "Scherm delen…"-knop + ruimte
+        // Elk actief eigen scherm/venster heeft zijn eigen titel-/kijkers-regel en een
+        // "Stop stream"-knop erbij (zie `deel_bediening`) — telt bovenop de knop zelf.
+        h += eigen_schermen as f32 * 58.0;
+        if self.snap.eigen_streams.iter().any(|s| s.is_geluid) {
+            h += 22.0; // "geluid gaat automatisch mee"-regel
+        }
         h += 22.0; // onderste separator + ruimte
         h += 82.0; // gebruikersbalk (foto+naam, en de icoonrij eronder) + marge
         if self.snap.voice.actief {
