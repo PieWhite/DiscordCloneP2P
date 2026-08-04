@@ -1,1033 +1,439 @@
-//! De UI: het Discord-achtige ontwerp uit `docs/` verdeeld over deze weergave-modules.
+//! The display layer: a Tauri v2 window on WebView2.
 //!
-//! Puur een weergave: leest een momentopname van de motor en stuurt commando's terug.
-//! Er wordt hier geen enkele beslissing genomen over netwerk of opslag, en er staat
-//! geen state in die verloren gaat als het venster even niet tekent.
+//! Pure display, exactly as the egui version was. It reads a snapshot from the engine
+//! and sends commands back; no decision about the network or the store is taken here,
+//! and no state lives here that would be lost if the window stopped drawing. That
+//! boundary — `Snapshot` in, `UiCommand` out — is what made swapping the whole UI stack
+//! affordable, so it survived the swap on purpose. See `docs/OVERDRACHT.md`, decision 19.
+//!
+//! # Three kinds of traffic, deliberately separated
+//!
+//! - `state` carries everything structural and is emitted **only when the serialized
+//!   state actually differs**. With nothing happening it fires zero times a second,
+//!   where egui repainted four times a second because immediate mode cannot do
+//!   otherwise. That was one of the arguments for the move, so it is measured rather
+//!   than assumed.
+//! - `meters` carries the two things that change while you merely look at them — speaking
+//!   level and RTT — at 4 Hz, and only while a call is running or a peer is online. The
+//!   frontend patches attributes with it instead of re-rendering panels.
+//! - `thumbnail` carries the stream strip at 2 Hz. In egui this was an
+//!   `egui::TextureHandle` per stream; here the bytes are served over a `thumb://`
+//!   protocol and the event only says which tile changed.
 
-pub mod channels;
-pub mod chat_pane;
-pub mod dms;
-pub mod modals;
-pub mod rail;
-pub mod settings;
-pub mod statusbar;
-pub mod stream_strip;
-pub mod theme;
-pub mod titlebar;
-pub mod widgets;
+pub mod commands;
+pub mod state;
 
-use settings::SettingsTab;
-
-use crate::engine::{self, EngineHandle, Snapshot, UiCommand};
+use crate::config::Config;
+use crate::engine::{EngineHandle, Snapshot};
 use crate::tray;
-use eframe::egui;
-use fitcom_proto::{Channel, OpId, PeerId, TopicId};
-use fitcom_video::Bron;
+use fitcom_proto::PeerId;
+use state::{Constants, UiState};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::{Emitter, Manager};
 
-/// 4 fps als er niets gebeurt. Genoeg om wijzigingen direct te tonen, en
-/// verwaarloosbaar qua CPU — de app moet in rust vrijwel niets doen.
-const IDLE_REPAINT: Duration = Duration::from_millis(250);
-/// Tijdens een gesprek vaker: een spreekindicatie die vier keer per seconde bijwerkt
-/// oogt traag. Dit kost pas iets als er daadwerkelijk gepraat wordt.
-const VOICE_REPAINT: Duration = Duration::from_millis(80);
+/// Speaking level and RTT are the only things that move while the window is idle-ish.
+/// 4 Hz is the rate the old build repainted *everything* at; here it moves two numbers.
+const METER_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Welke van de elkaar uitsluitende hoofdweergaven getoond wordt, gestuurd door de
-/// icoonrail (`ui/rail.rs`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppView {
-    Channels,
-    Dms,
-    Settings,
-}
+/// The stream strip. `docs/OVERDRACHT.md` sets the budget at 2 fps and a small size.
+const THUMBNAIL_INTERVAL: Duration = Duration::from_millis(500);
 
-pub struct App {
-    engine: EngineHandle,
-    snap: Arc<Snapshot>,
-    mij: PeerId,
-    eigen_naam: String,
-    control_port: u16,
-    data_dir: PathBuf,
-    downloads_dir: PathBuf,
-    /// Content-adresseerbare map voor afbeeldingen, zowel eigen aanbod als gedownload —
-    /// zie `files::hash_bestandsnaam`. Apart van `downloads_dir`: dit zijn geen
-    /// gebruikersbestanden met een leesbare naam.
-    pictures_dir: PathBuf,
-    /// Moet in leven blijven zolang de app draait, anders stopt alles eronder.
+/// Everything the commands need. Managed by Tauri, so one instance for the process.
+pub struct Ui {
+    pub engine: EngineHandle,
+    pub me: PeerId,
+    pub fallback_name: String,
+    pub pictures_dir: PathBuf,
+    pub minimize_to_tray: bool,
+    constants: Constants,
+    /// The source list handed to the picker, so "share the third one" resolves to the
+    /// same source the user saw. Replaced wholesale every time the picker opens.
+    sources: Mutex<Vec<fitcom_video::Bron>>,
+    /// Bumped when the op log changes. The frontend refetches the open conversation on a
+    /// change instead of the whole history riding on every state event.
+    timeline_revision: AtomicU64,
+    last_timeline: Mutex<usize>,
+    /// PNG bytes per stream key, served over `thumb://`.
+    thumbnails: Mutex<HashMap<String, Arc<Vec<u8>>>>,
+    /// When each peer was last seen online, observed while this process ran.
+    last_seen: Mutex<HashMap<PeerId, i64>>,
+    /// Must outlive everything below it: dropping the runtime stops the engine.
     _runtime: tokio::runtime::Runtime,
-    invoer: String,
-    bewerkt: Option<OpId>,
-    vorig_aantal: usize,
-    /// Het algemene kanaal, of een DM — bepaalt wat de chat- en bestandenpanelen tonen
-    /// en waar een nieuw bericht naartoe gaat.
-    actief_kanaal: Channel,
-    /// Welke hoofdweergave de icoonrail net toont. Bepaalt alleen de lay-out, niet
-    /// welk kanaal actief is — zie `laatste_niet_dm_kanaal`/`laatste_dm` hieronder.
-    view: AppView,
-    /// Laatst bekeken niet-DM-kanaal (Algemeen of een subkanaal). Zo verlies je je
-    /// plek niet als je tijdelijk naar de DM-weergave wisselt en terugkomt.
-    laatste_niet_dm_kanaal: Channel,
-    /// Laatst geopende DM-gesprek, indien er ooit één geopend is. `None` betekent: de
-    /// DM-weergave toont een lege "kies een gesprek"-staat, geen geforceerde keuze.
-    laatste_dm: Option<PeerId>,
-    /// Welke tab van de Instellingen-weergave getoond wordt.
-    settings_tab: SettingsTab,
-    naar_tray: bool,
-    /// `Some` zolang het keuzemenu voor te delen bronnen open staat. De lijst wordt bij
-    /// het openen opgehaald: vensters komen en gaan, dus hem bewaren zou hem verouderen.
-    bronkeuze: Option<Vec<Bron>>,
-    /// `Some` zolang het algemene instellingenscherm open staat. Een kopie van de
-    /// video-instellingen om in te bewerken, zodat "annuleren" niets hoeft terug te
-    /// draaien — geldt alleen voor de video-sectie van het scherm.
-    instellingen: Option<VideoConcept>,
-    /// Namen van de beschikbare microfoons en weergaveapparaten, opgehaald zodra het
-    /// Geluid-tabblad voor het eerst getoond wordt. `None` = nog niet opgehaald; de
-    /// "Vernieuwen"-knop zet hem terug op `None` zodat een net ingeplugde headset
-    /// verschijnt.
-    audio_apparaten: Option<(Vec<String>, Vec<String>)>,
-    /// Staat de bevestigingsvraag voor "Verwijder alle afbeeldingen" open? Los van
-    /// `instellingen`, zodat annuleren van de bevestiging het instellingenscherm zelf
-    /// niet sluit.
-    bevestig_verwijder_afbeeldingen: bool,
-    /// `Some` zolang het profielvenster open staat. Bewerkbare kopie van de naam, zodat
-    /// "annuleren" niets hoeft terug te draaien.
-    profiel: Option<String>,
-    /// `Some` zolang het invoerveld voor een nieuw subkanaal open staat, met de al
-    /// getypte titel erin.
-    nieuw_kanaal_titel: Option<String>,
-    /// `Some` zolang het hernoem-venster voor een subkanaal open staat: welk subkanaal,
-    /// en een bewerkbare kopie van zijn titel.
-    kanaal_hernoemen: Option<(TopicId, String)>,
-    /// `Some` zolang de bevestigingsvraag voor "subkanaal verwijderen" open staat, met
-    /// welk subkanaal het betreft.
-    bevestig_verwijder_kanaal: Option<TopicId>,
-    /// Welke suggestie in de @tag-autocomplete gemarkeerd is. Reset zodra de getypte
-    /// tag verandert, zie `chat_paneel`.
-    tag_selectie: usize,
-    /// Stond er vorige frame een suggestielijst open? Bepaalt of Tab/Enter dit frame
-    /// vóór het tekenen van het invoerveld uit de toetsenbordgebeurtenissen gehaald
-    /// moeten worden — anders voegt een multiline `TextEdit` zelf al een tab-teken of
-    /// nieuwe regel in vóórdat onze eigen code de tag kan afronden. Zie `chat_paneel`.
-    tag_actief: bool,
-    /// Geladen teksturen voor het overzicht, met de pointer van de laatst geüploade
-    /// `Arc` erbij. Zo hoeft een miniatuur die niet ververst is niet elke frame opnieuw
-    /// naar de GPU; alleen een echt nieuwe `Arc` (van de kijk-thread) triggert dat.
-    miniatuur_cache: HashMap<(PeerId, u32), (usize, egui::TextureHandle)>,
-    /// Geladen miniatuurteksturen van aangeboden afbeeldingen, per `OpId`. Het pad zelf
-    /// is altijd deterministisch af te leiden uit `FileView::hash` (zie
-    /// `files::hash_bestandsnaam`) — zowel voor wat wij aanbieden als voor wat we
-    /// gedownload hebben — dus is er geen aparte boekhouding per bestandsnaam nodig
-    /// zoals eerder wel het geval was. De bytes van een aangeboden bestand veranderen
-    /// nooit meer, dus dit hoeft nooit ververst te worden zoals `miniatuur_cache` dat
-    /// wel moet.
-    bijlage_texturen: HashMap<OpId, egui::TextureHandle>,
-    /// Was Ctrl+V vorige frame al ingedrukt? Voor randdetectie op `GetAsyncKeyState` —
-    /// zie `App::ctrl_v_zojuist_ingedrukt` voor waarom dit niet via egui's eigen
-    /// toetsenbordevents kan.
-    ctrl_v_ingedrukt: bool,
 }
 
-/// Bewerkbare kopie van de video-instellingen. Bitrate in Mbit/s voor de schuif —
-/// niemand denkt in bits per seconde.
-struct VideoConcept {
-    codec: String,
-    fps: u32,
-    bitrate_mbit: f32,
-}
-
-impl App {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        engine: EngineHandle,
-        mij: PeerId,
-        eigen_naam: String,
-        control_port: u16,
-        data_dir: PathBuf,
-        downloads_dir: PathBuf,
-        pictures_dir: PathBuf,
-        naar_tray: bool,
-        runtime: tokio::runtime::Runtime,
-    ) -> Self {
-        let snap = engine.snapshot.borrow().clone();
-        Self {
-            engine,
-            snap,
-            mij,
-            eigen_naam,
-            control_port,
-            data_dir,
-            downloads_dir,
-            pictures_dir,
-            _runtime: runtime,
-            invoer: String::new(),
-            bewerkt: None,
-            vorig_aantal: 0,
-            actief_kanaal: Channel::GENERAL,
-            view: AppView::Channels,
-            laatste_niet_dm_kanaal: Channel::GENERAL,
-            laatste_dm: None,
-            settings_tab: SettingsTab::Account,
-            naar_tray,
-            bronkeuze: None,
-            instellingen: None,
-            audio_apparaten: None,
-            bevestig_verwijder_afbeeldingen: false,
-            profiel: None,
-            nieuw_kanaal_titel: None,
-            kanaal_hernoemen: None,
-            bevestig_verwijder_kanaal: None,
-            tag_selectie: 0,
-            tag_actief: false,
-            miniatuur_cache: HashMap::new(),
-            bijlage_texturen: HashMap::new(),
-            ctrl_v_ingedrukt: false,
-        }
+impl Ui {
+    fn state(&self) -> UiState {
+        let snap = self.engine.snapshot.borrow().clone();
+        self.build_state(&snap)
     }
 
-    fn stuur(&self, cmd: UiCommand) {
-        if let Err(e) = self.engine.commands.try_send(cmd) {
-            tracing::warn!(error = %e, "commando niet doorgegeven aan de motor");
-        }
+    fn build_state(&self, snap: &Snapshot) -> UiState {
+        let seen = self.note_last_seen(snap);
+        UiState::build(snap, &self.constants, self.revision(snap), &seen)
     }
 
-    fn versturen(&mut self) {
-        let tekst = self.invoer.trim().to_string();
-        if tekst.is_empty() {
-            self.invoer.clear();
-            self.bewerkt = None;
-            return;
+    /// "Last seen 22:14, 3 August" is the roster's line for a peer who is away, and the
+    /// engine has nowhere to put it — a peer that is gone has no status to carry it. So
+    /// it is observed here: every time a peer is up, that is the moment we remember.
+    /// Not persisted, so the first run after a restart says plain "Offline" instead of
+    /// making a time up.
+    fn note_last_seen(&self, snap: &Snapshot) -> HashMap<PeerId, i64> {
+        let mut seen = self.last_seen.lock().unwrap();
+        let now = chrono::Local::now().timestamp_millis();
+        for p in &snap.peers {
+            if let (Some(id), fitcom_net::PeerStatus::Online { .. }) = (p.peer_id, &p.status) {
+                seen.insert(id, now);
+            }
         }
-        match self.bewerkt.take() {
-            Some(doel) => self.stuur(UiCommand::Bewerk(doel, tekst)),
-            None => self.stuur(UiCommand::Plaats(tekst, self.actief_kanaal)),
-        }
-        self.invoer.clear();
+        seen.clone()
     }
 
-    fn naam_van(&self, peer: PeerId) -> String {
-        self.snap
-            .timeline
+    /// The op log is rebuilt into a fresh `Arc<Timeline>` whenever it changes, so
+    /// comparing the allocation is enough — and the previous `Arc` is kept alive by the
+    /// snapshot we are holding, so the address cannot be recycled underneath us.
+    fn revision(&self, snap: &Snapshot) -> u64 {
+        let ptr = Arc::as_ptr(&snap.timeline) as usize;
+        let mut last = self.last_timeline.lock().unwrap();
+        if *last != ptr {
+            *last = ptr;
+            self.timeline_revision.fetch_add(1, Ordering::Relaxed);
+        }
+        self.timeline_revision.load(Ordering::Relaxed)
+    }
+
+    fn display_name(&self, snap: &Snapshot) -> String {
+        snap.timeline
             .nicknames
-            .get(&peer)
+            .get(&self.me)
             .cloned()
-            .unwrap_or_else(|| peer.to_string()[..8].to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.fallback_name.clone())
     }
+}
 
-    /// Of een bericht of bestand bij het actief bekeken kanaal hoort.
-    ///
-    /// Voor het algemene kanaal is dat een gewone gelijkheid. Voor een DM ligt het
-    /// subtieler: `Channel::dm(x)` betekent "de auteur DM'de naar x", dus *mijn* eigen
-    /// berichten aan X dragen `Dm(X)`, maar X's antwoorden aan mij dragen `Dm(mij)` — niet
-    /// `Dm(X)`. Een DM-gesprek met X bestaat dus uit twee verschillende kanaalwaarden, één
-    /// per gespreksdeelnemer. Simpelweg vergelijken met `self.actief_kanaal` (wat altijd
-    /// `Dm(X)` is) laat daardoor alleen je eigen kant van het gesprek zien en nooit de
-    /// antwoorden van de ander.
-    fn hoort_bij_actief_kanaal(&self, kanaal: Channel, auteur: PeerId) -> bool {
-        hoort_bij_kanaal(self.actief_kanaal, self.mij, kanaal, auteur)
-    }
+fn parse_peer(id: &str) -> Option<PeerId> {
+    id.parse::<uuid::Uuid>().ok().map(PeerId)
+}
 
-    /// Wisselt van kanaal. Een half getypt bericht of een lopende bewerking hoort niet
-    /// per ongeluk in het verkeerde gesprek terecht te komen, dus die vervallen hierbij.
-    fn wissel_kanaal(&mut self, kanaal: Channel) {
-        // Bijhouden welk kanaal je in elke weergave het laatst bekeek, ook als dit
-        // vroegtijdig terugkeert omdat het al het actieve kanaal is — anders zou een
-        // eerste `wissel_view` naar Dms nooit een `laatste_dm` vinden als je toevallig
-        // al op die DM zat vóór het wisselen van weergave.
-        match kanaal.dm_peer() {
-            Some(peer) => self.laatste_dm = Some(peer),
-            None => self.laatste_niet_dm_kanaal = kanaal,
-        }
+/// Starts the window. Returns when the user really quits — closing to the tray does not
+/// come back here.
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    engine: EngineHandle,
+    me: PeerId,
+    cfg: &Config,
+    downloads_dir: PathBuf,
+    pictures_dir: PathBuf,
+    runtime: tokio::runtime::Runtime,
+) -> anyhow::Result<()> {
+    let ui = Ui {
+        me,
+        fallback_name: cfg.display_name.clone(),
+        pictures_dir: pictures_dir.clone(),
+        minimize_to_tray: cfg.minimize_to_tray,
+        constants: Constants {
+            me,
+            fallback_name: cfg.display_name.clone(),
+            control_port: cfg.control_port,
+            media_port: cfg.media_port,
+            download_dir: downloads_dir,
+            pictures_dir: pictures_dir.clone(),
+            autostart: cfg.autostart,
+            minimize_to_tray: cfg.minimize_to_tray,
+        },
+        sources: Mutex::new(Vec::new()),
+        timeline_revision: AtomicU64::new(0),
+        last_timeline: Mutex::new(0),
+        thumbnails: Mutex::new(HashMap::new()),
+        last_seen: Mutex::new(HashMap::new()),
+        engine,
+        _runtime: runtime,
+    };
 
-        if self.actief_kanaal == kanaal {
-            return;
-        }
-        self.actief_kanaal = kanaal;
-        self.invoer.clear();
-        self.bewerkt = None;
-        if let Some(peer) = kanaal.dm_peer() {
-            self.stuur(UiCommand::GelezenDm(peer));
-        } else if let Some(topic) = kanaal.topic_id() {
-            self.stuur(UiCommand::GelezenTopic(topic));
-        } else {
-            self.stuur(UiCommand::Gelezen);
-        }
-    }
+    let foreground = ui.engine.voorgrond.clone();
+    let quit_for_update = ui.engine.afsluiten_voor_update.clone();
+    let snapshot_rx = ui.engine.snapshot.clone();
+    let to_tray = cfg.minimize_to_tray;
 
-    /// Wisselt van hoofdweergave (icoonrail) en herstelt daarbij waar je was: de
-    /// Kanalen-weergave opent op het laatst bekeken niet-DM-kanaal, de DM-weergave op
-    /// het laatst geopende gesprek — of laat het actieve kanaal met rust als er nog
-    /// geen DM is geweest, zodat er geen gesprekspartner wordt afgedwongen.
-    fn wissel_view(&mut self, view: AppView) {
-        self.view = view;
-        match view {
-            AppView::Channels => self.wissel_kanaal(self.laatste_niet_dm_kanaal),
-            AppView::Dms => {
-                if let Some(peer) = self.laatste_dm {
-                    self.wissel_kanaal(Channel::dm(peer));
+    tauri::Builder::default()
+        .manage(ui)
+        .register_uri_scheme_protocol("thumb", move |ctx, request| {
+            let app = ctx.app_handle();
+            let ui: tauri::State<'_, Ui> = app.state();
+            let key = request.uri().path().trim_start_matches('/').to_string();
+            let png = ui.thumbnails.lock().unwrap().get(&key).cloned();
+            match png {
+                Some(png) => tauri::http::Response::builder()
+                    .header("Content-Type", "image/png")
+                    // The URL carries a revision, so a stale frame is never requested;
+                    // caching it is what keeps a re-render from re-fetching.
+                    .header("Cache-Control", "max-age=31536000, immutable")
+                    .body(png.to_vec())
+                    .unwrap_or_default(),
+                None => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap_or_default(),
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_state,
+            commands::get_timeline,
+            commands::send_message,
+            commands::edit_message,
+            commands::delete_message,
+            commands::mark_read,
+            commands::dismiss_error,
+            commands::set_joined,
+            commands::set_muted,
+            commands::set_deafened,
+            commands::set_do_not_disturb,
+            commands::set_peer_volume,
+            commands::set_stream_volume,
+            commands::set_watching,
+            commands::list_sources,
+            commands::share_source,
+            commands::stop_sharing,
+            commands::set_video_settings,
+            commands::list_audio_devices,
+            commands::set_audio_devices,
+            commands::set_display_name,
+            commands::pick_and_offer_file,
+            commands::offer_files,
+            commands::offer_pasted_image,
+            commands::download_file,
+            commands::delete_all_images,
+            commands::create_channel,
+            commands::rename_channel,
+            commands::delete_channel,
+            commands::apply_update,
+            commands::ignore_update,
+            commands::dismiss_update,
+            commands::close_window,
+            ready,
+        ])
+        .setup(move |app| {
+            let handle = app.handle().clone();
+
+            // Images are read straight off disk by the webview through `asset:`, so the
+            // one folder they can live in is opened and nothing else is.
+            app.asset_protocol_scope().allow_directory(&pictures_dir, false)?;
+
+            if let Some(window) = app.get_webview_window("main") {
+                // The tray thread talks to the window over Win32 so it can show it again
+                // even when nothing is drawing — hidden windows do not run event loops.
+                match window.hwnd() {
+                    Ok(hwnd) => tray::onthoud_venster(hwnd.0 as isize),
+                    Err(e) => tracing::warn!(error = %e, "no window handle; the tray cannot show the window"),
                 }
             }
-            // Instellingen heeft geen "actief kanaal" om te herstellen — de rail vult
-            // hier zelf `self.instellingen` (zie `App::open_instellingen`).
-            AppView::Settings => {}
-        }
+
+            // The icon has to stay alive or it drops straight out of the tray.
+            match tray::start() {
+                Ok(t) => std::mem::forget(t),
+                Err(e) => tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed"),
+            }
+
+            spawn_state_pusher(handle.clone(), snapshot_rx.clone());
+            spawn_meters(handle.clone(), snapshot_rx.clone());
+            spawn_thumbnails(handle.clone(), snapshot_rx.clone());
+            spawn_quit_watcher(handle, quit_for_update.clone());
+            Ok(())
+        })
+        .on_window_event(move |window, event| match event {
+            // The engine reads this to decide whether a message deserves a Windows
+            // notification. Unfocused is not the same as hidden, and both count.
+            tauri::WindowEvent::Focused(focused) => {
+                foreground.store(*focused, Ordering::Relaxed);
+                let _ = window.emit("focus", *focused);
+            }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                if to_tray {
+                    api.prevent_close();
+                    foreground.store(false, Ordering::Relaxed);
+                    tray::verberg_venster();
+                }
+            }
+            tauri::WindowEvent::DragDrop(drop) => match drop {
+                tauri::DragDropEvent::Enter { .. } | tauri::DragDropEvent::Over { .. } => {
+                    let _ = window.emit("drag", true);
+                }
+                tauri::DragDropEvent::Drop { paths, .. } => {
+                    let _ = window.emit("drag", false);
+                    let _ = window.emit("dropped", paths.clone());
+                }
+                _ => {
+                    let _ = window.emit("drag", false);
+                }
+            },
+            _ => {}
+        })
+        .run(tauri::generate_context!())
+        .map_err(|e| anyhow::anyhow!("starting the window: {e}"))?;
+
+    Ok(())
+}
+
+/// Called once the frontend has painted. The window starts hidden so the first thing on
+/// screen is the finished dark shell, never a white rectangle — the app is used in a
+/// dark room and a flash of white is the one thing the theme exists to avoid.
+#[tauri::command]
+fn ready(app: tauri::AppHandle, ui: tauri::State<'_, Ui>) -> UiState {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
+    ui.state()
+}
 
-    /// Discord-achtige balk onderaan zowel de Kanalen- als de DM-zijbalk (`ui/channels.rs`,
-    /// `ui/dms.rs`): boven avatar/naam/status, daaronder — op dezelfde hoogte als de
-    /// foto, niet naast de naam — een rij icoonknoppen (mic-mute, headphone-deafen,
-    /// niet storen, instellingen-tandwiel).
-    ///
-    /// Mute/deafen werken alleen tijdens een actief gesprek (zie `engine.rs`'s
-    /// `UiCommand::Mute`/`Deafen`), dus die twee knoppen zijn buiten een gesprek zichtbaar
-    /// maar uitgeschakeld in plaats van verborgen — net als in de echte Discord-client.
-    ///
-    /// Levert (mute-wijziging, deafen-wijziging, niet-storen-wijziging, instellingen-
-    /// tandwiel aangeklikt) — de aanroeper stuurt de eerste drie als commando en opent
-    /// bij de vierde de Instellingen-weergave, want binnen deze functie is `self` al
-    /// onveranderlijk geleend door de paneelsluiting.
-    fn gebruiker_balk(&mut self, ui: &mut egui::Ui) -> (Option<bool>, Option<bool>, Option<bool>, bool) {
-        let eigen = self
-            .snap
-            .timeline
-            .nicknames
-            .get(&self.mij)
-            .cloned()
-            .unwrap_or_else(|| self.eigen_naam.clone());
-        let eigen_kleur = widgets::kleur_van(self.mij);
-        let status_kleur = if self.snap.niet_storen {
-            theme::STATUS_DND
-        } else {
-            theme::STATUS_ONLINE
-        };
-
-        let mut mute_wijziging = None;
-        let mut deafen_wijziging = None;
-        let mut niet_storen_wijziging = None;
-        let mut instellingen_openen = false;
-
-        ui.horizontal(|ui| {
-            let avatar = widgets::avatar_square(ui, &widgets::initialen(&eigen), eigen_kleur, 32.0);
-            widgets::status_badge(ui.painter(), avatar.rect, status_kleur, theme::BG_SIDEBAR);
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new(&eigen).strong().size(14.0));
-                ui.small(
-                    egui::RichText::new(if self.snap.niet_storen {
-                        "Niet storen"
-                    } else {
-                        "Online"
-                    })
-                    .color(status_kleur),
-                );
-            });
-        });
-
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if widgets::icon_toggle(ui, false, true, "\u{2699}")
-                .on_hover_text("Instellingen")
-                .clicked()
-            {
-                instellingen_openen = true;
+fn spawn_state_pusher(app: tauri::AppHandle, mut rx: tokio::sync::watch::Receiver<Arc<Snapshot>>) {
+    tauri::async_runtime::spawn(async move {
+        let mut previous = String::new();
+        loop {
+            if rx.changed().await.is_err() {
+                return;
             }
-            if widgets::icon_toggle(ui, self.snap.niet_storen, true, "\u{1F515}")
-                .on_hover_text("Niet storen")
-                .clicked()
-            {
-                niet_storen_wijziging = Some(!self.snap.niet_storen);
-            }
-            let v = &self.snap.voice;
-            if widgets::icon_toggle(ui, v.deafened, v.actief, "\u{1F3A7}")
-                .on_hover_text("Deafen")
-                .clicked()
-            {
-                deafen_wijziging = Some(!v.deafened);
-            }
-            if widgets::icon_toggle(ui, v.muted, v.actief, "\u{1F3A4}")
-                .on_hover_text("Mute")
-                .clicked()
-            {
-                mute_wijziging = Some(!v.muted);
-            }
-        });
-
-        if self.snap.voice.actief {
-            let niveau = if self.snap.voice.muted {
-                0.0
-            } else {
-                self.snap.voice.eigen_niveau
+            let snap = rx.borrow_and_update().clone();
+            let ui: tauri::State<'_, Ui> = app.state();
+            let json = match serde_json::to_string(&ui.build_state(&snap)) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::error!(error = %e, "serializing the state failed");
+                    continue;
+                }
             };
-            widgets::niveaubalk(ui, niveau);
-        }
-
-        (mute_wijziging, deafen_wijziging, niet_storen_wijziging, instellingen_openen)
-    }
-
-    /// Levert `true` als er deze frame niets meer getekend hoeft te worden.
-    ///
-    /// De sluitknop verbergt naar de tray in plaats van af te sluiten: de motor loopt
-    /// door, dus je blijft berichten ontvangen en een melding krijgen terwijl je iets
-    /// anders doet. Echt afsluiten gaat via het tray-menu.
-    fn afsluiten_of_verbergen(&mut self, ctx: &egui::Context) -> bool {
-        if tray::wil_afsluiten() || self.engine.afsluiten_voor_update.load(Ordering::Relaxed) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return true;
-        }
-
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if !self.naar_tray {
-                return false; // gewoon afsluiten
+            // The engine publishes on a fixed tick, so most of these are identical to the
+            // last one. Comparing here is what keeps an idle window at zero events —
+            // volatile figures live in `meters` precisely so they cannot defeat this.
+            if json == previous {
+                continue;
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            // De motor moet weten dat we niet meer kijken, anders blijven meldingen uit.
-            self.engine.voorgrond.store(false, Ordering::Relaxed);
-            tray::verberg_venster();
-            return true;
+            previous = json.clone();
+            let _ = app.emit("state", json);
         }
-
-        false
-    }
+    });
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.snap = self.engine.snapshot.borrow_and_update().clone();
-        ctx.request_repaint_after(if self.snap.voice.actief {
-            VOICE_REPAINT
-        } else {
-            IDLE_REPAINT
-        });
+fn spawn_meters(app: tauri::AppHandle, rx: tokio::sync::watch::Receiver<Arc<Snapshot>>) {
+    tauri::async_runtime::spawn(async move {
+        let mut previous = String::new();
+        let mut ticker = tokio::time::interval(METER_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let snap = rx.borrow().clone();
 
-        if self.afsluiten_of_verbergen(ctx) {
-            return;
-        }
-
-        // De motor gebruikt dit om te bepalen of er een Windows-melding moet komen.
-        let voorgrond = ctx.input(|i| i.focused);
-        self.engine.voorgrond.store(voorgrond, Ordering::Relaxed);
-        if voorgrond {
-            // Alleen het kanaal dat je daadwerkelijk bekijkt telt als gelezen: zit je
-            // in een DM, dan mag dat het algemene kanaal niet stilletjes wegstrepen,
-            // en andersom.
-            match (self.actief_kanaal.dm_peer(), self.actief_kanaal.topic_id()) {
-                (Some(p), _) if self.snap.ongelezen_dm.get(&p).copied().unwrap_or(0) > 0 => {
-                    self.stuur(UiCommand::GelezenDm(p));
-                }
-                (None, Some(t)) if self.snap.ongelezen_topic.get(&t).copied().unwrap_or(0) > 0 => {
-                    self.stuur(UiCommand::GelezenTopic(t));
-                }
-                (None, None) if self.snap.ongelezen > 0 => self.stuur(UiCommand::Gelezen),
-                _ => {}
-            }
-        }
-
-        self.verwerk_gedropte_bestanden(ctx);
-
-        titlebar::resize_randen(ctx);
-        titlebar::titlebar(ctx);
-        rail::rail(self, ctx);
-
-        self.bronkeuze_venster(ctx);
-        self.bevestig_verwijder_afbeeldingen_venster(ctx);
-        self.kanaal_hernoemen_venster(ctx);
-        self.bevestig_verwijder_kanaal_venster(ctx);
-        self.update_beschikbaar_venster(ctx);
-        self.statusbalk(ctx);
-        self.overzicht_strook(ctx);
-        match self.view {
-            AppView::Channels => self.channels_view(ctx),
-            AppView::Dms => self.dms_view(ctx),
-            AppView::Settings => self.settings_view(ctx),
-        }
-    }
-}
-
-impl App {
-    /// Wat wij delen, plus de knop om er iets bij te doen.
-    ///
-    /// Levert het commando en "open het keuzemenu" terug in plaats van ze meteen uit
-    /// te voeren: binnen de paneelsluiting is `self` al onveranderlijk geleend.
-    fn deel_bediening(&self, ui: &mut egui::Ui) -> (Option<UiCommand>, bool) {
-        let mut cmd = None;
-
-        let schermen: Vec<_> = self
-            .snap
-            .eigen_streams
-            .iter()
-            .filter(|s| !s.is_geluid)
-            .collect();
-
-        for s in &schermen {
-            ui.horizontal(|ui| {
-                // Delen kost pas iets zodra er iemand kijkt, en dat is precies wat je
-                // hier wilt kunnen zien als er een game draait.
-                let kleur = if s.kijkers > 0 {
-                    theme::STATUS_ONLINE
-                } else {
-                    theme::STATUS_OFFLINE
+            let mut peers = serde_json::Map::new();
+            for p in &snap.peers {
+                let Some(id) = p.peer_id else { continue };
+                let rtt = match &p.status {
+                    fitcom_net::PeerStatus::Online { rtt_ms, .. } => Some(*rtt_ms),
+                    _ => None,
                 };
-                ui.colored_label(kleur, "\u{25CF}");
-                ui.small(&s.titel);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.small(match s.kijkers {
-                        0 => "niemand kijkt".to_string(),
-                        1 => "1 kijker".to_string(),
-                        n => format!("{n} kijkers"),
-                    });
-                });
-            });
-            ui.add_space(4.0);
-            // Zoals Discord's rode "Stop Stream"-knop, niet het kale tekstlinkje dat
-            // dit voorheen was — dit is de belangrijkste actie in deze balk zolang er
-            // gedeeld wordt.
-            let stop = egui::Button::new(
-                egui::RichText::new("Stop stream")
-                    .size(13.0)
-                    .color(egui::Color32::WHITE),
-            )
-            .fill(theme::STATUS_DND)
-            .corner_radius(theme::ROUNDING);
-            if ui.add_sized([ui.available_width(), 28.0], stop).clicked() {
-                cmd = Some(UiCommand::StopDelen(s.stream_id));
+                peers.insert(
+                    id.to_string(),
+                    serde_json::json!({ "rtt": rtt, "level": p.niveau }),
+                );
             }
-            ui.add_space(4.0);
-        }
-
-        let label = if schermen.is_empty() {
-            "Scherm delen…"
-        } else {
-            "Nog een bron delen…"
-        };
-        let openen = ui
-            .add_sized([ui.available_width(), 26.0], egui::Button::new(label))
-            .clicked();
-
-        // Geen eigen knop meer (fase 10): geluid van deze pc gaat automatisch mee zodra
-        // er een scherm of venster gedeeld wordt, en stopt automatisch met de laatste.
-        // Alleen nog een passieve statusregel, niets om op te klikken.
-        if self.snap.eigen_streams.iter().any(|s| s.is_geluid) {
-            ui.add_space(4.0);
-            ui.small("\u{1F50A} geluid van deze pc gaat automatisch mee");
-        }
-        (cmd, openen)
-    }
-
-    /// Centrale plek waar een lokaal bestand de aanbiedflow ingaat, ongeacht of het via
-    /// de bestandsdialoog, slepen-en-neerzetten of Ctrl+V-plakken binnenkwam — alleen een
-    /// nieuwe invoerweg, geen nieuwe logica (zie `ROADMAP.md`, fase 8). Is het een
-    /// afbeelding, dan kopieert de motor hem zelf naar `pictures_dir` onder een naam op
-    /// basis van zijn inhoudshash (`hash_en_bied_aan` in `engine.rs`) — de UI hoeft hier
-    /// dus zelf niets te onthouden.
-    fn bied_bestand_aan(&mut self, pad: PathBuf) {
-        self.stuur(UiCommand::BiedBestandAan(pad, self.actief_kanaal));
-    }
-
-    /// Een bestand vanaf Windows in het venster gesleept: start dezelfde aanbiedflow als
-    /// de bestandsdialoog.
-    fn verwerk_gedropte_bestanden(&mut self, ctx: &egui::Context) {
-        let gedropt: Vec<PathBuf> = ctx.input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .filter_map(|f| f.path.clone())
-                .collect()
-        });
-        for pad in gedropt {
-            self.bied_bestand_aan(pad);
-        }
-
-        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
-            egui::Area::new(egui::Id::new("sleep_hint"))
-                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.label("Zet hier neer om te delen");
-                    });
-                });
-        }
-    }
-
-    /// Leest een afbeelding van het klembord en schrijft hem als PNG weg in een
-    /// tijdelijk bestand. `None` als het klembord geen afbeelding bevat (bijvoorbeeld
-    /// gewone tekst, of niets) — dan laat dit egui's eigen tekst-plakken in de
-    /// `TextEdit` met rust; die twee klembord-inhouden gaan nooit tegelijk over
-    /// hetzelfde pad.
-    ///
-    /// Dit hoeft geen permanente plek te zijn: `hash_en_bied_aan` in `engine.rs` maakt
-    /// er zelf een blijvende, content-adresseerbare kopie van in `pictures_dir` zodra
-    /// hij hasht. Dit bestand is daarna niet meer nodig — het opruimen ervan laten we
-    /// aan Windows' eigen tijdelijke-bestandenbeheer over, net als bij een gesleept of
-    /// via de dialoog gekozen bestand, waarvan het origineel ook niet door de app wordt
-    /// aangeraakt.
-    /// Of Ctrl+V dit frame *net* is ingedrukt (overgang van los naar ingedrukt).
-    ///
-    /// Kan niet via egui's eigen toetsenbordevents: `egui-winit` herkent Ctrl+V zelf al
-    /// als de OS-plakopdracht (`is_paste_command` in zijn `lib.rs`) en stuurt in dat
-    /// geval **geen gewone `Key::V`-event** door — hij probeert zelf tekst van het
-    /// klembord te lezen en stopt daarna (`return`), met of zonder succes. Bevat het
-    /// klembord alleen een afbeelding (geen tekst), dan komt er dus helemaal niets in
-    /// `ctx.input()` terecht om op te reageren — `i.key_pressed(egui::Key::V)` blijft
-    /// voor altijd `false`, wat precies verklaart waarom de eerdere aanpak niets deed.
-    /// Dit is bevestigd via de app-log: alleen `egui_winit::clipboard`'s eigen (tekst-)
-    /// klembordpoging verschijnt daar, nooit een eigen gedetecteerde toetsaanslag.
-    ///
-    /// In plaats daarvan wordt de fysieke toetsstatus rechtstreeks bij Windows
-    /// opgevraagd (`GetAsyncKeyState`), los van egui's eigen event-vertaling. Alleen
-    /// als het venster ook daadwerkelijk de voorgrond heeft: deze functie is anders
-    /// niet gebonden aan welk venster de OS-focus heeft, en zonder die check zou een
-    /// Ctrl+V in een willekeurige andere toepassing hier ook een bestand aanbieden.
-    fn ctrl_v_zojuist_ingedrukt(&mut self, ctx: &egui::Context) -> bool {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_V};
-
-        if !ctx.input(|i| i.focused) {
-            self.ctrl_v_ingedrukt = false;
-            return false;
-        }
-
-        let ingedrukt = |vk: u16| unsafe { GetAsyncKeyState(i32::from(vk)) as u16 & 0x8000 != 0 };
-        let nu = ingedrukt(VK_CONTROL.0) && ingedrukt(VK_V.0);
-        let net_ingedrukt = nu && !self.ctrl_v_ingedrukt;
-        self.ctrl_v_ingedrukt = nu;
-        net_ingedrukt
-    }
-
-    fn plak_afbeelding(&self) -> Option<PathBuf> {
-        // Uitgebreid gelogd (op debug-niveau, dus alleen zichtbaar met
-        // `$env:FITCOM_LOG = "debug"`): dit stuk faalde bij Rick zonder duidelijke
-        // reden, en "geen afbeelding op het klembord" (heel normaal bij een gewone
-        // tekst-plak, want dit loopt nu voor elke Ctrl+V, niet alleen met een
-        // afbeelding erop) moet te onderscheiden zijn van een echte bug hieronder.
-        let mut klembord = match arboard::Clipboard::new() {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::warn!(error = %e, "klembord openen mislukt bij Ctrl+V");
-                return None;
-            }
-        };
-        let beeld = match klembord.get_image() {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::debug!(error = %e, "geen afbeelding op het klembord");
-                return None;
-            }
-        };
-        tracing::debug!(
-            breedte = beeld.width,
-            hoogte = beeld.height,
-            bytes = beeld.bytes.len(),
-            "afbeelding van het klembord gelezen"
-        );
-
-        let breedte = beeld.width as u32;
-        let hoogte = beeld.height as u32;
-        let bytes = beeld.bytes.into_owned();
-        let Some(buffer) = image::RgbaImage::from_raw(breedte, hoogte, bytes) else {
-            tracing::warn!(
-                breedte,
-                hoogte,
-                "klembordafbeelding paste niet in breedte×hoogte×4 bytes"
-            );
-            return None;
-        };
-
-        let naam = format!(
-            "fitcom-plak-{}.png",
-            chrono::Local::now().format("%Y%m%d-%H%M%S%3f")
-        );
-        let pad = std::env::temp_dir().join(naam);
-        if let Err(e) = buffer.save(&pad) {
-            tracing::warn!(error = %e, pad = %pad.display(), "klembordafbeelding als PNG wegschrijven mislukt");
-            return None;
-        }
-        tracing::debug!(pad = %pad.display(), "klembordafbeelding weggeschreven");
-        Some(pad)
-    }
-
-    /// Laadt een eigen aangeboden afbeelding als egui-textuur, of levert de al geladen
-    /// textuur terug. Faalt geruisloos (bijvoorbeeld een sindsdien verplaatst pad) —
-    /// de aanroeper valt dan terug op de generieke bestandskaart.
-    fn bijlage_texture(
-        &mut self,
-        ctx: &egui::Context,
-        file: OpId,
-        pad: &Path,
-    ) -> Option<(egui::TextureId, egui::Vec2)> {
-        if let Some(handle) = self.bijlage_texturen.get(&file) {
-            return Some((handle.id(), handle.size_vec2()));
-        }
-
-        let beeld = image::open(pad).ok()?.into_rgba8();
-        let (breedte, hoogte) = beeld.dimensions();
-        let kleur = egui::ColorImage::from_rgba_unmultiplied(
-            [breedte as usize, hoogte as usize],
-            beeld.as_raw(),
-        );
-        let handle = ctx.load_texture(
-            format!("bijlage-{file:?}"),
-            kleur,
-            egui::TextureOptions::LINEAR,
-        );
-        let resultaat = (handle.id(), handle.size_vec2());
-        self.bijlage_texturen.insert(file, handle);
-        Some(resultaat)
-    }
-
-    fn open_bronkeuze(&mut self) {
-        match engine::deelbare_bronnen() {
-            Ok(b) => self.bronkeuze = Some(b),
-            Err(e) => {
-                tracing::error!(error = %format!("{e:#}"), "bronnen opvragen mislukt");
-                self.bronkeuze = Some(Vec::new());
-            }
-        }
-    }
-
-    /// Compacte statusstrook boven de gebruikersbalk — Discord's "verbonden met
-    /// spraakkanaal"-balk. Mute/deafen staan niet meer hier maar als icoonknoppen in
-    /// `gebruiker_balk`; dit is alleen nog verbinden/verlaten.
-    ///
-    /// Levert het commando dat de gebruiker aanklikte terug in plaats van het meteen
-    /// te versturen: binnen de paneelsluiting is `self` al onveranderlijk geleend.
-    fn voice_bediening(&self, ui: &mut egui::Ui) -> Option<UiCommand> {
-        let v = &self.snap.voice;
-
-        if !v.actief {
-            // Wie er al in het gesprek zit staat hieronder in `voice_sectie` — hier dus
-            // geen aparte hint-tekst meer nodig.
-            return ui
-                .add_sized(
-                    [ui.available_width(), 32.0],
-                    egui::Button::new(
-                        egui::RichText::new("\u{1F3A4} Deelnemen aan spraakkanaal").size(13.0),
-                    ),
-                )
-                .clicked()
-                .then_some(UiCommand::VoiceDeelnemen);
-        }
-
-        let mut cmd = None;
-        egui::Frame::new()
-            .fill(theme::BG_CARD)
-            .corner_radius(theme::ROUNDING)
-            .inner_margin(egui::Margin::symmetric(10, 7))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(theme::STATUS_ONLINE, "\u{1F3A4}");
-                    ui.label(
-                        egui::RichText::new("Spraakverbinding actief")
-                            .size(13.0)
-                            .color(theme::STATUS_ONLINE),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::icon_button(ui, "\u{260E}")
-                            .on_hover_text("Verlaten")
-                            .clicked()
-                        {
-                            cmd = Some(UiCommand::VoiceVerlaten);
-                        }
-                    });
-                });
-            });
-        cmd
-    }
-
-    /// Wie er in het gesprek zit of iets deelt, met een "LIVE"-badge en een
-    /// "bekijken"-knop ernaast — zoals Discord's ledenlijst onder een spraakkanaal.
-    /// Vervangt de permanente "bekijken"/"sluiten"-knoppen die dit voorheen in de
-    /// rechter ledenlijst waren: dezelfde commando's, alleen nu hier gegroepeerd.
-    ///
-    /// Bij meer dan één videostream van dezelfde peer (zeldzaam: multi-monitor) stuurt
-    /// de knop alleen de eerste — geen ruimte voor een rij per stream in deze balk.
-    ///
-    /// Toont niets (dus ook geen lege ruimte) als niemand in gesprek is of deelt.
-    fn voice_sectie(&mut self, ui: &mut egui::Ui) {
-        let relevant: Vec<_> = self
-            .snap
-            .peers
-            .iter()
-            .filter(|p| {
-                p.in_voice
-                    || p.peer_id.is_some_and(|id| {
-                        self.snap
-                            .streams
-                            .iter()
-                            .any(|s| s.eigenaar == id && !s.is_geluid)
-                    })
+            let payload = serde_json::json!({
+                "peers": peers,
+                "self": { "level": snap.voice.eigen_niveau },
             })
-            .cloned()
-            .collect();
-        if relevant.is_empty() {
-            return;
-        }
+            .to_string();
 
-        for p in &relevant {
-            let Some(id) = p.peer_id else { continue };
-            let naam = self.naam_van(id);
-            let video = self
-                .snap
-                .streams
-                .iter()
-                .find(|s| s.eigenaar == id && !s.is_geluid)
-                .cloned();
-
-            let mut geklikt = false;
-            ui.horizontal(|ui| {
-                let avatar_kleur = widgets::kleur_van(id);
-                let avatar =
-                    widgets::avatar_square(ui, &widgets::initialen(&naam), avatar_kleur, 26.0);
-                if p.in_voice {
-                    widgets::status_badge(
-                        ui.painter(),
-                        avatar.rect,
-                        theme::STATUS_ONLINE,
-                        theme::BG_SIDEBAR,
-                    );
-                }
-                ui.label(egui::RichText::new(&naam).size(13.0).color(avatar_kleur));
-                if let Some(s) = &video {
-                    widgets::live_badge(ui);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let tekst = if s.kijken { "sluiten" } else { "bekijken" };
-                        geklikt = ui
-                            .add(
-                                egui::Button::new(egui::RichText::new(tekst).size(12.0))
-                                    .min_size(egui::vec2(0.0, 24.0)),
-                            )
-                            .clicked();
-                    });
-                }
-            });
-            if geklikt {
-                if let Some(s) = &video {
-                    self.stuur_kijk_toggle(id, s.stream_id, s.kijken);
-                }
+            // With everyone offline and no call running this settles into one constant
+            // string, so a truly idle app emits nothing at all after the first tick.
+            if payload == previous {
+                continue;
             }
-            ui.add_space(4.0);
+            previous = payload.clone();
+            let _ = app.emit("meters", payload);
         }
-        ui.add_space(2.0);
-    }
-
-    /// Geschatte hoogte van `zijbalk_onderkant`'s inhoud, zodat de kanalen-/DM-lijst
-    /// erboven precies genoeg kan inschikken (zie `channels.rs`/`dms.rs`) — anders duwt
-    /// een langere lijst de gebruikersbalk het paneel uit in plaats van andersom.
-    ///
-    /// ponytail: harde schatting per rij i.p.v. een echte meting (egui kent geen
-    /// two-pass layout zonder moeite); als een rij ooit van hoogte verandert, hier ook
-    /// aanpassen. Ruim naar boven afgerond — een paar losse pixels lege ruimte is
-    /// onschuldig, te weinig ruimte duwt de balk weer van het scherm af.
-    fn zijbalk_onderkant_hoogte(&self) -> f32 {
-        let voice_leden = self
-            .snap
-            .peers
-            .iter()
-            .filter(|p| {
-                p.in_voice
-                    || p.peer_id.is_some_and(|id| {
-                        self.snap
-                            .streams
-                            .iter()
-                            .any(|s| s.eigenaar == id && !s.is_geluid)
-                    })
-            })
-            .count();
-
-        let eigen_schermen = self
-            .snap
-            .eigen_streams
-            .iter()
-            .filter(|s| !s.is_geluid)
-            .count();
-
-        let mut h = 22.0; // bovenste separator + ruimte eromheen
-        h += if self.snap.voice.actief { 48.0 } else { 38.0 }; // strook/knop
-        if voice_leden > 0 {
-            h += voice_leden as f32 * 40.0 + 8.0;
-        }
-        h += 46.0; // "Scherm delen…"-knop + ruimte
-        // Elk actief eigen scherm/venster heeft zijn eigen titel-/kijkers-regel en een
-        // "Stop stream"-knop erbij (zie `deel_bediening`) — telt bovenop de knop zelf.
-        h += eigen_schermen as f32 * 58.0;
-        if self.snap.eigen_streams.iter().any(|s| s.is_geluid) {
-            h += 22.0; // "geluid gaat automatisch mee"-regel
-        }
-        h += 22.0; // onderste separator + ruimte
-        h += 82.0; // gebruikersbalk (foto+naam, en de icoonrij eronder) + marge
-        if self.snap.voice.actief {
-            h += 12.0; // niveaubalk
-        }
-        h
-    }
-
-    /// Video bekijken/sluiten koppelt automatisch het bijbehorende bureaubladgeluid mee
-    /// aan/uit — zie `engine.rs`'s `deel_bureaubladgeluid`. Alleen uitzetten als dit de
-    /// laatste video van deze peer was die je bekeek.
-    fn stuur_kijk_toggle(&self, id: PeerId, video_stream: u32, kijkt: bool) {
-        let geluid = self
-            .snap
-            .streams
-            .iter()
-            .find(|s| s.eigenaar == id && s.is_geluid)
-            .cloned();
-
-        if kijkt {
-            self.stuur(UiCommand::StopKijken(id, video_stream));
-            let nog_een_video = self.snap.streams.iter().any(|s| {
-                s.eigenaar == id && !s.is_geluid && s.stream_id != video_stream && s.kijken
-            });
-            if !nog_een_video {
-                if let Some(g) = &geluid {
-                    if g.kijken {
-                        self.stuur(UiCommand::StopKijken(id, g.stream_id));
-                    }
-                }
-            }
-        } else {
-            self.stuur(UiCommand::Kijken(id, video_stream));
-            if let Some(g) = &geluid {
-                if !g.kijken {
-                    self.stuur(UiCommand::Kijken(id, g.stream_id));
-                }
-            }
-        }
-    }
-
-    /// Vult een verse bewerkkopie van de huidige video-instellingen. Aangeroepen door
-    /// het tandwiel in de icoonrail (`ui/rail.rs`) bij het openen van de Instellingen-
-    /// weergave, en door `ui/settings.rs` zelf na "Toepassen"/"Annuleren" op het
-    /// Video-tabblad om een verse kopie te tonen.
-    fn open_instellingen(&mut self) {
-        self.instellingen = Some(VideoConcept {
-            codec: self.snap.video.codec.clone(),
-            fps: self.snap.video.fps,
-            bitrate_mbit: self.snap.video.bitrate as f32 / 1_000_000.0,
-        });
-    }
+    });
 }
 
-/// Leesbare bestandsgrootte. Bewust grof (één decimaal): niemand telt hier mee.
-fn grootte_tekst(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
+fn spawn_thumbnails(app: tauri::AppHandle, rx: tokio::sync::watch::Receiver<Arc<Snapshot>>) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticker = tokio::time::interval(THUMBNAIL_INTERVAL);
+        // Which frame we last encoded per stream, so an unchanged tile costs nothing.
+        let mut last: HashMap<String, usize> = HashMap::new();
+        let mut revision: u64 = 0;
+        loop {
+            ticker.tick().await;
+            let snap = rx.borrow().clone();
+            let ui: tauri::State<'_, Ui> = app.state();
 
-/// Of een op met dit `(kanaal, auteur)`-paar hoort bij wat je nu bekijkt (`actief`, vanuit
-/// je eigen standpunt `mij`).
-///
-/// Losstaand van `App` zodat dit zonder een hele `EngineHandle` te testen is. Zie
-/// `App::hoort_bij_actief_kanaal` voor de uitleg van de valkuil die dit voorkomt: een
-/// DM-gesprek met X bestaat uit twee kanaalwaarden (`Dm(X)` voor jouw berichten, `Dm(mij)`
-/// voor die van X), dus simpelweg vergelijken met `actief` (altijd `Dm(X)`) laat de helft
-/// van het gesprek verdwijnen. Voor het algemene kanaal en een subkanaal geldt die valkuil
-/// niet — daar draagt elke op, van wie dan ook, precies dezelfde kanaalwaarde — dus is een
-/// gewone gelijkheid genoeg.
-fn hoort_bij_kanaal(actief: Channel, mij: PeerId, kanaal: Channel, auteur: PeerId) -> bool {
-    match actief.dm_peer() {
-        Some(partner) => {
-            (auteur == mij && kanaal == Channel::dm(partner))
-                || (auteur == partner && kanaal == Channel::dm(mij))
+            let mut alive: Vec<String> = Vec::new();
+            for s in snap.streams.iter().filter(|s| !s.is_geluid && s.kijken) {
+                let key = format!("{}-{}", s.eigenaar, s.stream_id);
+                alive.push(key.clone());
+                let Some(thumb) = &s.miniatuur else { continue };
+                let frame = Arc::as_ptr(&thumb.data) as *const u8 as usize;
+                if last.get(&key) == Some(&frame) {
+                    continue;
+                }
+                let Some(png) = encode_thumbnail(thumb) else {
+                    continue;
+                };
+                last.insert(key.clone(), frame);
+                revision += 1;
+                ui.thumbnails
+                    .lock()
+                    .unwrap()
+                    .insert(key.clone(), Arc::new(png));
+                let _ = app.emit(
+                    "thumbnail",
+                    serde_json::json!({ "key": key, "revision": revision }),
+                );
+            }
+
+            // A stream nobody watches any more must not keep its bytes alive; the strip
+            // is the only thing that ever asks for them.
+            if alive.len() != last.len() {
+                last.retain(|k, _| alive.contains(k));
+                ui.thumbnails
+                    .lock()
+                    .unwrap()
+                    .retain(|k, _| alive.contains(k));
+            }
         }
-        None => kanaal == actief,
-    }
+    });
 }
 
-#[cfg(test)]
-mod kanaal_tests {
-    use super::*;
-
-    fn peer(n: u8) -> PeerId {
-        let mut b = [0u8; 16];
-        b[0] = n;
-        PeerId::from_bytes(b)
+/// The decoder hands us BGRA; PNG wants RGBA. At 2 fps and a strip-sized image this is
+/// cheaper than any of the alternatives that keep the bytes raw, and it means the
+/// frontend is a plain `<img>` instead of a canvas that has to be fed.
+fn encode_thumbnail(thumb: &fitcom_video::Miniatuur) -> Option<Vec<u8>> {
+    let mut rgba = thumb.data.to_vec();
+    if rgba.len() < (thumb.breedte as usize * thumb.hoogte as usize * 4) {
+        return None;
     }
-
-    fn topic(n: u8) -> TopicId {
-        TopicId::from_bytes([n; 16])
+    for px in rgba.chunks_exact_mut(4) {
+        px.swap(0, 2);
     }
+    let buffer = image::RgbaImage::from_raw(thumb.breedte, thumb.hoogte, rgba)?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(buffer)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
 
-    #[test]
-    fn subkanaal_toont_alleen_zijn_eigen_berichten() {
-        let (mij, ander) = (peer(1), peer(2));
-        let a = Channel::topic(topic(1));
-        let b = Channel::topic(topic(2));
-
-        assert!(hoort_bij_kanaal(a, mij, a, ander), "eigen subkanaal");
-        assert!(
-            !hoort_bij_kanaal(a, mij, b, ander),
-            "een ander subkanaal hoort er niet bij"
-        );
-        assert!(
-            !hoort_bij_kanaal(a, mij, Channel::GENERAL, ander),
-            "het algemene kanaal hoort niet bij een subkanaal"
-        );
-    }
-
-    #[test]
-    fn algemeen_toont_geen_berichten_uit_een_subkanaal() {
-        let (mij, ander) = (peer(1), peer(2));
-        assert!(!hoort_bij_kanaal(
-            Channel::GENERAL,
-            mij,
-            Channel::topic(topic(1)),
-            ander
-        ));
-    }
-
-    #[test]
-    fn algemeen_toont_alleen_algemene_berichten() {
-        let (mij, ander) = (peer(1), peer(2));
-        assert!(hoort_bij_kanaal(
-            Channel::GENERAL,
-            mij,
-            Channel::GENERAL,
-            ander
-        ));
-        assert!(!hoort_bij_kanaal(
-            Channel::GENERAL,
-            mij,
-            Channel::dm(mij),
-            ander
-        ));
-    }
-
-    #[test]
-    fn dm_toont_beide_kanten_van_het_gesprek() {
-        // Precies de bug die de reviewer vond: mijn eigen berichten aan X dragen Dm(X),
-        // maar X's antwoorden aan mij dragen Dm(mij), niet Dm(X).
-        let (mij, x) = (peer(1), peer(2));
-        let actief = Channel::dm(x);
-
-        assert!(
-            hoort_bij_kanaal(actief, mij, Channel::dm(x), mij),
-            "mijn eigen bericht aan X moet zichtbaar zijn"
-        );
-        assert!(
-            hoort_bij_kanaal(actief, mij, Channel::dm(mij), x),
-            "X's antwoord aan mij moet zichtbaar zijn"
-        );
-    }
-
-    #[test]
-    fn dm_toont_geen_berichten_uit_een_ander_gesprek() {
-        let (mij, x, derde) = (peer(1), peer(2), peer(3));
-        let actief = Channel::dm(x);
-
-        assert!(!hoort_bij_kanaal(actief, mij, Channel::dm(derde), mij));
-        assert!(!hoort_bij_kanaal(actief, mij, Channel::dm(mij), derde));
-        assert!(!hoort_bij_kanaal(actief, mij, Channel::GENERAL, x));
-    }
+/// Two ways out that are not the close button: the tray's Quit item, and a confirmed
+/// update whose updater process has already been started. Both need the app to shut down
+/// properly rather than be killed, so the connections close cleanly.
+fn spawn_quit_watcher(app: tauri::AppHandle, quit_for_update: Arc<std::sync::atomic::AtomicBool>) {
+    std::thread::Builder::new()
+        .name("fitcom-quit-watch".into())
+        .spawn(move || loop {
+            if tray::wil_afsluiten() || quit_for_update.load(Ordering::Relaxed) {
+                app.exit(0);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        })
+        .ok();
 }

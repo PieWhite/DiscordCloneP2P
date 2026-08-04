@@ -33,37 +33,10 @@ pub fn bevat_tag(body: &str, naam: &str) -> bool {
     false
 }
 
-/// Vindt een tag die nog getypt wordt: een `@`-run zonder witruimte die tot aan de
-/// cursor doorloopt. `cursor_byte` is de byte-positie van de cursor in `tekst`.
-/// Levert de byte-offset van de `@` en het al getypte deel erna op.
-pub fn actieve_tag(tekst: &str, cursor_byte: usize) -> Option<(usize, &str)> {
-    let voor = tekst.get(..cursor_byte)?;
-    let start = voor
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| !c.is_whitespace())
-        .last()
-        .map(|(i, _)| i)?;
-    if !voor[start..].starts_with('@') {
-        return None;
-    }
-    Some((start, &voor[start + 1..]))
-}
-
-/// Filtert `namen` op een hoofdletterongevoelig prefix van `query`, gesorteerd en
-/// zonder dubbelingen.
-pub fn tag_suggesties<'a>(namen: &'a [String], query: &str) -> Vec<&'a str> {
-    let query_lower = query.to_lowercase();
-    let mut gevonden: Vec<&str> = namen
-        .iter()
-        .map(String::as_str)
-        .filter(|n| !n.is_empty() && n.to_lowercase().starts_with(&query_lower))
-        .collect();
-    gevonden.sort_unstable();
-    gevonden.dedup();
-    gevonden
-}
-
+/// De cursor-parsing en het filteren van suggesties stonden hier ook. Die zijn met de
+/// Tauri-migratie vervallen: de autocomplete in de invoerbalk is presentatie en zit nu
+/// in `crates/app/frontend/app.js`. Wat *wel* hier moet blijven is `bevat_tag` — dat is
+/// de regel waarop de meldingslaag beslist, en die mag maar op één plek staan.
 fn is_tag_teken(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '-'
 }
@@ -99,44 +72,5 @@ mod tests {
     #[test]
     fn lege_naam_matcht_nooit() {
         assert!(!bevat_tag("@ per ongeluk", ""));
-    }
-
-    #[test]
-    fn actieve_tag_vindt_de_lopende_run() {
-        let tekst = "hallo @ric";
-        assert_eq!(actieve_tag(tekst, tekst.len()), Some((6, "ric")));
-    }
-
-    #[test]
-    fn actieve_tag_stopt_bij_witruimte() {
-        let tekst = "hallo daar";
-        assert_eq!(actieve_tag(tekst, tekst.len()), None);
-    }
-
-    #[test]
-    fn actieve_tag_alleen_bij_een_at_teken() {
-        let tekst = "gewoonwoord";
-        assert_eq!(actieve_tag(tekst, tekst.len()), None);
-    }
-
-    #[test]
-    fn actieve_tag_direct_na_het_at_teken() {
-        let tekst = "@";
-        assert_eq!(actieve_tag(tekst, 1), Some((0, "")));
-    }
-
-    #[test]
-    fn actieve_tag_kijkt_niet_voorbij_de_cursor() {
-        // De cursor staat middenin "@rick", dus alleen "@ri" telt mee.
-        let tekst = "@rick";
-        assert_eq!(actieve_tag(tekst, 3), Some((0, "ri")));
-    }
-
-    #[test]
-    fn suggesties_filteren_op_prefix_en_zijn_gesorteerd() {
-        let namen = vec!["Rick".to_string(), "Robin".to_string(), "Sam".to_string()];
-        assert_eq!(tag_suggesties(&namen, "r"), vec!["Rick", "Robin"]);
-        assert_eq!(tag_suggesties(&namen, ""), vec!["Rick", "Robin", "Sam"]);
-        assert_eq!(tag_suggesties(&namen, "z"), Vec::<&str>::new());
     }
 }

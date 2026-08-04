@@ -1,11 +1,13 @@
 # P2P communicatie-app — projectcontext
 
 Servervrij Discord-alternatief voor 3 vaste peers over een Tailscale-tailnet.
-Rust + egui. Windows only.
+Rust-kern. Windows only.
+UI-stack: **besloten Tauri v2, code is nu nog egui** — zie "UI-stack" hieronder.
 
 ## Documenten
 | Bestand | Wanneer lezen |
 |---|---|
+| `PRODUCT.md` | Wie de gebruikers zijn, wat er vastligt, en het volledige stackbesluit met zijn prijs. Bij twijfel over de UI-laag of het waarom van een keuze. |
 | `docs/SPEC.md` | Wat we bouwen en welke keuzes vastliggen. Bij twijfel over scope. |
 | `docs/ARCHITECTURE.md` | Techstack, wire-protocol, chat-sync, crate-layout. **Verplicht** vóór wijzigingen aan `crates/proto` of `crates/store`. |
 | `ROADMAP.md` | Welke fase we doen en wat "klaar" betekent. |
@@ -46,6 +48,41 @@ op. De H.264-decoder zit altijd in Windows. Bij 1 Gbit is de bitrate-winst van H
 irrelevant; een codec die misschien niet werkt bij je vriend is dat niet.
 Zie `docs/SPEC.md` voor de gemeten onderbouwing.
 
+## UI-stack
+**Tauri v2 op WebView2.** Uitgevoerd in fase 12 (2026-08-04), ter vervanging van egui.
+
+```
+crates/app/src/ui/mod.rs       Vensterbootstrap, tray, events, thumb://-protocol
+crates/app/src/ui/state.rs     Snapshot → UiState (JSON)
+crates/app/src/ui/commands.rs  IPC → UiCommand
+crates/app/frontend/           index.html, app.css, app.js, fonts/ — in de exe gebakken
+```
+
+- **De vijf niet-UI-crates zijn onaangeroerd.** `proto`, `store`, `net`, `audio` en
+  `video` bevatten geen enkele egui-aanroep (alleen doc-commentaar dat het noemt).
+  Houd dat zo, en introduceer er ook geen Tauri.
+- **De `Snapshot`/`UiCommand`-grens staat er nog en blijft staan.** De UI leest een
+  momentopname en stuurt commando's terug; dat is de reden dat deze wissel goedkoop was.
+  Hem opgeven maakt een volgende weer duur.
+- **Drie events, bewust gescheiden.** `state` alleen bij een echte wijziging (er wordt
+  geserialiseerd en met de vorige vergeleken), `meters` op 4 Hz voor spreekniveau en RTT,
+  `thumbnail` op 2 Hz voor de streamstrook. Zet niets in `UiState` dat elke tik verandert:
+  dan stuurt de app in rust weer tien events per seconde.
+- **Het pop-out kijkvenster is een eigen Win32-venster met eigen D3D11-swapchain.**
+  Het hete videopad raakt de UI-stack nergens.
+- **Niet naar de fixed-version WebView2-runtime** (~180 MB) — dat sloopt "losse exe in
+  een zip". Evergreen zit standaard in Windows 11 en alle drie draaien Windows 11.
+- **`design/main-window.html` is de reproductiedoelstelling**, `design/shots/` zijn de
+  19 gerenderde toestanden om tegen te vergelijken, en `DESIGN.md` +
+  `.impeccable/design.json` zijn het ontwerpsysteem. Een kleurwaarde of radius die niet
+  uit een token komt is een bug. Fonts worden lokaal gebundeld — nooit van een CDN, dat
+  botst met invariant 1.
+- **UI-taal is Engels** voor de weergavelaag en alles wat daar nieuw geschreven wordt; de
+  motor en de andere crates blijven Nederlands. De vertaling zit in `ui/state.rs`.
+
+Volledige onderbouwing en de expliciet benoemde kosten staan in `PRODUCT.md`, sectie
+`## Stack`, en `docs/OVERDRACHT.md`, beslissing 19 en 20.
+
 ## Bouwvereisten
 Naast Rust + MSVC is `cmake` nodig: libopus wordt vanuit broncode meegebouwd. Op deze
 machine staat hij portable in `%USERPROFILE%\tools\cmake-4.4.0-windows-x86_64\bin`,
@@ -54,6 +91,11 @@ toegevoegd aan het gebruikers-PATH.
 `.cargo/config.toml` zet `CMAKE_POLICY_VERSION_MINIMUM=3.5`: de libopus die met
 `audiopus_sys` meekomt is uit 2021 en zijn CMakeLists vraagt om een minimumversie die
 CMake 4 niet meer zonder meer accepteert.
+
+**Geen Node en geen frontend-bouwstap.** De frontend is gewone HTML/CSS/JS zonder bundler;
+`tauri-build` bakt `crates/app/frontend/` in de exe. `cargo build` bouwt dus nog steeds de
+hele app. Wel opnieuw bouwen na een frontendwijziging — de assets zitten ín de binary.
+`crates/app/icons/icon.ico` moet bestaan, anders weigert `tauri-build`.
 
 ## Commando's
 ```

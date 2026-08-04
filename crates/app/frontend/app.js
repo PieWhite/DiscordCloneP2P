@@ -1,0 +1,1505 @@
+"use strict";
+
+/* FitCommunication — the window.
+ *
+ * Ported from the approved comp `design/main-window.html`. The comp's render functions
+ * are kept shape for shape; what changed is where the state comes from. The comp seeded
+ * its own and had a review harness to flip it. Here it arrives from the engine over
+ * three channels, and every control sends a command back:
+ *
+ *   state      everything structural, emitted only when it actually changed
+ *   meters     speaking level and RTT at 4 Hz, patched into attributes, never re-rendered
+ *   thumbnail  the stream strip at 2 fps, as a `thumb://` URL per tile
+ *
+ * Nothing here decides anything. It draws a snapshot and sends commands, exactly as the
+ * egui build did — that boundary is the reason this stack swap was affordable.
+ */
+
+const { invoke, convertFileSrc } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+const { getCurrentWindow } = window.__TAURI__.window;
+
+/* ---------------------------------------------------------------- state */
+
+/** Last state from the engine. Replaced wholesale; never mutated. */
+let S = null;
+/** Timeline of the open conversation, fetched on demand. */
+let TL = [];
+/** Live speaking levels and RTT, from `meters`. */
+let M = { peers: {}, self: { level: 0 } };
+
+/** What this window is looking at. Purely local: none of it outlives the process. */
+const V = {
+  view: "channels",          // channels | dms | settings
+  channel: "general",        // last non-DM channel
+  dm: null,                  // last opened DM peer id
+  members: true,
+  settingsTab: "account",
+  overlay: "none",           // none | ac | drop
+  editing: null,             // OpRef of the message being edited
+  acIndex: 0,
+  acMatches: [],
+  /** Half-typed messages, per conversation. Switching away must not lose them, and must
+      not carry them into the wrong conversation either. */
+  drafts: {},
+  /** Muting a peer is volume 0 with the old level remembered, because that is all the
+      engine has — there is no separate per-peer mute on the wire. */
+  volumeBeforeMute: {},
+  focused: true,
+};
+
+/** The level above which a peer counts as speaking. Matches the voice VAD closely
+    enough that the ring does not flicker on room noise. */
+const SPEAKING = 0.06;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const ic = (id, cls = "icon", extra = "") =>
+  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" ${extra}><use href="#${id}"/></svg>`;
+
+/* ---------------------------------------------------------------- derived */
+
+const activeChannel = () => (V.view === "dms" && V.dm ? `dm:${V.dm}` : V.channel);
+const peerById = id => (S.peers || []).find(p => p.id === id);
+const channelByKey = key => (S.channels || []).find(c => c.key === key);
+const knownPeers = () => (S.peers || []).filter(p => p.id);
+const onlinePeers = () => knownPeers().filter(p => p.presence === "online");
+const callPeers = () => knownPeers().filter(p => p.in_call);
+const callRunning = () => callPeers().length > 0 || S.voice.joined;
+const totalDmUnread = () => knownPeers().reduce((n, p) => n + p.unread, 0);
+const sharingSelf = () => (S.own_streams || []).some(s => !s.is_audio);
+const watchedStreams = () => (S.streams || []).filter(s => s.watching);
+const isSpeaking = id => (M.peers[id]?.level || 0) > SPEAKING;
+const meSpeaking = () => S.voice.joined && !S.voice.muted && M.self.level > SPEAKING;
+
+const activeName = () => {
+  if (V.view === "dms" && V.dm) return peerById(V.dm)?.name || "";
+  return channelByKey(V.channel)?.name || "general";
+};
+
+/* Presence for the roster and the status bar. `self` is never offline and turns rose
+   while do-not-disturb is on, which is a state, not a fault. */
+const selfPresence = () => (S.do_not_disturb ? "dnd" : "online");
+
+const fmtRtt = id => {
+  const rtt = M.peers[id]?.rtt;
+  return rtt === null || rtt === undefined ? "—" : `${rtt} ms`;
+};
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["kB", "MB", "GB", "TB"];
+  let v = bytes / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+const mbit = bits => Math.round(bits / 1_000_000);
+
+const fmtTime = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+/* Only ever from a moment this process actually observed. A peer that has not been up
+   since the app started has no time to show, and inventing one would be worse than the
+   plain word. */
+function lastSeenLine(p) {
+  if (!p.last_seen) return "Offline";
+  const d = new Date(p.last_seen);
+  const day = fmtDay(p.last_seen);
+  return `Last seen ${fmtTime(p.last_seen)}${day === "Today" ? "" : `, ${d.toLocaleDateString([], { day: "numeric", month: "long" })}`}`;
+}
+
+function fmtDay(ms) {
+  const d = new Date(ms);
+  const today = new Date();
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  if (same(d, today)) return "Today";
+  const yesterday = new Date(today.getTime() - 86400000);
+  if (same(d, yesterday)) return "Yesterday";
+  return d.toLocaleDateString([], { day: "numeric", month: "long" });
+}
+
+/* ---------------------------------------------------------------- avatars */
+
+function avatar(peer, size = 32, dot = false, ring = false) {
+  const initial = (peer.name || "?").trim().charAt(0).toUpperCase() || "?";
+  const state = peer.self ? selfPresence() : peer.presence;
+  const d = dot ? `<i class="dot" data-state="${state}"></i>` : "";
+  return `<span class="av-wrap${ring ? " speak-ring" : ""}"><span class="avatar avatar--${size} av-${peer.avatar}">${esc(initial)}</span>${d}</span>`;
+}
+
+/** The engine's own peer, shaped like the others so one avatar function covers both. */
+const selfPeer = () => ({ ...S.self, presence: selfPresence(), self: true });
+
+/* ---------------------------------------------------------------- message body */
+
+/* Chat content is Dutch and comes from another machine, so everything is escaped first
+   and only then given structure. Three things get structure: fenced code, links, and
+   `@name` for a name that actually exists. */
+function renderBody(text, mentionsYou) {
+  const parts = String(text).split(/```/);
+  return parts.map((part, i) => (i % 2 === 1
+    ? codeBlock(part)
+    : `<div class="msg-text">${inline(part, mentionsYou)}</div>`))
+    .filter((_, i) => i % 2 === 1 || parts[i].trim() !== "")
+    .join("");
+}
+
+/* The header carries whatever follows the opening fence — a filename is what actually
+   gets pasted here — and a Copy button, because the reason to paste a config block is
+   for somebody else to use it. */
+function codeBlock(part) {
+  const nl = part.indexOf("\n");
+  const info = (nl === -1 ? "" : part.slice(0, nl)).trim();
+  const code = nl === -1 ? part : part.slice(nl + 1).replace(/\n$/, "");
+  return `<div class="code">
+    <div class="code-head">${esc(info || "code")}<button class="code-copy" data-copy="${esc(code)}">Copy</button></div>
+    <pre>${highlight(code)}</pre>
+  </div>`;
+}
+
+function inline(text, mentionsYou) {
+  let html = esc(text).replace(/\n/g, "<br>");
+  html = html.replace(/(https?:\/\/[^\s<]+)/g, u => `<a href="${u}" target="_blank" rel="noreferrer">${u}</a>`);
+  const names = [S.self.name, ...knownPeers().map(p => p.name)].filter(Boolean);
+  for (const name of names) {
+    const mine = name === S.self.name;
+    const re = new RegExp(`@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+    html = html.replace(re, m =>
+      `<span class="mention${mine && mentionsYou ? " mention--self" : ""}">${esc(m)}</span>`);
+  }
+  return html;
+}
+
+/* The three code hues exist for the kind of thing that actually gets pasted here: a
+   config file. Comments, strings and numbers, and the key before an `=`. Anything else
+   stays body text — a fourth hue is not in the system. */
+function highlight(code) {
+  return esc(code)
+    .split("\n")
+    .map(line => line
+      .replace(/^(\s*)([A-Za-z_][\w.-]*)(\s*=)/, '$1<span class="tok-key">$2</span>$3')
+      .replace(/(&quot;[^&]*?&quot;)/g, '<span class="tok-str">$1</span>')
+      .replace(/\b(\d[\d_.]*)\b/g, '<span class="tok-num">$1</span>')
+      .replace(/(#.*)$/, '<span class="tok-com">$1</span>'))
+    .join("\n");
+}
+
+/* ---------------------------------------------------------------- channel column */
+
+function channelRow(c) {
+  const active = V.view === "channels" && V.channel === c.key;
+  const unread = c.unread > 0;
+  return `<button class="chan-item" data-channel="${esc(c.key)}" ${active ? 'aria-current="true"' : ""} data-unread="${unread}">
+    ${unread ? '<span class="unread-dot"></span>' : ""}
+    ${ic("i-hash")}
+    <span class="chan-name">${esc(c.name)}</span>
+    ${unread ? `<span class="badge num">${c.unread}</span>` : ""}
+  </button>`;
+}
+
+function dmRow(p, active) {
+  const unread = p.unread > 0;
+  return `<button class="chan-item" data-dm="${esc(p.id)}" ${active ? 'aria-current="true"' : ""} data-unread="${unread}">
+    ${unread ? '<span class="unread-dot"></span>' : ""}
+    ${avatar(p, 20, true)}
+    <span class="chan-name">${esc(p.name)}</span>
+    ${unread ? `<span class="badge num">${p.unread}</span>` : ""}
+  </button>`;
+}
+
+function renderChannels() {
+  const el = $("chan-scroll");
+  const title = $("chan-head-title");
+  const dms = knownPeers();
+
+  if (V.view === "dms") {
+    title.textContent = "Direct messages";
+    el.innerHTML = dms.length
+      ? `<div class="group">
+           <div class="group-head">Conversations<span class="group-count num">${dms.length}</span></div>
+           ${dms.map(p => dmRow(p, V.dm === p.id)).join("")}
+         </div>`
+      : `<p class="voice-hint">No peer has introduced itself yet. Identities are learned on
+         first contact, so a conversation appears here as soon as somebody connects.</p>`;
+    return;
+  }
+
+  title.textContent = "Channels";
+  el.innerHTML = `
+    <div class="group">
+      <div class="group-head">
+        <button id="collapse-general" title="${V.collapsed ? "Expand" : "Collapse"}"
+                aria-expanded="${!V.collapsed}" style="transform:rotate(${V.collapsed ? -90 : 0}deg)">
+          ${ic("i-chev", "icon", 'style="width:12px;height:12px"')}
+          <span class="sr">${V.collapsed ? "Expand" : "Collapse"} the channel list</span>
+        </button>
+        General<span class="group-count num">${S.channels.length}</span>
+      </div>
+      ${V.collapsed
+        ? S.channels.filter(c => c.unread > 0 || c.key === V.channel).map(channelRow).join("")
+        : S.channels.map(channelRow).join("")}
+    </div>
+    ${dms.length ? `<div class="group">
+      <div class="group-head">Direct messages<span class="group-count num">${dms.length}</span></div>
+      ${dms.map(p => dmRow(p, false)).join("")}
+    </div>` : ""}`;
+}
+
+/* ---------------------------------------------------------------- voice panel */
+
+function voiceHint() {
+  const others = callPeers();
+  if (others.length > 1) {
+    const names = others.map(p => p.name);
+    return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} are in the call.`;
+  }
+  if (others.length === 1) return `${others[0].name} is in the call.`;
+  if (onlinePeers().length === 0) {
+    return "Nobody is online. Joining anyway is fine — the others arrive in the call when they come back.";
+  }
+  return "Nobody is in the call.";
+}
+
+function renderVoice() {
+  const el = $("voice");
+  const others = callPeers();
+  const roster = S.voice.joined ? [selfPeer(), ...others] : others;
+  const sharing = (S.own_streams || []).filter(s => !s.is_audio);
+  let live = "";
+
+  if (roster.length) {
+    const rows = roster.map(p => {
+      const me = !!p.self;
+      const muted = me ? S.voice.muted : (p.volume || 0) === 0;
+      return `<div class="voice-peer" data-id="${esc(p.id)}" data-speaking="${me ? meSpeaking() : isSpeaking(p.id)}">
+        ${avatar(p, 24, false, true)}
+        <span class="voice-peer-name">${esc(p.name)}${me ? " (you)" : ""}</span>
+        ${muted ? ic("i-mic-off", "icon", 'data-muted="1"') : ""}
+      </div>`;
+    }).join("");
+
+    /* The head reports the worst link in the call, not a number of its own. Patched by
+       the meters event, so it never forces a re-render. */
+    live = `<div class="voice-live">
+      <div class="voice-live-head">
+        ${ic("i-wave")}
+        ${S.voice.joined ? "Voice connected" : "Call running"}
+        <span class="voice-rtt mono" id="worst-rtt">—</span>
+      </div>
+      <div class="voice-peers">${rows}</div>
+      ${sharing.length ? `<p class="voice-share">${ic("i-monitor")}<span>Sharing <b>${esc(sharing[0].title)}</b>${sharing.length > 1 ? ` and ${sharing.length - 1} more` : ""} &middot; desktop audio follows automatically</span></p>` : ""}
+      ${S.voice.joined
+        ? `<div class="voice-acts">
+             <button class="btn btn--ghost" id="btn-share">${ic(sharing.length ? "i-x" : "i-share")}${sharing.length ? "Stop sharing" : "Share screen"}</button>
+             <button class="leave" id="btn-leave">${ic("i-leave")}Leave</button>
+           </div>`
+        : `<button class="join" id="btn-join">${ic("i-wave")}Join the call</button>`}
+    </div>`;
+  } else {
+    live = `<button class="join" id="btn-join">${ic("i-wave")}Join voice</button>
+      <p class="voice-hint">${voiceHint()}</p>`;
+  }
+
+  const me = selfPeer();
+  el.innerHTML = `${live}
+    <div class="self" data-speaking="${meSpeaking()}">
+      ${avatar(me, 32, true, true)}
+      <div class="self-id">
+        <div class="self-name">${esc(me.name)}</div>
+        <div class="self-sub">${S.do_not_disturb ? "Do not disturb" : S.voice.joined ? "In the call" : "Online"}</div>
+      </div>
+      <div class="self-actions">
+        <button class="self-btn" id="btn-mic" aria-pressed="${S.voice.muted}" title="${S.voice.muted ? "Unmute microphone" : "Mute microphone"}">
+          ${ic(S.voice.muted ? "i-mic-off" : "i-mic", "icon-18 icon")}
+          <span class="sr">${S.voice.muted ? "Unmute microphone" : "Mute microphone"}</span>
+        </button>
+        <button class="self-btn" id="btn-deaf" aria-pressed="${S.voice.deafened}" title="${S.voice.deafened ? "Undeafen" : "Deafen"}">
+          ${ic(S.voice.deafened ? "i-head-off" : "i-head", "icon-18 icon")}
+          <span class="sr">${S.voice.deafened ? "Undeafen" : "Deafen"}</span>
+        </button>
+        <button class="self-btn" id="btn-dnd" aria-pressed="${S.do_not_disturb}" title="${S.do_not_disturb ? "Turn off do not disturb" : "Do not disturb"}">
+          ${ic("i-moon", "icon-18 icon")}
+          <span class="sr">Do not disturb</span>
+        </button>
+      </div>
+    </div>`;
+}
+
+/* ---------------------------------------------------------------- timeline */
+
+function attachmentCard(item) {
+  const t = item.transfer;
+  const author = peerById(item.author);
+  /* "Paused" is not a state the engine has; it is a running transfer whose offerer went
+     away. Deriving it here is what keeps the line from claiming progress that stopped. */
+  const stalled = t.state === "running" && author && author.presence !== "online";
+
+  if (t.state === "mine") {
+    return `<div class="att">
+      <span class="att-ico">${ic("i-file", "icon-18 icon")}</span>
+      <span class="att-meta">
+        <span class="att-name">${esc(item.name)}</span>
+        <span class="att-sub num">${fmtSize(item.size)} &middot; offered by you</span>
+      </span>
+    </div>`;
+  }
+  if (t.state === "done") {
+    return `<div class="att">
+      <span class="att-ico">${ic("i-file", "icon-18 icon")}</span>
+      <span class="att-meta">
+        <span class="att-name">${esc(item.name)}</span>
+        <span class="att-sub num">${fmtSize(item.size)} &middot; in your download folder</span>
+      </span>
+      <button class="btn btn--ghost" disabled>${ic("i-check")}Downloaded</button>
+    </div>`;
+  }
+  if (t.state === "failed") {
+    return `<div class="att">
+      <span class="att-ico" data-error>${ic("i-alert", "icon-18 icon")}</span>
+      <span class="att-meta">
+        <span class="att-name">${esc(item.name)}</span>
+        <span class="att-sub" data-error>${esc(t.error)}</span>
+      </span>
+      <button class="btn" data-download='${opAttr(item.id)}'>${ic("i-retry")}Try again</button>
+    </div>`;
+  }
+  if (t.state === "running") {
+    const pct = t.total ? t.received / t.total : 0;
+    return `<div class="att">
+      <span class="att-ico">${ic("i-file", "icon-18 icon")}</span>
+      <span class="att-meta">
+        <span class="att-name">${esc(item.name)}</span>
+        <span class="att-sub num">${stalled
+          ? `Paused at ${fmtSize(t.received)} of ${fmtSize(t.total)} &middot; ${esc(author.name)} went offline`
+          : `${fmtSize(t.received)} of ${fmtSize(t.total)} &middot; ${Math.round(pct * 100)}%`}</span>
+        <span class="bar"${stalled ? " data-paused" : ""}><i style="transform:scaleX(${pct.toFixed(3)})"></i></span>
+        ${stalled ? `<span class="att-sub">Continues from ${fmtSize(t.received)} by itself when he is back. Nothing already transferred is sent again.</span>` : ""}
+      </span>
+      <button class="btn" disabled>${stalled ? "Waiting" : "Downloading"}</button>
+    </div>`;
+  }
+  return `<div class="att">
+    <span class="att-ico">${ic("i-file", "icon-18 icon")}</span>
+    <span class="att-meta">
+      <span class="att-name">${esc(item.name)}</span>
+      <span class="att-sub num">${fmtSize(item.size)}</span>
+    </span>
+    <button class="btn" data-download='${opAttr(item.id)}'>${ic("i-download")}Download</button>
+  </div>`;
+}
+
+const opAttr = op => esc(JSON.stringify(op));
+
+function itemContent(item) {
+  if (item.kind === "message") {
+    if (V.editing && sameOp(V.editing, item.id)) {
+      return `<div class="msg-edit">
+        <textarea id="edit-input">${esc(item.body)}</textarea>
+        <p class="msg-edit-hint"><b>Enter</b> saves &middot; <b>Esc</b> cancels &middot; empty deletes</p>
+      </div>`;
+    }
+    return renderBody(item.body, item.mentions_you);
+  }
+  if (item.image_path) {
+    return `<figure class="shot">
+      <img src="${convertFileSrc(item.image_path)}" alt="${esc(item.name)}">
+      <figcaption class="shot-cap">${esc(item.name)} &middot; <span class="num">${fmtSize(item.size)}</span></figcaption>
+    </figure>`;
+  }
+  return attachmentCard(item);
+}
+
+const sameOp = (a, b) => a && b && a.author === b.author && a.channel === b.channel && a.seq === b.seq;
+
+function renderMessage(item, grouped, at) {
+  const author = item.mine ? selfPeer() : (peerById(item.author) || { name: item.author_name, avatar: item.avatar, presence: "offline" });
+  const time = at ? fmtTime(at) : "";
+  return `<article class="msg${grouped ? " msg--grouped" : " msg--start"}${item.mentions_you ? " msg--mentions" : ""}">
+    <div class="msg-gutter">
+      ${grouped ? `<span class="stamp-hover">${time}</span>` : avatar(author, 40)}
+    </div>
+    <div class="msg-body">
+      ${grouped ? "" : `<div class="msg-head">
+        <span class="msg-author">${esc(item.author_name)}</span>
+        <span class="msg-stamp">${time}</span>
+        ${item.edited ? '<span class="msg-edited">(edited)</span>' : ""}
+      </div>`}
+      ${itemContent(item)}
+    </div>
+    <div class="msg-actions">
+      ${item.mine && item.kind === "message" ? `<button data-edit='${opAttr(item.id)}' title="Edit">${ic("i-edit", "icon", 'style="width:15px;height:15px"')}<span class="sr">Edit this message</span></button>` : ""}
+      ${item.mine ? `<button data-danger data-delete='${opAttr(item.id)}' title="Delete">${ic("i-trash", "icon", 'style="width:15px;height:15px"')}<span class="sr">Delete this</span></button>` : ""}
+      ${!item.mine && item.kind === "message" ? `<button data-copy='${esc(item.body)}' title="Copy text">${ic("i-file", "icon", 'style="width:15px;height:15px"')}<span class="sr">Copy this message</span></button>` : ""}
+    </div>
+  </article>`;
+}
+
+/** Grouped continuation: same author, same day, within seven minutes. */
+const GROUP_WINDOW = 7 * 60 * 1000;
+
+function renderTimeline() {
+  const host = $("timeline");
+  const dmPeer = V.view === "dms" && V.dm ? peerById(V.dm) : null;
+  let html = "";
+
+  if (dmPeer) {
+    html += `<div class="dm-intro">
+      ${avatar(dmPeer, 40)}
+      <h2>${esc(dmPeer.name)}</h2>
+      <p>This conversation stays between the two of you. It is never relayed through the
+         third peer, because there is no encryption on the wire and relaying would mean
+         letting them read it.</p>
+    </div>`;
+    if (!TL.length) {
+      html += `<p class="dm-empty">No messages yet. ${dmPeer.presence === "online"
+        ? `Anything you send reaches ${esc(dmPeer.name)} straight away.`
+        : `Anything you send reaches ${esc(dmPeer.name)} as soon as he is back.`}</p>`;
+      host.innerHTML = `<div class="tl-inner">${html}</div>`;
+      return;
+    }
+  } else if (!TL.length) {
+    host.innerHTML = `<div class="tl-inner"><div class="empty">
+      <div class="empty-ico">${ic("i-hash", "icon-20 icon")}</div>
+      <h2>#${esc(activeName())} is empty</h2>
+      <p>Nothing has been posted here yet. Anything you send stays in this channel and
+         reaches the others as soon as they are online.</p>
+    </div></div>`;
+    return;
+  }
+
+  let lastDay = null;
+  let lastAuthor = null;
+  let lastAt = 0;
+  /* Where the "New" divider goes is decided when the conversation opens, not from the
+     live counter: opening marks it read, so by the time this runs the count is already
+     zero and the divider would never appear at all. */
+  let firstUnreadDrawn = false;
+  const unreadFrom = TL.length - (V.unreadAtOpen || 0);
+
+  TL.forEach((item, i) => {
+    /* A file carries no wall clock of its own — it is ordered by the same lamport key as
+       the messages and shown at the time of whatever it was dropped beside. */
+    const at = item.at || lastAt;
+    const day = at ? fmtDay(at) : null;
+    if (day && day !== lastDay) {
+      html += `<div class="day">${esc(day)}</div>`;
+      lastDay = day;
+      lastAuthor = null;
+    }
+    if (!firstUnreadDrawn && unreadFrom > 0 && i === unreadFrom) {
+      html += `<div class="newline">New</div>`;
+      firstUnreadDrawn = true;
+      lastAuthor = null;
+    }
+    const grouped = item.author === lastAuthor
+      && at && lastAt && at - lastAt < GROUP_WINDOW
+      && !item.mentions_you;
+    html += renderMessage(item, grouped, at);
+    lastAuthor = item.author;
+    lastAt = at || lastAt;
+  });
+
+  host.innerHTML = `<div class="tl-inner">${html}</div>`;
+}
+
+function unreadCount() {
+  const key = activeChannel();
+  if (key.startsWith("dm:")) return peerById(key.slice(3))?.unread || 0;
+  return channelByKey(key)?.unread || 0;
+}
+
+/* ---------------------------------------------------------------- members */
+
+function memberRow(p, opts = {}) {
+  const me = !!p.self;
+  const quiet = !me && p.presence !== "online";
+  const speaking = me ? meSpeaking() : isSpeaking(p.id);
+  const shared = (S.streams || []).filter(s => s.owner === p.id);
+  const muted = (p.volume || 0) === 0;
+  const vol = Math.round((p.volume ?? 1) * 100);
+  const deskVol = Math.round((p.desktop_volume ?? 1) * 100);
+
+  return `<div class="mem" data-id="${esc(p.id)}" data-quiet="${quiet}" data-speaking="${speaking}">
+    <div>${avatar(p, 32, true, true)}</div>
+    <div class="mem-main">
+      <div class="mem-top">
+        <span class="mem-name">${esc(p.name)}</span>
+        ${me ? '<span class="mem-you">YOU</span>' : ""}
+      </div>
+      ${opts.sub ? `<div class="mem-sub">${opts.sub}</div>` : ""}
+      ${opts.tools ? `<div class="mem-tools">
+        <button class="mem-mute" aria-pressed="${muted}" data-pmute="${esc(p.id)}" title="${muted ? `Unmute ${esc(p.name)}` : `Mute ${esc(p.name)}`}">
+          ${ic(muted ? "i-mic-off" : "i-mic", "icon", 'style="width:14px;height:14px"')}
+          <span class="sr">${muted ? "Unmute" : "Mute"} ${esc(p.name)}</span>
+        </button>
+        <input type="range" min="0" max="100" value="${vol}" data-vol="${esc(p.id)}"
+               style="--pct:${vol}%" aria-label="Voice volume for ${esc(p.name)}">
+        <span class="vol-num num">${vol}</span>
+      </div>` : ""}
+      ${p.desktop_stream !== null && p.desktop_stream !== undefined ? `<div class="mem-desk">
+        <span class="tool-label">Screen audio</span>
+        <div class="mem-tools">
+          ${ic("i-monitor", "icon", 'style="width:14px;height:14px;color:var(--text-dim);flex:none"')}
+          <input type="range" min="0" max="100" value="${deskVol}" data-dvol="${esc(p.id)}" data-stream="${p.desktop_stream}"
+                 style="--pct:${deskVol}%" aria-label="Desktop audio volume for ${esc(p.name)}">
+          <span class="vol-num num">${deskVol}</span>
+        </div>
+      </div>` : ""}
+      ${shared.filter(s => !s.watching).map(s =>
+        `<button class="share-chip" data-watch="${esc(p.id)}" data-stream="${s.stream_id}">${ic("i-monitor")}Watch ${esc(s.title)}</button>`).join("")}
+      ${shared.filter(s => s.watching).map(s =>
+        `<button class="share-chip" data-unwatch="${esc(p.id)}" data-stream="${s.stream_id}">${ic("i-x")}Stop watching ${esc(s.title)}</button>`).join("")}
+    </div>
+  </div>`;
+}
+
+function renderMembers() {
+  const el = $("members");
+  const me = selfPeer();
+  const inCall = callPeers();
+  const inCallIds = new Set(inCall.map(p => p.id));
+  const roster = S.voice.joined ? [me, ...inCall] : inCall;
+  const online = knownPeers().filter(p => p.presence === "online" && !inCallIds.has(p.id));
+  const connecting = knownPeers().filter(p => p.presence === "connecting");
+  const away = knownPeers().filter(p => p.presence === "offline" || p.presence === "broken");
+  const unknown = (S.peers || []).filter(p => !p.id);
+  if (!S.voice.joined) online.unshift(me);
+
+  const group = (label, list, opts) => list.length ? `<div class="group">
+      <div class="group-head">${label}<span class="group-count num">${list.length}</span></div>
+      ${list.map(p => memberRow(p, opts(p))).join("")}
+    </div>` : "";
+
+  el.innerHTML =
+    group("In the call", roster, p => ({
+      sub: p.self
+        ? (S.voice.muted ? "Microphone muted" : meSpeaking() ? "Speaking" : "Listening")
+        : (isSpeaking(p.id) ? "Speaking" : (p.volume || 0) === 0 ? "Muted for you" : "Listening"),
+      tools: !p.self,
+    })) +
+    group("Online", online, p => ({
+      sub: p.self && S.do_not_disturb ? "Do not disturb"
+         : p.self && sharingSelf() ? "Sharing your screen"
+         : callRunning() ? "Not in the call" : "",
+    })) +
+    group("Connecting", connecting, () => ({ sub: "Reconnecting" })) +
+    group("Offline", away, p => ({ sub: p.problem || lastSeenLine(p) })) +
+    group("Not introduced yet", unknown, p => ({ sub: esc(p.address) }));
+}
+
+/* ---------------------------------------------------------------- strip */
+
+function renderStrip() {
+  const el = $("strip-slot");
+  const tiles = [
+    ...watchedStreams().map(s => ({
+      key: `${s.owner}-${s.stream_id}`,
+      who: s.owner_name,
+      what: s.title,
+      live: true,
+    })),
+    ...(S.own_streams || []).filter(s => !s.is_audio).map(s => ({
+      key: null,
+      who: "You",
+      what: s.title,
+      live: s.viewers > 0,
+    })),
+  ];
+  if (!tiles.length) { el.innerHTML = ""; return; }
+
+  /* A tile only becomes an image once a frame has actually arrived. Until then it shows
+     the idle mark: a stream that was just opened has nothing to draw for half a second,
+     and an <img> with no source is a broken-image box. */
+  el.innerHTML = `<div class="strip">${tiles.map(t => `
+    <button class="tile">
+      ${t.live ? '<span class="live-tag"><i></i>LIVE</span>' : ""}
+      ${t.key && thumbUrls[t.key]
+        ? `<img id="thumb-${esc(t.key)}" src="${esc(thumbUrls[t.key])}" alt="${esc(t.who)} &middot; ${esc(t.what)}">`
+        : `<span class="tile-idle">${ic("i-monitor", "icon-20 icon")}</span>`}
+      <span class="tile-cap">${ic("i-monitor")}<span>${esc(t.who)} &middot; ${esc(t.what)}</span></span>
+    </button>`).join("")}</div>`;
+}
+
+const thumbUrls = {};
+
+/* ---------------------------------------------------------------- overlays */
+
+function renderOverlays() {
+  const ac = $("ac-slot");
+  const drop = $("drop-slot");
+  const input = $("composer-input");
+  const open = V.overlay === "ac" && V.acMatches.length > 0;
+
+  ac.innerHTML = open ? `<div class="ac">
+    <div class="ac-head" id="ac-head">Members matching @${esc(V.acQuery || "")}</div>
+    <div role="listbox" id="ac-list" aria-labelledby="ac-head">
+      ${V.acMatches.map((p, i) => `<button class="ac-item" role="option" id="ac-opt-${i}"
+        aria-selected="${i === V.acIndex}" data-ac="${esc(p.name)}">${avatar(p, 20)}${esc(p.name)}${i === V.acIndex ? "<small>Tab</small>" : ""}</button>`).join("")}
+    </div>
+  </div>` : "";
+  input.setAttribute("aria-expanded", String(open));
+  if (open) input.setAttribute("aria-activedescendant", `ac-opt-${V.acIndex}`);
+  else input.removeAttribute("aria-activedescendant");
+
+  drop.innerHTML = V.overlay === "drop" ? `<div class="drop">
+    <div class="drop-inner">
+      ${ic("i-share", "icon")}
+      <strong>Drop to share</strong>
+      <span>The file is offered to everyone in ${V.view === "dms" ? esc(activeName()) : `#${esc(activeName())}`}</span>
+    </div>
+  </div>` : "";
+}
+
+function renderError() {
+  $("error-slot").innerHTML = S.error ? `<div class="error-bar">
+    ${ic("i-alert", "icon")}
+    <span>${esc(S.error)}</span>
+    <button id="error-dismiss" title="Dismiss">${ic("i-x")}<span class="sr">Dismiss</span></button>
+  </div>` : "";
+}
+
+/* ---------------------------------------------------------------- status bar */
+
+function renderStatus() {
+  const el = $("status");
+  const link = p => `<span class="link" data-id="${esc(p.id || p.address)}" data-state="${p.presence}">
+      <i></i><b>${esc(p.name)}</b><span class="num" data-rtt>${
+        p.presence === "online" ? fmtRtt(p.id)
+        : p.presence === "connecting" ? "reconnecting"
+        : p.presence === "broken" ? "needs attention"
+        : "offline"}</span></span>`;
+
+  const update = S.update && S.update.state === "ready"
+    ? `<button class="update-chip" id="btn-update">${ic("i-download")}Update to ${esc(S.update.version)} is ready</button>`
+    : S.update && S.update.state === "downloading"
+    ? `<span class="update-chip" aria-live="polite">${ic("i-download")}Fetching ${esc(S.update.version)} — ${Math.round(100 * S.update.received / Math.max(1, S.update.total))}%</span>`
+    : S.update && S.update.state === "offered"
+    ? `<span class="update-chip">${ic("i-download")}${esc(S.update.peer)} runs ${esc(S.update.version)}</span>`
+    : S.update && S.update.state === "failed"
+    ? `<button class="update-chip" id="btn-update-dismiss">${ic("i-alert")}Update failed</button>`
+    : "";
+
+  el.innerHTML = `
+    ${(S.peers || []).map(link).join("")}
+    <span class="status-spacer"></span>
+    ${update}
+    <span class="status-meta mono">v${esc(S.app_version)} &middot; protocol ${S.protocol_version}</span>`;
+}
+
+/* ---------------------------------------------------------------- header + shell */
+
+function renderHead() {
+  const icon = $("main-head-icon");
+  const title = $("main-title");
+  const topic = $("main-topic");
+  const input = $("composer-input");
+
+  if (V.view === "dms" && V.dm) {
+    const p = peerById(V.dm);
+    icon.innerHTML = `<use href="#i-at"/>`;
+    title.textContent = p ? p.name : "";
+    topic.textContent = "Direct message · never relayed through the third peer";
+    input.placeholder = `Message ${p ? p.name : ""}`;
+  } else {
+    const c = channelByKey(V.channel) || S.channels[0];
+    icon.innerHTML = `<use href="#i-hash"/>`;
+    title.textContent = c ? c.name : "general";
+    topic.textContent = c && c.key === "general"
+      ? "Everyone sees this channel"
+      : "Sub-channel · everyone sees this too";
+    input.placeholder = `Message #${c ? c.name : ""}`;
+  }
+}
+
+function renderShell() {
+  const body = $("body");
+  body.dataset.view = V.view;
+  body.dataset.members = V.members ? "shown" : "hidden";
+
+  $("settings").hidden = V.view !== "settings";
+  $("nav-channels").setAttribute("aria-current", V.view === "channels");
+  $("nav-dms").setAttribute("aria-current", V.view === "dms");
+  $("nav-settings").setAttribute("aria-current", V.view === "settings");
+  $("toggle-members").setAttribute("aria-pressed", V.members);
+
+  const n = totalDmUnread();
+  const badge = $("dm-badge");
+  badge.hidden = n === 0;
+  badge.textContent = n || "";
+  $("dm-badge-sr").textContent = n ? `Direct messages, ${n} unread` : "Direct messages";
+}
+
+/* ---------------------------------------------------------------- settings */
+
+const SET_TABS = [
+  { id: "account", name: "Account", icon: "i-users" },
+  { id: "audio", name: "Audio", icon: "i-mic" },
+  { id: "video", name: "Video", icon: "i-monitor" },
+  { id: "files", name: "Files", icon: "i-image" },
+  { id: "network", name: "Network", icon: "i-signal" },
+];
+
+/** Fetched the first time the Audio tab is shown; Refresh drops it so a headset that was
+    just plugged in appears. */
+let devices = null;
+
+const deviceSelect = (id, list, chosen, label) => `
+  <span class="select-wrap">
+    <select id="${id}" style="min-width:300px" aria-label="${label}">
+      <option value=""${chosen ? "" : " selected"}>Windows default</option>
+      ${(list || []).map(d => `<option${d === chosen ? " selected" : ""}>${esc(d)}</option>`).join("")}
+      ${chosen && !(list || []).includes(chosen) ? `<option selected>${esc(chosen)}</option>` : ""}
+    </select>
+    ${ic("i-chev")}
+  </span>`;
+
+const SET_BODY = {
+  account: () => `
+    <h2>Account</h2>
+    <p>Your identity is a UUID generated on first start and stored locally. The display
+       name is cosmetic and can change at any time; the others see the new name without
+       restarting.</p>
+    <div class="field">
+      <label class="field-label" for="set-name">Display name</label>
+      <span class="field-help">How the other two see you.</span>
+      <div class="control-row">
+        <input class="text-input" id="set-name" value="${esc(S.self.name)}" style="min-width:240px">
+        <button class="btn btn--accent" id="save-name">Save</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Identity</span>
+      <span class="field-help">Never copy this between machines. Two peers sharing one
+        identity break chat synchronisation.</span>
+      <div class="control-row">
+        <code class="mono code-inline">${esc(S.self.id)}</code>
+        <button class="btn btn--ghost" data-copy="${esc(S.self.id)}">Copy</button>
+      </div>
+    </div>
+    <div class="field">
+      <div class="switch-row">
+        <div>
+          <span class="field-label">Start with Windows</span>
+          <span class="field-help">Set in <code class="mono">config.toml</code>
+            and applied at every start.</span>
+        </div>
+        <button class="switch" aria-pressed="${S.autostart}" aria-label="Start with Windows" disabled></button>
+      </div>
+    </div>
+    <div class="field">
+      <div class="switch-row">
+        <div>
+          <span class="field-label">Close button hides to tray</span>
+          <span class="field-help">On by default, so closing the window does not stop the
+            app while you are gaming. Set in <code class="mono">config.toml</code>.</span>
+        </div>
+        <button class="switch" aria-pressed="${S.minimize_to_tray}" aria-label="Close button hides to tray" disabled></button>
+      </div>
+    </div>`,
+
+  audio: () => `
+    <h2>Audio</h2>
+    <p>Voice runs at 48 kHz with 20 ms frames. Noise suppression is always on. There is no
+       echo cancellation, because everyone wears a headset.</p>
+    <div class="field">
+      <label class="field-label" for="set-in">Microphone</label>
+      <span class="field-help">Leave on the Windows default unless you need a specific
+        device. Changing it restarts a running call briefly.</span>
+      <div class="control-row">
+        ${deviceSelect("set-in", devices && devices[0], S.input_device, "Microphone")}
+        <button class="btn btn--ghost" id="refresh-devices">${ic("i-retry")}Refresh</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="set-out">Output</label>
+      <div class="control-row">
+        ${deviceSelect("set-out", devices && devices[1], S.output_device, "Output")}
+      </div>
+      <div class="note">
+        ${ic("i-alert")}
+        <span>Set both devices to <code>48000 Hz</code> in Windows. At any other rate the
+          app has to resample, and that costs quality for nothing.</span>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Input level</span>
+      <span class="field-help">Voice is only sent while you are actually speaking. When
+        you are quiet, nothing goes over the line.</span>
+      <span class="bar" style="max-width:320px;height:6px" id="input-level"><i style="transform:scaleX(0)"></i></span>
+    </div>`,
+
+  video: () => `
+    <h2>Video</h2>
+    <p>Applies to every screen or window you share. A running share restarts immediately
+       with the new settings.</p>
+    <div class="field">
+      <span class="field-label">Codec</span>
+      <span class="field-help">H.264 always works. HEVC decoding needs a Store extension
+        that is not installed by default, so only pick it if you know both sides have it.</span>
+      <div class="seg" data-video="codec">
+        <button data-v="h264" aria-pressed="${S.video.codec === "h264"}">H.264</button>
+        <button data-v="hevc" aria-pressed="${S.video.codec === "hevc"}">HEVC</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Frame rate</span>
+      <span class="field-help">An upper bound, not a promise: only whole divisors of your
+        refresh rate give even motion.</span>
+      <div class="seg" data-video="fps">
+        <button data-v="30" aria-pressed="${S.video.fps === 30}">30</button>
+        <button data-v="60" aria-pressed="${S.video.fps === 60}">60</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="set-br">Bitrate</label>
+      <span class="field-help">12 Mbit/s is the default. Higher caused stutter in the voice
+        of whoever was sharing when a viewer had a weaker connection.</span>
+      <div class="control-row">
+        <input type="range" min="4" max="40" value="${mbit(S.video.bitrate)}"
+               style="--pct:${(mbit(S.video.bitrate) - 4) / 36 * 100}%;max-width:280px"
+               id="set-br" aria-label="Bitrate in Mbit/s">
+        <span class="mono readout" id="br-readout">${mbit(S.video.bitrate)} Mbit/s</span>
+      </div>
+    </div>
+    <div class="field">
+      <div class="note">
+        ${ic("i-alert")}
+        <span>Desktop audio starts and stops with the share, always. Your own voice is
+          excluded, so nobody hears themselves back.</span>
+      </div>
+    </div>`,
+
+  files: () => `
+    <h2>Files</h2>
+    <p>Shared files land in a fixed folder. Images go to a separate content-addressed
+       folder so a thumbnail resolves to the same path for the sender and the receiver.</p>
+    <div class="field">
+      <span class="field-label">Download folder</span>
+      <span class="field-help">Set in <code class="mono">config.toml</code>.</span>
+      <div class="control-row">
+        <code class="mono code-inline">${esc(S.download_dir)}</code>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Images</span>
+      <span class="field-help">Kept under <code class="mono">${esc(S.pictures_dir)}</code>,
+        named after the content hash so both sides resolve the same file.</span>
+      <div class="control-row">
+        <button class="btn btn--danger" id="btn-wipe">${ic("i-trash")}Delete all images</button>
+        <span class="field-help" style="margin:0">Only clears them from this machine.</span>
+      </div>
+    </div>`,
+
+  network: () => `
+    <h2>Network</h2>
+    <p>Peers are addressed over the tailnet. Identities are learned on first contact, so
+       there is nothing to exchange by hand.</p>
+    <div class="field">
+      <span class="field-label">Peers</span>
+      <span class="field-help">Each peer lists the other two, in
+        <code class="mono">config.toml</code>.</span>
+      <div class="peer-table">
+        ${(S.peers || []).map(p => `
+          <div class="peer-row">
+            ${avatar(p, 24, true)}
+            <span class="peer-id">
+              <span class="peer-name">${esc(p.name)}</span>
+              <span class="mono peer-addr">${esc(p.address)}${p.app_version ? ` &middot; v${esc(p.app_version)}` : ""}</span>
+            </span>
+            <span class="link" data-id="${esc(p.id || p.address)}" data-state="${p.presence}"><i></i><span class="num" data-rtt>${
+              p.presence === "online" ? fmtRtt(p.id)
+              : p.presence === "connecting" ? "reconnecting"
+              : p.presence === "broken" ? esc(p.problem || "needs attention")
+              : "offline"}</span></span>
+          </div>`).join("")}
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Ports</span>
+      <span class="field-help">Changed in <code class="mono">config.toml</code>;
+        the app reads them at start.</span>
+      <div class="control-row">
+        <span>
+          <span class="field-help" style="margin:0 0 4px">Control (QUIC)</span>
+          <input class="text-input mono" value="${S.control_port}" style="min-width:120px" aria-label="Control port" readonly>
+        </span>
+        <span>
+          <span class="field-help" style="margin:0 0 4px">Media (UDP)</span>
+          <input class="text-input mono" value="${S.media_port}" style="min-width:120px" aria-label="Media port" readonly>
+        </span>
+      </div>
+    </div>`,
+};
+
+function renderSettings() {
+  $("settings").innerHTML = `
+    <nav class="set-nav" aria-label="Settings sections">
+      <div class="set-nav-title">Settings</div>
+      ${SET_TABS.map(t => `<button class="set-tab" data-tab="${t.id}" ${V.settingsTab === t.id ? 'aria-current="true"' : ""}>
+        ${ic(t.icon)}${t.name}
+      </button>`).join("")}
+    </nav>
+    <div class="set-body"><div class="set-inner">${SET_BODY[V.settingsTab]()}</div></div>`;
+}
+
+/* ---------------------------------------------------------------- render */
+
+/* A chat opens on the newest message, never at the top of its history. Two rules, and the
+   second is the one that gets forgotten:
+   1. Switching conversation jumps to the newest message.
+   2. Anything that shrinks the timeline — the stream strip appearing, the composer
+      growing to three lines — must not slide the newest message out of view. */
+let lastConversation = null;
+const PIN_SLACK = 24;
+const wasPinned = tl => tl.scrollHeight - tl.clientHeight - tl.scrollTop <= PIN_SLACK;
+const repin = (tl, pinned) => { if (pinned) tl.scrollTop = tl.scrollHeight; };
+
+function render() {
+  if (!S) return;
+  const tlPre = $("timeline");
+  const pinned = tlPre ? wasPinned(tlPre) : true;
+
+  renderShell();
+  renderChannels();
+  renderVoice();
+  renderHead();
+  renderStrip();
+  renderTimeline();
+  renderMembers();
+  renderOverlays();
+  renderError();
+  renderStatus();
+  if (V.view === "settings") renderSettings();
+
+  const tl = $("timeline");
+  const key = `${V.view}:${activeChannel()}`;
+  if (key !== lastConversation) {
+    lastConversation = key;
+    tl.scrollTop = tl.scrollHeight;
+  } else {
+    repin(tl, pinned);
+  }
+}
+
+/* ---------------------------------------------------------------- dialogs */
+
+const dlg = $("confirm");
+let confirmAction = null;
+
+function askConfirm({ title, text, ok, danger, onYes }) {
+  $("confirm-title").textContent = title;
+  $("confirm-text").textContent = text;
+  const yes = $("confirm-yes");
+  yes.textContent = ok;
+  yes.className = "btn " + (danger ? "btn--danger" : "btn--accent");
+  confirmAction = onYes;
+  dlg.showModal();
+}
+
+$("confirm-no").addEventListener("click", () => dlg.close());
+$("confirm-yes").addEventListener("click", () => {
+  dlg.close();
+  if (confirmAction) confirmAction();
+  confirmAction = null;
+});
+
+const promptDlg = $("prompt");
+let promptAction = null;
+
+function askText({ title, text, value = "", ok = "Save", onYes }) {
+  $("prompt-title").textContent = title;
+  $("prompt-text").textContent = text;
+  $("prompt-input").value = value;
+  $("prompt-yes").textContent = ok;
+  promptAction = onYes;
+  promptDlg.showModal();
+  $("prompt-input").focus();
+  $("prompt-input").select();
+}
+
+$("prompt-no").addEventListener("click", () => promptDlg.close());
+$("prompt-yes").addEventListener("click", submitPrompt);
+$("prompt-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); submitPrompt(); }
+});
+
+function submitPrompt() {
+  const value = $("prompt-input").value.trim();
+  promptDlg.close();
+  if (value && promptAction) promptAction(value);
+  promptAction = null;
+}
+
+const picker = $("picker");
+$("picker-cancel").addEventListener("click", () => picker.close());
+
+async function openPicker() {
+  const sources = await invoke("list_sources");
+  $("picker-list").innerHTML = sources.length
+    ? sources.map(s => `<button class="picker-item" data-source="${s.index}">
+        ${ic(s.is_window ? "i-file" : "i-monitor")}<span>${esc(s.name)}</span>
+      </button>`).join("")
+    : `<p class="picker-empty">Windows offered nothing to capture.</p>`;
+  picker.showModal();
+}
+
+/* ---------------------------------------------------------------- navigation */
+
+function saveDraft() {
+  const input = $("composer-input");
+  const key = activeChannel();
+  if (input.value.trim()) V.drafts[key] = input.value;
+  else delete V.drafts[key];
+}
+
+function restoreDraft() {
+  const input = $("composer-input");
+  input.value = V.drafts[activeChannel()] || "";
+  growComposer();
+}
+
+function openChannel(key) {
+  saveDraft();
+  V.view = "channels";
+  V.channel = key;
+  V.editing = null;
+  V.overlay = "none";
+  afterConversationChange();
+}
+
+function openDm(id) {
+  saveDraft();
+  V.view = "dms";
+  V.dm = id;
+  V.editing = null;
+  V.overlay = "none";
+  afterConversationChange();
+}
+
+async function afterConversationChange() {
+  restoreDraft();
+  V.unreadAtOpen = unreadCount();
+  await invoke("mark_read", { channel: activeChannel() });
+  await loadTimeline();
+  render();
+}
+
+async function loadTimeline() {
+  TL = await invoke("get_timeline", { channel: activeChannel() });
+}
+
+/* ---------------------------------------------------------------- events */
+
+document.addEventListener("click", async e => {
+  const t = e.target;
+
+  if (t.closest("#win-min")) return getCurrentWindow().minimize();
+  if (t.closest("#win-max")) return getCurrentWindow().toggleMaximize();
+  if (t.closest("#win-close")) return invoke("close_window");
+
+  const rail = t.closest("#nav-channels, #nav-dms, #nav-settings");
+  if (rail) {
+    if (rail.id === "nav-channels") { V.view = "channels"; return afterConversationChange(); }
+    if (rail.id === "nav-dms") {
+      V.view = "dms";
+      if (!V.dm) V.dm = knownPeers()[0]?.id || null;
+      return afterConversationChange();
+    }
+    V.view = "settings";
+    return render();
+  }
+
+  const chan = t.closest("[data-channel]");
+  if (chan) return openChannel(chan.dataset.channel);
+
+  const dm = t.closest("[data-dm]");
+  if (dm) return openDm(dm.dataset.dm);
+
+  if (t.closest("#toggle-members")) { V.members = !V.members; return render(); }
+  /* Collapsing keeps the channel you are in and anything unread — a collapse that hides
+     a channel shouting at you is a collapse that loses the message. */
+  if (t.closest("#collapse-general")) { V.collapsed = !V.collapsed; return renderChannels(); }
+  if (t.closest("#new-channel")) {
+    return askText({
+      title: "New channel",
+      text: "A sub-channel under the general channel. Everyone sees it, and it keeps its own message stream and its own unread count.",
+      ok: "Create",
+      onYes: title => invoke("create_channel", { title }),
+    });
+  }
+
+  if (t.closest("#btn-join")) return invoke("set_joined", { joined: true });
+  if (t.closest("#btn-leave")) return invoke("set_joined", { joined: false });
+  if (t.closest("#btn-share")) {
+    const mine = (S.own_streams || []).filter(s => !s.is_audio);
+    if (mine.length) return Promise.all(mine.map(s => invoke("stop_sharing", { stream: s.stream_id })));
+    return openPicker();
+  }
+  if (t.closest("#btn-mic")) return invoke("set_muted", { muted: !S.voice.muted });
+  if (t.closest("#btn-deaf")) return invoke("set_deafened", { deafened: !S.voice.deafened });
+  if (t.closest("#btn-dnd")) return invoke("set_do_not_disturb", { on: !S.do_not_disturb });
+  if (t.closest("#attach")) return invoke("pick_and_offer_file", { channel: activeChannel() });
+  if (t.closest("#error-dismiss")) return invoke("dismiss_error");
+
+  const source = t.closest("[data-source]");
+  if (source) {
+    picker.close();
+    return invoke("share_source", { index: Number(source.dataset.source) });
+  }
+
+  const watch = t.closest("[data-watch]");
+  if (watch) return invoke("set_watching", { peer: watch.dataset.watch, stream: Number(watch.dataset.stream), watching: true });
+  const unwatch = t.closest("[data-unwatch]");
+  if (unwatch) return invoke("set_watching", { peer: unwatch.dataset.unwatch, stream: Number(unwatch.dataset.stream), watching: false });
+
+  const pm = t.closest("[data-pmute]");
+  if (pm) {
+    const id = pm.dataset.pmute;
+    const p = peerById(id);
+    if (!p) return;
+    const muted = (p.volume || 0) === 0;
+    const volume = muted ? (V.volumeBeforeMute[id] ?? 1) : 0;
+    if (!muted) V.volumeBeforeMute[id] = p.volume;
+    return invoke("set_peer_volume", { peer: id, volume });
+  }
+
+  const dl = t.closest("[data-download]");
+  if (dl) return invoke("download_file", { op: JSON.parse(dl.dataset.download) });
+
+  const ed = t.closest("[data-edit]");
+  if (ed) {
+    V.editing = JSON.parse(ed.dataset.edit);
+    render();
+    const box = $("edit-input");
+    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    return;
+  }
+
+  const del = t.closest("[data-delete]");
+  if (del) {
+    const op = JSON.parse(del.dataset.delete);
+    return askConfirm({
+      title: "Delete this?",
+      text: "It disappears from the timeline for everyone. A file also stops being served — but a download that already finished stays on that machine.",
+      ok: "Delete",
+      danger: true,
+      onYes: () => invoke("delete_message", { op }),
+    });
+  }
+
+  const copy = t.closest("[data-copy]");
+  if (copy) return navigator.clipboard.writeText(copy.dataset.copy);
+
+  const acItem = t.closest("[data-ac]");
+  if (acItem) return acceptSuggestion(acItem.dataset.ac);
+
+  if (t.closest("#btn-update")) {
+    return askConfirm({
+      title: `Update to ${S.update.version} and restart?`,
+      text: "The new version is already downloaded and verified. Applying it closes the app, replaces it, and starts it again. Your history and settings are untouched.",
+      ok: "Update and restart",
+      onYes: () => invoke("apply_update"),
+    });
+  }
+  if (t.closest("#btn-update-dismiss")) return invoke("dismiss_update");
+
+  if (t.closest("#btn-wipe")) {
+    return askConfirm({
+      title: "Delete all images?",
+      text: "This clears the image folder on this machine only. The others keep their copies, and anything still offered in the chat can be downloaded again.",
+      ok: "Delete them",
+      danger: true,
+      onYes: () => invoke("delete_all_images"),
+    });
+  }
+
+  if (t.closest("#save-name")) return invoke("set_display_name", { name: $("set-name").value });
+  if (t.closest("#refresh-devices")) { devices = null; return loadDevices(); }
+
+  const tab = t.closest("[data-tab]");
+  if (tab) {
+    V.settingsTab = tab.dataset.tab;
+    renderSettings();
+    if (V.settingsTab === "audio" && !devices) loadDevices();
+    return;
+  }
+
+  const video = t.closest("[data-video] button");
+  if (video) {
+    const group = video.closest("[data-video]").dataset.video;
+    const next = {
+      codec: S.video.codec, fps: S.video.fps,
+      bitrate: S.video.bitrate,
+    };
+    next[group] = group === "fps" ? Number(video.dataset.v) : video.dataset.v;
+    return invoke("set_video_settings", next);
+  }
+});
+
+/* Right-click a sub-channel for the two things you can do to it. Renaming and removing a
+   channel are rare enough not to earn a control in the row, and common enough to need to
+   exist. */
+document.addEventListener("contextmenu", e => {
+  const row = e.target.closest("[data-channel]");
+  if (!row) return;
+  const c = channelByKey(row.dataset.channel);
+  if (!c || !c.removable) return;
+  e.preventDefault();
+  askText({
+    title: `Rename ${c.name}`,
+    text: "Everyone sees the new name. Leave it empty and cancel to remove the channel instead.",
+    value: c.name,
+    onYes: title => invoke("rename_channel", { channel: c.key, title }),
+  });
+});
+
+document.addEventListener("input", e => {
+  const desk = e.target.closest("[data-dvol]");
+  if (desk) {
+    desk.style.setProperty("--pct", desk.value + "%");
+    desk.parentElement.querySelector(".vol-num").textContent = desk.value;
+    invoke("set_stream_volume", {
+      peer: desk.dataset.dvol,
+      stream: Number(desk.dataset.stream),
+      volume: desk.value / 100,
+    });
+    return;
+  }
+  const vol = e.target.closest("[data-vol]");
+  if (vol) {
+    vol.style.setProperty("--pct", vol.value + "%");
+    vol.parentElement.querySelector(".vol-num").textContent = vol.value;
+    invoke("set_peer_volume", { peer: vol.dataset.vol, volume: vol.value / 100 });
+    return;
+  }
+  const br = e.target.closest("#set-br");
+  if (br) {
+    br.style.setProperty("--pct", ((br.value - 4) / 36 * 100) + "%");
+    $("br-readout").textContent = `${br.value} Mbit/s`;
+    return;
+  }
+  const r = e.target.closest('input[type="range"]');
+  if (r) r.style.setProperty("--pct", ((r.value - r.min) / (r.max - r.min) * 100) + "%");
+});
+
+document.addEventListener("change", e => {
+  if (e.target.id === "set-br") {
+    return invoke("set_video_settings", {
+      codec: S.video.codec, fps: S.video.fps, bitrate: Number(e.target.value) * 1_000_000,
+    });
+  }
+  if (e.target.id === "set-in" || e.target.id === "set-out") {
+    return invoke("set_audio_devices", {
+      input: $("set-in").value || null,
+      output: $("set-out").value || null,
+    });
+  }
+});
+
+async function loadDevices() {
+  devices = await invoke("list_audio_devices");
+  if (V.view === "settings" && V.settingsTab === "audio") renderSettings();
+}
+
+/* ---------------------------------------------------------------- composer */
+
+const input = $("composer-input");
+
+function growComposer() {
+  const tl = $("timeline");
+  const pinned = tl ? wasPinned(tl) : true;
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 168) + "px";
+  if (tl) repin(tl, pinned);
+}
+
+function acceptSuggestion(name) {
+  const at = input.value.lastIndexOf("@");
+  input.value = (at >= 0 ? input.value.slice(0, at) : input.value) + `@${name} `;
+  V.overlay = "none";
+  renderOverlays();
+  input.focus();
+  growComposer();
+}
+
+function updateAutocomplete() {
+  const m = /@(\w*)$/.exec(input.value);
+  if (!m) {
+    if (V.overlay === "ac") { V.overlay = "none"; renderOverlays(); }
+    return;
+  }
+  const q = m[1].toLowerCase();
+  V.acQuery = m[1];
+  V.acMatches = knownPeers().filter(p => p.name.toLowerCase().startsWith(q));
+  V.acIndex = 0;
+  V.overlay = "ac";
+  renderOverlays();
+}
+
+input.addEventListener("input", () => {
+  growComposer();
+  updateAutocomplete();
+});
+
+input.addEventListener("keydown", e => {
+  if (V.overlay === "ac" && V.acMatches.length) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = V.acMatches.length;
+      V.acIndex = (V.acIndex + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      return renderOverlays();
+    }
+    if (e.key === "Tab" || e.key === "Enter") {
+      e.preventDefault();
+      return acceptSuggestion(V.acMatches[V.acIndex].name);
+    }
+  }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    invoke("send_message", { channel: activeChannel(), text });
+    input.value = "";
+    delete V.drafts[activeChannel()];
+    growComposer();
+    const tl = $("timeline");
+    tl.scrollTop = tl.scrollHeight;
+  }
+});
+
+/* A real paste event with the image in it. In egui this needed `GetAsyncKeyState`,
+   because egui-winit swallowed the paste command before the app ever saw it. */
+document.addEventListener("paste", async e => {
+  const items = [...(e.clipboardData?.items || [])];
+  const image = items.find(i => i.type.startsWith("image/"));
+  if (!image) return;
+  e.preventDefault();
+  const file = image.getAsFile();
+  if (!file) return;
+  const bytes = [...new Uint8Array(await file.arrayBuffer())];
+  const extension = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+  invoke("offer_pasted_image", { bytes, extension, channel: activeChannel() });
+});
+
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (dlg.open || promptDlg.open || picker.open) return;   // <dialog> closes itself
+  if (V.editing) { V.editing = null; return render(); }
+  if (V.overlay !== "none") { V.overlay = "none"; return renderOverlays(); }
+});
+
+document.addEventListener("keydown", e => {
+  if (e.target.id !== "edit-input") return;
+  if (e.key === "Escape") { V.editing = null; return render(); }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    const op = V.editing;
+    const text = e.target.value;
+    V.editing = null;
+    invoke("edit_message", { op, text });
+  }
+});
+
+/* ---------------------------------------------------------------- engine */
+
+function applyMeters() {
+  /* Two attributes and two text nodes, never a re-render: this runs four times a second
+     while a call is up, and product invariant 4 is "gaming wins". */
+  document.querySelectorAll(".voice-peer[data-id], .mem[data-id]").forEach(el => {
+    const id = el.dataset.id;
+    el.dataset.speaking = String(id === S.self.id ? meSpeaking() : isSpeaking(id));
+    const sub = el.querySelector(".mem-sub");
+    if (sub && (sub.textContent === "Speaking" || sub.textContent === "Listening")) {
+      sub.textContent = el.dataset.speaking === "true" ? "Speaking" : "Listening";
+    }
+  });
+  const self = document.querySelector(".self");
+  if (self) self.dataset.speaking = String(meSpeaking());
+
+  document.querySelectorAll("[data-rtt]").forEach(el => {
+    const id = el.closest("[data-id]")?.dataset.id;
+    const peer = peerById(id);
+    if (peer && peer.presence === "online") el.textContent = fmtRtt(id);
+  });
+
+  const worst = $("worst-rtt");
+  if (worst) {
+    const rtts = callPeers().map(p => M.peers[p.id]?.rtt).filter(r => r !== null && r !== undefined);
+    worst.textContent = rtts.length ? `${Math.max(...rtts)} ms` : "—";
+  }
+
+  const level = $("input-level");
+  if (level) level.firstElementChild.style.transform = `scaleX(${Math.min(1, M.self.level * 3).toFixed(3)})`;
+}
+
+async function applyState(next) {
+  const previous = S;
+  S = next;
+
+  // A conversation that disappeared (a sub-channel someone removed) must not leave the
+  // window pointing at nothing.
+  if (V.view === "channels" && !channelByKey(V.channel)) V.channel = "general";
+  if (V.view === "dms" && V.dm && !peerById(V.dm)) V.dm = knownPeers()[0]?.id || null;
+
+  if (!previous || previous.timeline_revision !== S.timeline_revision) {
+    await loadTimeline();
+  }
+  render();
+
+  // Looking at a conversation is reading it — but only the one actually on screen, so a
+  // DM cannot quietly clear the general channel's counter or the other way round.
+  if (V.focused && unreadCount() > 0) invoke("mark_read", { channel: activeChannel() });
+}
+
+listen("state", e => applyState(JSON.parse(e.payload)));
+listen("meters", e => { M = JSON.parse(e.payload); applyMeters(); });
+listen("thumbnail", e => {
+  const { key, revision } = e.payload;
+  const first = !thumbUrls[key];
+  thumbUrls[key] = `thumb://localhost/${key}?${revision}`;
+  const img = $(`thumb-${key}`);
+  if (img) img.src = thumbUrls[key];
+  // The first frame turns the idle mark into an image, which needs the tile rebuilt.
+  else if (first) renderStrip();
+});
+listen("focus", e => {
+  V.focused = e.payload;
+  if (V.focused && S && unreadCount() > 0) invoke("mark_read", { channel: activeChannel() });
+});
+listen("drag", e => {
+  const next = e.payload ? "drop" : "none";
+  if (V.overlay !== next && (V.overlay === "drop" || next === "drop")) {
+    V.overlay = next;
+    renderOverlays();
+  }
+});
+listen("dropped", e => invoke("offer_files", { paths: e.payload, channel: activeChannel() }));
+
+/* ---------------------------------------------------------------- narrow window */
+
+/* Below 1080 the member list is in the way, so it gets closed — but as state, so the
+   toggle keeps telling the truth and the user can open it again. A CSS override here made
+   the button a no-op that still reported itself pressed. */
+const narrow = matchMedia("(max-width: 1080px)");
+let wasNarrow = null;
+
+function applyWidth() {
+  if (narrow.matches === wasNarrow) return;
+  wasNarrow = narrow.matches;
+  V.members = !narrow.matches;
+  render();
+}
+narrow.addEventListener("change", applyWidth);
+
+/* ---------------------------------------------------------------- boot */
+
+(async () => {
+  wasNarrow = narrow.matches;
+  V.members = !narrow.matches;
+  S = await invoke("ready");
+  await loadTimeline();
+  render();
+  await invoke("mark_read", { channel: activeChannel() });
+})();

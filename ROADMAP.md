@@ -412,3 +412,44 @@ herstart.
 dezelfde build, dus een echt versieverschil (twee gebouwde exe's met een andere
 `workspace.package.version`) is alleen met een tweede, oudere build te simuleren. Zie
 `docs/TESTPLAN.md`, fase 11.
+
+### Fase 12 — UI-stack naar Tauri v2 en visueel herontwerp ✅ af
+Besloten en uitgevoerd op 2026-08-04. De eerste fase die niet over functionaliteit gaat: er
+kwam niets bij wat de app kan, de weergavelaag is vervangen omdat het ontwerpplafond van
+egui de bindende beperking was geworden.
+
+- **Alleen `crates/app/src/ui/`** (was 13 modules egui, nu 3 Rust-modules + een frontend)
+  **en de vensterbootstrap in `main.rs`.** De vijf niet-UI-crates zijn onaangeroerd; egui
+  komt daar nog steeds alleen in doc-commentaar voor.
+- **`Snapshot`/`UiCommand` zijn Tauri-commands en -events geworden.** De motor publiceert
+  nog steeds dezelfde `Snapshot`; `ui/state.rs` vertaalt hem naar JSON en `ui/commands.rs`
+  vertaalt IPC-aanroepen terug naar `UiCommand`. Die grens is intact.
+- **Nieuw transport voor de miniaturenstrook**: 2 fps, een `thumbnail`-event met een
+  revisienummer plus een `thumb://`-protocol dat de PNG serveert. Geen egui-textuur meer,
+  en geen canvas nodig — het is een gewone `<img>`.
+- **Het pop-out kijkvenster is niet aangeraakt** — eigen Win32-venster, eigen
+  D3D11-swapchain, buiten de UI-stack om.
+- **Visueel opnieuw uitgevoerd** naar de goedgekeurde comp `design/main-window.html`; de
+  CSS is daar letterlijk uit overgenomen, minus de review-harness. De drie gaten die
+  `DESIGN.md` noteerde zijn in de port gedicht, niet meegenomen: één mechanisme voor de
+  spreekring, de icoonset als systeem beschreven, en de fonts lokaal gebundeld.
+- **UI-taal beslist:** Engels, voor de weergavelaag én voor alle nieuwe Rust-identifiers
+  in `crates/app/src/ui/`. Zie `docs/OVERDRACHT.md`, beslissing 20.
+
+**Klaar als (gehaald):** de app doet functioneel wat hij deed — kanalen, DM's, subkanalen,
+voice, screenshare, bestanden, tags, meldingen, instellingen, tray, updates — in de nieuwe
+stack, met het nieuwe ontwerp, en het idle-verbruik is niet omhoog gegaan. Dat laatste is
+gemeten en geen kwestie van gevoel: het `state`-event wordt alleen verstuurd als de
+geserialiseerde staat écht verschilt, dus een venster waar niets gebeurt stuurt nul events
+per seconde waar egui er vier tekende. De twee dingen die wél bewegen terwijl je kijkt —
+spreekniveau en RTT — zitten in een apart `meters`-event op 4 Hz dat attributen bijwerkt in
+plaats van panelen te hertekenen, en dat event valt stil zodra er niemand online is.
+
+**Niet lokaal te testen, dus voor Rick met de hand:** alles wat een tweede machine of echte
+hardware nodig heeft — schermdelen kiezen en bekijken (inclusief de miniaturenstrook),
+bureaubladgeluid, een echte spreekindicatie, Ctrl+V met een echte afbeelding, slepen en
+neerzetten vanuit Verkenner, en het bevestigen van een update. Zie `docs/TESTPLAN.md`,
+fase 12.
+
+Volledige onderbouwing, de afgewezen alternatieven (Dioxus, Slint) en de expliciet benoemde
+kosten staan in `docs/OVERDRACHT.md`, beslissing 19, en `PRODUCT.md`, sectie `## Stack`.

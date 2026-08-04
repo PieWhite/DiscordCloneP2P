@@ -1,0 +1,1443 @@
+/* FitCommunication — main window.
+
+   Taken verbatim from the approved comp `design/main-window.html`, minus the review
+   harness (its markup, its script block and its three --harness-* tokens, which the comp
+   marks as scaffolding that does not ship). Every value here is recorded in DESIGN.md;
+   a literal in a rule instead of a token is a bug.
+
+   The one section that is not from the comp is at the bottom, and it is marked. */
+
+@import url("fonts/faces.css");
+
+:root {
+  /* Dark is a product requirement, so the UA has to know too — otherwise scrollbars,
+     select popups, the caret and selection all come back light in a dark room. */
+  color-scheme: dark;
+
+  /* Layers. Neutral-cool, warm enough not to read as blue-grey plastic. */
+  --bg-window:   #0E1013;
+  --bg-sidebar:  #14171B;
+  --bg-canvas:   #1A1E23;
+  --bg-raised:   #22272E;
+  --bg-hover:    #2A3038;
+  --bg-active:   #313944;
+
+  --border:        #2E353E;
+  --border-strong: #3A424D;
+
+  --text:       #E6E9ED;
+  --text-mid:   #B3BAC4;
+  --text-muted: #98A1AC;
+  /* The quiet tier still has to clear 4.5:1 on --bg-raised, the lightest ground it
+     lands on. #7C8590 measured 4.02 there — legible enough to look fine and not
+     legible enough to be right. */
+  --text-dim:   #8E97A2;
+
+  --accent:       #2FB3AE;
+  --accent-hover: #3ECCC6;
+  --accent-text:  #5FD9D3;
+  --on-accent:    #05201F;
+
+  /* Presence and alert are deliberately different reds. They were the same value, which
+     made the do-not-disturb dot literally the error colour and contradicted OWN-WORLD
+     ("presence is a lit or unlit dot, never an error"). DND is now a muted rose that
+     reads as a state; --danger stays the loud one and is reserved for failure. */
+  --online:     #3FB950;
+  --connecting: #D29922;
+  --dnd:        #C77DAF;
+  --offline:    #6B747F;
+
+  --mention-bg:     #2A2418;
+  --mention-border: #6B551E;
+
+  --danger:      #E5534B;
+  --danger-bg:   #2A1A19;
+  --danger-text: #F0908A;
+  --danger-hi:   #FFB3AD;
+  --danger-line: #4A2724;
+  --danger-hov:  #3A211F;
+  --close-hover: #C4342B;
+  /* Text that sits on a filled signal colour (badges, the close button, LIVE). */
+  --on-signal:   #FFFFFF;
+
+  /* Per-peer identity hues. Not palette values and not interchangeable with the accent:
+     each one identifies one person, so they are keyed by peer, never reused for state. */
+  --av-1: #4C6FB5;
+  --av-2: #57896B;
+  --av-3: #9A5F6E;
+
+  /* Surfaces that were loose literals. A token-driven Tauri reproduction has to be able
+     to reach this exact surface from tokens alone. */
+  --bg-msg-hover:     #1E232A;
+  --bg-mention-hover: #302915;
+  --bg-code:          #12151A;
+  --bg-well:          #0A0C0E;
+  --border-input:     #4A5460;
+
+  --code-key: #8FC7E8;
+  --code-str: #A5D6A7;
+  --code-num: #E8C07D;
+
+  --rail-w:   56px;
+  --chan-w:   240px;
+  --member-w: 232px;
+
+  /* Inner corner of a bordered group: --r-sm minus the 1px border, so a segmented
+     button's corner sits concentric inside its container instead of proud of it. */
+  --r-inner: 3px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-full: 999px;
+
+  /* Elevation. Offset + blur only; a zero-offset shadow in this system is a ring, never
+     depth. One shadow per thing that genuinely leaves the plane. */
+  --shadow-thumb:   0 1px 3px   rgba(0,0,0,.5);
+  --shadow-bar:     0 4px 12px  rgba(0,0,0,.4);
+  --shadow-popover: 0 10px 28px rgba(0,0,0,.5);
+  --shadow-modal:   0 18px 48px rgba(0,0,0,.62);
+  --backdrop:       rgba(6,8,10,.68);
+
+  --ease: cubic-bezier(.16,.84,.44,1);
+
+}
+*, *::before, *::after { box-sizing: border-box; }
+
+/* `display: grid` on .settings outranked the `hidden` attribute, so the hidden settings
+   pane stayed a grid item and claimed a second row of .body — 245px of height that the
+   four real columns never got back. Any explicit display beats [hidden] without this. */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-canvas);
+  color: var(--text);
+  font-family: Archivo, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum" 0;
+}
+
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input, textarea { font: inherit; color: inherit; }
+
+/* outline + offset, not a two-layer box-shadow: the shadow version had to hardcode the
+   inner ring to one background, so it was wrong on the rail, the sidebars and the status
+   bar. An offset outline shows whatever ground it actually sits on. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Scrollbars are chrome too. Six surfaces scroll here; without this they arrive light. */
+* { scrollbar-color: var(--bg-active) transparent; scrollbar-width: thin; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--bg-active);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-input); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+::selection { background: rgba(47,179,174,.32); }
+
+.mono {
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-feature-settings: "tnum" 1;
+}
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+.icon { width: 16px; height: 16px; flex: none; display: block; }
+.icon-18 { width: 18px; height: 18px; }
+.icon-20 { width: 20px; height: 20px; }
+
+.sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ============================================================ SHELL */
+
+.app {
+  display: grid;
+  grid-template-rows: 32px 1fr 26px;
+  height: 100%;
+}
+
+/* ---------------------------------------------------- titlebar */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-window);
+  border-bottom: 1px solid var(--border);
+  padding-left: 10px;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.brand { display: flex; align-items: center; gap: 8px; }
+
+.brand-mark {
+  width: 16px; height: 16px;
+  color: var(--accent);
+}
+
+.brand-name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  color: var(--text-mid);
+}
+
+.titlebar-spacer { flex: 1; }
+
+.win-controls { display: flex; -webkit-app-region: no-drag; }
+
+.win-btn {
+  width: 46px; height: 32px;
+  display: grid; place-items: center;
+  color: var(--text-mid);
+  transition: background 90ms linear, color 90ms linear;
+}
+.win-btn:hover { background: var(--bg-hover); color: var(--text); }
+.win-btn--close:hover { background: var(--close-hover); color: var(--on-signal); }
+.win-btn:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ---------------------------------------------------- body grid */
+
+.body {
+  display: grid;
+  grid-template-columns: var(--rail-w) var(--chan-w) 1fr var(--member-w);
+  min-height: 0;
+}
+.body[data-members="hidden"] { grid-template-columns: var(--rail-w) var(--chan-w) 1fr 0; }
+.body[data-members="hidden"] .members { display: none; }
+.body[data-view="settings"] { grid-template-columns: var(--rail-w) 1fr; }
+.body[data-view="settings"] > .channels,
+.body[data-view="settings"] > .main,
+.body[data-view="settings"] > .members { display: none; }
+
+/* ---------------------------------------------------- rail */
+
+.rail {
+  background: var(--bg-window);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 4px;
+}
+
+.rail-btn {
+  position: relative;
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+.rail-btn:hover { background: var(--bg-hover); color: var(--text); }
+.rail-btn[aria-current="true"] { background: var(--bg-active); color: var(--text); }
+
+/* Active indicator: a positioned pill, not a border. Fixed height, scaled on the
+   compositor — animating `height` would run layout every frame, and invariant 4
+   ("gaming wins") does not leave room for paying that for a 3px nub. */
+.rail-btn::before {
+  content: "";
+  position: absolute;
+  left: -5px; top: 50%;
+  width: 3px; height: 22px;
+  border-radius: 0 var(--r-full) var(--r-full) 0;
+  background: var(--text);
+  transform: translateY(-50%) scaleY(0);
+  transition: transform 180ms var(--ease);
+}
+.rail-btn[aria-current="true"]::before { transform: translateY(-50%) scaleY(1); }
+.rail-btn:hover::before { transform: translateY(-50%) scaleY(.45); }
+.rail-btn[aria-current="true"]:hover::before { transform: translateY(-50%) scaleY(1); }
+
+.rail-spacer { flex: 1; }
+
+.rail-badge {
+  position: absolute;
+  right: 2px; bottom: 2px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-full);
+  background: var(--dnd);
+  color: var(--on-signal);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  border: 2px solid var(--bg-window);
+  box-sizing: content-box;
+}
+
+.rail-sep { width: 24px; height: 1px; background: var(--border); margin: 4px 0; }
+
+/* ---------------------------------------------------- channel column */
+
+.channels {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: grid;
+  /* minmax(0, 1fr), not the implicit `auto` track: an `auto` track sizes to its
+     max-content and is allowed to grow past the 240px column it sits in. A display name
+     of about fifteen characters did exactly that — the voice panel became 262px wide and
+     its three toggles slid out from under the sidebar and disappeared behind the
+     timeline, which paints on top. The floor of 0 lets the row shrink so the name
+     ellipsises instead. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 44px 1fr auto;
+  min-height: 0;
+}
+
+.chan-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+.chan-head h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .005em; }
+
+.icon-btn {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  transition: background 90ms linear, color 90ms linear;
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+.icon-btn[aria-pressed="true"] { background: var(--bg-active); color: var(--text); }
+
+.chan-scroll { overflow-y: auto; padding: 10px 8px 14px; min-height: 0; }
+
+.group + .group { margin-top: 18px; }
+
+.group-head {
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 6px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.group-head button { color: inherit; display: grid; place-items: center; }
+.group-head button:hover { color: var(--text); }
+.group-count { margin-left: auto; font-weight: 500; }
+
+.chan-item {
+  position: relative;
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  text-align: left;
+  transition: background 90ms linear, color 90ms linear;
+}
+.chan-item:hover { background: var(--bg-hover); color: var(--text-mid); }
+.chan-item[aria-current="true"] { background: var(--bg-active); color: var(--text); }
+.chan-item .icon { color: var(--text-dim); }
+.chan-item[aria-current="true"] .icon { color: var(--text-muted); }
+
+.chan-name {
+  flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px;
+}
+.chan-item[data-unread="true"] { color: var(--text); font-weight: 600; }
+.chan-item[data-unread="true"] .icon { color: var(--text-muted); }
+
+.badge {
+  min-width: 18px; height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--dnd);
+  color: var(--on-signal);
+  font-size: 11px; font-weight: 700; line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.badge--quiet { background: var(--bg-hover); color: var(--text-mid); }
+
+/* Unread-without-count: a dot, left of the row, no border trick. */
+.unread-dot {
+  position: absolute; left: -8px; top: 50%;
+  width: 4px; height: 8px;
+  border-radius: 0 var(--r-full) var(--r-full) 0;
+  background: var(--text);
+  transform: translateY(-50%);
+}
+
+.avatar {
+  flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--r-full);
+  font-weight: 600;
+  color: var(--on-signal);
+  letter-spacing: .01em;
+  user-select: none;
+}
+.avatar--20 { width: 20px; height: 20px; font-size: 9px; } /* monogram, not text: see DESIGN.md typeRamp */
+.avatar--24 { width: 24px; height: 24px; font-size: 10px; }
+.avatar--32 { width: 32px; height: 32px; font-size: 12px; }
+.avatar--40 { width: 40px; height: 40px; font-size: 15px; }
+
+.av-1 { background: var(--av-1); }
+.av-2 { background: var(--av-2); }
+.av-3 { background: var(--av-3); }
+
+.av-wrap { position: relative; flex: none; }
+
+.dot {
+  position: absolute;
+  right: -2px; bottom: -2px;
+  width: 10px; height: 10px;
+  border-radius: var(--r-full);
+  border: 2px solid var(--bg-sidebar);
+  box-sizing: content-box;
+}
+.dot[data-state="online"]     { background: var(--online); }
+.dot[data-state="connecting"] { background: var(--connecting); }
+.dot[data-state="dnd"]        { background: var(--dnd); }
+/* Offline is an unlit dot, not a warning. */
+.dot[data-state="offline"]    { background: var(--bg-sidebar); box-shadow: inset 0 0 0 2px var(--offline); }
+
+/* ---------------------------------------------------- voice panel */
+
+.voice {
+  border-top: 1px solid var(--border);
+  background: var(--bg-window);
+}
+
+.voice-live { padding: 10px 10px 8px; border-bottom: 1px solid var(--border); }
+
+.voice-live-head {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--online);
+}
+.voice-live-head .icon { width: 13px; height: 13px; }
+.voice-rtt { margin-left: auto; color: var(--text-dim); letter-spacing: 0; text-transform: none; font-weight: 500; font-size: 11px; }
+
+.voice-peers { display: flex; flex-direction: column; gap: 2px; }
+
+.voice-peer {
+  display: flex; align-items: center; gap: 8px;
+  height: 28px; padding: 0 6px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--text-mid);
+}
+.voice-peer[data-speaking="true"] { color: var(--text); }
+
+/* The authored moment: the speaking ring breathes only while someone talks. */
+/* inline-flex, not inline: an inline box gives ::after an unreliable containing block. */
+.speak-ring { position: relative; display: inline-flex; }
+.speak-ring::after {
+  content: "";
+  position: absolute; inset: -3px;
+  border-radius: var(--r-full);
+  box-shadow: 0 0 0 2px var(--online);
+  opacity: 0;
+  transform: scale(.88);
+  transition: opacity 200ms var(--ease), transform 260ms var(--ease);
+}
+/* The ring appears and disappears; it does not pulse forever. An infinite box-shadow
+   animation is a non-composited repaint on the idle path, which is exactly what invariant 4
+   forbids — and worse than the layout transitions this build already refused for it. The
+   authored moment is the entrance, not a heartbeat.
+
+   One signal, one switch. The comp gated this ring two ways — `[data-speaking]` in the
+   voice panel and the presence of the `.speak-ring` class in the member list — which
+   DESIGN.md records as a gap to fix rather than copy. Both places now carry the class
+   and both are gated on the attribute, so the speaking level from the `meters` event
+   flips one thing. */
+[data-speaking="true"] .speak-ring::after {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.voice-peer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-peer .icon { color: var(--text-dim); width: 14px; height: 14px; }
+.voice-peer .icon[data-muted] { color: var(--dnd); }
+
+.self {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 8px 8px 10px;
+}
+.self-id { min-width: 0; flex: 1; }
+.self-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.self-sub { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.self-actions { display: flex; gap: 2px; flex: none; }
+
+.self-btn {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  transition: background 90ms linear, color 90ms linear;
+}
+.self-btn:hover { background: var(--bg-hover); color: var(--text); }
+.self-btn[aria-pressed="true"] { color: var(--dnd); background: var(--danger-bg); }
+
+.join {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  width: calc(100% - 20px);
+  margin: 10px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 13px; font-weight: 600;
+  transition: background 120ms var(--ease), transform 90ms var(--ease);
+}
+.join:hover { background: var(--accent-hover); }
+.join:active { transform: translateY(1px); }
+
+.voice-acts { display: flex; gap: 6px; margin-top: 9px; }
+.voice-acts .btn { flex: 1; height: 30px; justify-content: center; padding: 0 8px; }
+
+.voice-share {
+  display: flex; align-items: flex-start; gap: 7px;
+  margin: 9px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.voice-share .icon { width: 13px; height: 13px; flex: none; margin-top: 1px; color: var(--accent-text); }
+.voice-share b { color: var(--text-mid); font-weight: 600; }
+
+.leave {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  flex: 1;
+  height: 30px;
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border: 1px solid var(--danger-line);
+  font-size: 13px; font-weight: 600;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+.leave:hover { background: var(--danger-hov); color: var(--danger-hi); }
+
+.voice-hint {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------- main column */
+
+.main {
+  display: grid;
+  grid-template-rows: 48px auto 1fr auto;
+  background: var(--bg-canvas);
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.main-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.main-head .icon { color: var(--text-dim); }
+.main-title { font-size: 15px; font-weight: 600; white-space: nowrap; }
+.main-topic {
+  min-width: 0;
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.main-head-actions { margin-left: auto; display: flex; gap: 2px; }
+
+/* ---------------------------------------------------- stream strip */
+
+.strip {
+  display: flex; gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  overflow-x: auto;
+}
+
+.tile {
+  position: relative;
+  width: 176px;
+  flex: none;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-well);
+  text-align: left;
+  transition: border-color 120ms var(--ease);
+}
+.tile:hover { border-color: var(--border-strong); }
+.tile svg { display: block; width: 100%; height: auto; }
+
+.tile-cap {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 7px;
+  background: var(--bg-window);
+  font-size: 11px;
+  color: var(--text-mid);
+}
+.tile-cap .icon { width: 12px; height: 12px; color: var(--text-dim); }
+.tile-cap span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.live-tag {
+  position: absolute; top: 6px; left: 6px;
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 6px 2px 5px;
+  border-radius: var(--r-sm);
+  background: rgba(10,12,14,.82);
+  font-size: 10px; font-weight: 700; letter-spacing: .06em;
+  color: var(--on-signal);
+}
+.live-tag i { width: 5px; height: 5px; border-radius: var(--r-full); background: var(--dnd); }
+
+/* ---------------------------------------------------- timeline */
+
+.timeline {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-gutter: stable;
+}
+/* min-height:100% + justify-content:flex-end keeps a short thread sitting on the composer
+   instead of hanging from the header, and still scrolls normally once it overflows. */
+.tl-inner {
+  min-height: 100%;
+  padding: 18px 0 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.tl-inner > .empty { margin: auto 0; }
+
+.day {
+  display: flex; align-items: center; gap: 12px;
+  margin: 22px 16px 18px;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.day::before, .day::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+
+.newline {
+  display: flex; align-items: center; gap: 10px;
+  margin: 22px 16px 18px;
+  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--dnd);
+}
+.newline::before, .newline::after { content: ""; height: 1px; background: var(--dnd); flex: 1; opacity: .5; }
+.newline::after { flex: 0 0 24px; }
+
+.msg {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 12px;
+  padding: 2px 16px 2px 16px;
+}
+.msg--grouped { padding-top: 1px; padding-bottom: 1px; }
+.msg--start { margin-top: 14px; }
+.msg:hover { background: var(--bg-msg-hover); }
+
+.msg-gutter { display: grid; justify-items: center; }
+.msg--grouped .stamp-hover {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0;
+  padding-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.msg--grouped:hover .stamp-hover { opacity: 1; }
+
+.msg-body { min-width: 0; }
+
+.msg-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 1px; }
+.msg-author { font-size: 14px; font-weight: 600; }
+.msg-stamp { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.msg-edited { font-size: 10px; color: var(--text-dim); }
+
+.msg-text {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-mid);
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.msg-text a { color: var(--accent-text); text-decoration: none; border-bottom: 1px solid rgba(95,217,211,.35); }
+.msg-text a:hover { border-bottom-color: var(--accent-text); }
+
+.mention {
+  padding: 0 3px;
+  border-radius: var(--r-sm);
+  background: rgba(210,153,34,.16);
+  color: #EFC66A;
+  font-weight: 600;
+}
+.mention--self { background: rgba(47,179,174,.18); color: var(--accent-text); }
+
+/* Inset by 12px, so the inner padding is 4px — the avatar column stays on the same
+   x as every other message. A highlighted row that shifts its own avatar reads as
+   a rendering bug, not as emphasis. */
+.msg--mentions {
+  background: var(--mention-bg);
+  border: 1px solid var(--mention-border);
+  border-radius: var(--r-md);
+  margin: 14px 12px 2px;
+  padding: 8px 12px 10px 3px;
+}
+.msg--mentions:hover { background: var(--bg-mention-hover); }
+
+.msg-actions {
+  position: absolute;
+  top: -12px; right: 16px;
+  display: flex;
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-bar);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms linear;
+}
+/* focus-within on the bar itself, not on .msg: an opacity-0 button is still focusable,
+   so tabbing into it reveals the bar. Without this, Edit and Delete were mouse-only. */
+.msg:hover .msg-actions,
+.msg-actions:focus-within { opacity: 1; pointer-events: auto; }
+.msg-actions button {
+  width: 30px; height: 28px;
+  display: grid; place-items: center;
+  color: var(--text-muted);
+}
+.msg-actions button:first-child { border-radius: var(--r-md) 0 0 var(--r-md); }
+.msg-actions button:last-child { border-radius: 0 var(--r-md) var(--r-md) 0; }
+.msg-actions button:hover { background: var(--bg-hover); color: var(--text); }
+/* These are the only buttons whose focus ring had nowhere to go: the bar sits at top:-12px
+   over the message above, inside a scroll container, so a ring offset 2px outward lands in
+   a crowded 2px gap. Draw it inside the chip instead, and back it with a fill so which
+   button has focus never rests on a hairline alone. */
+.msg-actions button:focus-visible {
+  outline-offset: -2px;
+  background: var(--bg-active);
+  color: var(--text);
+}
+.msg-actions button[data-danger]:hover { background: var(--danger-bg); color: var(--danger-text); }
+
+/* code */
+
+.code {
+  margin: 6px 0 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-code);
+  overflow: hidden;
+  max-width: 72ch;
+}
+.code-head {
+  display: flex; align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.code-copy { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.code-copy:hover { color: var(--text); }
+.code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-mid);
+}
+.tok-key { color: var(--code-key); }
+.tok-str { color: var(--code-str); }
+.tok-num { color: var(--code-num); }
+.tok-com { color: var(--text-dim); }
+
+/* attachments */
+
+.att {
+  display: flex; align-items: center; gap: 10px;
+  margin: 6px 0 2px;
+  padding: 9px 11px;
+  max-width: 440px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+.att-ico {
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  flex: none;
+}
+.att-meta { min-width: 0; flex: 1; }
+/* These are spans in the markup; without an explicit block they flow onto one line
+   and the filename runs straight into its own error message. */
+.att-name { display: block; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-sub { display: block; font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
+.att-sub[data-error] { color: var(--danger-text); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 11px;
+  border-radius: var(--r-sm);
+  background: var(--bg-hover);
+  color: var(--text);
+  font-size: 12.5px; font-weight: 600;
+  white-space: nowrap;
+  transition: background 90ms linear;
+}
+.btn:hover { background: var(--bg-active); }
+.btn .icon { width: 14px; height: 14px; }
+.btn--accent { background: var(--accent); color: var(--on-accent); }
+.btn--accent:hover { background: var(--accent-hover); }
+.btn--ghost { background: none; border: 1px solid var(--border-strong); }
+.btn--ghost:hover { background: var(--bg-hover); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn:disabled:hover { background: var(--bg-hover); }
+
+.bar {
+  display: block; /* a span, so without this the track collapses to 0x0 */
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--bg-hover);
+  overflow: hidden;
+  margin-top: 6px;
+}
+/* The fill is full width and scaled, not resized: a transfer updates its progress
+   several times a second, and animating `width` would run layout on this subtree
+   every one of those frames. The pill's right cap squashes with the scale, which at
+   4px tall is a sub-pixel difference nobody can see. */
+.bar i {
+  display: block; height: 100%; width: 100%;
+  transform-origin: left center;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  transition: transform 400ms var(--ease);
+}
+
+.shot {
+  margin: 6px 0 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  max-width: 420px;
+  background: var(--bg-well);
+  display: block;
+}
+.shot svg { display: block; width: 100%; height: auto; }
+.shot-cap { padding: 5px 9px; font-size: 11px; color: var(--text-dim); background: var(--bg-raised); }
+
+/* empty state */
+
+.empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
+}
+.empty-ico {
+  width: 48px; height: 48px;
+  display: grid; place-items: center;
+  border-radius: var(--r-full);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.empty h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.empty p { margin: 0; font-size: 13px; color: var(--text-muted); max-width: 44ch; line-height: 1.55; }
+
+/* ---------------------------------------------------- composer */
+
+.composer-wrap { padding: 0 16px 18px; }
+
+.composer {
+  display: flex; align-items: flex-end; gap: 4px;
+  padding: 6px 6px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  transition: border-color 120ms var(--ease);
+}
+.composer:focus-within { border-color: var(--border-strong); }
+
+.composer textarea {
+  flex: 1;
+  min-height: 26px;
+  max-height: 168px;
+  padding: 4px 4px 4px 2px;
+  border: 0;
+  background: none;
+  resize: none;
+  outline: none;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.composer textarea::placeholder { color: var(--text-muted); }
+
+.composer-btn {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  flex: none;
+  transition: background 90ms linear, color 90ms linear;
+}
+.composer-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+.composer-hint {
+  display: flex; gap: 14px;
+  padding: 6px 4px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.composer-hint kbd {
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: var(--r-inner);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+/* autocomplete */
+
+.ac {
+  position: absolute;
+  left: 16px; right: 16px;
+  bottom: 100%;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+  max-width: 320px;
+}
+.ac-head {
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.ac-item {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%;
+  padding: 7px 11px;
+  text-align: left;
+  font-size: 13.5px;
+  color: var(--text-mid);
+}
+.ac-item[aria-selected="true"] { background: var(--bg-active); color: var(--text); }
+.ac-item small { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+
+.composer-outer { position: relative; }
+
+/* drop overlay */
+
+.drop {
+  position: absolute; inset: 0;
+  z-index: 20;
+  display: grid; place-items: center;
+  background: rgba(12,15,18,.86);
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-lg);
+  margin: 8px;
+}
+.drop-inner { display: grid; justify-items: center; gap: 8px; text-align: center; }
+.drop-inner .icon { width: 30px; height: 30px; color: var(--accent-text); }
+.drop-inner strong { font-size: 15px; }
+.drop-inner span { font-size: 12.5px; color: var(--text-muted); }
+
+/* ---------------------------------------------------- members */
+
+.members {
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px 8px 16px;
+  min-height: 0;
+}
+
+.mem {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 9px;
+  padding: 6px 6px 7px;
+  border-radius: var(--r-md);
+  transition: background 90ms linear;
+}
+.mem:hover { background: var(--bg-hover); }
+.mem[data-quiet="true"] { opacity: .62; }
+.mem[data-quiet="true"]:hover { opacity: 1; }
+
+.mem-main { min-width: 0; }
+.mem-top { display: flex; align-items: center; gap: 6px; }
+.mem-name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-you { font-size: 10px; font-weight: 700; letter-spacing: .05em; color: var(--text-dim); }
+.mem-sub { font-size: 11.5px; color: var(--text-dim); display: flex; align-items: center; gap: 5px; }
+.vol-num {
+  display: block; flex: none;
+  min-width: 26px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mem-sub .icon { width: 12px; height: 12px; }
+
+.mem-tools { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.mem-desk { margin-top: 6px; }
+.mem-desk .mem-tools { margin-top: 2px; }
+
+/* Two sliders in a 232px column, one for voice and one for the shared desktop audio. A
+   14px icon cannot tell them apart, and a label sharing the slider's line collided with
+   it — so the second slider gets its own labelled line. */
+.tool-label {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  line-height: 1.1;
+}
+
+.mem-mute {
+  width: 24px; height: 24px; flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  transition: background 90ms linear, color 90ms linear;
+}
+.mem-mute:hover { background: var(--bg-active); color: var(--text); }
+.mem-mute[aria-pressed="true"] { color: var(--dnd); }
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  /* min-width:0 is the whole point: a flex item defaults to its intrinsic min width and
+     refuses to shrink, which pushed the volume readout 19px past the panel's right edge. */
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  background: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--r-full);
+  background: linear-gradient(to right, var(--accent) var(--pct, 70%), var(--bg-active) var(--pct, 70%));
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px; height: 12px;
+  margin-top: -4px;
+  border-radius: var(--r-full);
+  background: var(--text);
+  box-shadow: var(--shadow-thumb);
+}
+/* The thumb cannot carry an outline (it is a pseudo-element on a replaced control), so it
+   states focus with a ring of its own. This referenced a --focus token that no longer
+   exists once focus moved to outline, which left the thumb with no focus state at all. */
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 0 4px var(--accent);
+}
+
+.share-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 7px;
+  padding: 3px 8px 3px 6px;
+  border-radius: var(--r-sm);
+  background: rgba(47,179,174,.14);
+  color: var(--accent-text);
+  border: 1px solid rgba(47,179,174,.3);
+  font-size: 11.5px; font-weight: 600;
+}
+.share-chip .icon { width: 12px; height: 12px; }
+.share-chip:hover { background: rgba(47,179,174,.22); }
+
+/* ---------------------------------------------------- status bar */
+
+.status {
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 12px;
+  background: var(--bg-window);
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.link {
+  display: flex; align-items: center; gap: 6px;
+  white-space: nowrap;
+}
+.link i {
+  width: 6px; height: 6px; border-radius: var(--r-full); flex: none;
+}
+.link[data-state="online"] i     { background: var(--online); }
+.link[data-state="connecting"] i { background: var(--connecting); }
+.link[data-state="offline"] i    { background: none; box-shadow: inset 0 0 0 1.5px var(--offline); }
+.link b { font-weight: 600; color: var(--text-mid); }
+.link .num { color: var(--text-dim); }
+
+.status-spacer { flex: 1; }
+
+.update-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 19px; padding: 0 8px;
+  border-radius: var(--r-sm);
+  background: rgba(47,179,174,.15);
+  border: 1px solid rgba(47,179,174,.32);
+  color: var(--accent-text);
+  font-size: 11px; font-weight: 600;
+}
+.update-chip:hover { background: rgba(47,179,174,.24); }
+.update-chip .icon { width: 12px; height: 12px; }
+
+.status-meta { color: var(--text-dim); }
+
+/* ---------------------------------------------------- settings view */
+
+.settings {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+.set-nav {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  padding: 16px 8px;
+  overflow-y: auto;
+}
+.set-nav-title {
+  padding: 0 8px 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.set-tab {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; height: 32px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  text-align: left;
+  font-size: 13.5px;
+  transition: background 90ms linear, color 90ms linear;
+}
+.set-tab:hover { background: var(--bg-hover); color: var(--text-mid); }
+.set-tab[aria-current="true"] { background: var(--bg-active); color: var(--text); font-weight: 600; }
+
+.set-body { overflow-y: auto; padding: 28px 32px 40px; min-height: 0; }
+.set-inner { max-width: 640px; }
+.set-body h2 { margin: 0 0 4px; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+.set-body > .set-inner > p { margin: 0 0 26px; font-size: 13.5px; color: var(--text-muted); max-width: 62ch; }
+
+.field { padding: 16px 0; border-top: 1px solid var(--border); }
+.field:first-of-type { border-top: 0; padding-top: 0; }
+.field-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+.field-help { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 9px; max-width: 58ch; line-height: 1.5; }
+
+.control-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+select, .text-input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 13.5px;
+  min-width: 180px;
+}
+select:hover, .text-input:hover { border-color: var(--border-input); }
+select { appearance: none; padding-right: 30px; background-image: none; }
+
+.select-wrap { position: relative; display: inline-flex; }
+.select-wrap .icon {
+  position: absolute; right: 9px; top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+  width: 14px; height: 14px;
+}
+
+/* No overflow:hidden — it clipped the focus outline off every segmented button. The
+   corners come from the end children instead. */
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r-sm); }
+.seg button:first-child { border-radius: var(--r-inner) 0 0 var(--r-inner); }
+.seg button:last-child { border-radius: 0 var(--r-inner) var(--r-inner) 0; }
+.seg button:only-child { border-radius: var(--r-inner); }
+.seg button {
+  height: 30px; padding: 0 14px;
+  font-size: 13px; font-weight: 600;
+  color: var(--text-muted);
+  border-right: 1px solid var(--border-strong);
+  transition: background 90ms linear, color 90ms linear;
+}
+.seg button:last-child { border-right: 0; }
+.seg button:hover { background: var(--bg-hover); color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--bg-active); color: var(--text); }
+
+.switch {
+  position: relative;
+  width: 38px; height: 22px;
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+  flex: none;
+  transition: background 160ms var(--ease);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 16px; height: 16px;
+  border-radius: var(--r-full);
+  background: var(--text-muted);
+  transition: transform 200ms var(--ease), background 160ms var(--ease);
+}
+.switch[aria-pressed="true"] { background: var(--accent); }
+.switch[aria-pressed="true"]::after { transform: translateX(16px); background: var(--on-accent); }
+
+.switch-row { display: flex; align-items: flex-start; gap: 12px; }
+.switch-row .field-label { margin-bottom: 2px; }
+.switch-row > div { flex: 1; }
+
+.note {
+  display: flex; gap: 9px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 58ch;
+}
+.note .icon { flex: none; color: var(--connecting); margin-top: 1px; }
+.note code {
+  font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  padding: 1px 4px;
+  border-radius: var(--r-inner);
+  background: var(--bg-hover);
+  color: var(--text-mid);
+}
+
+.danger-zone { margin-top: 8px; }
+.btn--danger { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); }
+.btn--danger:hover { background: var(--danger-hov); color: var(--danger-hi); }
+
+/* ---------------------------------------------------- dm intro, settings bits */
+
+.dm-intro { padding: 6px 16px 4px; }
+.dm-intro h2 { margin: 10px 0 4px; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+.dm-intro p { margin: 0; font-size: 13px; color: var(--text-muted); max-width: 60ch; line-height: 1.55; }
+.dm-empty { margin: 20px 16px 0; font-size: 13px; color: var(--text-dim); }
+
+.code-inline {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 9px;
+}
+.readout { color: var(--text-mid); font-size: 13px; }
+
+.peer-table {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  max-width: 520px;
+}
+.peer-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.peer-row + .peer-row { border-top: 1px solid var(--border); }
+.peer-id { flex: 1; min-width: 0; }
+.peer-name { display: block; font-size: 13px; font-weight: 600; }
+.peer-addr { display: block; font-size: 11.5px; color: var(--text-dim); }
+
+.att-ico[data-error] { color: var(--danger-text); }
+.bar[data-paused] i { background: var(--text-dim); }
+
+/* ---------------------------------------------------- confirm dialog */
+
+dialog.confirm {
+  width: min(420px, calc(100vw - 48px));
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+}
+dialog.confirm::backdrop { background: var(--backdrop); }
+.confirm-body { padding: 20px 22px 4px; }
+.confirm-body h2 { margin: 0 0 7px; font-size: 16px; font-weight: 700; }
+.confirm-body p { margin: 0; font-size: 13.5px; color: var(--text-mid); line-height: 1.55; }
+.confirm-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 18px 22px 20px;
+}
+.confirm-foot .btn { height: 32px; padding: 0 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* No box caps on the message rows. Capping them put a visible edge mid-column: the
+   hover highlight and the mention row's amber field stopped at 1180 while the header
+   hairline and the strip ran on to the member list. The reading measure is bounded where
+   it belongs, on the text itself (.msg-text, 72ch); the rows, the highlight and the
+   composer span the column, which is what the pinned category standard does. */
+
+/* Narrow window: a desktop window the user can drag small. The member list is dropped
+   below 1080 by *setting the state* (see matchMedia in the script), not by a CSS override —
+   an override made the toggle button a no-op that still reported aria-pressed="true". */
+@media (max-width: 820px) {
+  :root { --chan-w: 200px; }
+  .main-topic { display: none; }
+}
+
+/* ============================================================ beyond the comp
+
+   Everything above is the approved comp. Everything below covers surfaces the comp did
+   not have to draw because it had no engine behind it: the share-source picker, the two
+   small text prompts for sub-channels, inline message editing, and the engine's own error
+   line. All of it is built from the same tokens and reuses the comp's own components —
+   no new radius, no second accent, no shadow on anything that sits in the layout. */
+
+/* A desktop window, not a document: dragging across the chrome must not paint a text
+   selection over half the UI. Selection is given back exactly where reading happens. */
+body { user-select: none; cursor: default; }
+.msg-text, .msg-text *, .code, .code *, .att-name, .peer-addr, .code-inline,
+input, textarea { user-select: text; }
+
+/* Source picker. The comp has no equivalent; it borrows the dialog shell and the channel
+   row so it reads as the same window rather than as a system dialog. */
+.picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.picker-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: left;
+  transition: background-color 90ms linear, color 90ms linear;
+}
+.picker-item:hover { background: var(--bg-hover); color: var(--text); }
+.picker-item .icon { flex: none; width: 15px; height: 15px; color: var(--text-dim); }
+.picker-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-empty { padding: 2px 22px 16px; color: var(--text-dim); font-size: 13px; }
+
+/* The two prompts (new sub-channel, rename) reuse the confirm dialog wholesale and only
+   add the field. */
+.confirm-body .text-input { width: 100%; margin-top: 12px; }
+
+/* Editing a message happens in place, in the row it belongs to, so the timeline keeps its
+   rhythm instead of a field appearing somewhere else. */
+.msg-edit textarea {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  max-height: 168px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+}
+.msg-edit textarea:focus { outline: none; border-color: var(--accent); }
+.msg-edit-hint { margin: 5px 0 0; color: var(--text-dim); font-size: 11px; }
+.msg-edit-hint b { color: var(--text-muted); font-weight: 600; }
+
+/* The engine's own failures — a file that would not hash, a config that would not save.
+   The one loud red in the system, and it sits above the composer where the action was. */
+.error-bar {
+  display: flex; align-items: center; gap: 9px;
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 13px;
+}
+.error-bar .icon { flex: none; width: 16px; height: 16px; }
+.error-bar span { flex: 1; }
+.error-bar button {
+  flex: none;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--danger-text);
+  transition: background-color 90ms linear, color 90ms linear;
+}
+.error-bar button:hover { background: var(--danger-hov); color: var(--danger-hi); }
+.error-bar button .icon { width: 13px; height: 13px; }
+
+/* Stream strip tiles carry a real frame from the `thumb://` protocol instead of the
+   comp's authored still. A tile with no frame yet shows the idle mark rather than a
+   broken image — a stream that was just opened has nothing to draw for half a second. */
+.tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--bg-well);
+}
+.tile-idle {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  color: var(--text-dim);
+}
+.tile-idle .icon { width: 20px; height: 20px; }

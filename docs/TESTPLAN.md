@@ -513,7 +513,10 @@ de peer verbonden blijft. Herstart de oude peer: het aanbod mag dan wél weer ve
 
 ---
 
-## Fase 12 — periodieke microhapering bij screenshare (2026-08-02)
+## Periodieke microhapering bij screenshare (2026-08-02)
+
+> Heette hier eerder "fase 12". Dat botste met de echte fase 12 uit `ROADMAP.md`
+> (de UI-stack), die hieronder staat. De testnummers 12.1 t/m 12.6 zijn ongewijzigd.
 
 Alles hieronder is op één machine gemeten en gerepareerd (zie `docs/OVERDRACHT.md`,
 "Onderzoek 2026-08-02"). Wat daar niet te controleren viel is of het verlies op een écht
@@ -556,6 +559,77 @@ dan ga je het netwerk zitten uitzoeken terwijl er niets mis is met het netwerk.*
 loopt. Sinds Windows 10 2004 werkt dat per proces, dus een game hoort er niets van te
 merken — maar dat is een aanname uit documentatie, geen meting. *Deel je scherm terwijl je
 gamet en kijk of de frametimes van de game er anders uitzien dan voorheen.*
+
+---
+
+## Fase 12 — UI-stack naar Tauri v2
+
+De weergavelaag is vervangen; functioneel hoort er niets veranderd te zijn. Wat hieronder
+staat kan alleen met echte hardware of een tweede machine, want daar zit precies het deel
+dat de migratie een nieuw transport of een nieuw invoerpad gaf.
+
+Wat wél al met de hand gecontroleerd is op de dev-PC (geen actie nodig): het venster start
+en toont chat, kanalen, DM's, het lege kanaal, het deelnemerspaneel, de statusbalk en alle
+vijf de instellingen-tabbladen; de tijdlijn toont berichten, codeblokken, links, tags en
+bestandskaarten; en de app verbruikt in rust 0,05% van één kern.
+
+**U.1 De miniaturenstrook toont echt beeld**
+Laat iemand een scherm delen en kijk mee. Boven de chat hoort een strook met een tegel per
+bekeken stream te verschijnen, met **live beeld** dat ongeveer twee keer per seconde
+bijwerkt, een LIVE-markering en de naam eronder. *Blijft de tegel het grijze monitor-icoon
+tonen, dan komt er wel een stream binnen maar geen miniatuur — dat is het nieuwe
+`thumbnail`-event of het `thumb://`-protocol, niet de stream zelf.*
+
+**U.2 Ctrl+V met een echte afbeelding**
+Maak een schermafdruk (PrtSc of Win+Shift+S), klik in het invoerveld en druk Ctrl+V. Er
+hoort meteen een bestandsaanbod te verschijnen en bij de ander een inline afbeelding.
+*Dit is het pad dat in egui via `GetAsyncKeyState` moest — beslissing 15 — en nu een echt
+`paste`-event is. Werkt het niet, dan is dat een regressie op precies dat punt.*
+
+**U.3 Slepen en neerzetten vanuit Verkenner**
+Sleep een bestand het venster in. Terwijl je erboven hangt hoort er een overlay te
+verschijnen ("Drop to share"), en na loslaten hetzelfde aanbod als via de knop. *De overlay
+en het neerzetten zijn twee aparte Tauri-events; als de overlay wel komt en het aanbod niet
+(of andersom), zeg welke van de twee.*
+
+**U.4 Spreekindicatie tijdens een gesprek**
+Zit met z'n tweeën of drieën in het gesprek en let op de groene ring om de avatar in het
+spraakpaneel én in de ledenlijst, en op de regel "Speaking"/"Listening". Die moeten
+tegelijk aan en uit gaan. *In de comp werd dit door twee mechanismen aangestuurd; dat is
+in de port één mechanisme geworden, dus als de ene plek wel meebeweegt en de andere niet is
+dat een echte bug.*
+
+**U.5 RTT in de statusbalk beweegt en springt niet**
+Kijk onderin naar de milliseconden per peer. Die horen rustig bij te werken (viermaal per
+seconde) zonder dat de rest van het venster knippert of verspringt. *De hele reden dat RTT
+in een apart event zit is dat het venster er niet van hoeft te hertekenen.*
+
+**U.6 Een scherm kiezen om te delen**
+Klik "Share screen" in het spraakpaneel. Er hoort een lijst te komen met je monitoren én
+je open vensters, en na kiezen begint het delen. *Deze keuzelijst stond niet in de comp en
+is nieuw gebouwd; let vooral op of de lijst klopt met wat er op dat moment open staat.*
+
+**U.7 Bureaubladgeluid en volume per stream**
+Deel een scherm met geluid. Bij de luisteraar hoort onder de peer een aparte, gelabelde
+schuif "Screen audio" te staan, los van zijn stemvolume. *Beide schuiven moeten
+onafhankelijk werken; één schuif die allebei stuurt is de bug om op te letten.*
+
+**U.8 Sluiten naar de tray, en terug**
+Klik het kruisje. Het venster hoort te verdwijnen en de app moet blijven synchroniseren en
+melden. Dubbelklik het tray-icoon om hem terug te halen, en probeer ook "Afsluiten" in het
+tray-menu. *Dit ging door een compleet nieuwe vensterlus heen; dat het icoon het venster
+nog terugvindt is niet vanzelfsprekend.*
+
+**U.9 Een melding tijdens het gamen**
+Zet het venster naar de tray, laat iemand `@jouwnaam` sturen en kijk of de Windows-melding
+komt. Zet daarna niet-storen aan en laat het opnieuw doen: dan hoort er niets te komen.
+*De motor beslist dit, niet de UI — maar de UI vertelt de motor of het venster de voorgrond
+heeft, en dat is nieuwe code.*
+
+**U.10 Een update bevestigen**
+Alleen te doen met een tweede, oudere build (zie fase 11). De chip rechtsonder hoort te
+verschijnen en een bevestigingsvenster te openen vóór er iets gebeurt. *Nooit stilzwijgend
+toepassen.*
 
 ---
 

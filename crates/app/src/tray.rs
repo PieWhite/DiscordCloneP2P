@@ -2,10 +2,10 @@
 //!
 //! # Waarom de tray-events op een eigen thread worden afgehandeld
 //!
-//! Verberg je het venster, dan tekent egui niet meer en draait `update()` dus niet.
-//! Zou de tray-klik daar afgehandeld worden, dan kon je het venster nooit meer
-//! terughalen — precies wanneer je het nodig hebt. Een losse thread leest de
-//! tray-gebeurtenissen en praat rechtstreeks met het venster via Win32.
+//! Verberg je het venster, dan tekent de weergavelaag niet meer. Zou de tray-klik daar
+//! afgehandeld worden, dan kon je het venster nooit meer terughalen — precies wanneer je
+//! het nodig hebt. Een losse thread leest de tray-gebeurtenissen en praat rechtstreeks
+//! met het venster via Win32.
 
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -60,8 +60,8 @@ pub fn start() -> Result<Tray> {
                     if ev.id == openen_id {
                         toon_venster();
                     } else if ev.id == afsluiten_id {
-                        // Eerst tonen: pas als egui weer tekent kan het zichzelf netjes
-                        // afsluiten. Zou we hier het proces killen, dan sluiten de
+                        // Eerst tonen: pas als de app weer draait kan hij zichzelf netjes
+                        // afsluiten. Zouden we hier het proces killen, dan sluiten de
                         // verbindingen niet netjes af.
                         toon_venster();
                         AFSLUITEN.store(true, Ordering::Relaxed);

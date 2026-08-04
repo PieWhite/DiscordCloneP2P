@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FitCommunication</title>
+<!-- Fonts are bundled in the binary, not fetched. The comp linked Google Fonts because a
+     comp is opened by hand; "zero servers" is product invariant 1. -->
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<!-- The icon set, as a system rather than as 29 loose drawings — DESIGN.md records the
+     missing rules as a gap to close here, not to copy.
+
+       Grid        24 × 24, drawn on whole and half pixels, no sub-pixel control points.
+       Stroke      1.5, `fill="none"`, round caps and round joins, `currentColor` only.
+       Sizes       rendered at 12–20px; the size is set by the caller, never by the symbol.
+       Weight      one visual weight for the whole set: a glyph that needs a second
+                   stroke width to read at 14px is drawn wrong, not styled wrong.
+       Pairs       a state that toggles ships as a pair with the same silhouette plus a
+                   slash from (3.5,3.5) to (20.5,20.5) — mic/mic-off, head/head-off.
+       Colour      never hardcoded. Presence, danger and accent reach the icon through
+                   the colour of the element it sits in.
+
+     Defined once here and referenced with <use>. A new surface needs new drawings that
+     follow these rules — not a near-enough substitute from this set. -->
+<svg class="sr" aria-hidden="true">
+  <defs>
+    <g id="i-hash"><path d="M4.5 8.5h15M3.5 15.5h15M9.5 3.5 7.5 20.5M16.5 3.5 14.5 20.5"/></g>
+    <g id="i-at"><circle cx="12" cy="12" r="3.6"/><path d="M15.6 8.4v4.4a2.9 2.9 0 0 0 5.1 1.9A9.2 9.2 0 1 0 17 19.4"/></g>
+    <g id="i-gear"><circle cx="12" cy="12" r="3"/><path d="M19.2 14.6a1.6 1.6 0 0 0 .3 1.8l.1.1a1.9 1.9 0 1 1-2.7 2.7l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.3a1.9 1.9 0 1 1-3.8 0v-.2a1.6 1.6 0 0 0-2.8-1.1l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1a1.6 1.6 0 0 0-1.1-2.7h-.2a1.9 1.9 0 1 1 0-3.8h.3a1.6 1.6 0 0 0 1.1-2.8l-.1-.1a1.9 1.9 0 1 1 2.7-2.7l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5v-.2a1.9 1.9 0 1 1 3.8 0v.3a1.6 1.6 0 0 0 2.7 1.1l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.2a1.9 1.9 0 1 1 0 3.8h-.2a1.6 1.6 0 0 0-1.4 1z"/></g>
+    <g id="i-mic"><path d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z"/><path d="M5.5 11v.5a6.5 6.5 0 0 0 13 0V11M12 18v3"/></g>
+    <g id="i-mic-off"><path d="M9 5.8A3 3 0 0 1 15 6.5v3.7M15 14.2a3 3 0 0 1-6-1.7V9"/><path d="M5.5 11v.5a6.5 6.5 0 0 0 10 5.5M18.5 11v.5c0 .6-.1 1.2-.2 1.7M12 18v3"/><path d="m3.5 3.5 17 17"/></g>
+    <g id="i-head"><path d="M4.5 14v-2a7.5 7.5 0 0 1 15 0v2"/><path d="M4.5 13.5h1.8c.7 0 1.2.5 1.2 1.2v3.6c0 .7-.5 1.2-1.2 1.2H5.4c-.5 0-.9-.4-.9-.9zM19.5 13.5h-1.8c-.7 0-1.2.5-1.2 1.2v3.6c0 .7.5 1.2 1.2 1.2h.9c.5 0 .9-.4.9-.9z"/></g>
+    <g id="i-head-off"><path d="M4.5 14v-2a7.5 7.5 0 0 1 11.7-6.2M19.4 9.6c.1.8.1 1.6.1 2.4v2"/><path d="M4.5 13.5h1.8c.7 0 1.2.5 1.2 1.2v3.6c0 .7-.5 1.2-1.2 1.2H5.4c-.5 0-.9-.4-.9-.9zM19.5 13.5h-1.8c-.7 0-1.2.5-1.2 1.2v3.6c0 .7.5 1.2 1.2 1.2h.9c.5 0 .9-.4.9-.9z"/><path d="m3.5 3.5 17 17"/></g>
+    <g id="i-moon"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4 8.5 8.5 0 1 0 20 14.2z"/></g>
+    <g id="i-monitor"><rect x="2.5" y="4" width="19" height="12.5" rx="1.8"/><path d="M9 20.5h6M12 16.5v4"/></g>
+    <g id="i-clip"><path d="M20 11.5 12.3 19.2a4.6 4.6 0 0 1-6.5-6.5l7.6-7.6a3.1 3.1 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l6.9-6.8"/></g>
+    <g id="i-download"><path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/></g>
+    <g id="i-retry"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/><path d="M20.5 4v5h-5"/></g>
+    <g id="i-x"><path d="m5.5 5.5 13 13M18.5 5.5l-13 13"/></g>
+    <g id="i-min"><path d="M5 12h14"/></g>
+    <g id="i-max"><rect x="5.5" y="5.5" width="13" height="13" rx="1.4"/></g>
+    <g id="i-chev"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></g>
+    <g id="i-plus"><path d="M12 5.5v13M5.5 12h13"/></g>
+    <g id="i-users"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 20.2a6.4 6.4 0 0 1 12.4 0M16.2 4.9a3.4 3.4 0 0 1 0 6.2M18 20.2a6.4 6.4 0 0 0-1.6-4.2"/></g>
+    <g id="i-search"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.4 15.4 5 5"/></g>
+    <g id="i-leave"><path d="M15.5 4.5h2.6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-2.6"/><path d="M10 8l-4 4 4 4M6 12h9"/></g>
+    <g id="i-file"><path d="M13.5 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13.5 3.5V9H19"/></g>
+    <g id="i-image"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4.5 17.5 4.7-4.2a1.6 1.6 0 0 1 2.2 0l3 2.8M14.6 15.4l1.6-1.4a1.6 1.6 0 0 1 2.2 0l1.9 1.7"/></g>
+    <g id="i-alert"><path d="M12 4.2 2.8 19.5h18.4z"/><path d="M12 9.5v4.2M12 16.6v.1"/></g>
+    <g id="i-check"><path d="m4.5 12.5 5 5 10-11"/></g>
+    <g id="i-edit"><path d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-3-3l-10 10z"/><path d="M14 5.5l3.5 3.5"/></g>
+    <g id="i-trash"><path d="M4.5 6.5h15M9 6.5V4.8c0-.7.6-1.3 1.3-1.3h3.4c.7 0 1.3.6 1.3 1.3v1.7"/><path d="M6.5 6.5 7.4 19a1.6 1.6 0 0 0 1.6 1.5h6a1.6 1.6 0 0 0 1.6-1.5l.9-12.5"/></g>
+    <g id="i-signal"><path d="M12 20v-6M7 20v-9M17 20v-13M2.5 20v-3M21.5 20v-3"/></g>
+    <g id="i-wave"><path d="M4 10v4M8 6.5v11M12 3.5v17M16 6.5v11M20 10v4"/></g>
+    <g id="i-share"><path d="M12 15.5V4.5M8 8.5 12 4.5l4 4"/><path d="M4.5 14v4.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14"/></g>
+  </defs>
+</svg>
+
+<div class="app">
+
+  <!-- ============================================ TITLEBAR -->
+  <!-- `data-tauri-drag-region` is what actually moves the window; the comp's
+       `-webkit-app-region: drag` is not honoured by WebView2 in a frameless window. -->
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <svg class="brand-mark" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="3.4" cy="8" r="2.1" fill="currentColor"/>
+        <circle cx="12.6" cy="3.6" r="2.1" fill="currentColor"/>
+        <circle cx="12.6" cy="12.4" r="2.1" fill="currentColor"/>
+        <path d="M3.4 8 12.6 3.6M3.4 8l9.2 4.4M12.6 3.6v8.8" stroke="currentColor" stroke-width="1.1" opacity=".55"/>
+      </svg>
+      <div class="brand-name">FitCommunication</div>
+    </div>
+    <div class="titlebar-spacer" data-tauri-drag-region></div>
+    <div class="win-controls">
+      <button class="win-btn" id="win-min" title="Minimize"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-min"/></svg><span class="sr">Minimize</span></button>
+      <button class="win-btn" id="win-max" title="Maximize"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-max"/></svg><span class="sr">Maximize</span></button>
+      <button class="win-btn win-btn--close" id="win-close" title="Close to tray"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-x"/></svg><span class="sr">Close to tray</span></button>
+    </div>
+  </header>
+
+  <!-- ============================================ BODY -->
+  <div class="body" id="body" data-view="channels" data-members="shown">
+
+    <!-- ------------------------------------------ RAIL -->
+    <nav class="rail" aria-label="Views">
+      <button class="rail-btn" id="nav-channels" aria-current="true" title="Channels">
+        <svg class="icon-20 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-hash"/></svg>
+        <span class="sr">Channels</span>
+      </button>
+      <button class="rail-btn" id="nav-dms" title="Direct messages">
+        <svg class="icon-20 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-at"/></svg>
+        <span class="rail-badge num" id="dm-badge" hidden></span>
+        <span class="sr" id="dm-badge-sr">Direct messages</span>
+      </button>
+      <div class="rail-spacer"></div>
+      <div class="rail-sep"></div>
+      <button class="rail-btn" id="nav-settings" title="Settings">
+        <svg class="icon-20 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gear"/></svg>
+        <span class="sr">Settings</span>
+      </button>
+    </nav>
+
+    <!-- ------------------------------------------ CHANNEL COLUMN -->
+    <div class="channels" id="channels">
+      <div class="chan-head">
+        <h1 id="chan-head-title">Channels</h1>
+        <button class="icon-btn" id="new-channel" title="New channel">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><use href="#i-plus"/></svg>
+          <span class="sr">New channel</span>
+        </button>
+      </div>
+
+      <div class="chan-scroll" id="chan-scroll"><!-- filled by script --></div>
+
+      <!-- voice panel -->
+      <div class="voice" id="voice"><!-- filled by script --></div>
+    </div>
+
+    <!-- ------------------------------------------ MAIN -->
+    <main class="main" id="main">
+      <div class="main-head">
+        <svg class="icon-18 icon" id="main-head-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-hash"/></svg>
+        <div class="main-title" id="main-title">general</div>
+        <div class="main-topic" id="main-topic">No topic set</div>
+        <div class="main-head-actions">
+          <button class="icon-btn" title="Search">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-search"/></svg>
+            <span class="sr">Search</span>
+          </button>
+          <button class="icon-btn" id="toggle-members" aria-pressed="true" title="Toggle member list">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-users"/></svg>
+            <span class="sr">Toggle member list</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="strip-slot"></div>
+      <div class="timeline" id="timeline"><!-- filled by script --></div>
+
+      <div class="composer-wrap">
+        <div id="error-slot"></div>
+        <div class="composer-outer">
+          <div class="composer">
+            <button class="composer-btn" id="attach" title="Share a file">
+              <svg class="icon-18 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><use href="#i-clip"/></svg>
+              <span class="sr">Share a file</span>
+            </button>
+            <textarea id="composer-input" rows="1" placeholder="Message #general"
+                      aria-autocomplete="list" aria-controls="ac-list" aria-expanded="false"></textarea>
+          </div>
+          <!-- after the composer in DOM, above it on screen: Tab from the textarea has to
+               reach the suggestion list, and DOM order is what Tab follows. -->
+          <div id="ac-slot"></div>
+          <div class="composer-hint">
+            <span><kbd>Enter</kbd> to send</span>
+            <span><kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span>
+            <span><kbd>Ctrl</kbd> + <kbd>V</kbd> pastes an image</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="drop-slot"></div>
+    </main>
+
+    <!-- ------------------------------------------ MEMBERS -->
+    <aside class="members" id="members" aria-label="Members"><!-- filled by script --></aside>
+
+    <!-- ------------------------------------------ SETTINGS -->
+    <div class="settings" id="settings" hidden><!-- filled by script --></div>
+
+  </div>
+
+  <!-- ============================================ STATUS BAR -->
+  <footer class="status" id="status"><!-- filled by script --></footer>
+</div>
+
+<!-- Nothing irreversible happens without this: applying an update restarts the app, and
+     deleting the picture cache cannot be undone. -->
+<dialog class="confirm" id="confirm">
+  <div class="confirm-body">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+  </div>
+  <div class="confirm-foot">
+    <button class="btn btn--ghost" id="confirm-no">Cancel</button>
+    <button class="btn btn--accent" id="confirm-yes">Confirm</button>
+  </div>
+</dialog>
+
+<!-- Below this line: surfaces the comp did not have to draw, because it had no engine
+     behind it. Same shell, same tokens. -->
+
+<!-- Picking a screen or a window to share. The list is fetched when this opens and never
+     cached: windows come and go, and a stale list offers something that is gone. -->
+<dialog class="confirm" id="picker">
+  <div class="confirm-body">
+    <h2>Share a screen or window</h2>
+    <p>Nothing is captured until somebody actually watches. A shared source that nobody
+       opened costs no encoder and no traffic.</p>
+  </div>
+  <div class="picker-list" id="picker-list"></div>
+  <div class="confirm-foot">
+    <button class="btn btn--ghost" id="picker-cancel">Cancel</button>
+  </div>
+</dialog>
+
+<!-- One prompt for both naming a new sub-channel and renaming one. -->
+<dialog class="confirm" id="prompt">
+  <div class="confirm-body">
+    <h2 id="prompt-title"></h2>
+    <p id="prompt-text"></p>
+    <input class="text-input" id="prompt-input" autocomplete="off">
+  </div>
+  <div class="confirm-foot">
+    <button class="btn btn--ghost" id="prompt-no">Cancel</button>
+    <button class="btn btn--accent" id="prompt-yes">Save</button>
+  </div>
+</dialog>
+</body>
+</html>

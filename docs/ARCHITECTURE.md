@@ -8,7 +8,7 @@ Hoe we bouwen. Requirements staan in `SPEC.md`.
 | Laag | Keuze | Waarom |
 |---|---|---|
 | Taal | Rust 1.86, MSVC | Toolchain staat al; geen .NET SDK aanwezig; één statische exe; geen GC-pauzes in de audiopijplijn |
-| UI | `eframe` / `egui` | Alles in één proces, snel te bouwen, laag idle-verbruik |
+| UI | **Tauri v2** (WebView2), sinds fase 12 | Ontwerpplafond: egui kon geen echte typografie, ritme of gelaagdheid, CSS wel. Tekent alleen bij verandering in plaats van 4 fps polling. Zie `PRODUCT.md` → `## Stack` |
 | Async | `tokio` | Standaard, past bij quinn |
 | Control/chat | `quinn` (QUIC) | Betrouwbaar, meerdere onafhankelijke streams over één verbinding, geen head-of-line blocking tussen berichttypes, ruimte voor bulk file transfer later |
 | Media | `tokio::net::UdpSocket` | Retransmits zijn schadelijk voor realtime audio/video |
@@ -27,13 +27,36 @@ glass-to-glass latency tegenvalt, wisselen we naar **directe NVENC** (via
 `nvidia-video-codec-sdk` of eigen FFI naar `nvEncodeAPI.dll` met
 `NV_ENC_DEVICE_TYPE_DIRECTX`) zonder de rest te raken. Meetpunt zit in fase 4.
 
+### De grens tussen UI en de rest
+De UI is een pure weergave: hij leest een `watch`-momentopname (`Snapshot`) en stuurt
+`UiCommand`'s terug over kanalen. Geen enkele beslissing over netwerk of opslag staat in de
+weergavelaag, en er staat geen state in die verloren gaat als het venster niet tekent.
+
+**Dat is niet alleen netjes, het is de reden dat de stackwissel naar Tauri haalbaar
+was.** Gemeten vóór dat besluit en opnieuw erna: buiten `crates/app/src/ui/` komt egui
+alleen voor in doc-commentaar — geen enkele API-aanroep in `proto`, `store`, `net`, `audio`
+of `video`. Te vervangen viel dus alleen `crates/app/src/ui/` en de vensterbootstrap in
+`main.rs`. `Snapshot`/`UiCommand` zijn Tauri-commands en -events geworden: `ui/state.rs`
+vertaalt de momentopname naar JSON, `ui/commands.rs` vertaalt IPC-aanroepen terug naar een
+`UiCommand`. Laat die grens intact — hem opgeven maakt een volgende wissel weer duur.
+
 ### Waarom video in een apart venster
-`eframe` rendert via wgpu (DX12). Een gedecodeerde D3D11-textuur daarin krijgen vereist
-shared-handle-interop op `wgpu-hal`-niveau — onveilig, fragiel, en niet nodig.
-In plaats daarvan: elke stream krijgt een eigen Win32-venster met eigen D3D11 swapchain,
-op een eigen thread met eigen message pump. Volledig geïsoleerd van de UI-thread,
-optimale videopad, en een maximaliseerbaar venster is op één 1080p-monitor sowieso de
-betere UX. Grid-in-hoofdvenster is fase 5.
+Elke stream krijgt een eigen Win32-venster met eigen D3D11 swapchain, op een eigen thread
+met eigen message pump. Volledig geïsoleerd van de UI, optimaal videopad, en een
+maximaliseerbaar los venster is voor het echte kijken de betere UX — met twee schermen per
+persoon kan het naast een game op het andere scherm staan.
+
+**Dit staat los van de UI-stack en verandert niet mee.** Het oorspronkelijke argument was
+dat `eframe` via wgpu (DX12) rendert en een gedecodeerde D3D11-textuur daarin
+shared-handle-interop op `wgpu-hal`-niveau zou vereisen — onveilig, fragiel, en niet nodig.
+Met een webview wordt een D3D11-textuur in de UI krijgen alleen maar moeilijker, dus de
+conclusie wordt sterker in plaats van zwakker: het hete videopad raakt de UI-stack nergens.
+
+Wat de UI wél nodig heeft is de overzichtstrook met verkleinde live beelden (fase 5): elke
+500 ms een GPU-naar-CPU-downscale (`D3dContext::lees_bgra_miniatuur`), buiten het
+eigenlijke weergavepad om. Dat was een egui-textuur en is sinds fase 12 een
+`thumbnail`-event met een revisienummer plus een `thumb://`-protocol dat de PNG aan een
+gewone `<img>` serveert. Bij 2 fps en een kleine afmeting verwaarloosbaar.
 
 Het venster houdt zijn gewone rand: zonder rand valt hij niet te verplaatsen, te
 vergroten of te sluiten zonder eigen hit-testing, en dat is nergens voor nodig.
@@ -57,7 +80,7 @@ niet omdat je alleen je eigen scherm kent.
 ## Processtructuur
 
 ```
-main thread            eframe/egui  — pure weergave van een momentopname
+main thread            weergavelaag — pure weergave van een momentopname
 tokio runtime          motor (oplog + mesh), quinn control-mesh, UDP media-sockets
 capture thread(s)      WGC → D3D11 texture → encoder → UDP  (één per gedeelde bron)
 render thread(s)       UDP → decoder → D3D11 swapchain      (één per bekeken stream)
@@ -68,13 +91,15 @@ audio render thread    UDP → jitterbuffer → Opus decode → mix → WASAPI
 Alle threads praten met de UI via kanalen. Geen gedeelde locks op het hot path.
 
 ### De UI mag stilvallen
-egui tekent geen frames zolang het venster verborgen of geminimaliseerd is. Alles wat
-door moet lopen terwijl je niet kijkt — synchronisatie, herverbinden, meldingen — hoort
-daarom níét in `update()`. De motor (`app/src/engine.rs`) bezit de mesh en de oplog en
-draait op de tokio-runtime; de UI leest een `watch`-momentopname en stuurt commando's
-terug. Om dezelfde reden leest de tray-thread zijn eigen gebeurtenissen: zou de
-tray-klik in de UI worden afgehandeld, dan kon je een verborgen venster nooit meer
-terughalen.
+Een verborgen of geminimaliseerd venster tekent niet. Alles wat door moet lopen terwijl je
+niet kijkt — synchronisatie, herverbinden, meldingen — hoort daarom níét in de weergavelus.
+De motor (`app/src/engine.rs`) bezit de mesh en de oplog en draait op de tokio-runtime; de
+UI leest een `watch`-momentopname en stuurt commando's terug. Om dezelfde reden leest de
+tray-thread zijn eigen gebeurtenissen: zou de tray-klik in de UI worden afgehandeld, dan
+kon je een verborgen venster nooit meer terughalen.
+
+Dit gold voor egui's `update()` en geldt onverkort voor een webview — **de reden is niet
+toolkit-specifiek.** Het is een van de invarianten die de stackwissel moet overleven.
 
 ## Voice
 
@@ -671,8 +696,13 @@ crates/
   audio/     capture, opus, jitterbuffer, mix, ns/vad
   video/     WGC capture, MF encoder en decoder, kleuromzetting, D3D11 render-venster,
              deler- en kijker-thread
-  app/       lib + binary: eframe UI, config, chat-plumbing, streambeheer,
+  app/       lib + binary: weergavelaag (`ui/`), config, chat-plumbing, streambeheer,
              bestandsdeling, tray, notificaties
 ```
 `proto` en `store` hebben geen Windows- of hardware-afhankelijkheden en zijn daarom
 volledig unit-testbaar. Daar zit de subtiele logica, dus daar zitten de tests.
+
+**`crates/app/src/ui/` is de enige map met een UI-toolkit erin** (Tauri v2, plus
+`crates/app/frontend/`).
+De vijf crates erboven weten niet welke toolkit er gebruikt wordt en dat moet zo blijven —
+zie "De grens tussen UI en de rest".
