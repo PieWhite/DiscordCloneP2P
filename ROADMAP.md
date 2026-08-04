@@ -412,3 +412,35 @@ herstart.
 dezelfde build, dus een echt versieverschil (twee gebouwde exe's met een andere
 `workspace.package.version`) is alleen met een tweede, oudere build te simuleren. Zie
 `docs/TESTPLAN.md`, fase 11.
+
+### Fase 12 — UI-stack naar Tauri v2 en visueel herontwerp ⬜ nog niet begonnen
+Besloten op 2026-08-04. De eerste fase die niet over functionaliteit gaat: er komt niets bij
+wat de app kan, de weergavelaag wordt vervangen omdat het ontwerpplafond van egui de
+bindende beperking is geworden.
+
+- **Alleen `crates/app/src/ui/`** (13 modules, 2.979 regels) **en de vensterbootstrap in
+  `main.rs`.** De vijf niet-UI-crates bevatten geen enkele egui-aanroep — gemeten vóór het
+  besluit — en blijven onaangeroerd.
+- **`Snapshot`/`UiCommand` worden Tauri-commands en -events.** Die grens is de reden dat dit
+  haalbaar is; hem opgeven maakt een volgende wissel weer duur.
+- **Nieuw transport voor de miniaturenstrook**: nu een `egui::TextureHandle` per stream,
+  wordt een canvas gevoed via een event of custom protocol. 2 fps, kleine afmeting.
+- **Het pop-out kijkvenster verandert niet** — eigen Win32-venster, eigen D3D11-swapchain,
+  buiten de UI-stack om.
+- **Visueel opnieuw uitvoeren, binnen de categoriestandaard.** Richting gekozen op
+  2026-08-04: de Discord-indeling zoals iedereen hem kent, met **Discord en Slack als
+  kwaliteitslat** — dus niet overzetten wat er nu staat, maar dezelfde soort wereld op een
+  hoger afwerkingsniveau. De vier zones blijven staan (expliciete keuze van Rick). Donker
+  blijft een eis (avondgebruik). Het palet zelf staat open. Zie `PRODUCT.md`, "De visuele
+  wereld: de categoriestandaard, met opzet".
+- **De UI-taal beslissen** terwijl het gratis is: de weergavelaag wordt toch helemaal
+  opnieuw geschreven. Zie `PRODUCT.md`, "Expliciet onbeslist".
+
+**Klaar als:** de app doet functioneel exact wat hij nu doet — alle kanalen, DM's,
+subkanalen, voice, screenshare, bestanden, tags, meldingen, instellingen, tray, updates —
+in de nieuwe stack, met een nieuw ontwerp, en het idle-verbruik is niet omhoog gegaan.
+Dat laatste is meetbaar en geen kwestie van gevoel: egui hertekende 4× per seconde in rust,
+een event-driven weergave hoort daaronder te zitten.
+
+Volledige onderbouwing, de afgewezen alternatieven (Dioxus, Slint) en de expliciet benoemde
+kosten staan in `docs/OVERDRACHT.md`, beslissing 19, en `PRODUCT.md`, sectie `## Stack`.

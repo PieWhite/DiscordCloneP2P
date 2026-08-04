@@ -1,0 +1,939 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-04T00:00:00Z",
+  "title": "Design System: FitCommunication",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Tuned Teal",
+        "canonical": "#2FB3AE",
+        "tonalRamp": [
+          "#071716",
+          "#0C2A28",
+          "#12403D",
+          "#195954",
+          "#22796F",
+          "#2FB3AE",
+          "#5FD9D3",
+          "#C7F2EF"
+        ]
+      },
+      "accent-text": {
+        "role": "primary",
+        "displayName": "Teal On Dark",
+        "canonical": "#5FD9D3",
+        "tonalRamp": [
+          "#0A1E1D",
+          "#103330",
+          "#174A46",
+          "#20655F",
+          "#2C8A82",
+          "#3ECCC6",
+          "#5FD9D3",
+          "#D2F6F4"
+        ]
+      },
+      "on-accent": {
+        "role": "primary",
+        "displayName": "Teal Ink",
+        "canonical": "#05201F",
+        "tonalRamp": [
+          "#03100F",
+          "#05201F",
+          "#08302E",
+          "#0C4340",
+          "#115853",
+          "#177069",
+          "#1E8B83",
+          "#2FB3AE"
+        ]
+      },
+      "online": {
+        "role": "secondary",
+        "displayName": "Presence Green",
+        "canonical": "#3FB950",
+        "tonalRamp": [
+          "#08190B",
+          "#0E2C13",
+          "#15431C",
+          "#1D5C26",
+          "#288033",
+          "#3FB950",
+          "#6FD57D",
+          "#CBF0D2"
+        ]
+      },
+      "connecting": {
+        "role": "secondary",
+        "displayName": "Retry Amber",
+        "canonical": "#D29922",
+        "tonalRamp": [
+          "#1B1305",
+          "#2E2109",
+          "#45320D",
+          "#5F4612",
+          "#8A6518",
+          "#D29922",
+          "#EFC66A",
+          "#F8E7BE"
+        ]
+      },
+      "dnd": {
+        "role": "secondary",
+        "displayName": "Muted Rose",
+        "canonical": "#C77DAF",
+        "tonalRamp": [
+          "#1D1218",
+          "#31202A",
+          "#48303E",
+          "#634455",
+          "#8C5F78",
+          "#C77DAF",
+          "#DFA9CB",
+          "#F3DEEA"
+        ]
+      },
+      "offline": {
+        "role": "secondary",
+        "displayName": "Unlit Grey",
+        "canonical": "#6B747F",
+        "tonalRamp": [
+          "#14171B",
+          "#1F242A",
+          "#2E353E",
+          "#3A424D",
+          "#525C68",
+          "#6B747F",
+          "#98A1AC",
+          "#D8DDE3"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Failure Red",
+        "canonical": "#E5534B",
+        "tonalRamp": [
+          "#1E0D0C",
+          "#2A1A19",
+          "#3A211F",
+          "#4A2724",
+          "#8C3B35",
+          "#E5534B",
+          "#F0908A",
+          "#FFB3AD"
+        ]
+      },
+      "mention-bg": {
+        "role": "tertiary",
+        "displayName": "Mention Field",
+        "canonical": "#2A2418",
+        "tonalRamp": [
+          "#14110A",
+          "#1E1A0F",
+          "#2A2418",
+          "#302915",
+          "#4A3E1E",
+          "#6B551E",
+          "#A98A38",
+          "#EFC66A"
+        ]
+      },
+      "code-key": {
+        "role": "tertiary",
+        "displayName": "Code Key Blue",
+        "canonical": "#8FC7E8",
+        "tonalRamp": [
+          "#0D1A22",
+          "#132937",
+          "#1B3C50",
+          "#26536D",
+          "#3E7A9B",
+          "#5FA3CB",
+          "#8FC7E8",
+          "#DCEEF8"
+        ]
+      },
+      "code-str": {
+        "role": "tertiary",
+        "displayName": "Code String Green",
+        "canonical": "#A5D6A7",
+        "tonalRamp": [
+          "#0F1A10",
+          "#182A19",
+          "#233D24",
+          "#315434",
+          "#4E7C52",
+          "#78A87C",
+          "#A5D6A7",
+          "#E1F2E2"
+        ]
+      },
+      "code-num": {
+        "role": "tertiary",
+        "displayName": "Code Number Amber",
+        "canonical": "#E8C07D",
+        "tonalRamp": [
+          "#1C160C",
+          "#2E2413",
+          "#43351B",
+          "#5D4A26",
+          "#8C7038",
+          "#BF9A56",
+          "#E8C07D",
+          "#F8EBD3"
+        ]
+      },
+      "bg-window": {
+        "role": "neutral",
+        "displayName": "Window Black",
+        "canonical": "#0E1013",
+        "tonalRamp": [
+          "#0A0C0E",
+          "#0E1013",
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D"
+        ]
+      },
+      "bg-sidebar": {
+        "role": "neutral",
+        "displayName": "Panel Black",
+        "canonical": "#14171B",
+        "tonalRamp": [
+          "#0A0C0E",
+          "#0E1013",
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D"
+        ]
+      },
+      "bg-canvas": {
+        "role": "neutral",
+        "displayName": "Canvas",
+        "canonical": "#1A1E23",
+        "tonalRamp": [
+          "#0A0C0E",
+          "#12151A",
+          "#1A1E23",
+          "#1E232A",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D"
+        ]
+      },
+      "bg-raised": {
+        "role": "neutral",
+        "displayName": "Raised Object",
+        "canonical": "#22272E",
+        "tonalRamp": [
+          "#0E1013",
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D",
+          "#4A5460"
+        ]
+      },
+      "bg-hover": {
+        "role": "neutral",
+        "displayName": "Hover Step",
+        "canonical": "#2A3038",
+        "tonalRamp": [
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D",
+          "#4A5460",
+          "#6B747F"
+        ]
+      },
+      "bg-active": {
+        "role": "neutral",
+        "displayName": "Current Step",
+        "canonical": "#313944",
+        "tonalRamp": [
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D",
+          "#4A5460",
+          "#6B747F"
+        ]
+      },
+      "bg-msg-hover": {
+        "role": "neutral",
+        "displayName": "Timeline Row Hover",
+        "canonical": "#1E232A",
+        "tonalRamp": [
+          "#0A0C0E",
+          "#12151A",
+          "#1A1E23",
+          "#1E232A",
+          "#22272E",
+          "#2A3038",
+          "#313944",
+          "#3A424D"
+        ]
+      },
+      "bg-well": {
+        "role": "neutral",
+        "displayName": "Content Well",
+        "canonical": "#0A0C0E",
+        "tonalRamp": [
+          "#050607",
+          "#0A0C0E",
+          "#0E1013",
+          "#12151A",
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038"
+        ]
+      },
+      "bg-code": {
+        "role": "neutral",
+        "displayName": "Code Black",
+        "canonical": "#12151A",
+        "tonalRamp": [
+          "#050607",
+          "#0A0C0E",
+          "#0E1013",
+          "#12151A",
+          "#1A1E23",
+          "#22272E",
+          "#2A3038",
+          "#313944"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#2E353E",
+        "tonalRamp": [
+          "#14171B",
+          "#1A1E23",
+          "#22272E",
+          "#2E353E",
+          "#3A424D",
+          "#4A5460",
+          "#6B747F",
+          "#98A1AC"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Control Edge",
+        "canonical": "#3A424D",
+        "tonalRamp": [
+          "#14171B",
+          "#1A1E23",
+          "#2A3038",
+          "#3A424D",
+          "#4A5460",
+          "#6B747F",
+          "#98A1AC",
+          "#B3BAC4"
+        ]
+      },
+      "border-input": {
+        "role": "neutral",
+        "displayName": "Hovered Field Edge",
+        "canonical": "#4A5460",
+        "tonalRamp": [
+          "#1A1E23",
+          "#22272E",
+          "#313944",
+          "#3A424D",
+          "#4A5460",
+          "#6B747F",
+          "#98A1AC",
+          "#D8DDE3"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Primary Ink",
+        "canonical": "#E6E9ED",
+        "tonalRamp": [
+          "#1A1E23",
+          "#2E353E",
+          "#4A5460",
+          "#6B747F",
+          "#8E97A2",
+          "#B3BAC4",
+          "#E6E9ED",
+          "#F7F9FA"
+        ]
+      },
+      "text-mid": {
+        "role": "neutral",
+        "displayName": "Reading Ink",
+        "canonical": "#B3BAC4",
+        "tonalRamp": [
+          "#1A1E23",
+          "#2E353E",
+          "#4A5460",
+          "#6B747F",
+          "#8E97A2",
+          "#B3BAC4",
+          "#D8DDE3",
+          "#F7F9FA"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Secondary Ink",
+        "canonical": "#98A1AC",
+        "tonalRamp": [
+          "#1A1E23",
+          "#2E353E",
+          "#4A5460",
+          "#6B747F",
+          "#8E97A2",
+          "#98A1AC",
+          "#C4CAD2",
+          "#F0F2F5"
+        ]
+      },
+      "text-dim": {
+        "role": "neutral",
+        "displayName": "Quiet Ink",
+        "canonical": "#8E97A2",
+        "tonalRamp": [
+          "#1A1E23",
+          "#2E353E",
+          "#4A5460",
+          "#6B747F",
+          "#8E97A2",
+          "#B3BAC4",
+          "#D8DDE3",
+          "#F7F9FA"
+        ]
+      },
+      "on-signal": {
+        "role": "neutral",
+        "displayName": "Signal Ink",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "#22272E",
+          "#3A424D",
+          "#6B747F",
+          "#98A1AC",
+          "#B3BAC4",
+          "#D8DDE3",
+          "#F0F2F5",
+          "#FFFFFF"
+        ]
+      },
+      "av-1": {
+        "role": "tertiary",
+        "displayName": "Peer Identity Blue",
+        "canonical": "#4C6FB5",
+        "tonalRamp": [
+          "#0C1220",
+          "#141E36",
+          "#1D2C4E",
+          "#283D69",
+          "#36538F",
+          "#4C6FB5",
+          "#8099CE",
+          "#D5DEEE"
+        ]
+      },
+      "av-2": {
+        "role": "tertiary",
+        "displayName": "Peer Identity Green",
+        "canonical": "#57896B",
+        "tonalRamp": [
+          "#0D1611",
+          "#141F19",
+          "#1D2E24",
+          "#284034",
+          "#3B5E4B",
+          "#57896B",
+          "#8AB39A",
+          "#DCEAE1"
+        ]
+      },
+      "av-3": {
+        "role": "tertiary",
+        "displayName": "Peer Identity Rose",
+        "canonical": "#9A5F6E",
+        "tonalRamp": [
+          "#1A1013",
+          "#26181C",
+          "#372329",
+          "#4C3138",
+          "#6B444E",
+          "#9A5F6E",
+          "#C293A0",
+          "#EEDCE1"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Settings page heading. The largest type in the app at 20px; there is no hero type anywhere."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Empty-state, dialog and DM-intro headings (16px, 19px at 700)."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Channel header title, column heading, message author name."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Message text and composer input. Bounded to 72ch on the text only."
+      },
+      "body-sm": {
+        "displayName": "Body Small",
+        "purpose": "Descriptive prose: settings help, dialog body, empty-state copy. 44-62ch."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase 0.07em group headings for every list in the app, plus day dividers."
+      },
+      "micro": {
+        "displayName": "Micro",
+        "purpose": "Count badges, YOU tag, LIVE tag, slider labels, kbd chips."
+      },
+      "code": {
+        "displayName": "Code / Measured",
+        "purpose": "JetBrains Mono for code blocks, RTT, version, protocol number, identifiers. Tabular figures always on."
+      },
+      "headline-intro": {
+        "displayName": "Headline Intro",
+        "purpose": "The DM introduction heading (19px/700) and nothing else. Declared as a role so the ramp in the frontmatter matches the build."
+      },
+      "monogram": {
+        "displayName": "Monogram",
+        "purpose": "The single initial inside a 20px avatar (9px/600, line-height 1). A letter, not text; 10px overflows the circle."
+      }
+    },
+    "shadows": [
+      {
+        "name": "--shadow-thumb",
+        "value": "0 1px 3px rgba(0,0,0,.5)",
+        "purpose": "Slider thumb, so it reads as a grabbable object on its own track.",
+        "token": true
+      },
+      {
+        "name": "--shadow-bar",
+        "value": "0 4px 12px rgba(0,0,0,.4)",
+        "purpose": "Message action bar floating over the message above it inside a scroll container.",
+        "token": true
+      },
+      {
+        "name": "--shadow-popover",
+        "value": "0 10px 28px rgba(0,0,0,.5)",
+        "purpose": "Mention autocomplete above the composer.",
+        "token": true
+      },
+      {
+        "name": "--shadow-modal",
+        "value": "0 18px 48px rgba(0,0,0,.62)",
+        "purpose": "Confirm dialog. Backdrop rgba(6,8,10,.68).",
+        "token": true
+      },
+      {
+        "name": "ring-speaking",
+        "value": "0 0 0 2px var(--online)",
+        "purpose": "NOT elevation. A zero-offset stroke around a speaking peer's avatar, entering on opacity+scale."
+      },
+      {
+        "name": "ring-offline",
+        "value": "inset 0 0 0 2px var(--offline)",
+        "purpose": "NOT elevation. The unlit presence dot: an inset ring on the panel ground."
+      },
+      {
+        "name": "ring-slider-focus",
+        "value": "0 0 0 2px var(--bg-sidebar), 0 0 0 4px var(--accent)",
+        "purpose": "NOT elevation. The range thumb's focus ring: a native slider thumb cannot carry an outline, so the ring is drawn as two zero-offset stops, the inner one in the panel ground to separate it from the track."
+      },
+      {
+        "name": "--backdrop",
+        "value": "rgba(6,8,10,.68)",
+        "token": true,
+        "purpose": "The confirm dialog's ::backdrop. The only scrim with a token; the drop overlay and LIVE-tag scrims have one user each and stay inline."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(.16,.84,.44,1)",
+        "purpose": "The only easing curve. Used for every non-linear transition."
+      },
+      {
+        "name": "swap-90",
+        "value": "90ms linear",
+        "purpose": "Plain colour swaps: rows, icon buttons, titlebar buttons, action-bar reveal."
+      },
+      {
+        "name": "state-120",
+        "value": "120ms var(--ease)",
+        "purpose": "Accent fills, border-colour changes, rail hover."
+      },
+      {
+        "name": "switch-160",
+        "value": "160ms var(--ease)",
+        "purpose": "Toggle track colour."
+      },
+      {
+        "name": "indicator-180",
+        "value": "180ms var(--ease)",
+        "purpose": "Rail nub scaleY."
+      },
+      {
+        "name": "knob-200",
+        "value": "200ms var(--ease)",
+        "purpose": "Toggle knob translateX; speaking-ring opacity."
+      },
+      {
+        "name": "ring-260",
+        "value": "260ms var(--ease)",
+        "purpose": "Speaking-ring scale entrance. The only authored moment; it does not loop."
+      },
+      {
+        "name": "progress-400",
+        "value": "400ms var(--ease)",
+        "purpose": "Transfer bar scaleX."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "transition-duration: 0.01ms !important",
+        "purpose": "prefers-reduced-motion: reduce collapses everything."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow-members",
+        "value": "1080px"
+      },
+      {
+        "name": "narrow-columns",
+        "value": "820px"
+      }
+    ],
+    "layoutTokens": [
+      {
+        "name": "--rail-w",
+        "value": "56px"
+      },
+      {
+        "name": "--chan-w",
+        "value": "240px (200px below 820px)"
+      },
+      {
+        "name": "--member-w",
+        "value": "232px"
+      },
+      {
+        "name": "titlebar",
+        "value": "32px"
+      },
+      {
+        "name": "statusbar",
+        "value": "26px"
+      }
+    ],
+    "gaps": [
+      "The speaking ring is gated by [data-speaking=\"true\"] in the voice panel and by the .speak-ring class in the member list: one state, two switches.",
+      "Fonts load from fonts.googleapis.com in the comp. The Tauri build must bundle Archivo and JetBrains Mono locally (product invariant 1).",
+      "The icon set is 29 symbols; all are referenced, but a new surface will need new drawings rather than substitutes."
+    ],
+    "radii": [
+      {
+        "name": "--r-inner",
+        "value": "3px",
+        "purpose": "The inner corner of a child inside a 1px-bordered group: --r-sm minus the border, so the child's corner sits concentric inside its container. Segmented-control end children and the kbd chip only."
+      },
+      {
+        "name": "--r-sm",
+        "value": "4px",
+        "purpose": "The working radius: rows, icon buttons, chips, form controls, inline code."
+      },
+      {
+        "name": "--r-md",
+        "value": "6px",
+        "purpose": "The object radius: cards, code blocks, tiles, rail buttons, member rows."
+      },
+      {
+        "name": "--r-lg",
+        "value": "10px",
+        "purpose": "The composer and the confirm dialog only."
+      },
+      {
+        "name": "--r-full",
+        "value": "999px",
+        "purpose": "Circles and pills: avatars, dots, badges, progress, switch, scrollbar thumb."
+      }
+    ],
+    "typeRamp": [
+      {
+        "value": "9px",
+        "owner": "Monogram inside a 20px avatar. Single letter, not text; the smallest glyph in the window."
+      },
+      {
+        "value": "9.5px",
+        "owner": "tool-label (Screen audio) uppercase micro-label."
+      },
+      {
+        "value": "10px",
+        "owner": "Micro tags: YOU, LIVE, edited marker, grouped-row hover timestamp."
+      },
+      {
+        "value": "10.5px",
+        "owner": "kbd chip; autocomplete and harness headers."
+      },
+      {
+        "value": "11px",
+        "owner": "The uppercase group-label step, plus timestamps and captions."
+      },
+      {
+        "value": "11.5px",
+        "owner": "Status bar, member sub-lines, volume readouts, inline code."
+      },
+      {
+        "value": "12px",
+        "owner": "Field help text, small icon captions."
+      },
+      {
+        "value": "12.5px",
+        "owner": "Buttons, notes, code blocks."
+      },
+      {
+        "value": "13px",
+        "owner": "Body small: voice panel, empty-state copy, field labels."
+      },
+      {
+        "value": "13.5px",
+        "owner": "Settings prose, list rows in settings, dialog body, autocomplete item."
+      },
+      {
+        "value": "14px",
+        "owner": "Body: message text, composer, channel rows, message author."
+      },
+      {
+        "value": "15px",
+        "owner": "Channel header title; drop-overlay lead."
+      },
+      {
+        "value": "16px",
+        "owner": "Empty-state and dialog headings."
+      },
+      {
+        "value": "19px",
+        "owner": "DM introduction heading. One owner only."
+      },
+      {
+        "value": "20px",
+        "owner": "Settings page heading. The largest type in the app."
+      }
+    ],
+    "closedGaps": [
+      "--focus no longer dangles: the slider thumb declares its own two-stop ring (see shadows.ring-slider-focus).",
+      "#fff hoisted to --on-signal (five uses: count badges, rail badge, LIVE tag, close button hover, avatar monogram).",
+      "The three avatar hues hoisted to --av-1/--av-2/--av-3, keyed by peer and never reused for state.",
+      "The five literal 3px radii hoisted to --r-inner and promoted to a documented fifth radius with a stated job.",
+      "The four shadows and the modal backdrop hoisted to --shadow-thumb/-bar/-popover/-modal and --backdrop: whole shadows named by job, geometry and colour together, so no author can reach an alpha without its offset and blur."
+    ],
+    "notTokenized": [
+      "The review harness's own chrome (#0B0D10, #15181C and its rgba(0,0,0,.6) shadow) is a state-toggling scaffold that does not ship and is not part of the system.",
+      "The drop-overlay scrim rgba(12,15,18,.86) and the LIVE-tag scrim rgba(10,12,14,.82) stay inline: one user each, no depth role."
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action (Join the call)",
+      "kind": "button",
+      "refersTo": "join-primary",
+      "description": "The window's primary action, sitting full-width in the voice panel. The only accent-filled button in the resting window.",
+      "html": "<button class=\"ds-join\"><svg class=\"ds-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 10v4M8 6.5v11M12 3.5v17M16 6.5v11M20 10v4\"/></svg>Join the call</button>",
+      "css": ".ds-join { display: flex; align-items: center; justify-content: center; gap: 7px; width: 220px; height: 34px; border: 0; cursor: pointer; border-radius: var(--r-md, 6px); background: var(--accent, #2FB3AE); color: var(--on-accent, #05201F); font-family: Archivo, 'Segoe UI', system-ui, sans-serif; font-size: 13px; font-weight: 600; transition: background 120ms cubic-bezier(.16,.84,.44,1), transform 90ms cubic-bezier(.16,.84,.44,1); } .ds-join .ds-ico { width: 16px; height: 16px; } .ds-join:hover { background: var(--accent-hover, #3ECCC6); } .ds-join:active { transform: translateY(1px); } .ds-join:focus-visible { outline: 2px solid var(--accent, #2FB3AE); outline-offset: 2px; }"
+    },
+    {
+      "name": "Neutral / Ghost / Danger Button",
+      "kind": "button",
+      "refersTo": "button-neutral",
+      "description": "The 28px inline action set used in the timeline, settings and dialogs. Three fills, one geometry.",
+      "html": "<span style=\"display:flex;gap:8px\"><button class=\"ds-btn\">Download</button><button class=\"ds-btn ds-btn--ghost\">Cancel</button><button class=\"ds-btn ds-btn--danger\">Delete</button></span>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; cursor: pointer; border-radius: var(--r-sm, 4px); background: var(--bg-hover, #2A3038); color: var(--text, #E6E9ED); font-family: Archivo, 'Segoe UI', system-ui, sans-serif; font-size: 12.5px; font-weight: 600; white-space: nowrap; transition: background 90ms linear; } .ds-btn:hover { background: var(--bg-active, #313944); } .ds-btn:focus-visible { outline: 2px solid var(--accent, #2FB3AE); outline-offset: 2px; } .ds-btn--ghost { background: none; border: 1px solid var(--border-strong, #3A424D); } .ds-btn--ghost:hover { background: var(--bg-hover, #2A3038); } .ds-btn--danger { background: var(--danger-bg, #2A1A19); color: var(--danger-text, #F0908A); border: 1px solid var(--danger-line, #4A2724); } .ds-btn--danger:hover { background: var(--danger-hov, #3A211F); color: var(--danger-hi, #FFB3AD); }"
+    },
+    {
+      "name": "Channel / DM Row",
+      "kind": "nav",
+      "refersTo": "list-row",
+      "description": "The 32px list row that carries channels, DMs and settings tabs. Three colour steps: rest, hover, current. Unread adds an outside nub, 600 weight and a rose count.",
+      "html": "<div class=\"ds-list\"><div class=\"ds-group-head\">Channels<span class=\"ds-count\">3</span></div><button class=\"ds-row\" aria-current=\"true\"><svg class=\"ds-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><path d=\"M4.5 8.5h15M3.5 15.5h15M9.5 3.5 7.5 20.5M16.5 3.5 14.5 20.5\"/></svg><span class=\"ds-row-name\">general</span></button><button class=\"ds-row\" data-unread=\"true\"><span class=\"ds-nub\"></span><svg class=\"ds-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><path d=\"M4.5 8.5h15M3.5 15.5h15M9.5 3.5 7.5 20.5M16.5 3.5 14.5 20.5\"/></svg><span class=\"ds-row-name\">project-x</span><span class=\"ds-badge\">4</span></button></div>",
+      "css": ".ds-list { width: 224px; padding: 0 8px; background: var(--bg-sidebar, #14171B); font-family: Archivo, 'Segoe UI', system-ui, sans-serif; } .ds-group-head { display: flex; align-items: center; padding: 0 6px 6px; font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-dim, #8E97A2); } .ds-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; } .ds-row { position: relative; width: 100%; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 0; cursor: pointer; background: none; border-radius: var(--r-sm, 4px); color: var(--text-muted, #98A1AC); text-align: left; font-size: 14px; transition: background 90ms linear, color 90ms linear; } .ds-row .ds-ico { width: 16px; height: 16px; flex: none; color: var(--text-dim, #8E97A2); } .ds-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-row:hover { background: var(--bg-hover, #2A3038); color: var(--text-mid, #B3BAC4); } .ds-row[aria-current=\"true\"] { background: var(--bg-active, #313944); color: var(--text, #E6E9ED); } .ds-row[data-unread=\"true\"] { color: var(--text, #E6E9ED); font-weight: 600; } .ds-row:focus-visible { outline: 2px solid var(--accent, #2FB3AE); outline-offset: 2px; } .ds-nub { position: absolute; left: -8px; top: 50%; width: 4px; height: 8px; border-radius: 0 999px 999px 0; background: var(--text, #E6E9ED); transform: translateY(-50%); } .ds-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--dnd, #C77DAF); color: var(--on-signal, #FFFFFF); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Composer",
+      "kind": "input",
+      "refersTo": "composer",
+      "description": "The message input: a 10px-radius raised field with an attach button, an auto-growing textarea, and keyboard hints below. Focus is signalled by the container border, not by an inner outline.",
+      "html": "<div class=\"ds-composer-outer\"><div class=\"ds-composer\"><button class=\"ds-composer-btn\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 11.5 12.3 19.2a4.6 4.6 0 0 1-6.5-6.5l7.6-7.6a3.1 3.1 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l6.9-6.8\"/></svg></button><textarea class=\"ds-composer-input\" rows=\"1\" placeholder=\"Message #general\"></textarea></div><div class=\"ds-hint\"><span><kbd class=\"ds-kbd\">Enter</kbd> to send</span><span><kbd class=\"ds-kbd\">Shift</kbd> + <kbd class=\"ds-kbd\">Enter</kbd> for a new line</span></div></div>",
+      "css": ".ds-composer-outer { width: 440px; font-family: Archivo, 'Segoe UI', system-ui, sans-serif; } .ds-composer { display: flex; align-items: flex-end; gap: 4px; padding: 6px 6px 6px 8px; border: 1px solid var(--border, #2E353E); border-radius: var(--r-lg, 10px); background: var(--bg-raised, #22272E); transition: border-color 120ms cubic-bezier(.16,.84,.44,1); } .ds-composer:focus-within { border-color: var(--border-strong, #3A424D); } .ds-composer-btn { width: 30px; height: 30px; display: grid; place-items: center; border: 0; background: none; cursor: pointer; border-radius: var(--r-sm, 4px); color: var(--text-muted, #98A1AC); flex: none; transition: background 90ms linear, color 90ms linear; } .ds-composer-btn svg { width: 18px; height: 18px; } .ds-composer-btn:hover { background: var(--bg-hover, #2A3038); color: var(--text, #E6E9ED); } .ds-composer-input { flex: 1; min-height: 26px; max-height: 168px; padding: 4px 4px 4px 2px; border: 0; background: none; resize: none; outline: none; color: var(--text, #E6E9ED); font: inherit; font-size: 14px; line-height: 1.5; } .ds-composer-input::placeholder { color: var(--text-muted, #98A1AC); } .ds-hint { display: flex; gap: 14px; padding: 6px 4px 0; font-size: 11px; color: var(--text-dim, #8E97A2); } .ds-kbd { font-family: inherit; font-size: 10.5px; font-weight: 600; padding: 1px 4px; border-radius: var(--r-inner, 3px); background: var(--bg-hover, #2A3038); border: 1px solid var(--border, #2E353E); color: var(--text-muted, #98A1AC); }"
+    },
+    {
+      "name": "Presence Avatar",
+      "kind": "custom",
+      "refersTo": "badge-count",
+      "description": "The presence vocabulary: a circular avatar with a 10px dot notched into its bottom-right, bordered in the panel colour. Online is lit green, connecting amber, do-not-disturb rose, offline an unlit inset ring.",
+      "html": "<span style=\"display:flex;gap:18px;padding:6px\"><span class=\"ds-av-wrap\"><span class=\"ds-av ds-av--r\">R</span><i class=\"ds-dot\" data-state=\"online\"></i></span><span class=\"ds-av-wrap\"><span class=\"ds-av ds-av--s\">S</span><i class=\"ds-dot\" data-state=\"connecting\"></i></span><span class=\"ds-av-wrap\"><span class=\"ds-av ds-av--j\">J</span><i class=\"ds-dot\" data-state=\"dnd\"></i></span><span class=\"ds-av-wrap\"><span class=\"ds-av ds-av--s\">S</span><i class=\"ds-dot\" data-state=\"offline\"></i></span></span>",
+      "css": ".ds-av-wrap { position: relative; flex: none; display: inline-flex; } .ds-av { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 999px; font-family: Archivo, 'Segoe UI', system-ui, sans-serif; font-size: 12px; font-weight: 600; color: var(--on-signal, #FFFFFF); letter-spacing: .01em; user-select: none; } .ds-av--r { background: var(--av-1, #4C6FB5); } .ds-av--s { background: var(--av-2, #57896B); } .ds-av--j { background: var(--av-3, #9A5F6E); } .ds-dot { position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 999px; border: 2px solid var(--bg-sidebar, #14171B); box-sizing: content-box; } .ds-dot[data-state=\"online\"] { background: var(--online, #3FB950); } .ds-dot[data-state=\"connecting\"] { background: var(--connecting, #D29922); } .ds-dot[data-state=\"dnd\"] { background: var(--dnd, #C77DAF); } .ds-dot[data-state=\"offline\"] { background: var(--bg-sidebar, #14171B); box-shadow: inset 0 0 0 2px var(--offline, #6B747F); }"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "chip",
+      "refersTo": "segmented-button",
+      "description": "The settings choice control. Corners come from the end children because clipping the group cut the focus ring off every button inside it.",
+      "html": "<div class=\"ds-seg\"><button aria-pressed=\"true\">720p</button><button>1080p</button><button>1440p</button></div>",
+      "css": ".ds-seg { display: inline-flex; border: 1px solid var(--border-strong, #3A424D); border-radius: var(--r-sm, 4px); font-family: Archivo, 'Segoe UI', system-ui, sans-serif; } .ds-seg button { height: 30px; padding: 0 14px; border: 0; background: none; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted, #98A1AC); border-right: 1px solid var(--border-strong, #3A424D); transition: background 90ms linear, color 90ms linear; } .ds-seg button:first-child { border-radius: var(--r-inner, 3px) 0 0 var(--r-inner, 3px); } .ds-seg button:last-child { border-radius: 0 var(--r-inner, 3px) var(--r-inner, 3px) 0; border-right: 0; } .ds-seg button:hover { background: var(--bg-hover, #2A3038); color: var(--text, #E6E9ED); } .ds-seg button[aria-pressed=\"true\"] { background: var(--bg-active, #313944); color: var(--text, #E6E9ED); } .ds-seg button:focus-visible { outline: 2px solid var(--accent, #2FB3AE); outline-offset: 2px; }"
+    },
+    {
+      "name": "Toggle Switch",
+      "kind": "custom",
+      "refersTo": "segmented-button-pressed",
+      "description": "Settings boolean. The knob moves on transform only; the track colour crossfades.",
+      "html": "<button class=\"ds-switch\" aria-pressed=\"true\"><span class=\"ds-sr\">Minimize to tray</span></button>",
+      "css": ".ds-switch { position: relative; width: 38px; height: 22px; border: 0; cursor: pointer; border-radius: 999px; background: var(--bg-active, #313944); flex: none; transition: background 160ms cubic-bezier(.16,.84,.44,1); } .ds-switch::after { content: \"\"; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 999px; background: var(--text-muted, #98A1AC); transition: transform 200ms cubic-bezier(.16,.84,.44,1), background 160ms cubic-bezier(.16,.84,.44,1); } .ds-switch[aria-pressed=\"true\"] { background: var(--accent, #2FB3AE); } .ds-switch[aria-pressed=\"true\"]::after { transform: translateX(16px); background: var(--on-accent, #05201F); } .ds-switch:focus-visible { outline: 2px solid var(--accent, #2FB3AE); outline-offset: 2px; } .ds-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }"
+    },
+    {
+      "name": "Attachment Card with Progress",
+      "kind": "card",
+      "refersTo": "card-attachment",
+      "description": "A file inline in the timeline: 6px raised card on a hairline, 34px icon tile, name and derived sub-line, action button, and a 4px progress track whose fill is scaled rather than resized.",
+      "html": "<div class=\"ds-att\"><span class=\"ds-att-ico\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M13.5 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z\"/><path d=\"M13.5 3.5V9H19\"/></svg></span><span class=\"ds-att-meta\"><span class=\"ds-att-name\">captures-juni.zip</span><span class=\"ds-att-sub\">114 MB of 184 MB &middot; 62%</span><span class=\"ds-bar\"><i style=\"transform:scaleX(.62)\"></i></span></span><button class=\"ds-att-btn\" disabled>Downloading</button></div>",
+      "css": ".ds-att { display: flex; align-items: center; gap: 10px; padding: 9px 11px; max-width: 440px; border: 1px solid var(--border, #2E353E); border-radius: var(--r-md, 6px); background: var(--bg-raised, #22272E); font-family: Archivo, 'Segoe UI', system-ui, sans-serif; color: var(--text, #E6E9ED); } .ds-att-ico { width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--r-sm, 4px); background: var(--bg-hover, #2A3038); color: var(--text-muted, #98A1AC); flex: none; } .ds-att-ico svg { width: 18px; height: 18px; } .ds-att-meta { min-width: 0; flex: 1; } .ds-att-name { display: block; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-att-sub { display: block; font-size: 11.5px; color: var(--text-dim, #8E97A2); line-height: 1.4; font-variant-numeric: tabular-nums; } .ds-bar { display: block; height: 4px; border-radius: 999px; background: var(--bg-hover, #2A3038); overflow: hidden; margin-top: 6px; } .ds-bar i { display: block; height: 100%; width: 100%; transform-origin: left center; border-radius: 999px; background: var(--accent, #2FB3AE); transition: transform 400ms cubic-bezier(.16,.84,.44,1); } .ds-att-btn { height: 28px; padding: 0 11px; border: 0; border-radius: var(--r-sm, 4px); background: var(--bg-hover, #2A3038); color: var(--text, #E6E9ED); font: inherit; font-size: 12.5px; font-weight: 600; opacity: .45; cursor: default; }"
+    },
+    {
+      "name": "Confirm Dialog",
+      "kind": "custom",
+      "refersTo": "dialog-confirm",
+      "description": "Nothing irreversible happens without it: applying an update restarts the app, and clearing the picture cache cannot be undone. 10px radius, modal shadow, ghost + accent footer pair.",
+      "html": "<div class=\"ds-dialog\"><div class=\"ds-dialog-body\"><h2>Apply update 0.3.0?</h2><p>FitCommunication restarts to apply it. The call and any running transfer stop.</p></div><div class=\"ds-dialog-foot\"><button class=\"ds-dbtn ds-dbtn--ghost\">Cancel</button><button class=\"ds-dbtn ds-dbtn--accent\">Confirm</button></div></div>",
+      "css": ".ds-dialog { width: 420px; border: 1px solid var(--border-strong, #3A424D); border-radius: var(--r-lg, 10px); background: var(--bg-raised, #22272E); color: var(--text, #E6E9ED); box-shadow: var(--shadow-modal, 0 18px 48px rgba(0,0,0,.62)); font-family: Archivo, 'Segoe UI', system-ui, sans-serif; } .ds-dialog-body { padding: 20px 22px 4px; } .ds-dialog-body h2 { margin: 0 0 7px; font-size: 16px; font-weight: 700; } .ds-dialog-body p { margin: 0; font-size: 13.5px; color: var(--text-mid, #B3BAC4); line-height: 1.55; } .ds-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 18px 22px 20px; } .ds-dbtn { height: 32px; padding: 0 14px; border: 0; cursor: pointer; border-radius: var(--r-sm, 4px); font: inherit; font-size: 12.5px; font-weight: 600; background: var(--bg-hover, #2A3038); color: var(--text, #E6E9ED); transition: background 90ms linear; } .ds-dbtn--ghost { background: none; border: 1px solid var(--border-strong, #3A424D); } .ds-dbtn--ghost:hover { background: var(--bg-hover, #2A3038); } .ds-dbtn--accent { background: var(--accent, #2FB3AE); color: var(--on-accent, #05201F); } .ds-dbtn--accent:hover { background: var(--accent-hover, #3ECCC6); } .ds-dbtn:focus-visible { outline: 2px solid var(--accent, #2FB3AE); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Well-Made Standard",
+    "overview": "The arrangement is the category standard — icon rail, channel/DM column, timeline, member list, own titlebar, status bar — and that conventionality is the commitment, chosen over four fully worked alternative worlds. The quality bar is Discord and Slack: the difference this system is allowed to make is not in the layout but in the execution. Hairlines land on whole pixels, presence has one vocabulary, the timeline keeps its rhythm at every density, and nothing animates that would cost a frame on a machine that is also running a game.\n\nThe world is neutral-cool near-black in six ground layers, separated by one 1px hairline value and one step of tonal lift rather than by shadow. There is exactly one accent, a tuned teal, and it is spent on the primary action, the live progress fill, links and the focus ring — nowhere decorative. Presence and alert are deliberately different families: green/amber/rose/unlit for who is around, one loud red reserved for failure. Density is high and calm: 32px list rows, 28px controls, 11px uppercase group labels, and a 9–20px type ramp on a half-pixel grid.\n\nDark is not a style choice. The app is used almost every evening in a dark room, so the theme is one fixed dark combination — no light mode, no theme switch, no OS-theme following — and color-scheme: dark is declared so UA chrome (scrollbars, select popups, caret, selection) comes back dark too rather than punching a bright hole in the window.",
+    "keyCharacteristics": [
+      "Six near-black ground layers, one hairline value, tonal lift instead of depth",
+      "One teal accent; a second, separate rose for do-not-disturb and a third, loud red for failure",
+      "Archivo for UI, JetBrains Mono for code and every measured figure",
+      "29 authored 24×24 icons at 1.5px stroke, round caps and joins, currentColor only",
+      "Transform-only motion, 90–260ms, zero infinite animations",
+      "Four fixed columns: 56px rail, 240px channels, fluid timeline, 232px members"
+    ],
+    "rules": [
+      {
+        "name": "The One Teal Rule",
+        "body": "One accent, and it means \"this is the action, or this is live\". If a surface needs a second colour to be understood, it needs a presence value or a danger value, not a second accent.",
+        "section": "colors"
+      },
+      {
+        "name": "The DND-Is-Not-Danger Rule",
+        "body": "dnd and danger must never be the same value. They were, and that made the do-not-disturb dot literally the error colour. Rose is a state; red is a failure. Audit test: search the sheet for the danger red outside the danger family, the close button and att-sub[data-error] — any other hit is a bug.",
+        "section": "colors"
+      },
+      {
+        "name": "The Unlit-Dot Rule",
+        "body": "Offline is drawn as an inset ring on the ground it sits on, never as a warning colour and never as a red dot. One or two peers away is a normal state, so nothing about it may read as an error — this holds in the roster, the status bar, and any future surface.",
+        "section": "colors"
+      },
+      {
+        "name": "The Quiet-Tier Floor Rule",
+        "body": "The quietest text tier must clear 4.5:1 against bg-raised, the lightest ground it ever lands on. #7C8590 measured 4.02 there — legible enough to look fine and not legible enough to be right — and was raised to the recorded value. A quiet tier is lightened, never dimmed further, to fix a legibility finding.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Figures Rule",
+        "body": "Every number that changes while you look at it is set with tabular figures: RTT and loss in the status bar, per-peer volume readouts, timestamps, unread counts, group counts, file sizes. The body default explicitly disables tnum so prose is proportional; .num and .mono turn it back on. A figure that shifts its neighbours as it ticks is a defect.",
+        "section": "typography"
+      },
+      {
+        "name": "The Measure-On-The-Text Rule",
+        "body": "The 72ch cap lives on the message text and the code block — nowhere else. Capping the message row, the hover highlight or the composer was built and reverted: it put a visible edge mid-column while the header hairline and the stream strip ran on to the member list. Rows span the column; only the words are bounded.",
+        "section": "typography"
+      },
+      {
+        "name": "The Mono-Means-Measured Rule",
+        "body": "JetBrains Mono marks code, identifiers, paths, versions and protocol numbers. It is never used for emphasis or for a label that happens to be short.",
+        "section": "typography"
+      },
+      {
+        "name": "The Truthful-Toggle Rule",
+        "body": "A responsive change that a control also owns is made in state, not in CSS. A media query that overrode the member list turned its toggle into a no-op that still reported aria-pressed=\"true\". If a breakpoint and a button can set the same thing, the breakpoint sets the state.",
+        "section": "layout"
+      },
+      {
+        "name": "The Thread-Sits-On-The-Composer Rule",
+        "body": "The timeline's inner wrapper is min-height: 100% with justify-content: flex-end, so a three-message channel rests on the composer instead of hanging from the header, and still scrolls normally once it overflows. The view opens pinned to the newest message and stays pinned when the stream strip appears or the composer grows.",
+        "section": "layout"
+      },
+      {
+        "name": "The Hidden-Means-Gone Rule",
+        "body": "[hidden] { display: none !important } is load-bearing, not hygiene. The settings pane declares display: grid, which outranks the hidden attribute; without the override the hidden pane stayed a grid item and stole 245px of height from the four real columns. Any component with an explicit display needs this to exist.",
+        "section": "layout"
+      },
+      {
+        "name": "The Rings-Are-Not-Depth Rule",
+        "body": "Every zero-offset box-shadow in this system is a ring, not elevation: the speaking ring, the offline dot's inset ring, the titlebar button's inset focus ring. Read 0 0 0 Npx as a stroke that a border could not draw, and never as a lift.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Float-Only Rule",
+        "body": "A shadow is earned by leaving the plane. Cards, panels, headers and inputs sit in the layout and get a tonal step plus a hairline; only the four floating things above get a shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Concentric-Inner-Corner Rule",
+        "body": "3px (--r-inner) is the working radius minus a 1px border, and it exists only for a child inside a bordered group — the segmented control's end children and the kbd chip — so the child's corner sits concentric inside its container instead of proud of it. Five radii total; nothing between them.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Whole-Shadow Rule",
+        "body": "A shadow is used as a whole token or not at all. Its alpha is inseparable from its offset and blur, so there is no shadow colour token to reach for and no way to pair one shadow's darkness with another's geometry. Adding a fifth shadow means adding a fifth job, not a fifth size.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do take every colour, radius, shadow, easing curve and column width from the custom properties on :root — including on-signal, the three peer-identity hues and the inner radius. The Tauri reproduction has to reach this surface from tokens alone, so a literal in a rule is a bug.",
+      "Do animate with transform, opacity, background-color, border-color and color only, in the 90–260ms band on cubic-bezier(.16,.84,.44,1) (or 90ms linear for a plain colour swap).",
+      "Do draw focus as outline: 2px solid var(--accent) with outline-offset: 2px, so the ring shows on whatever ground it lands on. The one exception is the message action bar's buttons, which use a negative offset plus a bg-active fill because the bar sits at top: -12px inside a scroll container where an outward ring has nowhere to go.",
+      "Do derive every state string from real state. Two strings were caught claiming a peer was offline while the roster beside them showed a lit dot; the DM empty line and the paused-transfer line both branch on peer state now.",
+      "Do keep UI strings English and chat content Dutch. The three users are Dutch; the mix is a decision, not drift.",
+      "Do draw icons as inline SVG at 24×24, fill=\"none\", stroke=\"currentColor\", stroke-width=\"1.5\", round caps and joins, rendered at 12–20px. 29 symbols are defined once in a hidden <defs> and referenced with <use>.",
+      "Do honour prefers-reduced-motion: reduce by collapsing all durations to 0.01ms."
+    ],
+    "donts": [
+      "Don't transition or animate a layout property — no width, height, top, margin, padding. Product invariant 4 is \"gaming wins\": perceptible impact on a game on the same PC is a bug. The rail nub scales on scaleY, the progress bar on scaleX.",
+      "Don't ship an infinite animation. There are zero in this build; an infinite box-shadow pulse on the speaking ring was removed as a non-composited repaint on the idle path. The authored moment is the entrance, not a heartbeat. Don't leave will-change parked on anything either.",
+      "Don't add a light theme, a theme switcher or OS-theme following, and don't remove color-scheme: dark — UA chrome comes back light without it.",
+      "Don't use the danger red for presence, and don't give offline a colour at all.",
+      "Don't cap the width of a message row, the hover highlight or the composer. Bound the text.",
+      "Don't put overflow: hidden on a control group that contains focusable children.",
+      "Don't add a shadow to something that sits in the layout, and don't introduce a second accent, a fourth code hue, or a radius outside the five.",
+      "Don't load fonts over the network in the shipping app. The comp links fonts.googleapis.com because a comp is opened by hand; \"zero servers, no cloud API\" is product invariant 1, so the Tauri build must bundle Archivo and JetBrains Mono locally and keep the same family names and weights (400/500/600/700 and 400/500)."
+    ]
+  }
+}

@@ -3,8 +3,13 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-07-30, na fase 11 (automatische updates tussen peers) — de laatste
-geplande fase uit `ROADMAP.md`.
+Laatst bijgewerkt: 2026-08-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 11,
+automatische updates tussen peers).
+
+**Wat er nu speelt:** de UI-stack gaat van egui naar **Tauri v2**, en het ontwerp wordt
+daarbij visueel opnieuw gedaan. Besloten, **nog niet uitgevoerd** — de code is nu nog egui.
+Lees beslissing 19 hieronder vóór je iets aan de UI doet, en `PRODUCT.md` (nieuw) voor de
+productcontext en de prijs van dat besluit.
 
 ---
 
@@ -294,6 +299,13 @@ Niet-storen en naam wijzigen zijn bewust blijven staan waar ze al stonden
 de vraag.
 
 ### 15. Ctrl+V via `GetAsyncKeyState`, niet via egui's eigen toetsenbordevents (fase 8)
+
+> **Vervalt bij de Tauri-migratie (beslissing 19).** Deze hele omweg bestaat alleen omdat
+> `egui-winit` de plakopdracht opslokt vóórdat de app hem ziet; een webview krijgt een echt
+> `paste`-event met de afbeelding erin. Blijft hier staan omdat de onderliggende les — welke
+> laag het OS-klembord bezit, en dat een logbestand dat sneller aanwijst dan raden — nog
+> steeds geldt. Niet naar de nieuwe stack overzetten.
+
 De focus-fix uit beslissing 12 loste Ctrl+V niet op — Rick meldde dat het nog steeds niet
 werkte. Het logbestand (met `FITCOM_LOG=debug`) liet zien dat `egui_winit::clipboard` zelf
 een `arboard paste error` gooide bij elke Ctrl+V, maar geen enkele eigen debug-regel van
@@ -407,6 +419,92 @@ Het updater-procesje (`fitcom-updater.exe`) is bewust een tweede binary in hetze
 `fitcom`-package (`crates/app/src/bin/`) geworden, niet een nieuwe workspace-crate: cargo
 pakt `src/bin/*.rs` vanzelf op, en een aparte crate voor iets dat alleen wacht, hernoemt en
 herstart zou alleen extra `Cargo.toml`-boekhouding zijn zonder een echt voordeel.
+
+### 19. UI-stack van egui naar Tauri v2, en visueel opnieuw beginnen (na fase 11)
+
+**Nog niet uitgevoerd.** Dit is een besluit, geen verslag van gebouwd werk — alle UI-code
+in `crates/app/src/ui/` is op het moment van schrijven nog egui. Ga niet op zoek naar
+Tauri-code, en bouw geen nieuwe UI in egui zonder te overleggen: dat is werk dat direct
+weggegooid wordt.
+
+`docs/SPEC.md` legde "Rust + egui/eframe" vast, en dat was vier jaar techstack-keuzes lang
+de goede afweging: alles in één proces, snel te bouwen, laag idle-verbruik. Wat er niet in
+stond is dat het ontwerpplafond laag is. egui kan geen echte typografie, geen ritme, geen
+gelaagdheid, geen animatie zonder handwerk. Voor een app die je elke avond openhebt is dat
+op een gegeven moment de bindende beperking geworden, niet het netwerk of de codec.
+
+**Waarom dit goedkoop kan.** Eerst gemeten, toen besloten. Buiten `crates/app/src/ui/` komt
+egui in de hele workspace alleen voor in *doc-commentaar* — `video/venster.rs`,
+`video/kijker.rs`, `app/engine.rs` en `app/tray.rs` noemen het, maar gebruiken geen enkele
+API ervan. De echte egui-code:
+
+| | Regels |
+|---|---|
+| `crates/app/src/ui/` (13 modules) | 2.979 |
+| `main.rs` vensterbootstrap | ~40 |
+| `proto`, `store`, `net`, `audio`, `video` | 0 |
+
+Dat is geen geluk: de UI is sinds beslissing 3 een pure weergave die een `Snapshot` leest
+en `UiCommand`'s terugstuurt over kanalen. Die grens wordt Tauri-commands en -events, wat
+grotendeels een mechanische vertaling is. **Die grens intact houden is de prijs van een
+volgende goedkope wissel.**
+
+**Twee dingen die tegen de intuïtie in gaan.** Ten eerste: idle wordt *goedkoper*.
+`ui/mod.rs` hertekent nu 4× per seconde in rust en 12,5× tijdens een gesprek
+(`IDLE_REPAINT`/`VOICE_REPAINT`), omdat immediate-mode niet anders kan; een event-driven
+weergave tekent alleen bij verandering. Dat werkt vóór invariant 4 ("gamen wint"), niet
+ertegen — dit was een argument om te wisselen, geen concessie. Ten tweede: **beslissing 15
+vervalt hiermee.** De `GetAsyncKeyState`-omweg voor Ctrl+V bestond uitsluitend omdat
+`egui-winit` de plakopdracht opslokte vóórdat de app hem zag; een webview krijgt een echt
+`paste`-event met de afbeelding erin. Ook de zelfgebouwde titelbalk (194 regels, het
+egui-dichtste bestand in de repo) wordt in CSS een fractie daarvan.
+
+**Overwogen en afgewezen.** Dioxus 0.7.10 — Rust van voor tot achter met echte CSS en één
+taal in de repo, maar pre-1.0 en een veel dunner ecosysteem dan Tauri; voor een codebase
+die verder stabiel is weegt volwassenheid zwaarder dan taaleenheid. Slint 1.17.1 — geen
+webview, geen externe Windows-component, GPU-gerenderd en fors beter dan egui, maar een
+eigen DSL in plaats van CSS, waarmee het plafond merkbaar lager blijft liggen.
+
+**Wat het kost, expliciet, zodat dit later niet als vergissing gelezen wordt.**
+
+- **WebView2 is een Windows-component die wij niet in de hand hebben** — dezelfde *soort*
+  afhankelijkheid als de HEVC Video Extensions, en dát argument kostte HEVC zijn plek als
+  standaardcodec. Het verschil: WebView2 Evergreen zit standaard in Windows 11 en alle drie
+  de machines draaien Windows 11. Zwakkere versie van dat probleem, geen herhaling ervan.
+  **Niet uitwijken naar de fixed-version runtime** (~180 MB): dat sloopt "losse exe in een
+  zip", en dat is de hele distributiestrategie.
+- **Een tweede taal in de repo** en een frontend-bouwstap; `cargo build` bouwt daarna niet
+  meer de hele app.
+- **De miniaturenstrook heeft een nieuw transport nodig.** Zie "Hoe screenshare in elkaar
+  zit" verderop: de UI cachet nu een `egui::TextureHandle` per stream. Dat wordt een canvas
+  gevoed via een event of custom protocol. Bij 2 fps verwaarloosbaar, maar nu gratis.
+- **De sectie "Hoe chat-verrijking in elkaar zit" beschrijft de egui-implementatie** van
+  plakken, slepen en de autocomplete in de chatbox. Die blijft correct tot de migratie en is
+  daarna verslag, niet beschrijving. Bewust niet weggehaald: het probleem dat eronder zat
+  (welke laag het klembord bezit) komt in een webview in andere vorm terug.
+
+**Het pop-out kijkvenster verandert niet.** Zie `docs/ARCHITECTURE.md`: het argument voor een
+eigen Win32-venster met eigen swapchain wordt met een webview sterker, niet zwakker.
+
+**Visueel opnieuw uitvoeren, binnen de categoriestandaard.** Rick heeft er tegelijk voor
+gekozen het bestaande ontwerp niet één-op-één over te zetten. In een richtingsronde daarna
+(zeven afgeleide werelden, vier gepresenteerde kaarten) heeft hij bewust de staande uitgang
+genomen: **de categoriestandaard, recht toe recht aan** — de Discord-indeling zoals iedereen
+hem kent, met **Discord en Slack als kwaliteitslat**. De aangewezen richting (handbediende
+telefooncentrale) en drie uitdagers (vertrekbord, Teletekst, Schiphol-signering) lagen er
+volledig uitgewerkt naast; dit is dus een keuze, geen gebrek aan alternatief.
+
+Gevolg voor de uitvoering: de conventie is de opdracht, zonder ironie en zonder
+eigenzinnigheid die er alsnog in gesmokkeld wordt. `ui/theme.rs` is daarmee **geen
+anti-referentie** — het is een vroege, laag-fidelity uitvoering van precies de richting die
+nu gekozen is, met een te lage afwerking. Het palet zelf staat wel open: de teal `#3ABFC0`
+en de vijf grijze lagen zijn geen vastgelegde waarden. Donker blíjft een eis — de app wordt
+bijna altijd 's avonds in het donker gebruikt, dat is geen smaak. En de informatiestructuur
+(icoonrail → kanaal/DM-lijst → tijdlijn → ledenlijst, plus eigen titelbalk en statusbalk)
+blijft staan op Ricks expliciete keuze: die is uitgeprobeerd en je vindt alles blind.
+
+Volledige onderbouwing en de productcontext eromheen staan in `PRODUCT.md` (nieuw, sectie
+`## Stack`).
 
 ---
 
