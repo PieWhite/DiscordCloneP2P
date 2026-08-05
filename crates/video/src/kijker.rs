@@ -186,6 +186,9 @@ fn kijk_lus(
 ) {
     let mut samensteller = Reassembler::new();
     let mut buf = [0u8; fitcom_net::MAX_PAKKET];
+    // De codec waar de huidige decoder voor gebouwd is; begint als de gok uit de
+    // config en volgt daarna wat de pakketten zelf melden.
+    let mut codec_actief = cfg.codec;
 
     // Aanhaken kan alleen op een keyframe. Bij de start is dat er nog niet, dus we
     // vragen er meteen om: als de deler al voor iemand anders bezig was, staat het
@@ -300,6 +303,51 @@ fn kijk_lus(
         if header.stream_id != cfg.stream_id || van.ip() != cfg.afzender {
             continue;
         }
+
+        // De draad bepaalt de codec, niet onze eigen config: de deler encodeert met
+        // zíjn instelling en de header zegt wat er echt in de pakketten zit. Zonder
+        // deze wissel voedde een kijker met `h264` in zijn config een H.264-decoder
+        // met HEVC-bytes (of andersom) en bleef het venster geluidloos wit.
+        match Codec::van_payload(header.payload_type) {
+            Some(codec) if codec != codec_actief => {
+                tracing::info!(
+                    verwacht = codec_actief.naam(),
+                    echt = codec.naam(),
+                    "deler stuurt een andere codec; decoder omgewisseld"
+                );
+                match Decoder::new(d3d, codec, cfg.breedte, cfg.hoogte) {
+                    Ok(d) => {
+                        decoder = d;
+                        codec_actief = codec;
+                        wacht_op_keyframe = true;
+                        laatst_gevraagd = Instant::now() - KEYFRAME_PAUZE;
+                    }
+                    Err(e) => {
+                        // Structureel, niet tijdelijk: deze machine kán deze codec
+                        // niet aan (HEVC zonder Store-extensie, HEVC op macOS). Het
+                        // venster sluiten is eerlijker dan eeuwig wit blijven.
+                        tracing::error!(
+                            codec = codec.naam(),
+                            error = %format!("{e:#}"),
+                            "geen decoder voor de codec die de deler stuurt"
+                        );
+                        break;
+                    }
+                }
+            }
+            Some(_) => {}
+            None => {
+                // Onbekend payload-type: loggen en negeren, zoals het protocol
+                // voorschrijft — een nieuwere peer stuurt misschien een codec die
+                // wij nog niet kennen.
+                tracing::debug!(
+                    payload_type = header.payload_type.0,
+                    "onbekend payload-type genegeerd"
+                );
+                continue;
+            }
+        }
+
         meter.fragmenten += 1;
         meter.bytes += (fitcom_proto::MEDIA_HEADER_LEN + payload.len()) as u64;
 

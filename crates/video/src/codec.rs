@@ -67,6 +67,16 @@ impl Codec {
         }
     }
 
+    /// De omgekeerde richting: welke codec er bij een payload-type op de draad hoort.
+    /// `None` voor alles wat geen video is (Opus) of wat we nog niet kennen.
+    pub fn van_payload(pt: fitcom_proto::PayloadType) -> Option<Self> {
+        match pt {
+            fitcom_proto::PayloadType::H264 => Some(Codec::H264),
+            fitcom_proto::PayloadType::HEVC => Some(Codec::Hevc),
+            _ => None,
+        }
+    }
+
     pub fn naam(self) -> &'static str {
         match self {
             Codec::H264 => "h264",
@@ -852,6 +862,14 @@ fn even(waarde: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_type_en_codec_zijn_elkaars_omkering() {
+        for codec in [Codec::H264, Codec::Hevc] {
+            assert_eq!(Codec::van_payload(codec.payload_type()), Some(codec));
+        }
+        assert_eq!(Codec::van_payload(fitcom_proto::PayloadType::OPUS), None);
+    }
 
     #[test]
     #[ignore = "vereist een GPU met hardware-encoder"]

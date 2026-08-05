@@ -1121,6 +1121,18 @@ impl Engine {
             .map(|p| p.label.clone())
             .unwrap_or_else(|| "peer".into());
 
+        // De codec hier is een startgok: de kijker leest de echte codec van de
+        // pakketten zelf en wisselt zijn decoder als de deler iets anders stuurt.
+        // Een gok die deze machine niet eens kán decoderen (HEVC zonder
+        // Store-extensie, HEVC op macOS) liet het opzetten meteen stranden —
+        // daarom valt hij terug op H.264, dat overal decodeert.
+        let gok = self.codec();
+        let gok = if gok.kan_decoderen() {
+            gok
+        } else {
+            Codec::H264
+        };
+
         let handle = fitcom_video::kijk(
             &d3d,
             KijkerConfig {
@@ -1128,7 +1140,7 @@ impl Engine {
                 titel: format!("{naam} — {titel}"),
                 breedte,
                 hoogte,
-                codec: self.codec(),
+                codec: gok,
                 afzender: ip,
             },
         )?;
