@@ -457,6 +457,7 @@ impl Engine {
             }
 
             self.chat.refresh();
+            self.volg_geluid_bij_beeld();
             self.publiceer();
         }
 
@@ -1021,6 +1022,18 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Zet het meeluisteren op andermans bureaubladgeluid gelijk aan wat we van hem
+    /// bekijken. Staat in de lus en niet bij één commando, want de aanleiding kan ook
+    /// een late aankondiging, een gesloten venster of een deelname aan het gesprek zijn.
+    fn volg_geluid_bij_beeld(&mut self) {
+        let (cmds, acties) = self.streams.stem_geluid_af_op_beeld(self.voice.is_some());
+        if cmds.is_empty() && acties.is_empty() {
+            return;
+        }
+        self.stuur_alles(cmds);
+        self.voer_uit(acties);
     }
 
     /// Intekenen op andermans bureaubladgeluid. Er komt geen venster en geen eigen

@@ -199,6 +199,49 @@ impl Streams {
         }]
     }
 
+    /// Bureaubladgeluid volgt het beeld: kijken naar het scherm van een peer betekent
+    /// zijn geluid horen, en het laatste venster van die peer sluiten zet het weer uit.
+    ///
+    /// Deze regel stond tot fase 12 in de egui-UI (`stuur_kijk_toggle`) en verdween bij
+    /// de wissel naar Tauri, waardoor niemand nog op een `DESKTOP_AUDIO`-stream intekende
+    /// en er dus geen geluid meer bij een gedeeld scherm kwam. Hier hoort hij: nu geldt
+    /// hij ook voor een aankondiging die later binnenkomt, een venster dat zichzelf sluit
+    /// en een peer die wegvalt.
+    ///
+    /// `in_gesprek` is `false` zonder voice-sessie — dan is er geen socket om het op te
+    /// ontvangen. Idempotent: tweemaal aanroepen levert de tweede keer niets op.
+    pub fn stem_geluid_af_op_beeld(&mut self, in_gesprek: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let met_beeld: Vec<PeerId> = self
+            .vreemd
+            .iter()
+            .filter(|s| s.kijken && s.kind != StreamKind::DESKTOP_AUDIO)
+            .map(|s| s.eigenaar)
+            .collect();
+
+        let wissels: Vec<(PeerId, u32, bool)> = self
+            .vreemd
+            .iter()
+            .filter(|s| s.kind == StreamKind::DESKTOP_AUDIO)
+            .filter_map(|s| {
+                let hoort = in_gesprek && met_beeld.contains(&s.eigenaar);
+                (hoort != s.kijken).then_some((s.eigenaar, s.id, hoort))
+            })
+            .collect();
+
+        let mut cmds = Vec::new();
+        let mut acties = Vec::new();
+        for (eigenaar, id, aan) in wissels {
+            if aan {
+                acties.extend(self.wil_kijken(eigenaar, id));
+            } else {
+                let (c, a) = self.stop_kijken(eigenaar, id);
+                cmds.extend(c);
+                acties.extend(a);
+            }
+        }
+        (cmds, acties)
+    }
+
     /// Het venster staat en luistert op `poort`; nu pas mag de deler beginnen.
     pub fn kijker_draait(&self, eigenaar: PeerId, stream_id: u32, poort: u16) -> Vec<MeshCommand> {
         vec![MeshCommand::Send {
@@ -751,6 +794,56 @@ mod tests {
             s.vreemd().iter().any(|v| v.id == 2 && !v.kijken),
             "het geluid hoort niet mee te liften op het beeld"
         );
+    }
+
+    #[test]
+    fn geluid_volgt_het_beeld_aan_en_uit() {
+        // De regressie van fase 12: de Tauri-UI tekent alleen op beeld in, dus zonder
+        // deze afstemming hoort niemand nog geluid bij een gedeeld scherm.
+        let mut s = Streams::new();
+        let a = PeerId::new_random();
+        s.bij_bericht(a, ip(), &aankondiging(1));
+        s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamAnnounce(StreamAnnounce {
+                stream_id: 2,
+                kind: StreamKind::DESKTOP_AUDIO,
+                title: "Bureaubladgeluid".into(),
+                width: 0,
+                height: 0,
+            }),
+        );
+
+        // Niet in het gesprek: geen socket om het op te ontvangen.
+        s.wil_kijken(a, 1);
+        assert_eq!(s.stem_geluid_af_op_beeld(false).1, Vec::new());
+
+        let (_, acties) = s.stem_geluid_af_op_beeld(true);
+        assert!(
+            matches!(
+                acties.as_slice(),
+                [Actie::StartKijken {
+                    stream_id: 2,
+                    is_geluid: true,
+                    ..
+                }]
+            ),
+            "geluid hoort mee te gaan met het beeld: {acties:?}"
+        );
+        assert!(s.stem_geluid_af_op_beeld(true).1.is_empty(), "idempotent");
+
+        // Laatste beeld dicht: het geluid gaat mee uit, mét afmelding bij de deler.
+        s.stop_kijken(a, 1);
+        let (cmds, acties) = s.stem_geluid_af_op_beeld(true);
+        assert_eq!(
+            acties,
+            vec![Actie::StopKijken {
+                eigenaar: a,
+                stream_id: 2
+            }]
+        );
+        assert_eq!(cmds.len(), 1, "de deler moet stoppen met versturen");
     }
 
     #[test]
