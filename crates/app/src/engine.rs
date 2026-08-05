@@ -76,6 +76,9 @@ pub struct EigenStreamView {
     pub titel: String,
     pub kijkers: usize,
     pub is_geluid: bool,
+    /// Onze eigen camera in plaats van een scherm. De UI heeft dit nodig om de
+    /// camera-knop ingedrukt te tonen en om te weten welke stream hij weer uitzet.
+    pub is_camera: bool,
 }
 
 /// Een bron die een ander deelt.
@@ -89,6 +92,9 @@ pub struct StreamView {
     pub kijken: bool,
     /// Geluid in plaats van beeld: geen venster, wel een volumeschuif.
     pub is_geluid: bool,
+    /// Iemands camera in plaats van zijn scherm. Verder identiek — hetzelfde venster,
+    /// dezelfde miniatuur — alleen het icoontje in de lijst verschilt.
+    pub is_camera: bool,
     pub volume: f32,
     /// Verkleind beeld voor het overzicht in het hoofdvenster. `None` tot het eerste
     /// beeld binnen is, en altijd `None` voor geluid.
@@ -170,6 +176,9 @@ pub enum UiCommand {
     /// gaat vanzelf mee als je in het gesprek zit — geen apart commando meer (fase 10).
     DeelBron(Bron),
     StopDelen(u32),
+    /// De camera aan (`true`) of uit (`false`). Eén schakelaar in plaats van de UI laten
+    /// uitzoeken welke bron de camera is; bureaubladgeluid blijft er buiten.
+    ZetCamera(bool),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
     /// Volume van één stream van een peer, los van zijn stem.
@@ -876,6 +885,7 @@ impl Engine {
         let kind = match bron.soort {
             BronSoort::Monitor => StreamKind::MONITOR,
             BronSoort::Venster => StreamKind::WINDOW,
+            BronSoort::Camera => StreamKind::CAMERA,
         };
         let (id, cmds) = self
             .streams
@@ -886,16 +896,75 @@ impl Engine {
         // Fase 10: geen losse knop meer, geluid van deze pc gaat automatisch mee zodra
         // er iets gedeeld wordt. `deel_bureaubladgeluid` is zelf al idempotent, dus dit
         // mag ook als er al een tweede scherm bij komt.
-        self.deel_bureaubladgeluid();
+        //
+        // Een camera valt er buiten: die deelt geen systeemgeluid, en je webcam aanzetten
+        // hoort niet stilzwijgend je Spotify de kamer in te sturen.
+        if kind.is_scherm() {
+            self.deel_bureaubladgeluid();
+        }
     }
 
     /// Of we op dit moment een monitor of venster delen — dus of bureaubladgeluid mee
-    /// hoort te lopen.
+    /// hoort te lopen. Een camera telt niet mee.
     fn deelt_scherm_of_venster(&self) -> bool {
-        self.streams
+        self.streams.eigen().iter().any(|s| s.kind.is_scherm())
+    }
+
+    /// Stoppen met delen. Eén plek, want zowel de knop "stop met delen", de camera-knop
+    /// als het intrekken bij een fout komen hier langs — en het opruimen van
+    /// bureaubladgeluid mag geen van die drie overslaan.
+    fn stop_met_delen(&mut self, id: u32) {
+        let was_scherm = self
+            .bronnen
+            .remove(&id)
+            .is_some_and(|b| b.soort != BronSoort::Camera);
+        let (cmds, acties) = self.streams.stop_delen(id);
+        self.stuur_alles(cmds);
+        self.voer_uit(acties);
+        // Fase 10: het laatste scherm weg betekent ook het geluid weg, zonder dat de
+        // gebruiker dat apart hoeft te doen. Een camera heeft er niets mee te maken.
+        if was_scherm && !self.deelt_scherm_of_venster() {
+            self.stop_bureaubladgeluid();
+        }
+    }
+
+    /// De camera aan- of uitzetten, als één schakelaar voor de UI.
+    ///
+    /// Aanzetten kondigt de eerste camera van deze machine aan als gewone stream — er
+    /// wordt nog niets opgenomen en het lampje blijft uit tot iemand er echt naar kijkt,
+    /// net als bij een gedeeld scherm. Idempotent: al in de gevraagde stand is een no-op,
+    /// zodat twee snelle klikken geen tweede camerastream opleveren.
+    fn zet_camera(&mut self, aan: bool) {
+        let eigen = self
+            .streams
             .eigen()
             .iter()
-            .any(|s| s.kind == StreamKind::MONITOR || s.kind == StreamKind::WINDOW)
+            .find(|s| s.kind == StreamKind::CAMERA)
+            .map(|s| s.id);
+
+        match (aan, eigen) {
+            (true, None) => {
+                let bronnen = match deelbare_bronnen() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!(error = %format!("{e:#}"), "camera's niet op te vragen");
+                        self.fout = Some(format!("camera: {e:#}"));
+                        return;
+                    }
+                };
+                match bronnen.into_iter().find(|b| b.soort == BronSoort::Camera) {
+                    Some(camera) => self.deel_bron(camera),
+                    None => {
+                        self.fout = Some(
+                            "geen camera gevonden; zit hij erin en gebruikt iets anders hem niet?"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            (false, Some(id)) => self.stop_met_delen(id),
+            _ => {}
+        }
     }
 
     /// Stopt bureaubladgeluid omdat het laatste gedeelde scherm net gestopt is. Geen-op
@@ -1276,17 +1345,8 @@ impl Engine {
                     self.deelnemen();
                 }
             }
-            UiCommand::StopDelen(id) => {
-                let was_scherm = self.bronnen.remove(&id).is_some();
-                let (cmds, acties) = self.streams.stop_delen(id);
-                self.stuur_alles(cmds);
-                self.voer_uit(acties);
-                // Fase 10: het laatste scherm weg betekent ook het geluid weg, zonder
-                // dat de gebruiker dat apart hoeft te doen.
-                if was_scherm && !self.deelt_scherm_of_venster() {
-                    self.stop_bureaubladgeluid();
-                }
-            }
+            UiCommand::StopDelen(id) => self.stop_met_delen(id),
+            UiCommand::ZetCamera(aan) => self.zet_camera(aan),
             UiCommand::Kijken(eigenaar, id) => {
                 let acties = self.streams.wil_kijken(eigenaar, id);
                 self.voer_uit(acties);
@@ -1559,6 +1619,7 @@ impl Engine {
                 titel: s.titel.clone(),
                 kijkers: s.kijkers.len(),
                 is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                is_camera: s.kind == StreamKind::CAMERA,
             })
             .collect();
 
@@ -1574,6 +1635,7 @@ impl Engine {
                 hoogte: s.hoogte,
                 kijken: s.kijken,
                 is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                is_camera: s.kind == StreamKind::CAMERA,
                 volume: self
                     .stream_volumes
                     .get(&(s.eigenaar, s.id))

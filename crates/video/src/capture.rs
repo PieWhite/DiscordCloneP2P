@@ -42,6 +42,10 @@ const POOL_BUFFERS: i32 = 2;
 pub enum BronSoort {
     Monitor,
     Venster,
+    /// Een webcam. Zit niet in Windows.Graphics.Capture maar in Media Foundation, dus
+    /// het opnemen loopt via [`crate::camera`]; naar buiten is het dezelfde `Bron` en
+    /// hetzelfde `Opgenomen`, zodat `deler.rs` het verschil niet kent.
+    Camera,
 }
 
 /// Een opgenomen beeld met de tijd waarop het gemaakt is.
@@ -76,6 +80,12 @@ pub fn ondersteund() -> bool {
 pub fn beschikbare_bronnen() -> Result<Vec<Bron>> {
     let mut uit = monitoren()?;
     uit.extend(vensters()?);
+    // Een kapotte of bezette camera mag het delen van een scherm niet in de weg staan:
+    // loggen en verder, zoals overal waar hardware ontbreekt.
+    match crate::camera::cameras() {
+        Ok(c) => uit.extend(c),
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "camera's niet op te sommen"),
+    }
     Ok(uit)
 }
 
@@ -183,6 +193,15 @@ fn vensters() -> Result<Vec<Bron>> {
 /// Nodig omdat we een gedeelde bron aankondigen — mét afmeting — voordat er iemand
 /// naar kijkt, en tot dat moment mag er geen enkel frame opgenomen worden.
 pub fn afmeting_van(bron: &Bron) -> Result<(u32, u32)> {
+    // Een camera meldt zijn afmeting pas als je hem opent, en dat zou het lampje
+    // aanzetten voordat er iemand kijkt — precies wat de afspraak "er wordt niets
+    // opgenomen tot iemand kijkt" verbiedt. Dus een nominale maat in de aankondiging;
+    // het eerste echte beeld overschrijft hem aan beide kanten van de draad, want zowel
+    // het kijkvenster als de encoder gaan uit van wat er werkelijk binnenkomt.
+    if bron.soort == BronSoort::Camera {
+        return Ok(crate::camera::NOMINALE_AFMETING);
+    }
+
     let interop: IGraphicsCaptureItemInterop =
         windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .context("capture-interop ophalen")?;
@@ -195,13 +214,50 @@ pub fn afmeting_van(bron: &Bron) -> Result<(u32, u32)> {
             BronSoort::Venster => interop
                 .CreateForWindow(HWND(bron.handle as *mut _))
                 .context("venster openen")?,
+            BronSoort::Camera => unreachable!("camera is hierboven al afgehandeld"),
         }
     };
     let grootte = item.Size().context("afmetingen opvragen")?;
     Ok((grootte.Width.max(1) as u32, grootte.Height.max(1) as u32))
 }
 
-pub struct Capture {
+/// Een lopende opname, van een scherm of van een camera.
+///
+/// Twee heel verschillende Windows-API's achter één vorm, zodat `deler.rs` niet weet
+/// waar het beeld vandaan komt en er dus geen tweede deel-pad hoeft te bestaan.
+pub enum Capture {
+    Scherm(Schermcapture),
+    Camera(crate::camera::Cameracapture),
+}
+
+impl Capture {
+    pub fn start(d3d: &D3dContext, bron: &Bron) -> Result<Self> {
+        match bron.soort {
+            BronSoort::Camera => Ok(Self::Camera(crate::camera::Cameracapture::start(
+                d3d, bron,
+            )?)),
+            _ => Ok(Self::Scherm(Schermcapture::start(d3d, bron)?)),
+        }
+    }
+
+    pub fn afmeting(&self) -> (u32, u32) {
+        match self {
+            Self::Scherm(c) => c.afmeting(),
+            Self::Camera(c) => c.afmeting(),
+        }
+    }
+
+    /// Wacht op het volgende beeld. `None` betekent dat er binnen de tijd niets kwam;
+    /// bij een scherm dat niet verandert is dat normaal.
+    pub fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<Opgenomen> {
+        match self {
+            Self::Scherm(c) => c.volgende_frame(timeout),
+            Self::Camera(c) => c.volgende_frame(timeout),
+        }
+    }
+}
+
+pub struct Schermcapture {
     d3d: D3dContext,
     _item: GraphicsCaptureItem,
     pool: Direct3D11CaptureFramePool,
@@ -215,10 +271,10 @@ pub struct Capture {
 // SAFETY: alle WinRT-objecten hierin zijn agile (free-threaded) en het D3D11-apparaat
 // staat op multithread-protected. De struct wordt bovendien maar door één thread
 // tegelijk gebruikt: de capture-thread.
-unsafe impl Send for Capture {}
+unsafe impl Send for Schermcapture {}
 
-impl Capture {
-    pub fn start(d3d: &D3dContext, bron: &Bron) -> Result<Self> {
+impl Schermcapture {
+    fn start(d3d: &D3dContext, bron: &Bron) -> Result<Self> {
         if !ondersteund() {
             bail!("dit Windows staat schermopname niet toe");
         }
@@ -237,6 +293,7 @@ impl Capture {
                 BronSoort::Venster => interop
                     .CreateForWindow(HWND(bron.handle as *mut _))
                     .context("venster openen voor opname")?,
+                BronSoort::Camera => bail!("een camera loopt niet via schermopname"),
             }
         };
 
@@ -287,7 +344,7 @@ impl Capture {
         })
     }
 
-    pub fn afmeting(&self) -> (u32, u32) {
+    fn afmeting(&self) -> (u32, u32) {
         self.afmeting
     }
 
@@ -296,7 +353,7 @@ impl Capture {
     ///
     /// `None` betekent dat er binnen de tijd niets kwam. Dat is normaal: een venster
     /// dat niet verandert levert geen frames, en dan is er ook niets te versturen.
-    pub fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<Opgenomen> {
+    fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<Opgenomen> {
         self.signaal.recv_timeout(timeout).ok()?;
 
         let frame = self.pool.TryGetNextFrame().ok()?;
@@ -347,7 +404,7 @@ impl Capture {
     }
 }
 
-impl Drop for Capture {
+impl Drop for Schermcapture {
     fn drop(&mut self) {
         let _ = self.session.Close();
         let _ = self.pool.Close();

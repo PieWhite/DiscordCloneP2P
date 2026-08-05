@@ -210,11 +210,15 @@ impl Streams {
     ///
     /// `in_gesprek` is `false` zonder voice-sessie — dan is er geen socket om het op te
     /// ontvangen. Idempotent: tweemaal aanroepen levert de tweede keer niets op.
+    ///
+    /// Alleen een gedeeld *scherm* trekt het geluid mee. Naar iemands camera kijken doet
+    /// dat niet: daar hoort geen systeemgeluid bij, en de deler zet er ook geen
+    /// `DESKTOP_AUDIO`-stream naast als hij alleen zijn camera aan heeft.
     pub fn stem_geluid_af_op_beeld(&mut self, in_gesprek: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
         let met_beeld: Vec<PeerId> = self
             .vreemd
             .iter()
-            .filter(|s| s.kijken && s.kind != StreamKind::DESKTOP_AUDIO)
+            .filter(|s| s.kijken && s.kind.is_scherm())
             .map(|s| s.eigenaar)
             .collect();
 
@@ -844,6 +848,52 @@ mod tests {
             }]
         );
         assert_eq!(cmds.len(), 1, "de deler moet stoppen met versturen");
+    }
+
+    #[test]
+    fn naar_een_camera_kijken_haalt_geen_bureaubladgeluid_binnen() {
+        // Een camera is beeld, maar geen scherm: er hoort geen systeemgeluid bij. Deelt
+        // iemand beide, dan mag alleen het scherm het geluid meetrekken.
+        let mut s = Streams::new();
+        let a = PeerId::new_random();
+        s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamAnnounce(StreamAnnounce {
+                stream_id: 1,
+                kind: StreamKind::CAMERA,
+                title: "Logitech C920".into(),
+                width: 1280,
+                height: 720,
+            }),
+        );
+        s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamAnnounce(StreamAnnounce {
+                stream_id: 2,
+                kind: StreamKind::DESKTOP_AUDIO,
+                title: "Bureaubladgeluid".into(),
+                width: 0,
+                height: 0,
+            }),
+        );
+
+        s.wil_kijken(a, 1);
+        assert_eq!(
+            s.stem_geluid_af_op_beeld(true).1,
+            Vec::new(),
+            "een camera trekt geen bureaubladgeluid mee"
+        );
+
+        // Zijn scherm erbij pakken doet het wél.
+        s.bij_bericht(a, ip(), &aankondiging(3));
+        s.wil_kijken(a, 3);
+        let (_, acties) = s.stem_geluid_af_op_beeld(true);
+        assert!(
+            matches!(acties.as_slice(), [Actie::StartKijken { stream_id: 2, .. }]),
+            "bij een gedeeld scherm hoort het geluid wel: {acties:?}"
+        );
     }
 
     #[test]

@@ -12,6 +12,11 @@ desktop
 > Geen mobiel, geen browser, geen publieke URL. iOS is op 2026-08-05 overwogen en
 > bewust uitgesteld: geen scherm delen mogelijk, en zonder servers geen push.
 >
+> **Twee dingen kan alleen de Windows-kant:** de P2P-auto-update (bewust — een mac mag
+> nooit een Mach-O over `fitcom.exe` heen zetten) en het *uitzenden* van de camera
+> (2026-08-06, op verzoek uitgesteld; `TODO.md`). Kijken naar de camera van een
+> Windows-peer werkt op de mac wel. Al het andere is featurepariteit.
+>
 > **Het weergavesubstraat is wél webtechnologie** (Tauri v2 — zie `## Stack`).
 > CSS, design tokens, echte typografie, motion en impeccable's detector zijn dus allemaal
 > van toepassing. Wat níet van toepassing is: mobiele breakpoints, touch-doelgroottes,

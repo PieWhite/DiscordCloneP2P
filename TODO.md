@@ -3,6 +3,15 @@
 Bewust niet in v1. De architectuur moet deze items kunnen opnemen zonder herontwerp.
 
 ## Overig
+- **Camera-opname op macOS.** De camera is op Windows gebouwd (Media Foundation, zie
+  `crates/video/src/camera.rs`); op macOS bewust niet. Een mac kan wél naar de camera van
+  een Windows-peer *kijken* — op de draad is dat hetzelfde als een gedeeld scherm — maar
+  zelf niets uitzenden: `beschikbare_bronnen` noemt daar geen camera's en `Capture::start`
+  weigert er een. Bouwen betekent `mac/camera.rs` met AVFoundation
+  (`AVCaptureSession` + `AVCaptureVideoDataOutput` op BGRA → `Beeld`, delegate via
+  `define_class!` net als de SCK-uitvoer), `NSCameraUsageDescription` in
+  `scripts/bundle-mac.sh` en de camera-TCC-prompt. `BronSoort::Camera` bestaat op mac al,
+  dus de gedeelde code hoeft er niet voor open.
 - Remote input control (muis/toetsenbord overnemen, Moonlight-stijl).
 - Chat: reacties, replies. Worden nieuwe `OpKind`-varianten. (Afbeeldingen plakken staat
   nu in `ROADMAP.md` fase 8, niet meer hier.)

@@ -495,6 +495,11 @@ input, textarea { font: inherit; color: inherit; }
 .self-btn:hover { background: var(--bg-hover); color: var(--text); }
 .self-btn[aria-pressed="true"] { color: var(--dnd); background: var(--danger-bg); }
 
+/* Mute, deafen and do-not-disturb are all "something is switched off", so pressed is the
+   warning colour above. Camera on is the opposite — it is working — so it opts out and
+   uses the accent instead. */
+.self-btn--on[aria-pressed="true"] { color: var(--accent-text); background: var(--bg-active); }
+
 .join {
   display: flex; align-items: center; justify-content: center; gap: 7px;
   width: calc(100% - 20px);

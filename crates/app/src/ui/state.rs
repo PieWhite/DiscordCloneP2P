@@ -136,6 +136,9 @@ pub struct OwnStreamState {
     pub title: String,
     pub viewers: usize,
     pub is_audio: bool,
+    /// Our own camera rather than a screen: the camera button reads this for its pressed
+    /// state, and the sharing line leaves it out of "Sharing <screen>".
+    pub is_camera: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -148,6 +151,9 @@ pub struct StreamState {
     pub height: u32,
     pub watching: bool,
     pub is_audio: bool,
+    /// Somebody's camera rather than their screen. Same window, same thumbnail — only the
+    /// icon in the list differs.
+    pub is_camera: bool,
     pub volume: f32,
 }
 
@@ -427,6 +433,7 @@ impl UiState {
                     title: s.titel.clone(),
                     viewers: s.kijkers,
                     is_audio: s.is_geluid,
+                    is_camera: s.is_camera,
                 })
                 .collect(),
             streams: snap
@@ -442,6 +449,7 @@ impl UiState {
                     height: s.hoogte,
                     watching: s.kijken,
                     is_audio: false,
+                    is_camera: s.is_camera,
                     volume: s.volume,
                 })
                 .collect(),

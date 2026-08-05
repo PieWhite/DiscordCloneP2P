@@ -48,6 +48,12 @@ const KANAAL_DIEPTE: usize = 2;
 pub enum BronSoort {
     Monitor,
     Venster,
+    /// Bestaat hier alleen zodat de gedeelde app-code (`engine.rs`, de bronkiezer) op
+    /// beide platforms compileert. Op macOS is camera-opname bewust niet gebouwd — zie
+    /// `TODO.md` — dus `beschikbare_bronnen` levert er nooit een, en `Capture::start`
+    /// weigert er een. Naar de camera van een Windows-peer *kijken* werkt wel: dat is op
+    /// de draad hetzelfde als een gedeeld scherm en loopt door dezelfde kijker.
+    Camera,
 }
 
 /// Een opgenomen beeld met de tijd waarop het gemaakt is — de presentatietijd van
@@ -251,8 +257,14 @@ pub fn afmeting_van(bron: &Bron) -> Result<(u32, u32)> {
                 ((kader.size.height * schaal).round() as u32).max(1),
             ))
         }
+        BronSoort::Camera => bail!(NIET_OP_MAC),
     }
 }
+
+/// Wat de gebruiker te zien krijgt als hij op macOS toch een camera probeert te delen.
+/// Onbereikbaar via de UI — `beschikbare_bronnen` noemt er geen — maar een duidelijke
+/// tekst is beter dan een verwarrende fout uit een laag eronder.
+const NIET_OP_MAC: &str = "camera delen is op macOS nog niet gebouwd; kijken naar de camera van een Windows-peer werkt wel";
 
 // ---------------------------------------------------------------------------
 // De opname zelf
@@ -359,6 +371,7 @@ impl Capture {
                 };
                 (filter, bron.naam.clone())
             }
+            BronSoort::Camera => bail!(NIET_OP_MAC),
         };
 
         // Pixels = punten × schaal; het filter weet allebei.

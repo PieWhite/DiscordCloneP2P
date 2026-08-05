@@ -149,6 +149,7 @@ pub struct SourceOption {
     pub index: usize,
     pub name: String,
     pub is_window: bool,
+    pub is_camera: bool,
 }
 
 /// Fetched when the picker opens, never cached: windows come and go, and a stale list
@@ -169,6 +170,7 @@ pub fn list_sources(ui: State<'_, Ui>) -> Vec<SourceOption> {
             index,
             name: b.naam.clone(),
             is_window: matches!(b.soort, fitcom_video::BronSoort::Venster),
+            is_camera: matches!(b.soort, fitcom_video::BronSoort::Camera),
         })
         .collect();
     *ui.sources.lock().unwrap() = sources;
@@ -190,6 +192,13 @@ pub fn share_source(ui: State<'_, Ui>, index: usize) {
 #[tauri::command]
 pub fn stop_sharing(ui: State<'_, Ui>, stream: u32) {
     send(&ui, UiCommand::StopDelen(stream));
+}
+
+/// The camera on or off. The engine picks the device and reports through the usual error
+/// banner if there is none, so the button needs no knowledge of what is plugged in.
+#[tauri::command]
+pub fn set_camera(ui: State<'_, Ui>, on: bool) {
+    send(&ui, UiCommand::ZetCamera(on));
 }
 
 #[tauri::command]

@@ -26,9 +26,31 @@ impl StreamKind {
     pub const MONITOR: Self = Self(1);
     pub const WINDOW: Self = Self(2);
     pub const DESKTOP_AUDIO: Self = Self(3);
+    /// Een webcam. Op de draad niet te onderscheiden van een scherm — dezelfde H.264 in
+    /// dezelfde fragmenten — maar de app moet het verschil wél weten: bureaubladgeluid
+    /// hangt aan een gedeeld scherm en niet aan een camera. Toegevoegd zonder
+    /// `protocol_version`-bump: een oudere peer ziet `is_known() == false`, negeert de
+    /// aankondiging en tekent er niet op in. Dat is precies het gedrag dat bij een
+    /// onbekende soort hoort.
+    pub const CAMERA: Self = Self(4);
 
     pub fn is_known(self) -> bool {
-        matches!(self, Self::MONITOR | Self::WINDOW | Self::DESKTOP_AUDIO)
+        matches!(
+            self,
+            Self::MONITOR | Self::WINDOW | Self::DESKTOP_AUDIO | Self::CAMERA
+        )
+    }
+
+    /// Of dit iets is dat je in een venster bekijkt. Geluid heeft geen venster, en een
+    /// onbekende soort van een nieuwere peer krijgt er zeker geen.
+    pub fn is_beeld(self) -> bool {
+        matches!(self, Self::MONITOR | Self::WINDOW | Self::CAMERA)
+    }
+
+    /// Of dit een gedeeld scherm of venster is — de twee soorten waar bureaubladgeluid
+    /// bij hoort. Een camera hoort er níét bij: die deelt geen systeemgeluid.
+    pub fn is_scherm(self) -> bool {
+        matches!(self, Self::MONITOR | Self::WINDOW)
     }
 }
 
@@ -38,6 +60,7 @@ impl std::fmt::Debug for StreamKind {
             Self::MONITOR => write!(f, "Monitor"),
             Self::WINDOW => write!(f, "Window"),
             Self::DESKTOP_AUDIO => write!(f, "DesktopAudio"),
+            Self::CAMERA => write!(f, "Camera"),
             Self(n) => write!(f, "Unknown({n})"),
         }
     }

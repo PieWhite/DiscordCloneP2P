@@ -224,6 +224,7 @@ pub fn run(
             commands::list_sources,
             commands::share_source,
             commands::stop_sharing,
+            commands::set_camera,
             commands::set_video_settings,
             commands::list_audio_devices,
             commands::set_audio_devices,

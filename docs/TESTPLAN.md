@@ -683,6 +683,49 @@ app verborgen is → macOS-melding met geluid; niet-storen onderdrukt hem.
 Mac dichtklappen tijdens een gesprek → peers zien offline; openklappen → binnen ~30 s
 vanzelf weer online, chat haalt in, stream-abonnementen zijn netjes opgeruimd.
 
+## Camera (2026-08-06) — nog op geen enkele echte camera getest
+
+Op de mac is bevestigd: bouwen, alle tests (inclusief de nieuwe streams-test), clippy
+schoon voor **beide** targets, en de app start met de camera-knop erin. Wat niet te
+bevestigen was: er is geen camera-opname op macOS, dus **alles hieronder moet op de
+Windows-machine**. `crates/video/src/camera.rs` is nagelopen met een typecheck tegen de
+echte `windows`-crate (zie `docs/OVERDRACHT.md` beslissing 22) — dat vangt API-fouten,
+geen gedrag.
+
+**C.1 Camera aanzetten**
+Knop naast mute/deafen (camera-icoon). Klik → knop licht op in de accentkleur, en er komt
+een regel "Camera on · <naam>" bij. **Het lampje van de camera hoort nog uit te zijn**:
+er wordt niets opgenomen tot iemand kijkt. Geen camera aangesloten → foutbalk "geen camera
+gevonden", geen crash.
+
+**C.2 Peer kijkt naar de camera**
+De peer ziet "Watch <cameranaam>" met een camera-icoontje. Kijken → venster opent, beeld
+loopt, miniatuur in de strook. **Let op de oriëntatie: staat het beeld op zijn kop, dan is
+de stride-afhandeling fout** (zoek in de log naar "camera levert onderstboven" /
+"bovenaf"). Ook checken: het venster begint op 1280×720 (de nominale maat) en springt naar
+de echte resolutie van de camera zodra het eerste beeld binnen is.
+
+**C.3 Camera én scherm tegelijk**
+Camera aan + scherm delen. Twee losse streams, twee vensters bij de kijker, beide vloeiend
+(meterregels per stream vergelijken). "Stop sharing" stopt alleen het scherm en laat de
+camera aan; de camera-knop stopt alleen de camera.
+
+**C.4 Bureaubladgeluid hoort níét bij de camera**
+Alleen de camera aan, in het gesprek → er komt **geen** bureaubladgeluid-stream. Scherm
+erbij → die komt er wel. Scherm weer weg (camera blijft aan) → geluid gaat weer uit. Dit
+is de regel die de nieuwe unittest afdekt; dit is de controle dat hij in het echt ook zo
+uitpakt.
+
+**C.5 Camera bezet of eruit getrokken**
+Start Teams/Zoom met de camera en zet hem dan hier aan → nette foutmelding, geen hang.
+USB-camera eruit trekken terwijl iemand kijkt → log meldt einde van de stroom, de app
+blijft leven, aankondiging intrekken werkt nog.
+
+**C.6 Mac kijkt naar een Windows-camera**
+Op de mac hoort de camera-knop een foutbalk te geven (geen camera-opname op macOS), maar
+**kijken naar de camera van de Windows-peer moet gewoon werken** — venster, miniatuur,
+alles. Dit is de test dat het overslaan van de mac-kant niets anders gebroken heeft.
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

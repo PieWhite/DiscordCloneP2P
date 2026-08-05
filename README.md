@@ -4,9 +4,15 @@ Servervrij alternatief voor Discord voor een kleine vaste groep. Draait over een
 Tailscale-tailnet, zonder signaling-server, zonder TURN, zonder accounts, zonder cloud.
 Alle peers zijn gelijkwaardig — er is geen host.
 
-**Status:** alle geplande fasen zijn af — chat, voice, screenshare, bestandsdeling,
-kanalen en automatische updates. Zie [ROADMAP.md](ROADMAP.md) en
+**Status:** alle geplande fasen zijn af — chat, voice, screenshare, camera,
+bestandsdeling, kanalen en automatische updates. Zie [ROADMAP.md](ROADMAP.md) en
 [docs/OVERDRACHT.md](docs/OVERDRACHT.md).
+
+De camera zit naast de microfoon- en koptelefoonknop en kan tegelijk met een gedeeld
+scherm aan. Er wordt niets opgenomen — en het lampje blijft uit — tot iemand er
+daadwerkelijk naar kijkt, net als bij een gedeeld scherm. **Camera *uitzenden* werkt
+alleen op Windows;** een mac kan wel naar de camera van een Windows-peer kijken (zie
+[TODO.md](TODO.md)).
 
 ## Wat je nodig hebt
 

@@ -94,8 +94,26 @@ Zelfde codebase, cfg-geselecteerde siblingmodules onder `crates/video/src/mac/`
   vertaalt van/naar AVCC. Protocol 5, geen bump — mac↔Windows interop is de eis.
 - **Geen P2P-update op mac**: `engine.rs` haalt er nooit een exe binnen en biedt de
   eigen binary nooit aan (`NOT_AVAILABLE`). Versies blijven per werkafspraak gelijk.
+- **Geen camera-opname op mac** (bewust, 2026-08-06). `BronSoort::Camera` bestaat er wel
+  zodat gedeelde code niet open hoeft, maar `beschikbare_bronnen` noemt er geen en
+  `Capture::start` weigert. Naar de camera van een Windows-peer *kijken* werkt wel.
+  Bouwplan in `TODO.md`.
 - TCC: schermopname en microfoon zijn permissies; ad-hoc signing betekent dat
   Screen Recording na elke nieuwe build opnieuw toegekend moet worden.
+
+## Camera (2026-08-06)
+Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`
+(Media Foundation, alleen Windows) levert dezelfde `Opgenomen` als de schermopname, dus
+`deler`/`kijker`/`fragment` zijn onaangeraakt. `StreamKind::CAMERA = 4` is additief
+toegevoegd zonder protocolbump. Zie `docs/OVERDRACHT.md` beslissing 22.
+
+- **Bureaubladgeluid hangt aan een *scherm*, niet aan beeld.** Gebruik
+  `StreamKind::is_scherm()`, nooit "alles wat geen geluid is" — anders stuurt een webcam
+  ongevraagd je systeemgeluid mee.
+- **Windows-code is op de Mac te typechecken** met een losse crate die `camera.rs` via
+  `#[path]` insluit (`cargo check --target x86_64-pc-windows-msvc` op de workspace zelf
+  loopt stuk op `ring`). Recept in beslissing 22 — gebruik dit vóór je Windows-code
+  aanraakt zonder Windows.
 
 ## Bouwen
 Naast Rust (MSVC op Windows, gewoon stable op macOS) is `cmake` nodig: libopus wordt

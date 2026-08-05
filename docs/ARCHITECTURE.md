@@ -170,6 +170,15 @@ enum ControlMsg {
 }
 ```
 
+`StreamKind` is een `u8` op de draad met vier bekende waarden: `MONITOR = 1`,
+`WINDOW = 2`, `DESKTOP_AUDIO = 3` en `CAMERA = 4`. Een camerastream is op de draad niet
+van een gedeeld scherm te onderscheiden — dezelfde H.264 in dezelfde fragmenten — maar de
+app moet het verschil weten, want bureaubladgeluid hangt aan een gedeeld *scherm* en niet
+aan een camera. `CAMERA` kwam erbij **zonder `protocol_version`-bump**: een peer die hem
+niet kent ziet `is_known() == false`, logt de aankondiging en tekent er niet op in. Dat is
+precies het gedrag dat bij een onbekende soort hoort, dus een oude peer verliest alleen de
+camera en blijft voor al het andere werken.
+
 Regels voor uitbreiding:
 - Alleen **toevoegen** aan het eind van enums en structs. Nooit varianten hernummeren of verwijderen.
 - Nieuwe struct-velden krijgen `#[serde(default)]`.

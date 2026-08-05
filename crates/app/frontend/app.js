@@ -78,7 +78,7 @@ const onlinePeers = () => knownPeers().filter(p => p.presence === "online");
 const callPeers = () => knownPeers().filter(p => p.in_call);
 const callRunning = () => callPeers().length > 0 || S.voice.joined;
 const totalDmUnread = () => knownPeers().reduce((n, p) => n + p.unread, 0);
-const sharingSelf = () => (S.own_streams || []).some(s => !s.is_audio);
+const sharingSelf = () => (S.own_streams || []).some(s => !s.is_audio && !s.is_camera);
 const watchedStreams = () => (S.streams || []).filter(s => s.watching);
 const isSpeaking = id => (M.peers[id]?.level || 0) > SPEAKING;
 const meSpeaking = () => S.voice.joined && !S.voice.muted && M.self.level > SPEAKING;
@@ -140,6 +140,9 @@ function avatar(peer, size = 32, dot = false, ring = false) {
 
 /** The engine's own peer, shaped like the others so one avatar function covers both. */
 const selfPeer = () => ({ ...S.self, presence: selfPresence(), self: true });
+
+/** Our own camera stream, or undefined. The camera button is a mirror of this. */
+const ownCamera = () => (S.own_streams || []).find(s => s.is_camera);
 
 /* ---------------------------------------------------------------- message body */
 
@@ -275,7 +278,9 @@ function renderVoice() {
   const el = $("voice");
   const others = callPeers();
   const roster = S.voice.joined ? [selfPeer(), ...others] : others;
-  const sharing = (S.own_streams || []).filter(s => !s.is_audio);
+  /* Screens only: the camera has its own button and its own line, so it must not turn
+     "Share screen" into "Stop sharing". */
+  const sharing = (S.own_streams || []).filter(s => !s.is_audio && !s.is_camera);
   let live = "";
 
   if (roster.length) {
@@ -299,6 +304,7 @@ function renderVoice() {
       </div>
       <div class="voice-peers">${rows}</div>
       ${sharing.length ? `<p class="voice-share">${ic("i-monitor")}<span>Sharing <b>${esc(sharing[0].title)}</b>${sharing.length > 1 ? ` and ${sharing.length - 1} more` : ""} &middot; desktop audio follows automatically</span></p>` : ""}
+      ${ownCamera() ? `<p class="voice-share">${ic("i-cam")}<span>Camera on &middot; <b>${esc(ownCamera().title)}</b></span></p>` : ""}
       ${S.voice.joined
         ? `<div class="voice-acts">
              <button class="btn btn--ghost" id="btn-share">${ic(sharing.length ? "i-x" : "i-share")}${sharing.length ? "Stop sharing" : "Share screen"}</button>
@@ -323,6 +329,10 @@ function renderVoice() {
         <button class="self-btn" id="btn-mic" aria-pressed="${S.voice.muted}" title="${S.voice.muted ? "Unmute microphone" : "Mute microphone"}">
           ${ic(S.voice.muted ? "i-mic-off" : "i-mic", "icon-18 icon")}
           <span class="sr">${S.voice.muted ? "Unmute microphone" : "Mute microphone"}</span>
+        </button>
+        <button class="self-btn self-btn--on" id="btn-cam" aria-pressed="${!!ownCamera()}" title="${ownCamera() ? "Turn the camera off" : "Turn the camera on"}">
+          ${ic(ownCamera() ? "i-cam" : "i-cam-off", "icon-18 icon")}
+          <span class="sr">${ownCamera() ? "Turn the camera off" : "Turn the camera on"}</span>
         </button>
         <button class="self-btn" id="btn-deaf" aria-pressed="${S.voice.deafened}" title="${S.voice.deafened ? "Undeafen" : "Deafen"}">
           ${ic(S.voice.deafened ? "i-head-off" : "i-head", "icon-18 icon")}
@@ -557,7 +567,7 @@ function memberRow(p, opts = {}) {
         </div>
       </div>` : ""}
       ${shared.filter(s => !s.watching).map(s =>
-        `<button class="share-chip" data-watch="${esc(p.id)}" data-stream="${s.stream_id}">${ic("i-monitor")}Watch ${esc(s.title)}</button>`).join("")}
+        `<button class="share-chip" data-watch="${esc(p.id)}" data-stream="${s.stream_id}">${ic(s.is_camera ? "i-cam" : "i-monitor")}Watch ${esc(s.title)}</button>`).join("")}
       ${shared.filter(s => s.watching).map(s =>
         `<button class="share-chip" data-unwatch="${esc(p.id)}" data-stream="${s.stream_id}">${ic("i-x")}Stop watching ${esc(s.title)}</button>`).join("")}
     </div>
@@ -591,6 +601,7 @@ function renderMembers() {
     group("Online", online, p => ({
       sub: p.self && S.do_not_disturb ? "Do not disturb"
          : p.self && sharingSelf() ? "Sharing your screen"
+         : p.self && ownCamera() ? "Camera on"
          : callRunning() ? "Not in the call" : "",
     })) +
     group("Connecting", connecting, () => ({ sub: "Reconnecting" })) +
@@ -608,12 +619,14 @@ function renderStrip() {
       who: s.owner_name,
       what: s.title,
       live: true,
+      icon: s.is_camera ? "i-cam" : "i-monitor",
     })),
     ...(S.own_streams || []).filter(s => !s.is_audio).map(s => ({
       key: null,
       who: "You",
       what: s.title,
       live: s.viewers > 0,
+      icon: s.is_camera ? "i-cam" : "i-monitor",
     })),
   ];
   if (!tiles.length) { el.innerHTML = ""; return; }
@@ -626,8 +639,8 @@ function renderStrip() {
       ${t.live ? '<span class="live-tag"><i></i>LIVE</span>' : ""}
       ${t.key && thumbUrls[t.key]
         ? `<img id="thumb-${esc(t.key)}" src="${esc(thumbUrls[t.key])}" alt="${esc(t.who)} &middot; ${esc(t.what)}">`
-        : `<span class="tile-idle">${ic("i-monitor", "icon-20 icon")}</span>`}
-      <span class="tile-cap">${ic("i-monitor")}<span>${esc(t.who)} &middot; ${esc(t.what)}</span></span>
+        : `<span class="tile-idle">${ic(t.icon, "icon-20 icon")}</span>`}
+      <span class="tile-cap">${ic(t.icon)}<span>${esc(t.who)} &middot; ${esc(t.what)}</span></span>
     </button>`).join("")}</div>`;
 }
 
@@ -841,8 +854,8 @@ const SET_BODY = {
 
   video: () => `
     <h2>Video</h2>
-    <p>Applies to every screen or window you share. A running share restarts immediately
-       with the new settings.</p>
+    <p>Applies to every screen, window and camera you share. A running share restarts
+       immediately with the new settings.</p>
     <div class="field">
       <span class="field-label">Codec</span>
       <span class="field-help">H.264 always works. HEVC decoding needs a Store extension
@@ -1046,11 +1059,14 @@ $("picker-cancel").addEventListener("click", () => picker.close());
 
 async function openPicker() {
   const sources = await invoke("list_sources");
-  $("picker-list").innerHTML = sources.length
-    ? sources.map(s => `<button class="picker-item" data-source="${s.index}">
+  /* Cameras are in the same list but never in this dialog: they have their own button,
+     and a webcam under "Share a screen or window" reads as a mistake. */
+  const screens = sources.filter(s => !s.is_camera);
+  $("picker-list").innerHTML = screens.length
+    ? screens.map(s => `<button class="picker-item" data-source="${s.index}">
         ${ic(s.is_window ? "i-file" : "i-monitor")}<span>${esc(s.name)}</span>
       </button>`).join("")
-    : `<p class="picker-empty">Windows offered nothing to capture.</p>`;
+    : `<p class="picker-empty">Nothing was offered to capture.</p>`;
   picker.showModal();
 }
 
@@ -1142,10 +1158,13 @@ document.addEventListener("click", async e => {
   if (t.closest("#btn-join")) return invoke("set_joined", { joined: true });
   if (t.closest("#btn-leave")) return invoke("set_joined", { joined: false });
   if (t.closest("#btn-share")) {
-    const mine = (S.own_streams || []).filter(s => !s.is_audio);
+    /* Screens only. Stopping "sharing" must not switch off the camera as a side effect —
+       that has its own button. */
+    const mine = (S.own_streams || []).filter(s => !s.is_audio && !s.is_camera);
     if (mine.length) return Promise.all(mine.map(s => invoke("stop_sharing", { stream: s.stream_id })));
     return openPicker();
   }
+  if (t.closest("#btn-cam")) return invoke("set_camera", { on: !ownCamera() });
   if (t.closest("#btn-mic")) return invoke("set_muted", { muted: !S.voice.muted });
   if (t.closest("#btn-deaf")) return invoke("set_deafened", { deafened: !S.voice.deafened });
   if (t.closest("#btn-dnd")) return invoke("set_do_not_disturb", { on: !S.do_not_disturb });

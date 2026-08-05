@@ -6,9 +6,12 @@ het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 Laatst bijgewerkt: 2026-08-05. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
 de UI-stack van egui naar Tauri v2).
 
-**Wat er net gebeurd is:** de app is **geport naar macOS** (14+, Apple Silicon) — zelfde
-codebase, zelfde protocol 5, volledige featurepariteit behalve P2P-auto-update. Lees
-beslissing 21 hieronder vóór je iets aan de platformlaag doet. De vorige mijlpaal (de
+**Wat er net gebeurd is:** de **camera** erbij (Windows; op macOS bewust overgeslagen,
+zie beslissing 22 en `TODO.md`) — een derde `BronSoort` door de bestaande deelketen, dus
+tegelijk met een gedeeld scherm. Daarvoor is de app **geport naar macOS** (14+, Apple
+Silicon) — zelfde codebase, zelfde protocol 5, volledige featurepariteit behalve
+P2P-auto-update en camera-opname. Lees beslissing 21 hieronder vóór je iets aan de
+platformlaag doet. De vorige mijlpaal (de
 weergavelaag in Tauri v2, naar de goedgekeurde comp `design/main-window.html`) staat in
 beslissing 19 en 20; er is geen egui meer in de repo behalve in doc-commentaar.
 
@@ -654,6 +657,68 @@ op met `get_timeline`.
 **Beslissing 15 is vervallen.** De `GetAsyncKeyState`-omweg voor Ctrl+V is weg: de webview
 krijgt een echt `paste`-event met de bytes van de afbeelding erin, en die gaan via
 `offer_pasted_image` naar dezelfde aanbiedflow als een gesleept of gekozen bestand.
+
+### 22. De camera is een derde `BronSoort`, niet een tweede pijplijn (2026-08-06)
+
+Rick wilde de camera aan kunnen zetten, ook tegelijk met een gedeeld scherm. De hele
+deelketen — encoder, pacing, `Verzendtempo`, fragmentatie met pariteit, keyframe-op-verzoek,
+kijker, weergaveklok, miniaturen — is al generiek over `Bron`. Dus kwam er **geen tweede
+pijplijn**: `BronSoort::Camera` erbij, `Capture` werd een enum met twee varianten, en
+`deler.rs`, `kijker.rs`, `fragment.rs` en de `Actie`-laag zijn niet aangeraakt. Dat
+meerdere eigen streams naast elkaar kunnen, was ook al zo (`engine.delers` is een map op
+`stream_id`), dus "camera tegelijk met scherm" vroeg geen enkele wijziging in de
+streamlogica.
+
+Wat er wél aan vastzat:
+
+- **`StreamKind::CAMERA = 4`, additief, geen `protocol_version`-bump.** Op de draad is een
+  camerastream niet van een gedeeld scherm te onderscheiden. De app moet het verschil toch
+  weten, want bureaubladgeluid hangt aan een *scherm*: je webcam aanzetten mag niet
+  stilzwijgend je Spotify de kamer in sturen. Daarvoor zijn `StreamKind::is_scherm()` en
+  `is_beeld()` bijgekomen, en `stem_geluid_af_op_beeld` filtert nu op `is_scherm()` in
+  plaats van "alles wat geen geluid is". Regressietest:
+  `streams.rs::tests::naar_een_camera_kijken_haalt_geen_bureaubladgeluid_binnen`.
+- **Windows: Media Foundation, en dit pad gaat wél door het werkgeheugen.** Bij een scherm
+  is "nooit een kopie naar RAM" een harde eis (invariant 4). Bij een camera is dat een
+  andere afweging: 720p30 is een orde kleiner dan 1080p60, en een webcam levert MJPEG of
+  YUY2 aan, dus er staat hoe dan ook een omzetting in het pad. Met
+  `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` doet MF die omzetting zelf naar
+  RGB32 en is één `memcpy` naar een textuur (`maak_textuur_met`) goedkoper dan zelf een
+  NV12-tussenstap met de GPU-videoprocessor optuigen. Upgradepad staat als
+  `ponytail:`-commentaar in `camera.rs`: NV12 in een DXGI-buffer vragen en
+  `kleur::Kleuromzetter` ertussen, als er ooit een 4K60-webcam komt.
+- **De reader staat op zijn eigen thread.** `ReadSample` blokkeert, en de deel-lus wil een
+  timeout kunnen stellen om te kunnen kijken of hij nog door moet. Kanaal ertussen, zelfde
+  patroon als de mac-SCK-uitvoer.
+- **RGB32 uit MF staat standaard onderstboven** (DIB-indeling, negatieve stride). Een
+  omgekeerd beeld zie je zelf niet, alleen je vriend. We zetten daarom expliciet een
+  positieve `MF_MT_DEFAULT_STRIDE` op het uitvoertype zodra de afmeting bekend is, en
+  lezen daarna alsnog de werkelijk geldende stride terug: is die negatief, dan klapt de
+  kopieerlus de rijen om. Beide takken staan in de code omdat niet elke camera de
+  strideset overneemt. **Dit is op geen echte camera getest** — zie de testlijst.
+- **De camera wordt aangekondigd met een nominale 1280×720.** Zijn echte afmeting vraag je
+  pas als je hem opent, en dat zou het lampje aanzetten voordat er iemand kijkt — precies
+  wat "er wordt niets opgenomen tot iemand kijkt" verbiedt. Het eerste echte beeld
+  overschrijft de maat aan beide kanten: de encoder gebruikt `capture.afmeting()` en het
+  kijkvenster past zich al aan (`Venster::pas_maat_aan`, en op mac de laagformaat-cache).
+- **Eén schakelaar, niet de bronkiezer.** `UiCommand::ZetCamera(bool)` zoekt zelf de eerste
+  camera en meldt via de bestaande foutbalk als er geen is. De kiezer filtert camera's er
+  juist uit: een webcam onder "Share a screen or window" leest als een fout. De knop zit
+  naast mute/deafen, maar met een eigen `self-btn--on`-stijl — die drie zijn "iets staat
+  uit" (rood), camera-aan is het tegenovergestelde (accent).
+- **macOS: bewust overgeslagen** (op Ricks verzoek). `BronSoort::Camera` bestaat daar wel,
+  zodat de gedeelde app-code niet open hoeft; `beschikbare_bronnen` noemt geen camera's en
+  `Capture::start` weigert er een met een leesbare melding. **Kijken naar de camera van een
+  Windows-peer werkt op de mac wel** — dat is dezelfde H.264 in hetzelfde venster. Het
+  bouwplan staat in `TODO.md`.
+
+**Windows-code is hier niet te compileren.** `cargo check --target x86_64-pc-windows-msvc`
+loopt op deze Mac stuk op `ring` (C-code, via `fitcom-net`). De omweg die wél werkt en
+waarmee `camera.rs` is nagelopen: een losse crate met alleen `windows`, `anyhow`,
+`crossbeam-channel` en `tracing` als deps, die de echte bestanden met
+`#[path = ".../crates/video/src/camera.rs"] pub mod camera;` insluit. Daarmee zijn
+`cargo check` én `cargo clippy` voor de Windows-target schoon te krijgen zonder Windows.
+Dat vangt elke API-vormfout; het vangt geen gedrag.
 
 ---
 

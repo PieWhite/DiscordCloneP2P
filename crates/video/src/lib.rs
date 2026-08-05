@@ -10,6 +10,14 @@
 //! `deler.rs`, `kijker.rs` en `fragment.rs` op beide platforms ongewijzigd compileren.
 //! `kleur` en `mf` zijn interne details van de Windows-codec en hebben geen
 //! mac-tegenhanger: VideoToolbox levert rechtstreeks BGRA en heeft geen bootstrap.
+//!
+//! # Camera
+//!
+//! `camera` bestaat alleen op Windows (Media Foundation). Een camera is naar buiten toe
+//! gewoon een derde `BronSoort`, dus hij loopt door dezelfde encoder, fragmentatie en
+//! kijker als een gedeeld scherm. Op macOS is het *opnemen* bewust niet gebouwd — zie
+//! `TODO.md` — maar *kijken* naar de camera van een Windows-peer werkt daar wel: op de
+//! draad is dat niet van een gedeeld scherm te onderscheiden.
 
 #[cfg(windows)]
 pub mod capture;
@@ -35,6 +43,10 @@ pub mod venster;
 #[path = "mac/venster.rs"]
 pub mod venster;
 
+/// Webcam-opname. Alleen Windows; op macOS listet `capture` geen camera's en weigert
+/// `Capture::start` er een te openen.
+#[cfg(windows)]
+pub mod camera;
 pub mod deler;
 pub mod fragment;
 pub mod kijker;
