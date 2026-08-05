@@ -45,6 +45,7 @@ const ONTVANGBUFFER: usize = 1024 * 1024;
 /// naast ons merkt er niets van. Er staat geen `timeEndPeriod` tegenover: Windows ruimt
 /// dat bij het afsluiten van het proces zelf op, en de enige plek waar dit vandaan komt is
 /// het openen van een mediasocket — dus zodra er beeld of geluid loopt.
+#[cfg(windows)]
 fn zorg_voor_fijne_timer() {
     static EEN_KEER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     EEN_KEER.get_or_init(|| {
@@ -60,6 +61,11 @@ fn zorg_voor_fijne_timer() {
         }
     });
 }
+
+/// Op macOS tikt de klok al fijner dan een milliseconde; `recv_timeout` en
+/// `thread::sleep` doen daar gewoon wat er gevraagd wordt. Niets te repareren.
+#[cfg(not(windows))]
+fn zorg_voor_fijne_timer() {}
 
 pub struct MediaSocket {
     sock: UdpSocket,

@@ -269,7 +269,9 @@ pub fn resolve_updates_dir(data_dir: &Path) -> PathBuf {
 }
 
 fn whoami_or(fallback: &str) -> String {
+    // Windows zet USERNAME, macOS/Unix zet USER; beide proberen kost niets.
     std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| fallback.to_string())

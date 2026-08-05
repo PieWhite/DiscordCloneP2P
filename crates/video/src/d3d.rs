@@ -22,6 +22,10 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 
+/// Het frametype dat door de gedeelde code stroomt (`deler`, `kijker`, `engine`).
+/// Op Windows ís dat de D3D11-textuur; de mac-backend heeft er zijn eigen houder voor.
+pub type Beeld = ID3D11Texture2D;
+
 #[derive(Clone)]
 pub struct D3dContext {
     pub device: ID3D11Device,

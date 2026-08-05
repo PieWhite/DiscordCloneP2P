@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 //! Hoe groot mag één beeld worden, en houdt de encoder zich aan het budget?
 //!
 //! De bitrate staat op 8 Mbit/s bij 60 beelden per seconde: gemiddeld 16 kB per beeld.

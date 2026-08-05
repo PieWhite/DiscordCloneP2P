@@ -17,11 +17,13 @@ rustls = { version = "0.23.42", default-features = false, features = ["ring", "s
 # Alleen voor SO_RCVBUF op de mediasocket; std kan dat niet. Zat hier al in via quinn.
 socket2 = "0.6.5"
 thiserror = "2.0.19"
-# Alleen voor timeBeginPeriod: zonder dat duurt elke leestimeout op de mediasocket
-# 15,6 ms in plaats van wat er gevraagd wordt. Zie `media::zorg_voor_fijne_timer`.
-windows = { version = "0.62.2", features = ["Win32_Media"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
 tracing = "0.1.44"
+
+# Alleen voor timeBeginPeriod: zonder dat duurt elke leestimeout op de mediasocket
+# 15,6 ms in plaats van wat er gevraagd wordt. Zie `media::zorg_voor_fijne_timer`.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Media"] }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

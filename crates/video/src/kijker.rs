@@ -744,10 +744,7 @@ fn naar_hns(tijdstempel: u32) -> i64 {
 /// Verkleint het getoonde beeld tot een miniatuur voor het overzicht in het
 /// hoofdvenster. Loopt via `D3dContext::lees_bgra_miniatuur`, dat alleen de nodige
 /// pixels uit de uitleestextuur bemonstert in plaats van het hele beeld te kopiëren.
-fn maak_miniatuur(
-    d3d: &D3dContext,
-    beeld: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
-) -> Result<Miniatuur> {
+fn maak_miniatuur(d3d: &D3dContext, beeld: &crate::d3d::Beeld) -> Result<Miniatuur> {
     let (bron_b, bron_h) = crate::d3d::afmetingen(beeld);
     let hoogte = ((MINIATUUR_BREEDTE as u64 * bron_h as u64) / bron_b.max(1) as u64).max(1) as u32;
     let data = d3d.lees_bgra_miniatuur(beeld, MINIATUUR_BREEDTE, hoogte)?;

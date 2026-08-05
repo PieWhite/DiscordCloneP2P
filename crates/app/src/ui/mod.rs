@@ -223,19 +223,31 @@ pub fn run(
             // one folder they can live in is opened and nothing else is.
             app.asset_protocol_scope().allow_directory(&pictures_dir, false)?;
 
-            if let Some(window) = app.get_webview_window("main") {
-                // The tray thread talks to the window over Win32 so it can show it again
-                // even when nothing is drawing — hidden windows do not run event loops.
-                match window.hwnd() {
-                    Ok(hwnd) => tray::onthoud_venster(hwnd.0 as isize),
-                    Err(e) => tracing::warn!(error = %e, "no window handle; the tray cannot show the window"),
+            #[cfg(windows)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    // The tray thread talks to the window over Win32 so it can show it
+                    // again even when nothing is drawing — hidden windows do not run
+                    // event loops.
+                    match window.hwnd() {
+                        Ok(hwnd) => tray::onthoud_venster(hwnd.0 as isize),
+                        Err(e) => tracing::warn!(error = %e, "no window handle; the tray cannot show the window"),
+                    }
+                }
+
+                // The icon has to stay alive or it drops straight out of the tray.
+                match tray::start() {
+                    Ok(t) => std::mem::forget(t),
+                    Err(e) => tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed"),
                 }
             }
 
-            // The icon has to stay alive or it drops straight out of the tray.
-            match tray::start() {
-                Ok(t) => std::mem::forget(t),
-                Err(e) => tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed"),
+            // On macOS the NSApplication run loop keeps pumping while the window is
+            // hidden, so Tauri's own tray — on the main thread — is all that is needed;
+            // the Win32 detour above exists precisely because that is not true there.
+            #[cfg(target_os = "macos")]
+            if let Err(e) = mac_tray(app.handle()) {
+                tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed");
             }
 
             spawn_state_pusher(handle.clone(), snapshot_rx.clone());
@@ -255,7 +267,10 @@ pub fn run(
                 if to_tray {
                     api.prevent_close();
                     foreground.store(false, Ordering::Relaxed);
+                    #[cfg(windows)]
                     tray::verberg_venster();
+                    #[cfg(not(windows))]
+                    let _ = window.hide();
                 }
             }
             tauri::WindowEvent::DragDrop(drop) => match drop {
@@ -275,6 +290,43 @@ pub fn run(
         .run(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("starting the window: {e}"))?;
 
+    Ok(())
+}
+
+/// The macOS tray: Tauri's own `TrayIconBuilder` on the main thread, same two items as
+/// the Windows menu. "Afsluiten" flips the shared flag so `spawn_quit_watcher` performs
+/// the same clean shutdown on both platforms.
+#[cfg(target_os = "macos")]
+fn mac_tray(app: &tauri::AppHandle) -> anyhow::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let openen = MenuItemBuilder::with_id("openen", "Openen").build(app)?;
+    let afsluiten = MenuItemBuilder::with_id("afsluiten", "Afsluiten").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&openen)
+        .separator()
+        .item(&afsluiten)
+        .build()?;
+
+    let (rgba, n) = tray::icoon_rgba();
+    let tray = TrayIconBuilder::new()
+        .icon(tauri::image::Image::new_owned(rgba, n, n))
+        .tooltip("FitCommunication")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "openen" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "afsluiten" => tray::markeer_afsluiten(),
+            _ => {}
+        })
+        .build(app)?;
+    // Same rule as on Windows: the icon has to stay alive or it drops out of the bar.
+    std::mem::forget(tray);
     Ok(())
 }
 

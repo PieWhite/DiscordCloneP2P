@@ -11,7 +11,27 @@ crossbeam-channel = "0.5.16"
 fitcom-net.workspace = true
 fitcom-proto.workspace = true
 tracing = "0.1.44"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Foundation", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+# macOS-backend: ScreenCaptureKit (opname), VideoToolbox (codeer/decodeer),
+# AVSampleBufferDisplayLayer in een NSWindow (weergave). Versies vastgepind in de
+# fase 0-spike van de mac-port; zie docs/OVERDRACHT.md.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-core-media = "0.3.2"
+objc2-video-toolbox = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-quartz-core", "objc2-core-media"] }
+objc2-quartz-core = "0.3.2"
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
 
 [dev-dependencies]
 # Alleen voor de ketentest: die wil de meterregels van deler en kijker zien.

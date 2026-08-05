@@ -686,6 +686,12 @@ impl Engine {
     /// tenzij we die versie al ophalen, al hebben liggen, of de gebruiker hem negeerde —
     /// zie `Updates::nieuwere_versie_gezien`.
     fn overweeg_update(&mut self, peer: PeerId, hun_versie: &str) {
+        // Op macOS geen P2P-update: de peers draaien Windows en hun exe is hier waard
+        // noch bruikbaar. De mac bouwt uit de broncode; versies blijven per
+        // werkafspraak gelijk op. Zie docs/OVERDRACHT.md (mac-port).
+        if cfg!(target_os = "macos") {
+            return;
+        }
         if !fitcom_proto::is_newer(hun_versie, EIGEN_VERSIE) {
             return;
         }
@@ -1899,6 +1905,14 @@ async fn update_upload_taak(
                 }),
             })
             .await;
+    }
+
+    // Een Mach-O aanbieden aan een Windows-peer zou diens `fitcom.exe` slopen zodra de
+    // updater hem eroverheen zet. `NOT_AVAILABLE` is een bestaand, netjes afgehandeld
+    // antwoord; de Windows-peers halen hun update bij elkaar.
+    if cfg!(target_os = "macos") {
+        niet_beschikbaar(&mesh_commands, naar).await;
+        return;
     }
 
     let pad = match std::env::current_exe() {

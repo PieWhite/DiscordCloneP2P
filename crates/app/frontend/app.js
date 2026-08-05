@@ -19,6 +19,15 @@ const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const { getCurrentWindow } = window.__TAURI__.window;
 
+/* macOS gets native traffic lights (titleBarStyle Overlay): hide our own window
+   buttons via the body class, and say ⌘ where Windows says Ctrl. */
+if (navigator.platform.startsWith("Mac")) {
+  document.body.classList.add("mac");
+  for (const k of document.querySelectorAll(".composer-hint kbd")) {
+    if (k.textContent === "Ctrl") k.textContent = "⌘";
+  }
+}
+
 /* ---------------------------------------------------------------- state */
 
 /** Last state from the engine. Replaced wholesale; never mutated. */

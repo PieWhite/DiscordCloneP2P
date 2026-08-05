@@ -1,22 +1,36 @@
 //! Tray-icoon, verbergen naar de tray, en autostart.
 //!
-//! # Waarom de tray-events op een eigen thread worden afgehandeld
+//! # Waarom de tray-events op Windows op een eigen thread worden afgehandeld
 //!
 //! Verberg je het venster, dan tekent de weergavelaag niet meer. Zou de tray-klik daar
 //! afgehandeld worden, dan kon je het venster nooit meer terughalen — precies wanneer je
 //! het nodig hebt. Een losse thread leest de tray-gebeurtenissen en praat rechtstreeks
 //! met het venster via Win32.
+//!
+//! Op macOS is die reden er niet: de main-runloop van `NSApplication` blijft pompen
+//! terwijl het venster verborgen is. Daar gebruikt `ui/mod.rs` gewoon de tray-API van
+//! Tauri op de main thread; deze module levert alleen de gedeelde afsluitvlag, het
+//! icoon en de autostart-schakelaar.
 
-use anyhow::{Context, Result};
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use anyhow::Result;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(windows)]
+use anyhow::Context;
+#[cfg(windows)]
+use std::sync::atomic::AtomicIsize;
+#[cfg(windows)]
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+#[cfg(windows)]
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// Het venster van deze app. 0 zolang het nog niet bekend is.
+#[cfg(windows)]
 static HWND: AtomicIsize = AtomicIsize::new(0);
 /// Wordt gezet als de gebruiker in de tray op "afsluiten" klikt.
 static AFSLUITEN: AtomicBool = AtomicBool::new(false);
 
+#[cfg(windows)]
 pub fn onthoud_venster(hwnd: isize) {
     HWND.store(hwnd, Ordering::Relaxed);
 }
@@ -25,12 +39,20 @@ pub fn wil_afsluiten() -> bool {
     AFSLUITEN.load(Ordering::Relaxed)
 }
 
+/// Voor de macOS-tray in `ui/mod.rs`: zelfde vlag, zelfde afsluitroute via
+/// `spawn_quit_watcher`.
+pub fn markeer_afsluiten() {
+    AFSLUITEN.store(true, Ordering::Relaxed);
+}
+
 /// Het icoon moet blijven leven zolang de app draait; valt het weg, dan verdwijnt het
 /// uit de tray.
+#[cfg(windows)]
 pub struct Tray {
     _icon: TrayIcon,
 }
 
+#[cfg(windows)]
 pub fn start() -> Result<Tray> {
     let menu = Menu::new();
     let openen = MenuItem::new("Openen", true, None);
@@ -81,6 +103,7 @@ pub fn start() -> Result<Tray> {
     Ok(Tray { _icon: icon })
 }
 
+#[cfg(windows)]
 pub fn verberg_venster() {
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
     if let Some(h) = venster() {
@@ -91,6 +114,7 @@ pub fn verberg_venster() {
     }
 }
 
+#[cfg(windows)]
 pub fn toon_venster() {
     use windows::Win32::UI::WindowsAndMessaging::{
         SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
@@ -105,6 +129,7 @@ pub fn toon_venster() {
     }
 }
 
+#[cfg(windows)]
 fn venster() -> Option<windows::Win32::Foundation::HWND> {
     match HWND.load(Ordering::Relaxed) {
         0 => None,
@@ -112,9 +137,10 @@ fn venster() -> Option<windows::Win32::Foundation::HWND> {
     }
 }
 
-/// Een gevulde cirkel met zachte rand. Klein genoeg om in de code te houden; een
-/// los .ico-bestand zou meegekopieerd moeten worden en dat botst met "één exe".
-fn maak_icoon() -> Result<tray_icon::Icon> {
+/// Een gevulde cirkel met zachte rand, als rauwe RGBA. Klein genoeg om in de code te
+/// houden; een los icoonbestand zou meegekopieerd moeten worden en dat botst met
+/// "één exe". Beide platforms bouwen hun tray-icoon hieruit op.
+pub fn icoon_rgba() -> (Vec<u8>, u32) {
     const N: u32 = 32;
     let mut rgba = Vec::with_capacity((N * N * 4) as usize);
     let midden = (N as f32 - 1.0) / 2.0;
@@ -130,14 +156,20 @@ fn maak_icoon() -> Result<tray_icon::Icon> {
             rgba.extend_from_slice(&[80, 200, 120, dekking]);
         }
     }
+    (rgba, N)
+}
 
-    tray_icon::Icon::from_rgba(rgba, N, N).context("icoon opbouwen")
+#[cfg(windows)]
+fn maak_icoon() -> Result<tray_icon::Icon> {
+    let (rgba, n) = icoon_rgba();
+    tray_icon::Icon::from_rgba(rgba, n, n).context("icoon opbouwen")
 }
 
 /// Zet of verwijdert de autostart-vermelding voor de huidige gebruiker.
 ///
 /// Alleen `HKEY_CURRENT_USER` — dat vereist geen beheerdersrechten en raakt de andere
 /// gebruikers van de PC niet.
+#[cfg(windows)]
 pub fn zet_autostart(aan: bool) -> Result<()> {
     use windows::core::{w, PCWSTR};
     use windows::Win32::System::Registry::{
@@ -178,5 +210,15 @@ pub fn zet_autostart(aan: bool) -> Result<()> {
         resultaat.context("autostart instellen")?;
     }
 
+    Ok(())
+}
+
+/// Nog niet op macOS: een LaunchAgent-plist is het upgradepad, maar niemand heeft er
+/// tot nu toe om gevraagd. De schakelaar in de instellingen doet hier dus niets.
+#[cfg(target_os = "macos")]
+pub fn zet_autostart(aan: bool) -> Result<()> {
+    if aan {
+        tracing::info!("autostart is op macOS nog niet ondersteund; instelling genegeerd");
+    }
     Ok(())
 }

@@ -1441,3 +1441,8 @@ input, textarea { user-select: text; }
   color: var(--text-dim);
 }
 .tile-idle .icon { width: 20px; height: 20px; }
+
+/* macOS: native traffic lights (titleBarStyle Overlay) replace our window buttons;
+   the titlebar keeps clear of them and stays the drag region. */
+body.mac .win-controls { display: none; }
+body.mac .titlebar { padding-left: 84px; }

@@ -8,6 +8,7 @@
 use super::state::{self, OpRef, TimelineItem, UiState};
 use super::Ui;
 use crate::engine::{self, UiCommand};
+#[cfg(windows)]
 use crate::tray;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -333,7 +334,12 @@ pub fn dismiss_update(ui: State<'_, Ui>) {
 #[tauri::command]
 pub fn close_window(app: tauri::AppHandle, ui: State<'_, Ui>) {
     if ui.minimize_to_tray {
+        #[cfg(windows)]
         tray::verberg_venster();
+        #[cfg(not(windows))]
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
     } else if let Some(w) = app.get_webview_window("main") {
         let _ = w.close();
     }

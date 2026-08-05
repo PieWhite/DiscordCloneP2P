@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 //! Wat de encoder doet als je hem precies weet wat je hem voert.
 //!
 //! De ketentest deelt het echte scherm, en dat maakt hem ongeschikt om aan te meten: een

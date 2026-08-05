@@ -10,12 +10,27 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Het hele mechanisme — wachten op een PID en een draaiende exe overschrijven — bestaat
+// omdat Windows dat overschrijven niet toestaat. Op macOS is er (nog) geen
+// auto-update; zie `engine.rs` (mac-guards) en docs/OVERDRACHT.md. De binary bestaat
+// daar alleen als lege stub zodat de workspace overal bouwt.
+// ponytail: mac-updater = kill(pid,0)-poll + rename in de .app-bundel + `open`,
+// zodra Developer-ID-signing er is (ad-hoc her-prompt Screen Recording per update).
+#[cfg(not(windows))]
+fn main() {}
+
+#[cfg(windows)]
 use clap::Parser;
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::time::Duration;
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 
+#[cfg(windows)]
 #[derive(Parser)]
 struct Args {
     /// De gedownloade, al geverifieerde exe.
@@ -32,8 +47,10 @@ struct Args {
 /// Hoe lang we maximaal wachten tot de hoofd-app afsluit. Ruim boven wat een nette
 /// afsluiting kost; loopt het hierop vast, dan is er iets anders mis en heeft nóg langer
 /// wachten geen zin.
+#[cfg(windows)]
 const MAX_WACHTTIJD: Duration = Duration::from_secs(30);
 
+#[cfg(windows)]
 fn main() {
     let args = Args::parse();
     let log_pad = args
@@ -64,6 +81,7 @@ fn main() {
 
 /// Wacht tot `pid` verdwenen is via `WaitForSingleObject` — geen polling-loop op
 /// `tasklist` nodig, Windows kan dit rechtstreeks.
+#[cfg(windows)]
 fn wacht_op_afsluiten(pid: u32) -> Result<(), String> {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) };
     let Ok(handle) = handle else {
@@ -88,6 +106,7 @@ fn wacht_op_afsluiten(pid: u32) -> Result<(), String> {
 
 /// `rename` op hetzelfde volume; `copy` + verwijderen als terugval bij een cross-volume-
 /// fout (bijvoorbeeld een `--data-dir` op een andere schijf dan de installatiemap).
+#[cfg(windows)]
 fn vervang(nieuw: &Path, doel: &Path) -> Result<(), String> {
     if std::fs::rename(nieuw, doel).is_ok() {
         return Ok(());
@@ -97,6 +116,7 @@ fn vervang(nieuw: &Path, doel: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn log(pad: &Path, regel: &str) {
     use std::io::Write;
     let tijd = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");

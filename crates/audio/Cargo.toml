@@ -14,5 +14,20 @@ fitcom-proto.workspace = true
 nnnoiseless = "0.5.2"
 opus = "0.3.1"
 tracing = "0.1.44"
+
+# Alleen voor de proces-exclusieve loopback van bureaubladgeluid;
+# zie `session::wasapi_capture`.
+[target.'cfg(windows)'.dependencies]
 wasapi = "0.23"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+# Bureaubladgeluid op macOS loopt via ScreenCaptureKit (audio-only SCStream met
+# `excludesCurrentProcessAudio`, macOS 14+); zie `session::sck_capture`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-media = { version = "0.3.2", features = ["objc2-core-audio-types"] }
+objc2-core-audio-types = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
+block2 = "0.6.2"
+dispatch2 = "0.3.1"

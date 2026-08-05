@@ -681,37 +681,8 @@ fn bureaublad_lus(
 
     // De stroom/thread moet blijven leven zolang deze functie loopt; laat je hem vallen
     // dan stopt de opname stil. `_stroom` is alleen gevuld bij de cpal-terugval — de
-    // wasapi-route beheert haar eigen thread en stopt zichzelf via `gedeeld`.
-    let (rate, _kanalen, _stroom) = match wasapi_capture::start_exclude_thread(
-        gedeeld.clone(),
-        tx.clone(),
-    ) {
-        Ok(()) => {
-            tracing::info!(
-                "bureaubladgeluid via proces-exclusieve WASAPI-loopback (eigen stem uitgesloten)"
-            );
-            (SAMPLE_RATE, wasapi_capture::KANALEN, None)
-        }
-        Err(e) => {
-            tracing::info!(
-                error = %format!("{e:#}"),
-                "proces-exclusieve loopback niet beschikbaar, terugval op gewone loopback (eigen stem kan meekomen)"
-            );
-            let host = cpal::default_host();
-            let dev = kies_apparaat(host.output_devices()?, apparaat)
-                .or_else(|| host.default_output_device())
-                .context("geen weergaveapparaat om geluid van af te tappen")?;
-            let cfg = dev
-                .default_output_config()
-                .context("weergave-instellingen")?;
-            let rate = cfg.sample_rate();
-            let kanalen = cfg.channels() as usize;
-            let stroom = bouw_invoer(&dev, &cfg, kanalen, tx)?;
-            stroom.play().context("bureaubladopname starten")?;
-            tracing::info!(apparaat = %dev.to_string(), rate, kanalen, "bureaubladgeluid wordt gedeeld");
-            (rate, kanalen, Some(stroom))
-        }
-    };
+    // wasapi/sck-route beheert haar eigen thread en stopt zichzelf via `gedeeld`.
+    let (rate, _kanalen, _stroom) = open_bureaublad_bron(gedeeld, tx, apparaat)?;
 
     let mut resampler = Resampler::new(rate, SAMPLE_RATE);
     let mut encoder = Encoder::voor_muziek()?;
@@ -778,6 +749,58 @@ fn bureaublad_lus(
     Ok(())
 }
 
+/// Opent de bron voor bureaubladgeluid: eerst de proces-exclusieve WASAPI-loopback,
+/// bij een fout de gewone `cpal`-loopback (invoerstroom op een uitvoerapparaat — die
+/// truc bestaat alleen op WASAPI en vangt ook de eigen voice-weergave mee).
+#[cfg(windows)]
+fn open_bureaublad_bron(
+    gedeeld: &Arc<Gedeeld>,
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    apparaat: Option<&String>,
+) -> Result<(u32, usize, Option<cpal::Stream>)> {
+    match wasapi_capture::start_exclude_thread(gedeeld.clone(), tx.clone()) {
+        Ok(()) => {
+            tracing::info!(
+                "bureaubladgeluid via proces-exclusieve WASAPI-loopback (eigen stem uitgesloten)"
+            );
+            Ok((SAMPLE_RATE, wasapi_capture::KANALEN, None))
+        }
+        Err(e) => {
+            tracing::info!(
+                error = %format!("{e:#}"),
+                "proces-exclusieve loopback niet beschikbaar, terugval op gewone loopback (eigen stem kan meekomen)"
+            );
+            let host = cpal::default_host();
+            let dev = kies_apparaat(host.output_devices()?, apparaat)
+                .or_else(|| host.default_output_device())
+                .context("geen weergaveapparaat om geluid van af te tappen")?;
+            let cfg = dev
+                .default_output_config()
+                .context("weergave-instellingen")?;
+            let rate = cfg.sample_rate();
+            let kanalen = cfg.channels() as usize;
+            let stroom = bouw_invoer(&dev, &cfg, kanalen, tx)?;
+            stroom.play().context("bureaubladopname starten")?;
+            tracing::info!(apparaat = %dev.to_string(), rate, kanalen, "bureaubladgeluid wordt gedeeld");
+            Ok((rate, kanalen, Some(stroom)))
+        }
+    }
+}
+
+/// Op macOS is ScreenCaptureKit de enige route: CoreAudio kent geen loopback via een
+/// invoerstroom op een uitvoerapparaat, dus er is geen cpal-terugval. Faalt SCK, dan
+/// faalt bureaubladgeluid — met een nette melding, zonder de voice-sessie te raken.
+#[cfg(target_os = "macos")]
+fn open_bureaublad_bron(
+    gedeeld: &Arc<Gedeeld>,
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    _apparaat: Option<&String>,
+) -> Result<(u32, usize, Option<cpal::Stream>)> {
+    sck_capture::start_exclude_thread(gedeeld.clone(), tx)?;
+    tracing::info!("bureaubladgeluid via ScreenCaptureKit (eigen stem uitgesloten)");
+    Ok((SAMPLE_RATE, sck_capture::KANALEN, None))
+}
+
 /// Proces-exclusieve WASAPI-loopback: capturet alles wat naar de speakers gaat
 /// *behalve* dit proces, zodat de eigen voice-weergave van deze app niet meegecaptured
 /// wordt (anders hoort een luisteraar zijn eigen stem vertraagd terug via het gedeelde
@@ -785,6 +808,7 @@ fn bureaublad_lus(
 /// 11), geen Store-uitbreiding nodig — maar niet gegarandeerd aanwezig, dus alles hier
 /// degradeert naar een `Err` in plaats van te crashen; `bureaublad_lus` valt dan terug
 /// op de gewone `cpal`-loopback.
+#[cfg(windows)]
 mod wasapi_capture {
     use super::Gedeeld;
     use crate::mix;
@@ -921,6 +945,274 @@ mod wasapi_capture {
                 break;
             }
         }
+    }
+}
+
+/// De macOS-tegenhanger van [`wasapi_capture`]: een audio-only ScreenCaptureKit-stream
+/// met `excludesCurrentProcessAudio` — systeemgeluid zonder de eigen voice-weergave.
+/// Vereist macOS 14+ en de Screen-Recording-permissie (dezelfde die scherm delen al
+/// nodig heeft). Alles degradeert naar een `Err`; `open_bureaublad_bron` meldt dat dan.
+#[cfg(target_os = "macos")]
+mod sck_capture {
+    use super::Gedeeld;
+    use anyhow::{anyhow, bail, Context, Result};
+    use block2::RcBlock;
+    use crossbeam_channel::Sender;
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
+    use objc2::{define_class, AllocAnyThread, DefinedClass};
+    use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
+    use objc2_core_foundation::CFRetained;
+    use objc2_core_media::{CMBlockBuffer, CMSampleBuffer, CMTime};
+    use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
+    use objc2_screen_capture_kit::{
+        SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamOutput,
+        SCStreamOutputType,
+    };
+
+    use std::ptr::NonNull;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// SCK levert wat we vragen; stereo, net als de WASAPI-route.
+    pub const KANALEN: usize = 2;
+
+    struct Ivars {
+        tx: Sender<Vec<f32>>,
+    }
+
+    define_class!(
+        #[unsafe(super(NSObject))]
+        #[name = "FitcomBureaubladGeluid"]
+        #[ivars = Ivars]
+        struct Geluidsuitvoer;
+
+        unsafe impl NSObjectProtocol for Geluidsuitvoer {}
+
+        unsafe impl SCStreamOutput for Geluidsuitvoer {
+            #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
+            fn sample_binnen(
+                &self,
+                _stream: &SCStream,
+                sbuf: &CMSampleBuffer,
+                soort: SCStreamOutputType,
+            ) {
+                if soort != SCStreamOutputType::Audio {
+                    return;
+                }
+                if let Some(mono) = mono_uit_samplebuffer(sbuf) {
+                    // Vol kanaal betekent dat de verwerker achterloopt; dan is het
+                    // oudste blok toch al te laat.
+                    let _ = self.ivars().tx.try_send(mono);
+                }
+            }
+        }
+    );
+
+    /// Haalt de PCM uit een audio-CMSampleBuffer en mengt naar mono. SCK levert
+    /// 32-bit float, per kanaal een eigen vlak (deinterleaved); één verweven vlak
+    /// kan ook voorkomen en wordt net zo afgehandeld.
+    fn mono_uit_samplebuffer(sbuf: &CMSampleBuffer) -> Option<Vec<f32>> {
+        // Ruimte voor twee kanalen; de C-struct heeft een variabele staart.
+        let mut lijst = [AudioBufferList {
+            mNumberBuffers: 0,
+            mBuffers: [AudioBuffer {
+                mNumberChannels: 0,
+                mDataByteSize: 0,
+                mData: std::ptr::null_mut(),
+            }; 1],
+        }; 2];
+        let mut blok: *mut CMBlockBuffer = std::ptr::null_mut();
+        let status = unsafe {
+            sbuf.audio_buffer_list_with_retained_block_buffer(
+                std::ptr::null_mut(),
+                lijst.as_mut_ptr(),
+                std::mem::size_of_val(&lijst),
+                None,
+                None,
+                0,
+                &mut blok,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        // Vasthouden tot we klaar zijn met lezen; de planes wijzen dit blok in.
+        let _blok = NonNull::new(blok).map(|b| unsafe { CFRetained::from_raw(b) })?;
+
+        let lijst = unsafe { &*lijst.as_ptr() };
+        let n = lijst.mNumberBuffers as usize;
+        if n == 0 {
+            return None;
+        }
+        // SAFETY: de staart van AudioBufferList bevat `mNumberBuffers` buffers; we
+        // hebben hierboven ruimte voor twee gereserveerd en SCK levert er nooit meer,
+        // omdat de configuratie om twee kanalen vraagt.
+        let buffers =
+            unsafe { std::slice::from_raw_parts(lijst.mBuffers.as_ptr(), n.min(KANALEN)) };
+
+        let vlak = |b: &AudioBuffer| -> &[f32] {
+            if b.mData.is_null() {
+                return &[];
+            }
+            // SAFETY: SCK levert 32-bit float PCM; grootte komt uit de buffer zelf.
+            unsafe {
+                std::slice::from_raw_parts(b.mData as *const f32, b.mDataByteSize as usize / 4)
+            }
+        };
+
+        if buffers.len() >= 2 {
+            // Deinterleaved: elk vlak één kanaal — middelen.
+            let (l, r) = (vlak(&buffers[0]), vlak(&buffers[1]));
+            let lengte = l.len().min(r.len());
+            Some((0..lengte).map(|i| (l[i] + r[i]) * 0.5).collect())
+        } else {
+            let data = vlak(&buffers[0]);
+            let kanalen = (buffers[0].mNumberChannels as usize).max(1);
+            if kanalen == 1 {
+                Some(data.to_vec())
+            } else {
+                let mut mono = Vec::new();
+                crate::mix::naar_mono(data, kanalen, &mut mono);
+                Some(mono)
+            }
+        }
+    }
+
+    /// Zelfde contract als `wasapi_capture::start_exclude_thread`: start de capture op
+    /// een eigen thread, wacht tot bekend is of dat gelukt is, en laat hem daarna
+    /// zelfstandig doorlopen tot `gedeeld` zegt dat niemand meer luistert.
+    pub fn start_exclude_thread(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>) -> Result<()> {
+        let (klaar_tx, klaar_rx) = crossbeam_channel::bounded::<Result<()>>(1);
+
+        std::thread::Builder::new()
+            .name("fitcom-bureaublad-sck".into())
+            .spawn(move || {
+                let (stream, _uitvoer) = match opzetten(tx) {
+                    Ok(v) => {
+                        let _ = klaar_tx.send(Ok(()));
+                        v
+                    }
+                    Err(e) => {
+                        let _ = klaar_tx.send(Err(e));
+                        return;
+                    }
+                };
+                // SCK duwt zelf; deze thread bewaakt alleen de levensduur.
+                while !gedeeld.stop.load(Ordering::Relaxed) {
+                    if gedeeld
+                        .bureaublad
+                        .lock()
+                        .map(|b| b.is_none())
+                        .unwrap_or(true)
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
+                let blok = RcBlock::new(move |_fout: *mut NSError| {
+                    let _ = stop_tx.try_send(());
+                });
+                unsafe { stream.stopCaptureWithCompletionHandler(Some(&blok)) };
+                let _ = stop_rx.recv_timeout(Duration::from_secs(3));
+            })
+            .context("sck-captureloop starten")?;
+
+        match klaar_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(res) => res,
+            Err(_) => bail!("geen antwoord van de sck-captureloop binnen 5 seconden"),
+        }
+    }
+
+    fn opzetten(tx: Sender<Vec<f32>>) -> Result<(Retained<SCStream>, Retained<Geluidsuitvoer>)> {
+        // Deelbare inhoud is een async API; hier synchroon maken mag, we zitten op een
+        // eigen thread.
+        let (inhoud_tx, inhoud_rx) = crossbeam_channel::bounded::<
+            std::result::Result<Retained<SCShareableContent>, String>,
+        >(1);
+        let blok = RcBlock::new(move |inhoud: *mut SCShareableContent, fout: *mut NSError| {
+            let uitkomst = if inhoud.is_null() {
+                Err(if fout.is_null() {
+                    "onbekende fout".to_string()
+                } else {
+                    unsafe { (*fout).localizedDescription() }.to_string()
+                })
+            } else {
+                Ok(unsafe { Retained::retain(inhoud) }.expect("net op null gecontroleerd"))
+            };
+            let _ = inhoud_tx.try_send(uitkomst);
+        });
+        unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&blok) };
+        let inhoud = inhoud_rx
+            .recv_timeout(Duration::from_secs(5))
+            .context("SCShareableContent kwam niet (Screen-Recording-permissie?)")?
+            .map_err(|m| anyhow!(m))?;
+
+        let schermen = unsafe { inhoud.displays() };
+        let scherm = schermen.iter().next().context("geen scherm gevonden")?;
+
+        // Het filter moet ergens naar wijzen, ook al gaat het alleen om geluid;
+        // het eerste scherm zonder uitsluitingen is de goedkoopste keuze.
+        let filter = unsafe {
+            SCContentFilter::initWithDisplay_excludingWindows(
+                SCContentFilter::alloc(),
+                &scherm,
+                &NSArray::new(),
+            )
+        };
+        let cfg = unsafe { SCStreamConfiguration::new() };
+        unsafe {
+            cfg.setCapturesAudio(true);
+            // De hele reden dat deze module bestaat: eigen weergave niet terugvangen.
+            cfg.setExcludesCurrentProcessAudio(true);
+            cfg.setSampleRate(super::SAMPLE_RATE as isize);
+            cfg.setChannelCount(KANALEN as isize);
+            // Video zo goedkoop mogelijk: we voegen er geen uitvoer voor toe, maar SCK
+            // rekent hem wel uit.
+            cfg.setWidth(2);
+            cfg.setHeight(2);
+            cfg.setMinimumFrameInterval(CMTime::new(1, 1));
+            cfg.setQueueDepth(3);
+        }
+
+        let uitvoer = Geluidsuitvoer::alloc().set_ivars(Ivars { tx });
+        let uitvoer: Retained<Geluidsuitvoer> = unsafe { objc2::msg_send![super(uitvoer), init] };
+
+        let stream = unsafe {
+            SCStream::initWithFilter_configuration_delegate(SCStream::alloc(), &filter, &cfg, None)
+        };
+        let wachtrij = dispatch2::DispatchQueue::new("fitcom.bureaublad.sck", None);
+        unsafe {
+            stream
+                .addStreamOutput_type_sampleHandlerQueue_error(
+                    ProtocolObject::from_ref(&*uitvoer),
+                    SCStreamOutputType::Audio,
+                    Some(&wachtrij),
+                )
+                .map_err(|e| anyhow!(e.localizedDescription().to_string()))
+                .context("geluidsuitvoer aan SCK-stream koppelen")?;
+        }
+
+        let (start_tx, start_rx) = crossbeam_channel::bounded::<std::result::Result<(), String>>(1);
+        let blok = RcBlock::new(move |fout: *mut NSError| {
+            let uitkomst = if fout.is_null() {
+                Ok(())
+            } else {
+                Err(unsafe { (*fout).localizedDescription() }.to_string())
+            };
+            let _ = start_tx.try_send(uitkomst);
+        });
+        unsafe { stream.startCaptureWithCompletionHandler(Some(&blok)) };
+        start_rx
+            .recv_timeout(Duration::from_secs(5))
+            .context("startCapture kwam niet")?
+            .map_err(|m| {
+                anyhow!(m).context("SCK-audiocapture starten (Screen-Recording-permissie?)")
+            })?;
+
+        Ok((stream, uitvoer))
     }
 }
 
