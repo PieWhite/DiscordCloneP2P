@@ -7,15 +7,19 @@
 desktop
 
 > Buiten de vier waarden die het schema kent (`web`/`ios`/`android`/`adaptive`). Dit is een
-> **native Windows-desktopapplicatie**, gedistribueerd als losse `fitcom.exe` in een zip.
-> Geen mobiel, geen browser, geen publieke URL.
+> **native desktopapplicatie voor Windows en macOS**: op Windows een losse `fitcom.exe`
+> in een zip, op macOS een `FitCommunication.app` in een zip (`scripts/bundle-mac.sh`).
+> Geen mobiel, geen browser, geen publieke URL. iOS is op 2026-08-05 overwogen en
+> bewust uitgesteld: geen scherm delen mogelijk, en zonder servers geen push.
 >
-> **Het weergavesubstraat is wél webtechnologie** (Tauri v2 op WebView2 — zie `## Stack`).
+> **Het weergavesubstraat is wél webtechnologie** (Tauri v2 — zie `## Stack`).
 > CSS, design tokens, echte typografie, motion en impeccable's detector zijn dus allemaal
 > van toepassing. Wat níet van toepassing is: mobiele breakpoints, touch-doelgroottes,
-> browserchroom, SEO, meerdere viewports en cross-browser-compatibiliteit. Er is precies
-> één engine (Chromium via WebView2) op precies één OS, in een venster dat de gebruiker
-> vrij kan verslepen en maximaliseren op een scherm van 1080p tot 3440×1440.
+> browserchroom, SEO en meerdere viewports. Er zijn twee engines — Chromium via WebView2
+> op Windows, WebKit via WKWebView op macOS — in een venster dat de gebruiker vrij kan
+> verslepen en maximaliseren op een scherm van 1080p tot 3440×1440. De frontend gebruikt
+> bewust geen API's die maar op één van de twee bestaan; de `-webkit-`-prefixes die er
+> voor WebView2 al stonden doen op WebKit gewoon werk.
 
 ## Stack
 

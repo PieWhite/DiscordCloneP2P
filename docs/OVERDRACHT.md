@@ -3,13 +3,14 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-08-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
+Laatst bijgewerkt: 2026-08-05. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
 de UI-stack van egui naar Tauri v2).
 
-**Wat er net gebeurd is:** de weergavelaag is **uitgevoerd** in Tauri v2 op WebView2, naar
-de goedgekeurde comp `design/main-window.html`. Er is geen egui meer in de repo behalve in
-doc-commentaar. Lees beslissing 19 en 20 hieronder vóór je iets aan de UI doet, en
-`PRODUCT.md` voor de productcontext en de prijs van dat besluit.
+**Wat er net gebeurd is:** de app is **geport naar macOS** (14+, Apple Silicon) — zelfde
+codebase, zelfde protocol 5, volledige featurepariteit behalve P2P-auto-update. Lees
+beslissing 21 hieronder vóór je iets aan de platformlaag doet. De vorige mijlpaal (de
+weergavelaag in Tauri v2, naar de goedgekeurde comp `design/main-window.html`) staat in
+beslissing 19 en 20; er is geen egui meer in de repo behalve in doc-commentaar.
 
 **Waar de UI nu staat:**
 
@@ -541,6 +542,74 @@ Wat dat concreet geworden is:
 Een repo-brede hernoeming van de resterende Nederlandse identifiers is daarmee toegestaan
 maar niet gedaan. Wie hem alsnog wil: dat is eigen werk met een eigen commit, niet iets om
 en passant mee te nemen.
+
+### 21. De macOS-port: cfg-siblingmodules, geen traits (2026-08-05)
+
+De SPEC zei "Windows only". Rick vroeg om een volledige port naar macOS (en iOS; dat
+laatste is na de analyse bewust uitgesteld — op iOS kan een app geen scherm van andere
+apps opnemen, en zonder servers is er geen push, dus een iPhone-client kan alleen iets
+betekenen terwijl hij open staat. Als iOS ooit komt is het een gereduceerde
+kijk/luister/chat-client met eigen spikes vooraf).
+
+Hoe de port in elkaar zit, en waarom zo:
+
+- **Cfg-geselecteerde siblingmodules, geen trait-hiërarchie.** Elke Windows-module
+  (`capture`, `codec`, `d3d`, `venster`) houdt naam en publieke API; macOS heeft
+  twinbestanden onder `crates/video/src/mac/`, gekozen met `#[cfg]` + `#[path]` in
+  `lib.rs`. Geen enkele Windows-regel is verplaatst of hernoemd; Windows-deps staan in
+  `[target.'cfg(windows)'.dependencies]`. Windows-gedrag is daardoor byte-identiek.
+- **Eén opaak frametype dicht het ene lek.** `ID3D11Texture2D` stond als parameter- en
+  returntype in de publieke API van zes modules. `d3d::Beeld` (Windows: type-alias van
+  de textuur; mac: houder om een IOSurface-gebackte `CVPixelBuffer`) laat `deler.rs`,
+  `kijker.rs`, `fragment.rs` en heel `engine.rs` op beide platforms ongewijzigd
+  compileren — de getunede pacing-, FEC- en weergaveklok-logica is niet aangeraakt.
+- **De mac-videobackend:** ScreenCaptureKit voor opname (opsommen gaat synchroon via
+  CoreGraphics, want `list_sources` is een synchroon Tauri-commando en
+  `SCShareableContent` bestaat alleen async), VideoToolbox voor H.264
+  (`VTCompressionSession`/`VTDecompressionSession`, synchroon gehouden met
+  `CompleteFrames` en de callback-op-aanroepende-thread), en het kijkvenster is een
+  `NSWindow` met `AVSampleBufferVideoRenderer` — geen regel Metal; de laag schaalt en
+  letterboxt zelf en `contentAspectRatio` bewaakt de verhouding.
+- **De Annex-B-brug is de wire-kritieke regel.** Media Foundation spreekt Annex-B
+  (startcodes, SPS/PPS inline op keyframes); VideoToolbox spreekt AVCC. De mac-codec
+  vertaalt beide richtingen. HEVC is op mac bewust niet geïmplementeerd; H.264 is de
+  standaard en `kan_decoderen(Hevc)` zegt daar eerlijk `false`.
+- **Kleurconversie en MF-bootstrap hebben geen mac-tegenhanger nodig**: de VT-decoder
+  levert op verzoek rechtstreeks BGRA (`destinationImageBufferAttributes`), dus
+  `kleur.rs` en `mf.rs` zijn Windows-interne details gebleven.
+- **Bureaubladgeluid**: audio-only `SCStream` met `excludesCurrentProcessAudio`
+  (macOS 14+) — hetzelfde doel als de proces-exclusieve WASAPI-loopback, zelfde
+  threadcontract (`session.rs::sck_capture` naast `wasapi_capture`). Er is geen
+  cpal-terugval: de loopback-truc (invoerstroom op een uitvoerapparaat) bestaat alleen
+  op WASAPI.
+- **Geen P2P-auto-update op mac.** Twee guards in `engine.rs`: mac haalt nooit een
+  peer-exe binnen, en biedt de eigen binary nooit aan (`NOT_AVAILABLE` — bestaand,
+  netjes afgehandeld antwoord). Zonder die tweede guard zou een Windows-peer die een
+  "nieuwere" mac-versie ziet een Mach-O over zijn `fitcom.exe` heen zetten. Versies
+  blijven per werkafspraak gelijk op; de mac bouwt uit de broncode.
+- **Tray en meldingen:** de Win32-omweg (eigen pollingthread, want een verborgen
+  venster pompt daar zijn events niet) is op macOS onnodig — de NSApplication-runloop
+  pompt door. De mac-tray is Tauri's eigen tray-API op de main thread
+  (`ui/mod.rs::mac_tray`); meldingen gaan via `osascript` (nul deps, respecteert
+  Focus). `tray.rs` deelt alleen nog de afsluitvlag en het icoon.
+- **Distributie:** `scripts/bundle-mac.sh` bouwt een ad-hoc-gesigneerde
+  `FitCommunication.app` in een zip — de mac-tweeling van "losse exe in een zip",
+  zonder tauri-cli of Node. De .app is nodig omdat TCC-permissies aan een
+  bundel-identiteit plakken. **Prijs van ad-hoc:** elke nieuwe build heeft een andere
+  cdhash, dus macOS vraagt Screen Recording na elke update opnieuw;
+  Developer-ID-signing lost dat op en dat besluit is uitgesteld.
+- **Bindings:** de objc2-familie 0.3.2 (objc2 0.6.4, block2 0.6.2, dispatch2 0.3.1),
+  gepind na een spike. Twee valkuilen om te onthouden: `CVPixelBuffer` is in die
+  bindings een type-alias van `CVBuffer`, en Rust 2021's disjuncte closure-capture kan
+  een `Send`-newtype omzeilen door alleen het binnenveld te vangen — vandaar dat
+  `Beeld` zijn veld privé houdt.
+- **De ene echte bug uit de integratie:** SCK-tijdstempels zijn hosttijd (nanoseconden
+  sinds opstarten); `value × 10^7` satureerde in i64, alle beelden kregen dezelfde
+  tijdstempel en de weergaveklok moest elke twee seconden opnieuw ijken. In i128
+  rekenen loste het op — gemeten daarna: 5,1 ms van opnemen tot tonen op loopback
+  (3456×2234), 231 van 233 beelden getoond, 0 gesneuveld
+  (`cargo run -p fitcom-video --example mac_keten`; als voorbeeldprogramma omdat het
+  venster de main-runloop nodig heeft en de cargo-testharnas die niet pompt).
 
 ---
 

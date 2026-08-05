@@ -21,7 +21,9 @@ Dat is de belangrijkste niet-functionele eis en wint van kwaliteit waar ze botse
   `ROADMAP.md`, fase 10.
 - Iedereen gebruikt altijd een headset.
 - Alle drie: 1 Gbit/s symmetrisch, Tailscale.
-- Windows only.
+- Windows 11; sinds 2026-08-05 ook macOS 14+ op Apple Silicon (zelfde codebase,
+  protocol 5, volledige featurepariteit behalve P2P-auto-update — zie
+  `docs/OVERDRACHT.md` beslissing 21).
 
 **Codecgevolg:** alle drie zijn NVIDIA Turing of nieuwer. AV1 valt af (2080 Super kan
 AV1 niet encoden én niet decoden).

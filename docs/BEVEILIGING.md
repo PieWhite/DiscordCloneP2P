@@ -22,6 +22,15 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 
 ---
 
+> **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
+> bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
+> Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
+> (`atty`) raakt macOS niet; B-46 (Control Flow Guard) is MSVC-specifiek. De
+> `veilige_bestandsnaam`-fix van B-03 moet ook `/` en `:` aankunnen nu er een
+> Unix-doel is. B-01/B-02/B-20/B-21 (updatepad) zijn op de mac zelf niet bereikbaar:
+> die haalt nooit een exe binnen en biedt de zijne nooit aan (`engine.rs`,
+> mac-guards) — voor de Windows-peers verandert er niets.
+
 ## Het dreigingsmodel: aanname versus code
 
 Het project rust op vier aannames. Twee ervan maakt de code niet waar.

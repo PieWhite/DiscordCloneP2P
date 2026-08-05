@@ -4,17 +4,18 @@ Servervrij alternatief voor Discord voor een kleine vaste groep. Draait over een
 Tailscale-tailnet, zonder signaling-server, zonder TURN, zonder accounts, zonder cloud.
 Alle peers zijn gelijkwaardig — er is geen host.
 
-**Status:** netwerklaag, tekstchat en voice chat zijn af. Screenshare is half af:
-opnemen en coderen werken, tonen nog niet. Zie [ROADMAP.md](ROADMAP.md) en
+**Status:** alle geplande fasen zijn af — chat, voice, screenshare, bestandsdeling,
+kanalen en automatische updates. Zie [ROADMAP.md](ROADMAP.md) en
 [docs/OVERDRACHT.md](docs/OVERDRACHT.md).
 
 ## Wat je nodig hebt
 
-- Windows 11
-- [Tailscale](https://tailscale.com/), geïnstalleerd en ingelogd op elke PC, met alle
-  PC's in hetzelfde tailnet
-- Om zelf te bouwen: Rust (stable) met de MSVC-toolchain, en `cmake` op je PATH
-  (libopus wordt vanuit broncode meegebouwd)
+- Windows 11, of macOS 14+ op Apple Silicon
+- [Tailscale](https://tailscale.com/), geïnstalleerd en ingelogd op elke machine, met
+  alle machines in hetzelfde tailnet
+- Om zelf te bouwen: Rust (stable; op Windows met de MSVC-toolchain) en `cmake`
+  (libopus wordt vanuit broncode meegebouwd). Op macOS: `xcode-select --install` en
+  `brew install cmake`.
 
 ## Installeren op een PC
 
@@ -60,6 +61,25 @@ verandert. Staat MagicDNS uit, gebruik dan de `100.x.x.x`-adressen uit `tailscal
 Zorg dat de firewall `fitcom.exe` toestaat op het Tailscale-netwerk. Windows vraagt dit
 meestal bij de eerste start.
 
+### macOS
+
+Bouw met `./scripts/bundle-mac.sh` (of pak de zip met `FitCommunication.app` uit) en
+start met rechtsklik → Open (eenmalig, vanwege Gatekeeper). De datamap staat in
+`~/Library/Application Support/FitCommunication`; een `data`-map naast de app werkt
+niet binnen een .app-bundel. Verder gelden dezelfde stappen als hierboven.
+
+- **Microfoon** en **schermopname** zijn permissies: macOS vraagt om de microfoon bij
+  de eerste keer deelnemen aan voice, en om Screen Recording bij de eerste keer
+  delen/kiezen van een bron. Na het toekennen van Screen Recording wil macOS de app
+  opnieuw gestart zien.
+- De app is ad-hoc gesigneerd: na een **update** vraagt macOS de
+  Screen-Recording-permissie opnieuw. Dat is de prijs van signing zonder
+  Apple-Developer-account.
+- Apparaatnamen in `config.toml` zijn de macOS-namen ("MacBook Pro Microphone"); de
+  app schrijft de beschikbare namen bij het starten in de log.
+- Automatische updates tussen peers doet de mac bewust niet mee: hij bouwt uit de
+  broncode. Houd de versies gelijk.
+
 ### Bestanden in de datamap
 
 | Bestand | |
@@ -85,9 +105,9 @@ Zie je "er is een gesprek bezig", dan zit er al iemand te wachten.
 Er zit geen echo-onderdrukking in: dat kan omdat jullie alle drie een headset gebruiken.
 Speel je het geluid via luidsprekers af, dan horen de anderen zichzelf terug.
 
-**Zet je microfoon en koptelefoon in Windows op 48000 Hz.** Staat er iets anders, dan
-moet de app herbemonsteren en dat kost onnodig kwaliteit. De app waarschuwt hierover
-in de log.
+**Zet je microfoon en koptelefoon in Windows op 48000 Hz** (op macOS is 48000 Hz al
+de standaard). Staat er iets anders, dan moet de app herbemonsteren en dat kost
+onnodig kwaliteit. De app waarschuwt hierover in de log.
 
 ## Chat
 

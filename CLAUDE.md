@@ -1,7 +1,8 @@
 # P2P communicatie-app — projectcontext
 
 Servervrij Discord-alternatief voor 3 vaste peers over een Tailscale-tailnet.
-Rust-kern. Windows only. UI-stack: Tauri v2 op WebView2.
+Rust-kern. Windows 11 + macOS 14+ (Apple Silicon). UI-stack: Tauri v2 op WebView2
+(Windows) / WKWebView (macOS).
 
 ## Documenten
 | Bestand | Wanneer lezen |
@@ -39,6 +40,9 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
 ## Codec en hardware
 Alle drie de peers hebben NVIDIA Turing of nieuwer, maar de RTX 2080 Super kan AV1
 **niet encoden en niet decoden**. Stel nooit AV1 voor zonder dat die machine vervangen is.
+Op macOS loopt H.264 via VideoToolbox (hardware op elke Apple Silicon); HEVC is daar
+bewust niet geïmplementeerd — de Annex-B-brug is alleen voor H.264 gebouwd en niemand
+gebruikt HEVC.
 
 **H.264 is de standaardcodec, niet HEVC.** Encoden kan met beide, maar HEVC *decoderen*
 loopt op Windows via de HEVC Video Extensions uit de Store, en die zit er niet standaard
@@ -76,18 +80,38 @@ crates/app/frontend/           index.html, app.css, app.js, fonts/ — in de exe
   zijn het ontwerpsysteem. Een kleurwaarde of radius die niet uit een token komt is een bug.
 - **UI-taal is Engels**, motor en overige crates blijven Nederlands.
 
+## macOS-port (2026-08-05)
+Zelfde codebase, cfg-geselecteerde siblingmodules onder `crates/video/src/mac/`
+(ScreenCaptureKit, VideoToolbox, NSWindow + AVSampleBufferVideoRenderer), zie
+`docs/OVERDRACHT.md` beslissing 21. Regels:
+
+- **Windows-gedrag blijft byte-identiek.** Platformcode gaat achter `#[cfg]`, nooit
+  in gedeelde paden; Windows-deps staan in `[target.'cfg(windows)'.dependencies]`.
+- **`d3d::Beeld` is het ene frametype** dat door `deler`/`kijker`/`engine` stroomt
+  (Windows: `ID3D11Texture2D`-alias, mac: `CVPixelBuffer`-houder). Introduceer geen
+  tweede platformtype in gedeelde code.
+- **Op de draad staat H.264 in Annex-B** met SPS/PPS op elk keyframe; de mac-codec
+  vertaalt van/naar AVCC. Protocol 5, geen bump — mac↔Windows interop is de eis.
+- **Geen P2P-update op mac**: `engine.rs` haalt er nooit een exe binnen en biedt de
+  eigen binary nooit aan (`NOT_AVAILABLE`). Versies blijven per werkafspraak gelijk.
+- TCC: schermopname en microfoon zijn permissies; ad-hoc signing betekent dat
+  Screen Recording na elke nieuwe build opnieuw toegekend moet worden.
+
 ## Bouwen
-Naast Rust + MSVC is `cmake` nodig: libopus wordt vanuit broncode meegebouwd. Staat hier
-portable in `%USERPROFILE%\tools\cmake-4.4.0-windows-x86_64\bin`, in het gebruikers-PATH.
-`.cargo/config.toml` zet `CMAKE_POLICY_VERSION_MINIMUM=3.5`, want de libopus uit
-`audiopus_sys` is van 2021 en zijn CMakeLists vraagt een minimum dat CMake 4 weigert.
+Naast Rust (MSVC op Windows, gewoon stable op macOS) is `cmake` nodig: libopus wordt
+vanuit broncode meegebouwd. Op Windows staat hij portable in
+`%USERPROFILE%\tools\cmake-4.4.0-windows-x86_64\bin`; op macOS: `brew install cmake`
+plus de Xcode Command Line Tools. `.cargo/config.toml` zet
+`CMAKE_POLICY_VERSION_MINIMUM=3.5`, want de libopus uit `audiopus_sys` is van 2021 en
+zijn CMakeLists vraagt een minimum dat CMake 4 weigert.
 
 Geen Node, geen frontend-bouwstap: `tauri-build` bakt `crates/app/frontend/` in de exe,
 dus `cargo build` bouwt de hele app — maar wel opnieuw bouwen na een frontendwijziging.
-`crates/app/icons/icon.ico` moet bestaan, anders weigert `tauri-build`.
+`crates/app/icons/icon.ico` (Windows) en `icons/icon.png` (macOS) moeten bestaan,
+anders weigert `tauri-build`.
 
-**Sluit draaiende instanties af vóór elke build**, anders faalt `cargo build` met
-"Toegang geweigerd (os error 5)".
+**Windows: sluit draaiende instanties af vóór elke build**, anders faalt `cargo build`
+met "Toegang geweigerd (os error 5)". macOS heeft die beperking niet.
 
 ```
 cargo build                          # debug build
@@ -97,8 +121,12 @@ cargo test                           # alles
 cargo test -p fitcom-audio --test apparaten -- --ignored   # echte geluidskaart
 cargo clippy --all-targets           # voor een commit
 cargo fmt --all
-.\scripts\run-peers.ps1 -Count 3     # 3 lokale instanties, volledige mesh
+.\scripts\run-peers.ps1 -Count 3     # Windows: 3 lokale instanties, volledige mesh
 .\scripts\run-peers.ps1 -Stop        # afsluiten
+./scripts/run-peers.sh --count 3     # macOS: zelfde, als bash
+./scripts/run-peers.sh --stop
+cargo run -p fitcom-video --example mac_keten   # macOS: hele videoketen op loopback
+./scripts/bundle-mac.sh              # macOS: FitCommunication.app + zip
 ```
 
 ## Werkafspraken

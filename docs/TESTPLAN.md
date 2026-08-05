@@ -633,6 +633,56 @@ toepassen.*
 
 ---
 
+## macOS-port (2026-08-05) — wat er met een echte Windows-peer getest moet worden
+
+Op de mac zelf is al bevestigd (zie `docs/OVERDRACHT.md` beslissing 21): bouwen, alle
+tests, mesh van twee lokale instanties (QUIC, protocol 5), SCK-opname op
+Retina-resolutie, en de hele videoketen op loopback (5,1 ms opnemen→tonen, 231/233
+beelden). Wat alleen met een echte Windows-peer over Tailscale kan:
+
+**M.1 Chat mac↔Windows**
+Berichten beide kanten op, bewerken/verwijderen convergeert, geschiedenis-inhaal na
+offline zijn, bestand heen en terug, geplakte afbeelding inline aan beide kanten.
+
+**M.2 Voice mac↔Windows**
+Duplex-audio, VAD (stilte verstuurt niets), mute/deafen, volume per peer, RTT in de
+meterregel. Eerste keer: macOS vraagt om de microfoon. *Klinkt de mac-kant robotisch
+of te snel/langzaam, kijk dan naar de herbemonstering (log meldt de apparaat-rate).*
+
+**M.3 Windows deelt, mac kijkt**
+Stream verschijnt in de strook (miniatuur!), kijkvenster opent, beeld loopt vloeiend
+(meterregel: `getoond_fps` ≈ bron, `spreiding_ms` laag), venster sluiten stopt het
+abonnement (deler-meter: kijkers → 0), keyframe-herstel na verlies (even de wifi/kabel
+knijpen).
+
+**M.4 Mac deelt, Windows kijkt**
+Bronkiezer toont schermen én vensters (eerste keer: Screen-Recording-permissie +
+herstart), Windows-decoder pakt de stream (Annex-B/SPS-PPS-brug — dít is de
+wire-kritieke test), 60 fps-pacing op de ProMotion-mac (120 Hz-bron → 60 op de draad),
+laat-instappende tweede kijker krijgt binnen een halve seconde beeld
+(keyframe-verzoek).
+
+**M.5 Desktopgeluid vanaf de mac**
+Mac deelt scherm + zit in voice → bureaubladgeluid-stream verschijnt vanzelf; de
+Windows-peer hoort het mac-systeemgeluid maar **niet zijn eigen stem terug**
+(`excludesCurrentProcessAudio` — speel muziek af terwijl de Windows-peer praat).
+Stilte stopt de pakketten (2 s hangover).
+
+**M.6 Update-gedrag met versieverschil**
+Bouw de mac één patchversie hoger dan de Windows-peer. De Windows-peer mag *geen*
+update-banner tonen of iets binnenhalen (de mac antwoordt NOT_AVAILABLE); in de
+Windows-log hoort de aanvraag als mislukt/niet-beschikbaar te eindigen, waarna alles
+gewoon doorwerkt.
+
+**M.7 Tray en meldingen op de mac**
+Sluitknop → venster weg, app blijft (menubalk-icoon), Openen haalt hem terug met
+focus, Afsluiten sluit netjes af (peer ziet offline binnen ~15 s). Bericht terwijl de
+app verborgen is → macOS-melding met geluid; niet-storen onderdrukt hem.
+
+**M.8 Slapen en ontwaken**
+Mac dichtklappen tijdens een gesprek → peers zien offline; openklappen → binnen ~30 s
+vanzelf weer online, chat haalt in, stream-abonnementen zijn netjes opgeruimd.
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of
