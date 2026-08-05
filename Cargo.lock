@@ -1297,7 +1297,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fitcom"
-version = "0.2.8"
+version = "0.2.85"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-audio"
-version = "0.2.8"
+version = "0.2.85"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-net"
-version = "0.2.8"
+version = "0.2.85"
 dependencies = [
  "anyhow",
  "fitcom-proto",
@@ -1361,7 +1361,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-proto"
-version = "0.2.8"
+version = "0.2.85"
 dependencies = [
  "rmp-serde",
  "serde",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-store"
-version = "0.2.8"
+version = "0.2.85"
 dependencies = [
  "anyhow",
  "fitcom-proto",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-video"
-version = "0.2.8"
+version = "0.2.85"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

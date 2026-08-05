@@ -25,10 +25,12 @@ pub mod state;
 
 use crate::config::Config;
 use crate::engine::{EngineHandle, Snapshot};
+use crate::files::DownloadStatus;
 use crate::tray;
 use fitcom_proto::PeerId;
 use state::{Constants, UiState};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,10 +55,11 @@ pub struct Ui {
     /// The source list handed to the picker, so "share the third one" resolves to the
     /// same source the user saw. Replaced wholesale every time the picker opens.
     sources: Mutex<Vec<fitcom_video::Bron>>,
-    /// Bumped when the op log changes. The frontend refetches the open conversation on a
-    /// change instead of the whole history riding on every state event.
+    /// Bumped when the op log or a transfer status changes. The frontend refetches the
+    /// open conversation on a change instead of the whole history riding on every state
+    /// event.
     timeline_revision: AtomicU64,
-    last_timeline: Mutex<usize>,
+    last_fingerprint: Mutex<u64>,
     /// PNG bytes per stream key, served over `thumb://`.
     thumbnails: Mutex<HashMap<String, Arc<Vec<u8>>>>,
     /// When each peer was last seen online, observed while this process ran.
@@ -95,11 +98,30 @@ impl Ui {
     /// The op log is rebuilt into a fresh `Arc<Timeline>` whenever it changes, so
     /// comparing the allocation is enough — and the previous `Arc` is kept alive by the
     /// snapshot we are holding, so the address cannot be recycled underneath us.
+    ///
+    /// Transfer status is rendered in that same payload but lives *outside* the `Arc`
+    /// (`Snapshot::files`), so it has to be folded in here as well. Without it a download
+    /// that really ran left its card on "Download" for ever — the frontend refetches the
+    /// conversation only when this number changes, so progress, "Downloaded" and a failure
+    /// all stayed invisible and the button looked dead.
     fn revision(&self, snap: &Snapshot) -> u64 {
-        let ptr = Arc::as_ptr(&snap.timeline) as usize;
-        let mut last = self.last_timeline.lock().unwrap();
-        if *last != ptr {
-            *last = ptr;
+        let mut hasher = DefaultHasher::new();
+        (Arc::as_ptr(&snap.timeline) as usize).hash(&mut hasher);
+        for f in &snap.files {
+            match &f.status {
+                None => 0u8.hash(&mut hasher),
+                Some(DownloadStatus::Bezig { ontvangen, .. }) => {
+                    (1u8, ontvangen).hash(&mut hasher)
+                }
+                Some(DownloadStatus::Voltooid) => 2u8.hash(&mut hasher),
+                Some(DownloadStatus::Mislukt(e)) => (3u8, e).hash(&mut hasher),
+            }
+        }
+        let vingerafdruk = hasher.finish();
+
+        let mut last = self.last_fingerprint.lock().unwrap();
+        if *last != vingerafdruk {
+            *last = vingerafdruk;
             self.timeline_revision.fetch_add(1, Ordering::Relaxed);
         }
         self.timeline_revision.load(Ordering::Relaxed)
@@ -147,7 +169,7 @@ pub fn run(
         },
         sources: Mutex::new(Vec::new()),
         timeline_revision: AtomicU64::new(0),
-        last_timeline: Mutex::new(0),
+        last_fingerprint: Mutex::new(0),
         thumbnails: Mutex::new(HashMap::new()),
         last_seen: Mutex::new(HashMap::new()),
         engine,
@@ -158,6 +180,10 @@ pub fn run(
     let quit_for_update = ui.engine.afsluiten_voor_update.clone();
     let snapshot_rx = ui.engine.snapshot.clone();
     let to_tray = cfg.minimize_to_tray;
+
+    // Vóór het bouwen van de Tauri-app, anders claimt Tauri de menu-gebeurtenissen van de
+    // tray en doet het tray-menu niets meer. Zie `tray::claim_menu_events`.
+    tray::claim_menu_events();
 
     tauri::Builder::default()
         .manage(ui)

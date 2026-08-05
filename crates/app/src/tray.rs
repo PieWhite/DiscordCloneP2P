@@ -31,16 +31,37 @@ pub struct Tray {
     _icon: TrayIcon,
 }
 
+const OPENEN_ID: &str = "fitcom-openen";
+const AFSLUITEN_ID: &str = "fitcom-afsluiten";
+
+/// Tauri kaapt bij het bouwen van zijn event-loop de globale menu-handler van `muda`, en
+/// vanaf dat moment blijft `MenuEvent::receiver()` leeg: muda stuurt een gebeurtenis naar
+/// de handler *of* naar het kanaal, nooit naar allebei. Onze tray gebruikt dezelfde
+/// muda-versie, dus de klikken op "Openen" en "Afsluiten" verdwenen in Tauri.
+///
+/// `set_event_handler` schrijft in een `OnceCell` — wie eerst is, wint. Deze functie moet
+/// daarom vóór `tauri::Builder::run` aangeroepen worden. De app heeft geen Tauri-menu's,
+/// dus alle menu-gebeurtenissen zijn van ons.
+pub fn claim_menu_events() {
+    MenuEvent::set_event_handler(Some(|ev: MenuEvent| match ev.id.0.as_str() {
+        OPENEN_ID => toon_venster(),
+        AFSLUITEN_ID => {
+            // Eerst tonen: pas als de app weer draait kan hij zichzelf netjes afsluiten.
+            // Zouden we hier het proces killen, dan sluiten de verbindingen niet netjes af.
+            toon_venster();
+            AFSLUITEN.store(true, Ordering::Relaxed);
+        }
+        _ => {}
+    }));
+}
+
 pub fn start() -> Result<Tray> {
     let menu = Menu::new();
-    let openen = MenuItem::new("Openen", true, None);
-    let afsluiten = MenuItem::new("Afsluiten", true, None);
+    let openen = MenuItem::with_id(OPENEN_ID, "Openen", true, None);
+    let afsluiten = MenuItem::with_id(AFSLUITEN_ID, "Afsluiten", true, None);
     menu.append(&openen).context("menu-item toevoegen")?;
     menu.append(&tray_icon::menu::PredefinedMenuItem::separator())?;
     menu.append(&afsluiten).context("menu-item toevoegen")?;
-
-    let openen_id = openen.id().clone();
-    let afsluiten_id = afsluiten.id().clone();
 
     let icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -52,23 +73,9 @@ pub fn start() -> Result<Tray> {
     std::thread::Builder::new()
         .name("fitcom-tray".into())
         .spawn(move || {
-            let menu_events = MenuEvent::receiver();
             let tray_events = TrayIconEvent::receiver();
 
             loop {
-                if let Ok(ev) = menu_events.try_recv() {
-                    if ev.id == openen_id {
-                        toon_venster();
-                    } else if ev.id == afsluiten_id {
-                        // Eerst tonen: pas als de app weer draait kan hij zichzelf netjes
-                        // afsluiten. Zouden we hier het proces killen, dan sluiten de
-                        // verbindingen niet netjes af.
-                        toon_venster();
-                        AFSLUITEN.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                }
-
                 if let Ok(TrayIconEvent::DoubleClick { .. }) = tray_events.try_recv() {
                     toon_venster();
                 }
