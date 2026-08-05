@@ -296,8 +296,10 @@ unsafe extern "C-unwind" fn encode_klaar(
     avcc_naar_annexb(&avcc, &mut annexb);
 
     let tijd = unsafe { sbuf.presentation_time_stamp() };
+    // In i128, om dezelfde reden als in `capture.rs`: grote tijdwaarden × 1e7 passen
+    // niet in i64 en saturatie plakt alle beelden op één tijdstempel.
     let tijd_hns = if tijd.timescale > 0 {
-        tijd.value.saturating_mul(HNS_PER_SEC) / i64::from(tijd.timescale)
+        (i128::from(tijd.value) * i128::from(HNS_PER_SEC) / i128::from(tijd.timescale)) as i64
     } else {
         0
     };

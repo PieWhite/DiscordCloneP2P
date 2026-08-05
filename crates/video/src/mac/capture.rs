@@ -286,8 +286,12 @@ define_class!(
                 return;
             };
             let pts = unsafe { sbuf.presentation_time_stamp() };
+            // In i128: SCK-tijdstempels zijn hosttijd (nanoseconden sinds opstarten,
+            // timescale 1e9); value × 1e7 loopt in i64 vast op de bovengrens en dan
+            // krijgen alle beelden dezelfde tijd — precies wat de weergaveklok sloopt.
             let hns = if pts.timescale > 0 {
-                pts.value.saturating_mul(super::codec::HNS_PER_SEC) / i64::from(pts.timescale)
+                (i128::from(pts.value) * i128::from(super::codec::HNS_PER_SEC)
+                    / i128::from(pts.timescale)) as i64
             } else {
                 0
             };
