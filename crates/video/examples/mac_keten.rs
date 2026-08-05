@@ -105,7 +105,10 @@ fn main() {
                 deler.beelden(),
                 getoond as f64 / seconden
             );
-            println!("vertraging van opnemen tot tonen: {:?}", kijker.vertraging());
+            println!(
+                "vertraging van opnemen tot tonen: {:?}",
+                kijker.vertraging()
+            );
 
             anyhow::ensure!(getoond >= 20, "maar {getoond} beelden; de keten valt stil");
             anyhow::ensure!(
@@ -126,13 +129,15 @@ fn main() {
 
     // De main-runloop pompen tot de werkthread klaar is; dit is wat Tauri in de echte
     // app doet.
-    unsafe {
-        let lus = objc2_foundation::NSRunLoop::mainRunLoop();
-        while !klaar.load(Ordering::Relaxed) {
-            lus.runUntilDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(
-                0.05,
-            ));
-        }
+    let lus = objc2_foundation::NSRunLoop::mainRunLoop();
+    while !klaar.load(Ordering::Relaxed) {
+        lus.runUntilDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(
+            0.05,
+        ));
     }
-    std::process::exit(if mislukt.load(Ordering::Relaxed) { 1 } else { 0 });
+    std::process::exit(if mislukt.load(Ordering::Relaxed) {
+        1
+    } else {
+        0
+    });
 }
