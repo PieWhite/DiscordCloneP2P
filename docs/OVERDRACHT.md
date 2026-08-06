@@ -720,6 +720,50 @@ waarmee `camera.rs` is nagelopen: een losse crate met alleen `windows`, `anyhow`
 `cargo check` én `cargo clippy` voor de Windows-target schoon te krijgen zonder Windows.
 Dat vangt elke API-vormfout; het vangt geen gedrag.
 
+### 23. Updates komen uit een getekende release-feed, niet meer van een peer (2026-08-07)
+
+Rick wilde af van "een peer duwt je een exe toe", maar zonder ergens een server te moeten
+draaien en zonder maandelijkse kosten. Dat kan: een statisch JSON-manifest plus de exe als
+release-asset op GitHub. Gratis, niets om te beheren, en de app haalt het alleen op als
+hij zelf gaat kijken.
+
+**Wat de echte winst is, en dat is niet het transport.** Het oude pad liet dezelfde peer
+zowel de bytes als de hash leveren waartegen die bytes gecontroleerd werden (B-01). Dat
+is geen controle, en het maakte van één besmette machine een worm richting de andere twee.
+De feed lost dat op met twee onafhankelijke bewijzen: TLS zegt met wíe we praten,
+Ed25519 zegt wie de release gemáákt heeft. De privésleutel staat op geen van de drie PC's
+en niet bij GitHub, dus een gekaapt account kan wel het bestand vervangen maar geen
+geldige handtekening maken. Zonder ingebakken publieke sleutel weigert het hele pad —
+falen gaat dicht, niet open.
+
+- **Het manifest tekent versie, hash én grootte samen** (`"{version}\n{hash}\n{size}"`).
+  Alle drie los tekenen zou toestaan dat iemand velden tussen twee geldige releases
+  omwisselt.
+- **De vormcontroles blijven, ook al is het getekend.** `version` belandt in een
+  bestandsnaam, dus alleen cijfers en punten (B-02 kwam ooit precies langs die weg
+  binnen); `url` moet binnen de ingebakken repo vallen; `size` onder 200 MB. Signing is
+  geen reden om de goedkope controles weg te laten.
+- **Hervatten is eruit.** `have_bytes`, het `.part`-hervatpunt en de
+  cross-stream-synchronisatie (`update_verwachting_tx`, `wacht_op_update_verwachting`)
+  waren er alleen omdat een peer-verbinding halverwege kon wegvallen. Een HTTPS-GET die
+  faalt begin je gewoon opnieuw; dat is ~130 regels minder motor.
+- **`ureq`, geen `reqwest`.** Blokkerend in een `spawn_blocking`, want dit is geen heet
+  pad. Het gebruikt dezelfde `rustls` 0.23 en dezelfde `ring` als quinn, dus er komt geen
+  tweede TLS-stack in de binary.
+- **Wat er bewust níet is:** een handmatige "check nu"-knop. De tik doet het elke zes uur
+  en de eerste een minuut na start; een knop is frontendwerk voor iets waar niemand op
+  wacht.
+- **macOS blijft uitgesloten.** `fitcom-updater` is daar een lege stub, dus een opgehaalde
+  build zou nergens heen kunnen. De feed maakt het mogelijk, het toepassen nog niet.
+
+**De prijs, expliciet.** Dit is een uitzondering op invariant 1 (nul servers, geen CDN).
+De app werkt zonder internet volledig door — alleen updaten niet. De tweede prijs is
+menselijk: raakt `release-key.pk8` kwijt, dan moet iedereen één keer met de hand
+bijwerken. Dat is inherent aan een vertrouwensanker; daarom staat hij buiten de repo.
+
+**Wat er nog open staat.** B-20 (TOCTOU: er wordt niet opnieuw geverifieerd vlak vóór het
+spawnen van de updater) is met deze wijziging niet aangeraakt.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -1490,6 +1534,14 @@ weergave.
 ---
 
 ## Hoe automatische updates in elkaar zitten (fase 11)
+
+> **Verouderd sinds fase 13 (2026-08-07).** Het ophaalpad hieronder is vervangen door een
+> getekende release-feed over HTTPS; zie beslissing 23 en `docs/ARCHITECTURE.md`
+> § Automatische updates. Wat nog klopt: `is_newer`, `app_version` in de handshake (nu
+> alleen om te tónen), `fitcom-updater` en `afsluiten_voor_update`. Wat weg is:
+> `overweeg_update`, `update_upload_taak`, `download_update_taak`,
+> `update_verwachting_tx`, en het hervatten met `have_bytes`. De protocolvarianten
+> bestaan nog maar worden gelogd en geweigerd.
 
 ```
 crates/proto/src/appversion.rs   is_newer(theirs, ours) — pure tuple-vergelijking,

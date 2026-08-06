@@ -16,13 +16,14 @@ use crate::chat::Chat;
 use crate::config::{self, Config, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::notify;
+use crate::release::{self, Release};
 use crate::streams::{Actie, Streams};
 use crate::tags;
 use crate::updates::{UpdateStatus, Updates};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
-use fitcom_proto::control::{FileOutcome, StreamKind, UpdateResponse, VoiceJoin, VoiceLeave};
+use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
@@ -44,9 +45,16 @@ const TIK: Duration = Duration::from_millis(100);
 /// per seconde veel te veel gelezen stukjes langs om elk apart te melden.
 const VOORTGANG_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Fase 11: eigen versie, uitgewisseld in de handshake en vergeleken met wat een peer
-/// meldt (`fitcom_proto::is_newer`).
+/// Eigen versie. Gaat mee in de handshake (peers tonen elkaars versie) en is sinds fase
+/// 13 waar de release-feed tegen vergeleken wordt (`fitcom_proto::is_newer`).
 const EIGEN_VERSIE: &str = env!("CARGO_PKG_VERSION");
+
+/// Hoe vaak de release-feed geraadpleegd wordt. Er is niets aan gelegen om er sneller
+/// bij te zijn, en dit is de enige verbinding die de app buiten het tailnet legt.
+const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Niet meteen bij het starten: eerst moet de mesh staan en moet de gebruiker zijn
+/// venster zien. Een feed-check die de start vertraagt is een check te vroeg.
+const UPDATE_EERSTE_CHECK: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct PeerView {
@@ -137,6 +145,9 @@ pub struct Snapshot {
     /// instellingenscherm: de sessie leest dit bij het starten uit de config.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+    /// Waar downloads nu landen. Volgt `cfg.download_dir`, dus reactief zodra de
+    /// gebruiker hem via het instellingenscherm wijzigt.
+    pub download_dir: PathBuf,
     pub files: Vec<FileView>,
     pub ongelezen: usize,
     /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
@@ -191,6 +202,9 @@ pub enum UiCommand {
     /// apparaten worden bij het openen van de voice-sessie gekozen, dus een lopend
     /// gesprek wordt hiervoor kort herstart.
     ZetGeluidsapparaten(Option<String>, Option<String>),
+    /// Nieuwe downloadmap. Bestaande downloads blijven staan waar ze stonden; alleen
+    /// nieuwe downloads landen vanaf nu op het nieuwe pad.
+    ZetDownloadMap(PathBuf),
     /// Een lokaal bestand kiezen en aanbieden aan de anderen (of aan één DM-partner).
     /// Hashen gebeurt op de motor: bij een groot bestand kan dat te lang duren om de UI
     /// op te laten wachten.
@@ -302,7 +316,6 @@ pub fn spawn(
         pictures_dir,
         updates: Updates::new(),
         updates_dir,
-        update_verwachting_tx: watch::channel(None).0,
         file_tx,
         file_rx,
         kijker_tx,
@@ -363,19 +376,11 @@ struct Engine {
     /// Content-adresseerbare map voor afbeeldingen: `<hash-hex>.<ext>`, zowel voor wat
     /// wij aanbieden als voor wat we downloaden. Zie `files::hash_bestandsnaam`.
     pictures_dir: PathBuf,
-    /// Wie op dit moment de nieuwste versie draait die we gezien hebben, en waar we
-    /// staan met een eventuele download daarvan. Zie `crate::updates`.
+    /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
+    /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
     /// Waar een opgehaalde nieuwere exe landt, tot toepassing.
     updates_dir: PathBuf,
-    /// Spiegelt `updates.status()`'s `Bezig`-veld voor `dispatch_inkomende_stream`: de
-    /// `UpdateResponse` (control-stream) en de bytes-stream (eigen uni-stream) zijn twee
-    /// onafhankelijke QUIC-streams zonder onderlinge volgorde-garantie. Over loopback komt
-    /// de control-stream altijd eerder aan, over een echte verbinding niet per se — zonder
-    /// dit zou een net geopende update-stream soms binnenkomen vóór wij weten dát we een
-    /// update verwachten, en dan wordt hij stilletjes weggegooid (zie
-    /// `wacht_op_update_verwachting`).
-    update_verwachting_tx: watch::Sender<Option<(String, [u8; 32])>>,
     /// Voor het klonen naar bestandstaken toe; `file_rx` is waar de motor op wacht.
     file_tx: mpsc::Sender<FileEvent>,
     file_rx: mpsc::Receiver<FileEvent>,
@@ -416,11 +421,20 @@ enum FileEvent {
         file: OpId,
         bericht: String,
     },
-    /// Fase 11: voortgang/uitkomst van een lopende update-download. Los van `Voortgang`/
+    /// Fase 13: verloop van een check bij de release-feed. Los van `Voortgang`/
     /// `Voltooid`/`Mislukt` hierboven omdat een update geen `OpId` heeft.
+    ///
+    /// De hele check — feed halen, handtekening controleren, downloaden — is één taak,
+    /// dus dit is puur wat de UI moet weten.
+    UpdateGestart {
+        versie: String,
+        totaal: u64,
+    },
     UpdateVoortgang {
         ontvangen: u64,
     },
+    /// De feed was bereikbaar en had niets nieuwers (of alleen iets weggeklikts).
+    GeenUpdate,
     UpdateKlaar {
         pad: PathBuf,
     },
@@ -439,6 +453,10 @@ impl Engine {
         self.publiceer();
 
         let mut ticker = tokio::time::interval(TIK);
+        let mut update_ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + UPDATE_EERSTE_CHECK,
+            UPDATE_INTERVAL,
+        );
 
         loop {
             tokio::select! {
@@ -463,6 +481,7 @@ impl Engine {
                     let r = self.chat.tick(&verbonden);
                     self.verwerk(r);
                 }
+                _ = update_ticker.tick() => self.zoek_update(),
             }
 
             self.chat.refresh();
@@ -488,7 +507,6 @@ impl Engine {
                         peer_id,
                         display_name,
                         media_addr,
-                        app_version,
                         ..
                     } => {
                         self.verbonden.insert(*peer_id, *media_addr);
@@ -508,7 +526,6 @@ impl Engine {
                             }
                             let cmds = self.streams.bij_verbinding(id);
                             self.stuur_alles(cmds);
-                            self.overweeg_update(id, app_version);
                         }
                     }
                     _ => {
@@ -569,13 +586,16 @@ impl Engine {
                 ControlMsg::FileResponse(resp) => {
                     self.files.antwoord_ontvangen(&resp);
                 }
-                ControlMsg::UpdateRequest(req) => {
-                    let mesh_commands = self.mesh.commands.clone();
-                    tokio::spawn(update_upload_taak(mesh_commands, from, req.have_bytes));
-                }
-                ControlMsg::UpdateResponse(resp) => {
-                    self.updates.antwoord_ontvangen(&resp);
-                    self.publiceer_update_verwachting();
+                // Fase 11 duwde exe's tussen peers door; sinds fase 13 komt een update
+                // uit de getekende release-feed en gaat de eigen binary nergens meer
+                // heen (`docs/BEVEILIGING.md` B-01, B-21). De varianten blijven in het
+                // protocol staan — dat wijzigt alleen additief — maar worden hier
+                // geweigerd, ook als de peer een oudere build draait die ze nog stuurt.
+                ControlMsg::UpdateRequest(_) | ControlMsg::UpdateResponse(_) => {
+                    tracing::warn!(
+                        peer = ?from,
+                        "update-bericht van een peer genegeerd; updates komen uit de release-feed"
+                    );
                 }
                 andere => {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
@@ -671,50 +691,27 @@ impl Engine {
         }
     }
 
-    // -- updates (fase 11) --------------------------------------------------
+    // -- updates (fase 13) --------------------------------------------------
 
-    /// Waar het deelbestand van een onderbroken update-download aan precies `versie`
-    /// zou staan — voor het hervatpunt in een verse `UpdateRequest`.
-    fn update_deelpad(&self, versie: &str) -> PathBuf {
-        self.updates_dir.join(format!("update-{versie}.exe.part"))
-    }
-
-    /// Na elke wijziging aan `self.updates` opnieuw uitsturen, zodat
-    /// `wacht_op_update_verwachting` in een al-lopende `dispatch_inkomende_stream`-taak de
-    /// verwachting alsnog ziet verschijnen als hij er nét te vroeg voor was.
-    fn publiceer_update_verwachting(&self) {
-        let verwachting = match self.updates.status() {
-            Some(UpdateStatus::Bezig {
-                hun_versie, hash, ..
-            }) => Some((hun_versie.clone(), *hash)),
-            _ => None,
-        };
-        let _ = self.update_verwachting_tx.send(verwachting);
-    }
-
-    /// Een peer bleek net een nieuwere versie te draaien dan wijzelf. Vraagt zijn exe op
-    /// tenzij we die versie al ophalen, al hebben liggen, of de gebruiker hem negeerde —
-    /// zie `Updates::nieuwere_versie_gezien`.
-    fn overweeg_update(&mut self, peer: PeerId, hun_versie: &str) {
-        // Op macOS geen P2P-update: de peers draaien Windows en hun exe is hier waard
-        // noch bruikbaar. De mac bouwt uit de broncode; versies blijven per
-        // werkafspraak gelijk op. Zie docs/OVERDRACHT.md (mac-port).
+    /// Kijkt bij de release-feed of er een nieuwere, getekende versie klaarstaat, en haalt
+    /// hem meteen op als dat zo is. Eén taak voor het hele traject: de motor houdt geen
+    /// halve toestand vast tussen "feed gelezen" en "bytes binnen".
+    fn zoek_update(&mut self) {
+        // Op macOS is er geen updater: `fitcom-updater` is daar een lege stub, dus een
+        // opgehaalde build zou nergens heen kunnen. De mac bouwt uit de broncode;
+        // versies blijven per werkafspraak gelijk op. Zie docs/OVERDRACHT.md (mac-port).
         if cfg!(target_os = "macos") {
             return;
         }
-        if !fitcom_proto::is_newer(hun_versie, EIGEN_VERSIE) {
+        if !self.updates.mag_zoeken() {
             return;
         }
-        let bestaand = std::fs::metadata(self.update_deelpad(hun_versie))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if let Some(cmd) = self
-            .updates
-            .nieuwere_versie_gezien(peer, hun_versie, bestaand)
-        {
-            self.publiceer_update_verwachting();
-            self.stuur_alles(vec![cmd]);
-        }
+        self.updates.zoeken_gestart();
+        tokio::spawn(update_check_taak(
+            self.updates_dir.clone(),
+            self.updates.genegeerde_versies(),
+            self.file_tx.clone(),
+        ));
     }
 
     /// De gebruiker bevestigt "nu bijwerken en herstarten": start het losse
@@ -1345,6 +1342,19 @@ impl Engine {
                     self.deelnemen();
                 }
             }
+            UiCommand::ZetDownloadMap(pad) => {
+                if let Err(e) = std::fs::create_dir_all(&pad) {
+                    tracing::warn!(error = %e, pad = %pad.display(), "downloadmap aanmaken mislukt");
+                    self.fout = Some(format!("downloadmap aanmaken: {e}"));
+                } else {
+                    self.cfg.download_dir = Some(pad.clone());
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        tracing::warn!(error = %format!("{e:#}"), "downloadmap niet opgeslagen");
+                        self.fout = Some(format!("instellingen opslaan: {e:#}"));
+                    }
+                    self.downloads_dir = pad;
+                }
+            }
             UiCommand::StopDelen(id) => self.stop_met_delen(id),
             UiCommand::ZetCamera(aan) => self.zet_camera(aan),
             UiCommand::Kijken(eigenaar, id) => {
@@ -1378,14 +1388,8 @@ impl Engine {
                 self.verwerk(r);
             }
             UiCommand::PasUpdateToe => self.pas_update_toe(),
-            UiCommand::NegeerUpdate(versie) => {
-                self.updates.negeer(&versie);
-                self.publiceer_update_verwachting();
-            }
-            UiCommand::WisUpdateMelding => {
-                self.updates.wis_melding();
-                self.publiceer_update_verwachting();
-            }
+            UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
+            UiCommand::WisUpdateMelding => self.updates.wis_melding(),
         }
     }
 
@@ -1470,25 +1474,17 @@ impl Engine {
     }
 
     /// Leest eerst het kind-byte van een inkomende uni-stream en stuurt hem dan naar het
-    /// bestands- of het update-downloadpad. Zie `fitcom_net::filestream::read_kind`.
+    /// bestandspad. Zie `fitcom_net::filestream::read_kind`.
     fn start_incoming_stream(&mut self, stream: RecvStream) {
         let downloads_dir = self.downloads_dir.clone();
         let pictures_dir = self.pictures_dir.clone();
         let timeline = self.chat.timeline_arc();
-        let updates_dir = self.updates_dir.clone();
-        // Geeft de dispatch-taak een levend zicht op `Updates::status()` in plaats van een
-        // snapshot van nu: de `UpdateResponse` die dit pas laat weten kan over een echte
-        // verbinding ná deze stream binnenkomen (aparte QUIC-streams, geen onderlinge
-        // volgorde-garantie). Zie `wacht_op_update_verwachting`.
-        let verwachting_rx = self.update_verwachting_tx.subscribe();
         let events = self.file_tx.clone();
         tokio::spawn(dispatch_inkomende_stream(
             stream,
             downloads_dir,
             pictures_dir,
             timeline,
-            updates_dir,
-            verwachting_rx,
             events,
         ));
     }
@@ -1522,15 +1518,16 @@ impl Engine {
                 self.files
                     .zet_status(file, DownloadStatus::Mislukt(bericht));
             }
-            FileEvent::UpdateVoortgang { ontvangen } => self.updates.voortgang(ontvangen),
-            FileEvent::UpdateKlaar { pad } => {
-                self.updates.klaar(pad);
-                self.publiceer_update_verwachting();
+            FileEvent::UpdateGestart { versie, totaal } => {
+                tracing::info!(%versie, %totaal, "nieuwere versie in de release-feed; ophalen");
+                self.updates.gestart(versie, totaal);
             }
+            FileEvent::UpdateVoortgang { ontvangen } => self.updates.voortgang(ontvangen),
+            FileEvent::GeenUpdate => self.updates.niets_gevonden(),
+            FileEvent::UpdateKlaar { pad } => self.updates.klaar(pad),
             FileEvent::UpdateMislukt { bericht } => {
-                tracing::warn!(%bericht, "update-download mislukt");
+                tracing::warn!(%bericht, "update ophalen mislukt");
                 self.updates.mislukt(bericht);
-                self.publiceer_update_verwachting();
             }
         }
     }
@@ -1673,6 +1670,7 @@ impl Engine {
             video: self.cfg.video.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
+            download_dir: self.downloads_dir.clone(),
             files,
             ongelezen: self.chat.ongelezen,
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
@@ -1886,62 +1884,27 @@ async fn upload_bytes(
     Ok(())
 }
 
-/// Leest het kind-byte van een inkomende bulk-stream en stuurt hem naar het bestands- of
-/// het update-downloadpad. Zie `fitcom_net::filestream::read_kind`.
-#[allow(clippy::too_many_arguments)]
+/// Leest het kind-byte van een inkomende bulk-stream en stuurt hem naar het bestandspad.
+/// Zie `fitcom_net::filestream::read_kind`.
 async fn dispatch_inkomende_stream(
     mut stream: RecvStream,
     downloads_dir: PathBuf,
     pictures_dir: PathBuf,
     timeline: Arc<Timeline>,
-    updates_dir: PathBuf,
-    mut verwachting_rx: watch::Receiver<Option<(String, [u8; 32])>>,
     events: mpsc::Sender<FileEvent>,
 ) {
     match fitcom_net::filestream::read_kind(&mut stream).await {
         Ok(fitcom_net::filestream::Inkomend::Bestand(file)) => {
             download_taak(stream, file, downloads_dir, pictures_dir, timeline, events).await;
         }
+        // Fase 11-pad, sinds fase 13 dicht: een peer die ons een exe wil toeschuiven
+        // wordt afgewezen, ongeacht wat hij erbij beweert. Zie B-01 in
+        // `docs/BEVEILIGING.md` — dit was de wormstap.
         Ok(fitcom_net::filestream::Inkomend::Update) => {
-            let Some((versie, hash)) = wacht_op_update_verwachting(&mut verwachting_rx).await
-            else {
-                tracing::warn!(
-                    "update-stream binnengekomen zonder dat we er (op tijd) een verwachtten"
-                );
-                return;
-            };
-            download_update_taak(stream, updates_dir, versie, hash, events).await;
+            tracing::warn!("update-stream van een peer geweigerd; updates komen uit de feed");
         }
         Err(e) => {
             tracing::warn!(error = %format!("{e:#}"), "kind van inkomende overdracht onleesbaar");
-        }
-    }
-}
-
-/// Wacht tot `Updates::status()` een `Bezig` voor deze stream laat zien. Nodig omdat de
-/// `UpdateResponse` (control-stream) en deze uni-stream over een echte verbinding in elke
-/// volgorde kunnen aankomen — op loopback viel dat nooit op. Geeft na 5s op net als de oude
-/// synchrone check, zodat een stream die nooit bij een update hoorde niet voor altijd blijft
-/// hangen.
-async fn wacht_op_update_verwachting(
-    rx: &mut watch::Receiver<Option<(String, [u8; 32])>>,
-) -> Option<(String, [u8; 32])> {
-    if let Some(v) = rx.borrow().clone() {
-        return Some(v);
-    }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let resterend = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if resterend.is_zero() {
-            return None;
-        }
-        match tokio::time::timeout(resterend, rx.changed()).await {
-            Ok(Ok(())) => {
-                if let Some(v) = rx.borrow().clone() {
-                    return Some(v);
-                }
-            }
-            _ => return None,
         }
     }
 }
@@ -1973,201 +1936,87 @@ async fn download_taak(
     }
 }
 
-/// Vraagt (op een losse taak) de eigen, draaiende exe op en biedt hem aan, zoals
-/// `hash_en_bied_aan` dat voor een gewoon bestand doet. Antwoordt `NotAvailable` als de
-/// eigen exe onverhoopt niet te lezen is — dan is er simpelweg niets te versturen.
-async fn update_upload_taak(
-    mesh_commands: mpsc::Sender<MeshCommand>,
-    naar: PeerId,
-    have_bytes: u64,
-) {
-    async fn niet_beschikbaar(mesh_commands: &mpsc::Sender<MeshCommand>, naar: PeerId) {
-        let _ = mesh_commands
-            .send(MeshCommand::Send {
-                to: naar,
-                msg: ControlMsg::UpdateResponse(UpdateResponse {
-                    outcome: FileOutcome::NOT_AVAILABLE,
-                    size: 0,
-                    hash: [0u8; 32],
-                }),
-            })
-            .await;
-    }
-
-    // Een Mach-O aanbieden aan een Windows-peer zou diens `fitcom.exe` slopen zodra de
-    // updater hem eroverheen zet. `NOT_AVAILABLE` is een bestaand, netjes afgehandeld
-    // antwoord; de Windows-peers halen hun update bij elkaar.
-    if cfg!(target_os = "macos") {
-        niet_beschikbaar(&mesh_commands, naar).await;
-        return;
-    }
-
-    let pad = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "eigen exe-pad niet te bepalen voor update-aanvraag");
-            niet_beschikbaar(&mesh_commands, naar).await;
-            return;
-        }
-    };
-
-    let leespad = pad.clone();
-    let gehasht = tokio::task::spawn_blocking(move || blake3_hash_bestand(&leespad)).await;
-
-    let (grootte, hash) = match gehasht {
-        Ok(Ok(v)) => v,
-        _ => {
-            tracing::warn!(pad = %pad.display(), "eigen exe niet te lezen voor update-aanvraag");
-            niet_beschikbaar(&mesh_commands, naar).await;
-            return;
-        }
-    };
-
-    if mesh_commands
-        .send(MeshCommand::Send {
-            to: naar,
-            msg: ControlMsg::UpdateResponse(UpdateResponse {
-                outcome: FileOutcome::READY,
-                size: grootte,
-                hash,
-            }),
-        })
-        .await
-        .is_err()
-    {
-        return;
-    }
-
-    let mut bestand = match tokio::fs::File::open(&pad).await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "eigen exe niet meer te openen voor update-upload");
-            return;
-        }
-    };
-
-    let (tx, rx) = oneshot::channel();
-    if mesh_commands
-        .send(MeshCommand::OpenUploadStream {
-            to: naar,
-            respond: tx,
-        })
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let stream = match rx.await {
-        Ok(Some(s)) => s,
-        _ => {
-            tracing::debug!(peer = ?naar, "kon geen uploadstream openen voor update; peer waarschijnlijk weg");
-            return;
-        }
-    };
-
-    if let Err(e) = update_upload_bytes(stream, &mut bestand, have_bytes).await {
-        tracing::warn!(error = %format!("{e:#}"), peer = ?naar, "update-upload mislukt");
-    }
-}
-
-async fn update_upload_bytes(
-    mut stream: SendStream,
-    bestand: &mut tokio::fs::File,
-    vanaf: u64,
-) -> Result<()> {
-    fitcom_net::filestream::write_update_header(&mut stream).await?;
-    bestand
-        .seek(std::io::SeekFrom::Start(vanaf))
-        .await
-        .context("hervatpunt opzoeken in de eigen exe")?;
-    tokio::io::copy(bestand, &mut stream)
-        .await
-        .context("bytes versturen")?;
-    stream.finish().context("uploadstream afsluiten")?;
-    Ok(())
-}
-
-/// Downloadt een update-overdracht, verifieert hem tegen de aangekondigde hash en zet
-/// hem klaar onder een vaste, aan de versie gekoppelde naam. Zelfde opzet als
-/// `download_bytes`, maar zonder `FileEntry` (er is geen oplog-op voor een update).
-async fn download_update_taak(
-    mut stream: RecvStream,
+/// Het hele updatetraject in één taak: feed halen, handtekening controleren, en bij een
+/// nieuwere versie de exe ophalen en tegen de ondertekende hash leggen.
+///
+/// Alles wat blokkeert (TLS, schijf, hashen) draait in `spawn_blocking`; `release.rs`
+/// gebruikt bewust een blokkerende HTTP-client, want dit is geen heet pad en een tweede
+/// async-stack ernaast zou alleen maar dependencies kosten.
+async fn update_check_taak(
     updates_dir: PathBuf,
-    versie: String,
-    verwachte_hash: [u8; 32],
+    genegeerd: HashSet<String>,
     events: mpsc::Sender<FileEvent>,
 ) {
-    if let Err(e) =
-        download_update_bytes(&mut stream, &updates_dir, &versie, verwachte_hash, &events).await
-    {
-        let _ = events
-            .send(FileEvent::UpdateMislukt {
-                bericht: format!("{e:#}"),
-            })
+    let uitkomst =
+        tokio::task::spawn_blocking(move || haal_update_op(&updates_dir, &genegeerd, &events))
             .await;
+    if let Err(e) = uitkomst {
+        tracing::warn!(error = %e, "update-check afgebroken");
     }
 }
 
-async fn download_update_bytes(
-    stream: &mut RecvStream,
+/// Blokkerende helft van `update_check_taak`. Meldt elke uitkomst zelf via `events`, want
+/// de motor mag hier niet op wachten.
+fn haal_update_op(
     updates_dir: &Path,
-    versie: &str,
-    verwachte_hash: [u8; 32],
+    genegeerd: &HashSet<String>,
     events: &mpsc::Sender<FileEvent>,
-) -> Result<()> {
-    let deelpad = updates_dir.join(format!("update-{versie}.exe.part"));
-    let mut bestand = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&deelpad)
-        .await
-        .context("deelbestand van update openen")?;
-    let mut ontvangen = bestand
-        .metadata()
-        .await
-        .context("deelbestand-grootte opvragen")?
-        .len();
+) {
+    let melden = |ev: FileEvent| {
+        let _ = events.blocking_send(ev);
+    };
 
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut laatste_update = Instant::now();
-    loop {
-        match stream.read(&mut buf).await.context("bytes ontvangen")? {
-            None => break,
-            Some(n) => {
-                bestand
-                    .write_all(&buf[..n])
-                    .await
-                    .context("bytes wegschrijven")?;
-                ontvangen += n as u64;
-                if laatste_update.elapsed() >= VOORTGANG_INTERVAL {
-                    laatste_update = Instant::now();
-                    let _ = events.send(FileEvent::UpdateVoortgang { ontvangen }).await;
-                }
-            }
+    let manifest = match release::haal_manifest() {
+        Ok(m) => m,
+        Err(e) => {
+            // Een onbereikbare feed is geen foutmelding waard in de UI — offline is een
+            // normale toestand, en dit staat los van waar de gebruiker mee bezig is.
+            tracing::debug!(error = %format!("{e:#}"), "release-feed niet gelezen");
+            melden(FileEvent::GeenUpdate);
+            return;
         }
-    }
-    bestand.flush().await.context("deelbestand doorschrijven")?;
-    drop(bestand);
+    };
 
-    let te_hashen = deelpad.clone();
-    let (_, hash) = tokio::task::spawn_blocking(move || blake3_hash_bestand(&te_hashen))
-        .await
-        .context("hash-taak afgebroken")??;
-    let klopt = hash == verwachte_hash;
-
-    if !klopt {
-        let _ = tokio::fs::remove_file(&deelpad).await;
-        anyhow::bail!("hash klopt niet; update is corrupt geraakt en is verwijderd");
+    if !fitcom_proto::is_newer(&manifest.version, EIGEN_VERSIE)
+        || genegeerd.contains(&manifest.version)
+    {
+        melden(FileEvent::GeenUpdate);
+        return;
     }
 
-    let definitief = updates_dir.join(format!("update-{versie}.exe"));
-    tokio::fs::rename(&deelpad, &definitief)
-        .await
-        .context("update hernoemen naar definitieve naam")?;
-    let _ = events
-        .send(FileEvent::UpdateKlaar { pad: definitief })
-        .await;
-    Ok(())
+    // Pas hierna wordt er iets binnengehaald: eerst moet de handtekening kloppen.
+    let hash = match release::controleer(&manifest) {
+        Ok(h) => h,
+        Err(e) => {
+            melden(FileEvent::UpdateMislukt {
+                bericht: format!("{e:#}"),
+            });
+            return;
+        }
+    };
+
+    melden(FileEvent::UpdateGestart {
+        versie: manifest.version.clone(),
+        totaal: manifest.size,
+    });
+
+    match download_met_voortgang(&manifest, hash, updates_dir, events) {
+        Ok(pad) => melden(FileEvent::UpdateKlaar { pad }),
+        Err(e) => melden(FileEvent::UpdateMislukt {
+            bericht: format!("{e:#}"),
+        }),
+    }
+}
+
+fn download_met_voortgang(
+    manifest: &Release,
+    hash: [u8; 32],
+    updates_dir: &Path,
+    events: &mpsc::Sender<FileEvent>,
+) -> Result<PathBuf> {
+    release::download(manifest, hash, updates_dir, |ontvangen| {
+        let _ = events.blocking_send(FileEvent::UpdateVoortgang { ontvangen });
+    })
 }
 
 async fn download_bytes(

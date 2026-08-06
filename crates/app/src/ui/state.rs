@@ -235,18 +235,12 @@ impl OpRef {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum UpdateState {
-    Offered {
-        peer: String,
-        version: String,
-    },
     Downloading {
-        peer: String,
         version: String,
         received: u64,
         total: u64,
     },
     Ready {
-        peer: String,
         version: String,
     },
     Failed {
@@ -302,7 +296,6 @@ pub struct Constants {
     pub fallback_name: String,
     pub control_port: u16,
     pub media_port: u16,
-    pub download_dir: std::path::PathBuf,
     pub pictures_dir: std::path::PathBuf,
     pub autostart: bool,
     pub minimize_to_tray: bool,
@@ -462,27 +455,17 @@ impl UiState {
             output_device: snap.output_device.clone(),
             do_not_disturb: snap.niet_storen,
             update: snap.update.as_ref().map(|u| match u {
-                UpdateStatus::Aangeboden { peer, hun_versie } => UpdateState::Offered {
-                    peer: name_of(*peer),
-                    version: hun_versie.clone(),
-                },
                 UpdateStatus::Bezig {
-                    peer,
-                    hun_versie,
+                    versie,
                     ontvangen,
                     totaal,
-                    ..
                 } => UpdateState::Downloading {
-                    peer: name_of(*peer),
-                    version: hun_versie.clone(),
+                    version: versie.clone(),
                     received: *ontvangen,
                     total: *totaal,
                 },
-                UpdateStatus::KlaarOmToeTePassen {
-                    peer, hun_versie, ..
-                } => UpdateState::Ready {
-                    peer: name_of(*peer),
-                    version: hun_versie.clone(),
+                UpdateStatus::KlaarOmToeTePassen { versie, .. } => UpdateState::Ready {
+                    version: versie.clone(),
                 },
                 UpdateStatus::Mislukt(e) => UpdateState::Failed { error: e.clone() },
             }),
@@ -491,7 +474,7 @@ impl UiState {
             protocol_version: fitcom_proto::PROTOCOL_VERSION,
             control_port: c.control_port,
             media_port: c.media_port,
-            download_dir: c.download_dir.display().to_string(),
+            download_dir: snap.download_dir.display().to_string(),
             pictures_dir: c.pictures_dir.display().to_string(),
             autostart: c.autostart,
             minimize_to_tray: c.minimize_to_tray,

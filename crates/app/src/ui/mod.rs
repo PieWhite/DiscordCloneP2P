@@ -146,7 +146,6 @@ pub fn run(
     engine: EngineHandle,
     me: PeerId,
     cfg: &Config,
-    downloads_dir: PathBuf,
     pictures_dir: PathBuf,
     runtime: tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
@@ -160,7 +159,6 @@ pub fn run(
             fallback_name: cfg.display_name.clone(),
             control_port: cfg.control_port,
             media_port: cfg.media_port,
-            download_dir: downloads_dir,
             pictures_dir: pictures_dir.clone(),
             autostart: cfg.autostart,
             minimize_to_tray: cfg.minimize_to_tray,
@@ -228,6 +226,7 @@ pub fn run(
             commands::set_video_settings,
             commands::list_audio_devices,
             commands::set_audio_devices,
+            commands::pick_download_dir,
             commands::set_display_name,
             commands::pick_and_offer_file,
             commands::offer_files,

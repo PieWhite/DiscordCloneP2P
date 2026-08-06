@@ -697,8 +697,6 @@ function renderStatus() {
     ? `<button class="update-chip" id="btn-update">${ic("i-download")}Update to ${esc(S.update.version)} is ready</button>`
     : S.update && S.update.state === "downloading"
     ? `<span class="update-chip" aria-live="polite">${ic("i-download")}Fetching ${esc(S.update.version)} — ${Math.round(100 * S.update.received / Math.max(1, S.update.total))}%</span>`
-    : S.update && S.update.state === "offered"
-    ? `<span class="update-chip">${ic("i-download")}${esc(S.update.peer)} runs ${esc(S.update.version)}</span>`
     : S.update && S.update.state === "failed"
     ? `<button class="update-chip" id="btn-update-dismiss">${ic("i-alert")}Update failed</button>`
     : "";
@@ -899,9 +897,11 @@ const SET_BODY = {
        folder so a thumbnail resolves to the same path for the sender and the receiver.</p>
     <div class="field">
       <span class="field-label">Download folder</span>
-      <span class="field-help">Set in <code class="mono">config.toml</code>.</span>
+      <span class="field-help">Already downloaded files stay where they are — only new
+        downloads land in the new folder.</span>
       <div class="control-row">
         <code class="mono code-inline">${esc(S.download_dir)}</code>
+        <button class="btn btn--ghost" id="btn-download-dir">Change…</button>
       </div>
     </div>
     <div class="field">
@@ -1244,6 +1244,7 @@ document.addEventListener("click", async e => {
   }
 
   if (t.closest("#save-name")) return invoke("set_display_name", { name: $("set-name").value });
+  if (t.closest("#btn-download-dir")) return invoke("pick_download_dir");
   if (t.closest("#refresh-devices")) { devices = null; return loadDevices(); }
 
   const tab = t.closest("[data-tab]");

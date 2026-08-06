@@ -226,6 +226,17 @@ pub fn set_audio_devices(ui: State<'_, Ui>, input: Option<String>, output: Optio
     send(&ui, UiCommand::ZetGeluidsapparaten(input, output));
 }
 
+/// Opens the Windows folder picker for the download folder. Same blocking-thread reason
+/// as `pick_and_offer_file` — the dialog is modal.
+#[tauri::command]
+pub async fn pick_download_dir(ui: State<'_, Ui>) -> Result<(), ()> {
+    let picked = rfd::AsyncFileDialog::new().pick_folder().await;
+    if let Some(dir) = picked {
+        send(&ui, UiCommand::ZetDownloadMap(dir.path().to_path_buf()));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_display_name(ui: State<'_, Ui>, name: String) {
     let name = name.trim().to_string();

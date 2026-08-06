@@ -9,6 +9,7 @@ pub mod config;
 pub mod engine;
 pub mod files;
 pub mod notify;
+pub mod release;
 pub mod streams;
 pub mod tags;
 pub mod tray;

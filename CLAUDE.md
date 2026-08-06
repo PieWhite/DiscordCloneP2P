@@ -24,6 +24,10 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
 1. **Nul servers.** Geen signaling, geen TURN, geen database, geen cloud-API, geen
    accounts, geen CDN (ook niet voor fonts). Tailscale is de enige externe
    afhankelijkheid en wordt als draaiend verondersteld.
+   **Eén bewuste uitzondering, fase 13:** `crates/app/src/release.rs` haalt de
+   update-feed op bij een vaste HTTPS-URL. Alleen tijdens een check, en de app werkt
+   zonder internet volledig door. Onderbouwing: `docs/OVERDRACHT.md` beslissing 23. Dit
+   is geen precedent voor andere netwerkpaden.
 2. **Geen host-peer.** Alle peers zijn gelijkwaardig. Elke instantie initieert én
    accepteert. Geen enkele functie mag afhangen van "peer X is er".
 3. **N-agnostisch.** Nergens hardcoded 3. Het aantal peers komt uit config.
@@ -92,8 +96,9 @@ Zelfde codebase, cfg-geselecteerde siblingmodules onder `crates/video/src/mac/`
   tweede platformtype in gedeelde code.
 - **Op de draad staat H.264 in Annex-B** met SPS/PPS op elk keyframe; de mac-codec
   vertaalt van/naar AVCC. Protocol 5, geen bump — mac↔Windows interop is de eis.
-- **Geen P2P-update op mac**: `engine.rs` haalt er nooit een exe binnen en biedt de
-  eigen binary nooit aan (`NOT_AVAILABLE`). Versies blijven per werkafspraak gelijk.
+- **Geen automatische update op mac**: `fitcom-updater` is daar een lege stub, dus
+  `engine.rs::zoek_update` slaat de release-feed over. Versies blijven per werkafspraak
+  gelijk; de mac bouwt uit de broncode.
 - **Geen camera-opname op mac** (bewust, 2026-08-06). `BronSoort::Camera` bestaat er wel
   zodat gedeelde code niet open hoeft, maar `beschikbare_bronnen` noemt er geen en
   `Capture::start` weigert. Naar de camera van een Windows-peer *kijken* werkt wel.

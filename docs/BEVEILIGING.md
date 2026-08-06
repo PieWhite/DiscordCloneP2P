@@ -22,6 +22,17 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 
 ---
 
+> **Addendum 2026-08-07 (release-feed, fase 13):** het P2P-updatepad is vervangen door een
+> ondertekende release-feed over HTTPS (`crates/app/src/release.rs`, `docs/ARCHITECTURE.md`
+> § Automatische updates). Daarmee vervallen **B-01** (de hash kwam van de aanbieder zelf),
+> **B-02** (padinjectie via `app_version` — de versie komt nu uit een getekend manifest en
+> wordt bovendien tot cijfers en punten begrensd), **B-21** (de draaiende exe wordt nergens
+> meer aangeboden) en de wormstap uit [De keten](#de-keten-die-alles-verbindt): een besmette
+> peer heeft geen updatekanaal meer naar de andere twee. **B-20** (TOCTOU tussen verifiëren
+> en toepassen) staat nog open — er wordt nog steeds niet opnieuw geverifieerd vlak vóór het
+> spawnen van de updater. Nieuw eraan: dit is de enige verbinding buiten het tailnet, en de
+> release-privésleutel is nu een vertrouwensanker dat kwijt kan raken.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
@@ -99,8 +110,8 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 
 | ID | Ernst | Bevinding | Waar |
 |---|---|---|---|
-| B-01 | KRITIEK | Update-binary heeft geen authenticiteit — de hash komt van de aanbieder zelf | `app/engine.rs:2055` |
-| B-02 | KRITIEK | Padinjectie via `app_version` → willekeurig bestand schrijven, nul klikken | `app/engine.rs:669,2017,2062` |
+| B-01 | ~~KRITIEK~~ | **Opgelost (fase 13)** — updates komen uit een getekende feed | `app/release.rs` |
+| B-02 | ~~KRITIEK~~ | **Opgelost (fase 13)** — versie komt uit het getekende manifest en is begrensd | `app/release.rs::controleer` |
 | B-03 | KRITIEK | Padtraversal via `FileMeta.name` → willekeurig bestand schrijven | `app/engine.rs:1631-1632` |
 | B-04 | KRITIEK | Ongevraagde bulkstreams worden geaccepteerd; de afzender wordt weggegooid | `app/engine.rs:537` |
 | B-05 | KRITIEK | `PeerId` is een onbewezen claim → volledige impersonatie | `net/mesh.rs:598-604` |
@@ -121,7 +132,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-52 | HOOG | `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief | `app/ui/commands.rs:241-246` |
 | B-53 | HOOG | `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%` | `app/ui/commands.rs:255-271` |
 | B-20 | MIDDEL | TOCTOU: de update wordt niet opnieuw geverifieerd vlak vóór toepassen | `app/engine.rs:707-736` |
-| B-21 | MIDDEL | Elke peer kan op elk moment de draaiende exe ophalen | `app/engine.rs:562-565` |
+| B-21 | ~~MIDDEL~~ | **Opgelost (fase 13)** — de eigen exe wordt nergens meer aangeboden | `app/engine.rs` |
 | B-22 | MIDDEL | Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens | `app/engine.rs:636-658` |
 | B-23 | MIDDEL | Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
 | B-24 | MIDDEL | Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |

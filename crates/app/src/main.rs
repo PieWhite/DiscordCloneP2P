@@ -101,7 +101,6 @@ fn main() -> Result<()> {
 
     // De motor draait op de tokio-runtime, niet op de UI-thread: chat en synchronisatie
     // moeten doorlopen terwijl het venster geminimaliseerd is of naar de tray staat.
-    let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
     let pictures_dir = config::resolve_pictures_dir(&data_dir);
 
     if let Err(e) = tray::zet_autostart(cfg.autostart) {
@@ -125,7 +124,6 @@ fn main() -> Result<()> {
         engine,
         identity.peer_id,
         &cfg_voor_ui,
-        downloads_dir,
         pictures_dir,
         runtime,
     )

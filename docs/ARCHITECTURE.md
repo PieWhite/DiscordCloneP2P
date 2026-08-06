@@ -598,40 +598,50 @@ alternatief voor `OpKind::Delete` — die twee doen iets anders en kunnen allebe
 
 ## Automatische updates
 
-Elke peer ziet in de handshake (`Hello`/`HelloAck.app_version`, `env!("CARGO_PKG_VERSION")`)
-of een ander verder is. Vergelijken gaat via `fitcom_proto::is_newer` (pure
-tuple-vergelijking van `MAJOR.MINOR.PATCH`, geen `semver`-dependency — het formaat ligt
-vast op `workspace.package.version`). Een onleesbare versie van een peer telt als ouder
-in plaats van te paniceren.
+**Fase 13 (2026-08-07) verving het P2P-updatepad door een getekende release-feed.** Het
+oude pad staat onderaan deze sectie beschreven, want het protocol draagt zijn berichten
+nog en een oudere peer kan ze nog sturen.
 
-**Wie initieert.** De peer met de oudere versie stuurt `UpdateRequest` naar de peer met de
-nieuwere, zodra die `Online` gaat. `crates/app/src/updates.rs` (`Updates`, zelfde
-pure-beslissing/uitvoering-scheiding als `files.rs`) houdt bij welke versie op dit moment
-aangeboden, onderweg of klaar is — één slot tegelijk, niet per peer: een nog nieuwere
-versie die langskomt wint van wat al onderweg was.
+**Waar een update vandaan komt.** `crates/app/src/release.rs` haalt elke zes uur (eerste
+check een minuut na start) een JSON-manifest op bij één vaste HTTPS-URL:
 
-**Downloaden is vrijwel fase 6, maar niet via de oplog.** Er is geen `FileMeta`-op voor
-een update — het is geen chatgeschiedenis, maar per-peer, vluchtige status die niet hoeft
-te convergeren. In plaats daarvan:
-
-```rust
-UpdateRequest  { have_bytes: u64 }                       // aanvrager -> peer met nieuwere versie
-UpdateResponse { outcome: FileOutcome, size: u64, hash: [u8; 32] }
+```json
+{ "version": "0.3.0", "url": "https://…/releases/download/v0.3.0/fitcom.exe",
+  "size": 24117248, "hash": "<blake3 hex>", "signature": "<ed25519 hex>" }
 ```
 
-Geen `version`/`file`-veld: de identiteit is impliciet ("jouw huidige, draaiende exe").
-`FileOutcome` wordt hergebruikt. Anders dan `FileResponse` draagt `UpdateResponse` ook
-`size`/`hash` mee — die liggen bij een gewoon bestand al vooraf vast in de `FileMeta`-op,
-maar bij een update is er geen voorafgaand bericht dat dat al deed.
+`signature` staat over `"{version}\n{hash}\n{size}"` — alle drie de velden zitten erin,
+zodat geen van hen los te verwisselen is met die uit een andere, ook geldig getekende
+release. De publieke sleutel is in de binary gebakken (`PUBLIEKE_SLEUTEL_HEX`); staat daar
+niets, dan wordt er nooit een update geaccepteerd. Falen gaat dicht.
 
-De bytes gaan, net als bij bestandsdeling, over een eigen QUIC-uni-stream
-(`MeshCommand::OpenUploadStream`/`MeshEvent::IncomingFileStream`), nooit over de
-control-stream. Omdat diezelfde uni-streams nu voor twee dingen gebruikt worden, begint
-elke stream met een 1-byte kind (`crates/net/src/filestream.rs::read_kind`): `0` = bestand
-(gevolgd door de bestaande 41-byte `OpId`-header), `1` = update (geen verdere body nodig).
-Dat kind-byte is de reden voor de `PROTOCOL_VERSION`-bump 3 → 4 hierboven. Hervatten werkt
-met `have_bytes`/een `.part`-bestand, verificatie met een BLAKE3-hash over het geheel —
-exact hetzelfde patroon als bij een gewoon bestand, alleen zonder `FileEntry`.
+**De volgorde is de beveiliging.** Manifest lezen → is de versie nieuwer dan
+`env!("CARGO_PKG_VERSION")` (via `fitcom_proto::is_newer`, pure tuple-vergelijking van
+`MAJOR.MINOR.PATCH`, geen `semver`-dependency) → vormcontroles (`version` alleen cijfers
+en punten, want hij belandt in een bestandsnaam; `url` binnen de ingebakken repo; `size`
+onder 200 MB) → handtekening → **pas dan** bytes ophalen → BLAKE3 tijdens het schrijven,
+en weggooien als hij niet tegen de *ondertekende* hash klopt. Geen hervatten: zonder
+Range-verzoek is het één rechte lijn, en een build opnieuw halen is goedkoper dan het
+hervatpunt bewaken.
+
+**Wat dit oplost.** In fase 11 leverde de peer met de nieuwere versie zowel de bytes als
+de hash waartegen die bytes gecontroleerd werden — geen controle, en de wormstap uit
+`docs/BEVEILIGING.md` (B-01). Nu bewijst TLS met wie we praten en bewijst de handtekening
+wie de release gemaakt heeft; de privésleutel staat op geen van de drie machines en niet
+bij de host. Een gekaapt hostaccount kan wel een bestand vervangen, geen handtekening
+maken. `UpdateRequest`/`UpdateResponse` en een inkomende update-uni-stream worden gelogd
+en geweigerd (ook B-21: onze eigen exe gaat nergens meer heen).
+
+**Prijs.** Dit is de enige verbinding die de app buiten het tailnet legt, en dus een
+bewuste uitzondering op invariant 1. Zie `docs/OVERDRACHT.md`, beslissing 23.
+
+**Releases uitgeven.** `crates/app/src/bin/fitcom-release.rs` maakt het sleutelpaar
+(`keygen`) en tekent een build (`sign`). De `.pk8` hoort buiten de repo; raakt hij kwijt,
+dan werkt iedereen één keer met de hand bij.
+
+**Structuur is ongewijzigd.** `crates/app/src/updates.rs` (`Updates`) blijft de pure
+beslislaag met dezelfde scheiding als `files.rs` — één slot tegelijk — en `engine.rs`
+voert uit. Alleen het veld `peer` is eruit verdwenen: er is nog maar één bron.
 
 **Toepassen: een los updater-procesje, geen nieuwe crate.**
 `crates/app/src/bin/fitcom-updater.rs` is een tweede binary in hetzelfde `fitcom`-package
@@ -644,9 +654,21 @@ gecontroleerd in `ui.rs::afsluiten_of_verbergen`). De updater wacht via
 nieuwe exe over de oude heen (`copy`+verwijderen als terugval bij een cross-volume-fout),
 start hem opnieuw op, en stopt zelf.
 
-**Vertrouwensgrens verschuift.** Dit is de eerste functie waarbij "een peer vertrouwen"
-ook "code van een peer uitvoeren" betekent — bewust niet extra afgeschermd bovenop het
-tailnet + de UUID-allowlist, zie `TODO.md`, sectie "Beveiliging".
+### Het oude P2P-pad (fase 11, sinds fase 13 dicht)
+
+Hier voor de volledigheid: de berichten bestaan nog in het protocol (varianten
+verwijderen mag niet, zie de uitbreidingsregels bij "Control"), dus een peer op een oudere
+build kan ze nog sturen. Ze worden gelogd en genegeerd.
+
+Elke peer zag in de handshake (`Hello`/`HelloAck.app_version`) of een ander verder was. De
+peer met de oudere versie stuurde dan `UpdateRequest`; de ander antwoordde met
+`UpdateResponse { outcome, size, hash }` en duwde zijn eigen, draaiende exe over een
+QUIC-uni-stream terug. Dat kind-byte (`0` = bestand, `1` = update, zie
+`crates/net/src/filestream.rs::read_kind`) is nog steeds de reden voor de
+`PROTOCOL_VERSION`-bump 3 → 4 hierboven, want bestandsdeling gebruikt hem nog.
+
+`app_version` in de handshake blijft bestaan: de UI toont welke versie een peer draait.
+Het triggert alleen niets meer.
 
 ## Verbindingsbeheer
 - Bij start verbindt elke peer met alle geconfigureerde adressen.
