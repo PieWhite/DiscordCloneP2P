@@ -15,6 +15,7 @@
 use crate::chat::Chat;
 use crate::config::{self, Config, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
+use crate::geluid;
 use crate::notify;
 use crate::release::{self, Release};
 use crate::streams::{Actie, Streams};
@@ -227,6 +228,9 @@ pub enum UiCommand {
     HernoemKanaal(TopicId, String),
     /// Subkanaal verwijderen. UI vraagt hier eerst een bevestiging voor.
     VerwijderKanaal(TopicId),
+    /// Nu bij de release-feed kijken, op verzoek van de gebruiker. Anders dan de tik van
+    /// zes uur meldt deze elke uitkomst, ook "niets nieuws" en "feed onbereikbaar".
+    ZoekUpdate,
     /// Fase 11: een klaarstaande update bevestigen — start het updaterproces en sluit de
     /// app af.
     PasUpdateToe,
@@ -480,8 +484,9 @@ impl Engine {
                     let verbonden: Vec<PeerId> = self.verbonden.keys().copied().collect();
                     let r = self.chat.tick(&verbonden);
                     self.verwerk(r);
+                    self.ruim_gestopte_camera_op();
                 }
-                _ = update_ticker.tick() => self.zoek_update(),
+                _ = update_ticker.tick() => self.zoek_update(false),
             }
 
             self.chat.refresh();
@@ -532,8 +537,11 @@ impl Engine {
                         if let Some(id) = self.peers.get(target).and_then(|p| p.peer_id) {
                             self.verbonden.remove(&id);
                             // Weg is weg: uit het gesprek halen, anders blijven we
-                            // audio naar een dood adres sturen.
-                            self.peers_in_voice.remove(&id);
+                            // audio naar een dood adres sturen. Wegvallen klinkt hetzelfde
+                            // als weggaan — voor wie meepraat is dat hetzelfde.
+                            if self.peers_in_voice.remove(&id) {
+                                self.geluid(geluid::Geluid::PeerLeave);
+                            }
                             let acties = self.streams.bij_verbreking(id);
                             self.voer_uit(acties);
                         }
@@ -568,12 +576,19 @@ impl Engine {
             MeshEvent::Message { from, msg } => match msg {
                 ControlMsg::VoiceJoin(_) => {
                     tracing::info!(peer = ?from, "peer neemt deel aan het gesprek");
-                    self.peers_in_voice.insert(from);
+                    // Alleen bij een echte overgang: deze melding komt ook langs als
+                    // *wij* net verbinding maken en hij al in het gesprek zat, en dan
+                    // is er niets gebeurd om over te piepen.
+                    if self.peers_in_voice.insert(from) {
+                        self.geluid(geluid::Geluid::PeerJoin);
+                    }
                     self.werk_voice_peers_bij();
                 }
                 ControlMsg::VoiceLeave(_) => {
                     tracing::info!(peer = ?from, "peer verlaat het gesprek");
-                    self.peers_in_voice.remove(&from);
+                    if self.peers_in_voice.remove(&from) {
+                        self.geluid(geluid::Geluid::PeerLeave);
+                    }
                     self.werk_voice_peers_bij();
                 }
                 ControlMsg::FileRequest(req) => {
@@ -601,9 +616,18 @@ impl Engine {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
                     // van hem is ongemoeid, en andersom net zo.
                     if let Some(ip) = self.verbonden.get(&from).map(|a| a.ip()) {
+                        // Voor en na tellen in plaats van op het berichttype letten: een
+                        // `StreamAnnounce` komt bij elke herverbinding opnieuw langs voor
+                        // een stream die we al kenden, en daar hoort geen geluidje bij.
+                        let voor = self.zichtbare_streams_van(from);
                         let (cmds, acties) = self.streams.bij_bericht(from, ip, &andere);
                         self.stuur_alles(cmds);
                         self.voer_uit(acties);
+                        match self.zichtbare_streams_van(from).cmp(&voor) {
+                            std::cmp::Ordering::Greater => self.geluid(geluid::Geluid::StreamAan),
+                            std::cmp::Ordering::Less => self.geluid(geluid::Geluid::StreamUit),
+                            std::cmp::Ordering::Equal => {}
+                        }
                     }
 
                     // Alleen een live `OpBroadcast` van een `Post` komt in aanmerking
@@ -696,20 +720,29 @@ impl Engine {
     /// Kijkt bij de release-feed of er een nieuwere, getekende versie klaarstaat, en haalt
     /// hem meteen op als dat zo is. Eén taak voor het hele traject: de motor houdt geen
     /// halve toestand vast tussen "feed gelezen" en "bytes binnen".
-    fn zoek_update(&mut self) {
+    /// `handmatig` is een druk op "Check for updates". Dan hoort elke uitkomst zichtbaar
+    /// te worden; de periodieke tik blijft stil zolang er niets te melden is, want
+    /// offline is een normale toestand en niet iets om over te berichten.
+    fn zoek_update(&mut self, handmatig: bool) {
         // Op macOS is er geen updater: `fitcom-updater` is daar een lege stub, dus een
         // opgehaalde build zou nergens heen kunnen. De mac bouwt uit de broncode;
         // versies blijven per werkafspraak gelijk op. Zie docs/OVERDRACHT.md (mac-port).
         if cfg!(target_os = "macos") {
+            if handmatig {
+                self.updates.mislukt(
+                    "op macOS werkt bijwerken niet vanzelf; deze build komt uit de broncode".into(),
+                );
+            }
             return;
         }
         if !self.updates.mag_zoeken() {
             return;
         }
-        self.updates.zoeken_gestart();
+        self.updates.zoeken_gestart(handmatig);
         tokio::spawn(update_check_taak(
             self.updates_dir.clone(),
             self.updates.genegeerde_versies(),
+            handmatig,
             self.file_tx.clone(),
         ));
     }
@@ -731,6 +764,20 @@ impl Engine {
         };
         // Naast de hoofd-exe, net als bij een gewone build (zie `crates/app/src/bin/fitcom-updater.rs`).
         let updater = huidige_exe.with_file_name("fitcom-updater.exe");
+        // Zonder dit is de melding "updater starten mislukt: Het systeem kan het
+        // opgegeven bestand niet vinden" — waar niemand uit opmaakt dat er een tweede
+        // bestand naast fitcom.exe uit de zip hoort.
+        if !updater.exists() {
+            let bericht = format!(
+                "fitcom-updater.exe staat niet naast fitcom.exe ({}). \
+                 Pak hem uit de release naast de app; zonder hem kan een draaiende exe \
+                 zichzelf niet vervangen.",
+                updater.display()
+            );
+            tracing::error!(pad = %updater.display(), "updater ontbreekt");
+            self.fout = Some(bericht);
+            return;
+        }
         let resultaat = std::process::Command::new(&updater)
             .arg("--new")
             .arg(&pad)
@@ -762,6 +809,7 @@ impl Engine {
         match fitcom_audio::start(cfg) {
             Ok(h) => {
                 self.voice = Some(h);
+                self.geluid(geluid::Geluid::EigenJoin);
                 self.werk_voice_peers_bij();
                 self.meld_voice_status(None);
                 // Deelde je al een scherm vóór je het gesprek in kwam, dan hoort het
@@ -781,6 +829,7 @@ impl Engine {
         if self.voice.take().is_none() {
             return;
         }
+        self.geluid(geluid::Geluid::EigenLeave);
         self.meld_voice_status(None);
 
         // Bureaubladgeluid loopt over de voice-socket, en die is er nu niet meer.
@@ -868,14 +917,73 @@ impl Engine {
         })
     }
 
+    /// Of deze eigen stream een eigen terugblikvenster heeft. Dat is precies de camera:
+    /// naar een gedeeld scherm kijk je al.
+    ///
+    /// Gevolg voor de levensduur van de deler: hij bestaat zolang de camera aan staat, en
+    /// niet alleen zolang er iemand kijkt.
+    fn heeft_voorbeeld(&self, stream_id: u32) -> bool {
+        self.streams
+            .eigen()
+            .iter()
+            .any(|s| s.id == stream_id && s.kind == StreamKind::CAMERA)
+    }
+
+    /// De titel van dat venster. Engelstalig, zoals alles wat de gebruiker ziet.
+    fn voorbeeld_titel(bron: &Bron) -> Option<String> {
+        (bron.soort == BronSoort::Camera).then(|| format!("You — {}", bron.naam))
+    }
+
+    /// Zet de camera uit als zijn deler er niet meer is.
+    ///
+    /// Nodig sinds de opname bij het *aanzetten* begint in plaats van bij de eerste kijker
+    /// (beslissing 26): vanaf dat moment kan het aanzetten zelf mislukken — de camera is in
+    /// gebruik door Teams, de encoder wil niet — en dat is iets waar de gebruiker op staat
+    /// te wachten. De deler heeft geen kanaal terug naar de motor, dus hij legt zijn reden
+    /// neer en die wordt hier op de tik opgehaald.
+    ///
+    /// Vangt tegelijk het nette geval: het voorbeeldvenster gesloten terwijl niemand kijkt.
+    /// Dan is er niets mis, maar de knop hoort wel terug op "uit" te springen in plaats van
+    /// "aan" te blijven staan boven iets dat niet meer draait.
+    ///
+    /// Alleen voor een camera. Een gedeeld scherm heeft geen voorbeeldvenster en hoort niet
+    /// vanzelf te verdwijnen omdat een deler eruit klapte; daar blijft de aankondiging
+    /// staan en probeert de volgende kijker het opnieuw, zoals altijd.
+    fn ruim_gestopte_camera_op(&mut self) {
+        let dood: Vec<(u32, Option<String>)> = self
+            .streams
+            .eigen()
+            .iter()
+            .filter(|s| s.kind == StreamKind::CAMERA)
+            .filter_map(|s| {
+                let d = self.delers.get(&s.id)?;
+                d.gestopt().then(|| (s.id, d.fout()))
+            })
+            .collect();
+
+        for (id, fout) in dood {
+            match fout {
+                Some(f) => {
+                    tracing::warn!(stream = id, error = %f, "camera gestopt door een fout");
+                    self.fout = Some(format!("camera: {f}"));
+                }
+                None => tracing::info!(stream = id, "camera uit; eigen venster was gesloten"),
+            }
+            self.stop_met_delen(id);
+        }
+    }
+
     /// Een bron aankondigen. Er wordt nog niets opgenomen — dat is het hele punt.
-    fn deel_bron(&mut self, bron: Bron) {
+    ///
+    /// Levert het toegekende stream-id op, zodat de aanroeper er nog iets mee kan (de
+    /// camera start meteen zijn eigen voorbeeldvenster). `None` als het niet lukte.
+    fn deel_bron(&mut self, bron: Bron) -> Option<u32> {
         let afmeting = match fitcom_video::capture::afmeting_van(&bron) {
             Ok(a) => a,
             Err(e) => {
                 tracing::error!(error = %format!("{e:#}"), "bron niet te openen");
                 self.fout = Some(format!("bron niet te openen: {e:#}"));
-                return;
+                return None;
             }
         };
 
@@ -899,6 +1007,7 @@ impl Engine {
         if kind.is_scherm() {
             self.deel_bureaubladgeluid();
         }
+        Some(id)
     }
 
     /// Of we op dit moment een monitor of venster delen — dus of bureaubladgeluid mee
@@ -918,6 +1027,10 @@ impl Engine {
         let (cmds, acties) = self.streams.stop_delen(id);
         self.stuur_alles(cmds);
         self.voer_uit(acties);
+        // Expliciet, niet via `Actie::StopDelen`: die komt er alleen als er iemand kéék,
+        // en een camera met een voorbeeldvenster loopt ook zonder kijkers. Dit sluit dus
+        // zowel de opname als het eigen venster. Een no-op voor alles wat geen deler had.
+        self.delers.remove(&id);
         // Fase 10: het laatste scherm weg betekent ook het geluid weg, zonder dat de
         // gebruiker dat apart hoeft te doen. Een camera heeft er niets mee te maken.
         if was_scherm && !self.deelt_scherm_of_venster() {
@@ -950,7 +1063,20 @@ impl Engine {
                     }
                 };
                 match bronnen.into_iter().find(|b| b.soort == BronSoort::Camera) {
-                    Some(camera) => self.deel_bron(camera),
+                    Some(camera) => {
+                        // Anders dan bij een scherm gaat de opname hier meteen aan: het
+                        // eigen venster is de reden dat je de camera aanzet, en zonder
+                        // opname is er niets in te zien. Het lampje gaat dus aan zodra je
+                        // hem aanzet — dat is precies wat "ik wil mezelf zien" betekent.
+                        if let Some(id) = self.deel_bron(camera) {
+                            if let Err(e) = self.start_deler(id, Vec::new()) {
+                                tracing::error!(error = %format!("{e:#}"), "camera starten mislukt");
+                                self.fout = Some(format!("camera: {e:#}"));
+                                // Niet half aan laten staan: de aankondiging weer intrekken.
+                                self.stop_met_delen(id);
+                            }
+                        }
+                    }
                     None => {
                         self.fout = Some(
                             "geen camera gevonden; zit hij erin en gebruikt iets anders hem niet?"
@@ -1035,9 +1161,18 @@ impl Engine {
                     }
                 }
                 Actie::StartDelen { stream_id, kijkers } => {
-                    if let Err(e) = self.start_deler(stream_id, kijkers) {
-                        tracing::error!(error = %format!("{e:#}"), stream = stream_id, "delen starten mislukt");
-                        self.fout = Some(format!("scherm delen: {e:#}"));
+                    // Een camera loopt al vóór de eerste kijker, want daar hangt het eigen
+                    // voorbeeldvenster aan. Dan is "de eerste kijker" niets anders dan een
+                    // adres erbij — tenzij die deler intussen gestopt is (venster dicht,
+                    // of eruit geklapt), en dan hoort hij opnieuw op.
+                    match self.delers.get(&stream_id) {
+                        Some(d) if !d.gestopt() => d.zet_kijkers(kijkers),
+                        _ => {
+                            if let Err(e) = self.start_deler(stream_id, kijkers) {
+                                tracing::error!(error = %format!("{e:#}"), stream = stream_id, "delen starten mislukt");
+                                self.fout = Some(format!("scherm delen: {e:#}"));
+                            }
+                        }
                     }
                 }
                 Actie::ZetKijkers { stream_id, kijkers } => {
@@ -1054,7 +1189,17 @@ impl Engine {
                             v.stop_bureaublad();
                         }
                     }
-                    self.delers.remove(&stream_id);
+                    // De laatste kijker weg betekent niet dat de deler weg moet: draagt
+                    // deze stream een eigen voorbeeldvenster, dan blijf je jezelf zien.
+                    // Alleen de kijkerslijst gaat leeg, en dan codeert de deel-lus niets
+                    // meer. Het echte opruimen doet `stop_met_delen`.
+                    if self.heeft_voorbeeld(stream_id) {
+                        if let Some(d) = self.delers.get(&stream_id) {
+                            d.zet_kijkers(Vec::new());
+                        }
+                    } else {
+                        self.delers.remove(&stream_id);
+                    }
                 }
                 Actie::StuurKeyframe { stream_id } => {
                     if let Some(d) = self.delers.get(&stream_id) {
@@ -1128,7 +1273,12 @@ impl Engine {
             .get(&stream_id)
             .cloned()
             .context("bron van deze stream is verdwenen")?;
+        // Eerst de oude weg, dán de nieuwe erbij. Bij `insert` zou de oude pas ná het
+        // opzetten van de nieuwe vallen, en een camera is dan nog door hem bezet.
+        drop(self.delers.remove(&stream_id));
+
         let d3d = self.d3d()?;
+        let voorbeeld = Self::voorbeeld_titel(&bron);
         let handle = fitcom_video::deel(
             &d3d,
             DelerConfig {
@@ -1137,6 +1287,7 @@ impl Engine {
                 codec: self.codec(),
                 fps: self.cfg.video.fps,
                 bitrate: self.cfg.video.bitrate,
+                voorbeeld,
             },
             kijkers,
         )?;
@@ -1311,7 +1462,9 @@ impl Engine {
                     p.volume = vol;
                 }
             }
-            UiCommand::DeelBron(bron) => self.deel_bron(bron),
+            UiCommand::DeelBron(bron) => {
+                self.deel_bron(bron);
+            }
             UiCommand::StreamVolume(peer, id, vol) => {
                 self.stream_volumes.insert((peer, id), vol);
                 if let Some(v) = &self.voice {
@@ -1387,6 +1540,7 @@ impl Engine {
                 let r = self.chat.verwijder_kanaal(id);
                 self.verwerk(r);
             }
+            UiCommand::ZoekUpdate => self.zoek_update(true),
             UiCommand::PasUpdateToe => self.pas_update_toe(),
             UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
             UiCommand::WisUpdateMelding => self.updates.wis_melding(),
@@ -1538,6 +1692,35 @@ impl Engine {
                 tracing::warn!(error = %e, "netwerkcommando niet verstuurd");
             }
         }
+    }
+
+    /// Een kort geluidje bij iets dat je anders alleen ziet als je op dat moment naar het
+    /// venster kijkt: iemand die het gesprek in of uit gaat, of een stream die aan of uit
+    /// gaat.
+    ///
+    /// Niet-storen zet ze uit. Dat is dezelfde regel als voor meldingen, en om dezelfde
+    /// reden: deze geluidjes zijn onderbrekingen, en dat is precies waar die stand voor is.
+    /// Mute en deafen doen hier níéts: die gaan over het gesprek, niet over de app.
+    fn geluid(&self, g: geluid::Geluid) {
+        if self.niet_storen {
+            return;
+        }
+        geluid::speel(g);
+    }
+
+    /// Hoeveel *zichtbare* streams (scherm, venster of camera) deze peer op dit moment
+    /// aanbiedt. Bureaubladgeluid telt niet mee: dat gaat automatisch met een scherm mee
+    /// en is geen aparte gebeurtenis.
+    ///
+    /// Gebruikt om aan het verschil vóór en ná een control-bericht te zien of er echt iets
+    /// aan of uit ging. Aan de aankondiging zelf is dat niet te zien: die komt bij elke
+    /// herverbinding opnieuw langs, en dan hoort er geen geluidje bij.
+    fn zichtbare_streams_van(&self, peer: PeerId) -> usize {
+        self.streams
+            .vreemd()
+            .iter()
+            .filter(|s| s.eigenaar == peer && s.kind.is_beeld())
+            .count()
     }
 
     /// Beslist of een net binnengekomen, live bericht een Windows-melding waard is.
@@ -1945,13 +2128,22 @@ async fn download_taak(
 async fn update_check_taak(
     updates_dir: PathBuf,
     genegeerd: HashSet<String>,
+    handmatig: bool,
     events: mpsc::Sender<FileEvent>,
 ) {
-    let uitkomst =
-        tokio::task::spawn_blocking(move || haal_update_op(&updates_dir, &genegeerd, &events))
-            .await;
+    let melder = events.clone();
+    let uitkomst = tokio::task::spawn_blocking(move || {
+        haal_update_op(&updates_dir, &genegeerd, handmatig, &events)
+    })
+    .await;
     if let Err(e) = uitkomst {
         tracing::warn!(error = %e, "update-check afgebroken");
+        // Anders blijft het slot op slot en komt er nooit meer een check.
+        let _ = melder
+            .send(FileEvent::UpdateMislukt {
+                bericht: "de update-check liep vast".into(),
+            })
+            .await;
     }
 }
 
@@ -1960,6 +2152,7 @@ async fn update_check_taak(
 fn haal_update_op(
     updates_dir: &Path,
     genegeerd: &HashSet<String>,
+    handmatig: bool,
     events: &mpsc::Sender<FileEvent>,
 ) {
     let melden = |ev: FileEvent| {
@@ -1969,10 +2162,18 @@ fn haal_update_op(
     let manifest = match release::haal_manifest() {
         Ok(m) => m,
         Err(e) => {
-            // Een onbereikbare feed is geen foutmelding waard in de UI — offline is een
-            // normale toestand, en dit staat los van waar de gebruiker mee bezig is.
+            // Een onbereikbare feed is bij de periodieke tik geen foutmelding waard —
+            // offline is een normale toestand, en dit staat los van waar de gebruiker mee
+            // bezig is. Wie er zelf om vroeg krijgt hem wél te zien: anders is "de feed
+            // is stuk" niet te onderscheiden van "de knop doet niets".
             tracing::debug!(error = %format!("{e:#}"), "release-feed niet gelezen");
-            melden(FileEvent::GeenUpdate);
+            melden(if handmatig {
+                FileEvent::UpdateMislukt {
+                    bericht: format!("{e:#}"),
+                }
+            } else {
+                FileEvent::GeenUpdate
+            });
             return;
         }
     };

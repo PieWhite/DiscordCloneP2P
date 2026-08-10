@@ -154,6 +154,23 @@ fn controleer_met_sleutel(rel: &Release, sleutel: [u8; 32]) -> Result<[u8; 32]> 
     Ok(hash)
 }
 
+/// Kijkt of de URL uit het manifest daadwerkelijk bestaat, zonder de bytes te halen.
+///
+/// Levert de HTTP-status op. Bestaat alleen voor `fitcom-release check`: het manifest
+/// noemt een URL die op zijn eigen tag vastgepind is, en een release publiceren met een
+/// tag die er (nog) niet is levert een handtekening op die perfect klopt boven een
+/// download die 404't. Dat is precies één keer gebeurd — zie `docs/OVERDRACHT.md`,
+/// beslissing 24.
+pub fn bereikbaar(rel: &Release) -> Result<u16> {
+    let antwoord = agent(MANIFEST_TIMEOUT)
+        .get(&rel.url)
+        .call()
+        .context("download-URL niet op te vragen")?;
+    // Body niet lezen: ureq breekt de verbinding af als hij ongelezen weggegooid wordt,
+    // dus dit kost geen 20 MB.
+    Ok(antwoord.status().as_u16())
+}
+
 /// Haalt de exe op, schrijft hem weg en legt hem tegen `verwachte_hash`. Blokkerend:
 /// hoort in een `spawn_blocking`. `voortgang` wordt hoogstens elke
 /// `VOORTGANG_INTERVAL` aangeroepen, plus één keer aan het eind.
@@ -161,7 +178,7 @@ pub fn download(
     rel: &Release,
     verwachte_hash: [u8; 32],
     updates_dir: &Path,
-    mut voortgang: impl FnMut(u64),
+    voortgang: impl FnMut(u64),
 ) -> Result<PathBuf> {
     let deelpad = updates_dir.join(format!("update-{}.exe.part", rel.version));
     // Geen hervatten: zonder Range-verzoek is dit één rechte lijn, en een build van
@@ -172,20 +189,65 @@ pub fn download(
         .get(&rel.url)
         .call()
         .context("update niet op te halen")?;
-    // `limit` op de aangekondigde grootte: een host die meer stuurt dan hij aankondigde
-    // loopt hier vast in plaats van de schijf vol te schrijven.
-    let mut lezer = antwoord.body_mut().with_config().limit(rel.size).reader();
+    // `limit` op de aangekondigde grootte is het tweede net tegen een host die meer stuurt
+    // dan hij aankondigde. Het eerste is `lees_precies` zelf, die nooit meer opvraagt dan
+    // het restant — lees daar waarom die grens niet als lus-einde te gebruiken is.
+    let lezer = antwoord.body_mut().with_config().limit(rel.size).reader();
 
+    let uitkomst = lees_precies(lezer, rel.size, &mut bestand, voortgang)
+        .and_then(|hash| {
+            ensure!(
+                hash == verwachte_hash,
+                "de opgehaalde update komt niet overeen met de ondertekende hash"
+            );
+            Ok(())
+        })
+        .and_then(|()| {
+            bestand.flush().context("deelbestand doorschrijven")?;
+            Ok(())
+        });
+    drop(bestand);
+    if let Err(e) = uitkomst {
+        let _ = std::fs::remove_file(&deelpad);
+        return Err(e);
+    }
+
+    let definitief = updates_dir.join(format!("update-{}.exe", rel.version));
+    std::fs::rename(&deelpad, &definitief).context("update hernoemen naar definitieve naam")?;
+    Ok(definitief)
+}
+
+/// Leest precies `grootte` bytes, schrijft ze weg en levert de BLAKE3 eroverheen.
+///
+/// **De lus telt zelf af en wacht niet op einde-bestand.** Dat is geen stijlkeuze: de
+/// begrensde lezer van ureq geeft bij een `read` ná de laatste byte geen `Ok(0)` maar
+/// `Err(BodyExceedsLimit)` (`ureq::body::limit::LimitReader` — de teller staat dan op nul
+/// en dat is niet te onderscheiden van "er komt meer dan aangekondigd"). Een lus die tot
+/// `n == 0` doorleest doet dus altijd één leesbeurt te veel en faalt *elke* download, ook
+/// een volstrekt correcte. Dat was de reden dat het bijwerken nooit werkte; zie
+/// `tests::een_body_van_exact_de_aangekondigde_grootte_komt_er_heel_door`.
+///
+/// Een afgebroken verbinding is dan wél gewoon `Ok(0)` — daar is einde-bestand precies wat
+/// het lijkt — en dat is hier een fout met het aantal bytes erbij, niet stilzwijgend een
+/// half bestand dat de hashcontrole later afkeurt.
+fn lees_precies(
+    mut lezer: impl Read,
+    grootte: u64,
+    uit: &mut impl Write,
+    mut voortgang: impl FnMut(u64),
+) -> Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut ontvangen = 0u64;
     let mut laatste_melding = Instant::now();
-    loop {
-        let n = lezer.read(&mut buf).context("bytes ontvangen")?;
+
+    while ontvangen < grootte {
+        let ruimte = ((grootte - ontvangen) as usize).min(buf.len());
+        let n = lezer.read(&mut buf[..ruimte]).context("bytes ontvangen")?;
         if n == 0 {
-            break;
+            bail!("de verbinding brak af na {ontvangen} van {grootte} bytes");
         }
-        bestand.write_all(&buf[..n]).context("bytes wegschrijven")?;
+        uit.write_all(&buf[..n]).context("bytes wegschrijven")?;
         hasher.update(&buf[..n]);
         ontvangen += n as u64;
         if laatste_melding.elapsed() >= VOORTGANG_INTERVAL {
@@ -193,18 +255,8 @@ pub fn download(
             voortgang(ontvangen);
         }
     }
-    bestand.flush().context("deelbestand doorschrijven")?;
-    drop(bestand);
     voortgang(ontvangen);
-
-    if ontvangen != rel.size || hasher.finalize().as_bytes() != &verwachte_hash {
-        let _ = std::fs::remove_file(&deelpad);
-        bail!("de opgehaalde update komt niet overeen met de ondertekende hash");
-    }
-
-    let definitief = updates_dir.join(format!("update-{}.exe", rel.version));
-    std::fs::rename(&deelpad, &definitief).context("update hernoemen naar definitieve naam")?;
-    Ok(definitief)
+    Ok(*hasher.finalize().as_bytes())
 }
 
 pub fn hex_naar_bytes<const N: usize>(s: &str) -> Result<[u8; N]> {
@@ -341,6 +393,71 @@ mod tests {
         let mut rel = getekend(&paar);
         rel.size = MAX_UPDATE + 1;
         assert!(controleer_met_sleutel(&rel, publiek(&paar)).is_err());
+    }
+
+    /// Doet na wat `ureq::body::limit::LimitReader` doet: hij levert de bytes tot aan de
+    /// grens en geeft daarna geen einde-bestand maar een fout. Zonder deze nabootsing is
+    /// de bug hieronder alleen met een echte HTTP-server te zien.
+    struct BegrensdeLezer<'a> {
+        bron: &'a [u8],
+        over: usize,
+    }
+
+    impl Read for BegrensdeLezer<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.over == 0 {
+                return Err(std::io::Error::other("body exceeds limit"));
+            }
+            let n = self.bron.len().min(buf.len()).min(self.over);
+            buf[..n].copy_from_slice(&self.bron[..n]);
+            self.bron = &self.bron[n..];
+            self.over -= n;
+            Ok(n)
+        }
+    }
+
+    /// De bug die het bijwerken vanaf GitHub onbruikbaar maakte: de lus las door tot
+    /// `n == 0`, en die leesbeurt komt bij een begrensde body nooit — hij geeft een fout.
+    /// Elke geslaagde download eindigde dus in "bytes ontvangen: body exceeds limit".
+    #[test]
+    fn een_body_van_exact_de_aangekondigde_grootte_komt_er_heel_door() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let lezer = BegrensdeLezer {
+            bron: &bytes,
+            over: bytes.len(),
+        };
+        let mut uit = Vec::new();
+        let hash = lees_precies(lezer, bytes.len() as u64, &mut uit, |_| {})
+            .expect("een body die precies zo groot is als aangekondigd hoort geen fout te zijn");
+        assert_eq!(uit, bytes);
+        assert_eq!(hash, *blake3::hash(&bytes).as_bytes());
+    }
+
+    #[test]
+    fn een_afgebroken_download_is_een_fout_en_geen_half_bestand() {
+        let bytes = vec![7u8; 1000];
+        let lezer = BegrensdeLezer {
+            bron: &bytes[..400],
+            over: 1000,
+        };
+        let mut uit = Vec::new();
+        let fout = lees_precies(lezer, 1000, &mut uit, |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(fout.contains("brak af"), "kreeg: {fout}");
+    }
+
+    #[test]
+    fn de_voortgang_eindigt_op_het_totaal() {
+        let bytes = vec![1u8; 300_000];
+        let lezer = BegrensdeLezer {
+            bron: &bytes,
+            over: bytes.len(),
+        };
+        let mut laatste = 0u64;
+        let mut uit = Vec::new();
+        lees_precies(lezer, bytes.len() as u64, &mut uit, |n| laatste = n).unwrap();
+        assert_eq!(laatste, 300_000, "de balk moet op vol eindigen");
     }
 
     #[test]

@@ -235,6 +235,8 @@ impl OpRef {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum UpdateState {
+    /// A check the user asked for is running. An automatic one never reaches the window.
+    Checking,
     Downloading {
         version: String,
         received: u64,
@@ -243,6 +245,9 @@ pub enum UpdateState {
     Ready {
         version: String,
     },
+    /// Asked, answered: the feed had nothing newer.
+    #[serde(rename = "uptodate")]
+    UpToDate,
     Failed {
         error: String,
     },
@@ -455,6 +460,8 @@ impl UiState {
             output_device: snap.output_device.clone(),
             do_not_disturb: snap.niet_storen,
             update: snap.update.as_ref().map(|u| match u {
+                UpdateStatus::Zoeken => UpdateState::Checking,
+                UpdateStatus::Actueel => UpdateState::UpToDate,
                 UpdateStatus::Bezig {
                     versie,
                     ontvangen,

@@ -236,6 +236,7 @@ pub fn run(
             commands::create_channel,
             commands::rename_channel,
             commands::delete_channel,
+            commands::check_update,
             commands::apply_update,
             commands::ignore_update,
             commands::dismiss_update,

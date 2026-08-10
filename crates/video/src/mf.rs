@@ -1,9 +1,17 @@
 //! Gedeelde Media Foundation-plumbing voor encoder en decoder.
 //!
-//! Media Foundation moet één keer per proces opgestart worden en verwacht dat de
-//! aanroepende thread een COM-apartment heeft. Beide gebeuren hier, precies één keer,
-//! want tweemaal opstarten of een verkeerd apartment levert fouten op die verderop
-//! nergens meer op te herleiden zijn.
+//! Twee dingen die niet hetzelfde zijn, en dat verschil is een keer duur geweest:
+//!
+//! - **`MFStartup` is per proces.** Tweemaal opstarten levert fouten op die verderop
+//!   nergens meer op te herleiden zijn, dus dat gaat door een `Once`.
+//! - **Een COM-apartment is per *thread*.** `CoInitializeEx` geldt alleen voor de thread
+//!   die hem aanroept. Dat stond hier vroeger óók in die `Once`, waardoor precies één
+//!   thread in het hele proces een apartment had en alle andere media-threads zonder
+//!   werkten. Zie `docs/OVERDRACHT.md`, beslissing 23, en de uitleg bij
+//!   [`zorg_dat_mf_draait`] over waarom er géén `CoUninitialize` tegenover staat.
+//!
+//! Elke thread die Media Foundation aanraakt roept daarom [`zorg_dat_mf_draait`] op
+//! *zichzelf* aan, en niet één keer namens iedereen.
 
 use anyhow::{Context, Result};
 use std::sync::Once;
@@ -19,13 +27,48 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 static START: Once = Once::new();
 
-/// Idempotent: elke thread die Media Foundation aanraakt roept dit eerst aan.
+thread_local! {
+    /// Of *deze* thread al in een apartment zit. Zonder deze thread-local zou de `Once`
+    /// hieronder precies één thread een apartment geven en alle andere media-threads
+    /// zonder laten werken.
+    static APARTMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Idempotent: elke thread die Media Foundation aanraakt roept dit op *zichzelf* aan.
+///
+/// `MFStartup` gaat door de `Once` (per proces), het apartment door de thread-local (per
+/// thread). Een thread die zonder apartment MF-objecten aanmaakt werkt in de praktijk
+/// vaak nog wel, maar het *vrijgeven* van een apparaatbron — een camera, bijvoorbeeld —
+/// geeft dan geen fout meer maar een crash in de driverlaag.
+///
+/// # Waarom er geen `CoUninitialize` bij hoort
+///
+/// Dat lijkt de nette tegenhanger, en het is hier juist gevaarlijk. Het multithreaded
+/// apartment bestaat zolang er minstens één thread in zit. Zouden de media-threads het
+/// bij hun einde netjes verlaten, dan kan de laatste vertrekker het hele MTA opdoeken
+/// terwijl `D3dContext::winrt_device` en de WinRT-capture-objecten nog leven bij de
+/// motor — en dat is een ergere fout dan degene die dit bestand oplost. Eén
+/// apartmentverwijzing per media-thread laten staan is precies het gedrag dat we willen:
+/// het MTA blijft bestaan zolang het proces bestaat. Media-threads zijn er een handvol
+/// en ze leven lang.
 pub fn zorg_dat_mf_draait() {
+    APARTMENT.with(|gedaan| {
+        if gedaan.replace(true) {
+            return;
+        }
+        // SAFETY: eenmalig per thread, vóór elk COM-gebruik op die thread.
+        // Multithreaded apartment: onze media-threads hebben geen message pump.
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if hr.is_err() {
+            // `RPC_E_CHANGED_MODE` is normaal en onschuldig: de vensterthread zit al in
+            // het single-threaded apartment van WebView2, en MF werkt daar ook.
+            tracing::debug!(hresult = ?hr, "thread zat al in een ander COM-apartment");
+        }
+    });
+
     START.call_once(|| {
         // SAFETY: eenmalig per proces, vóór elk ander MF-gebruik.
         unsafe {
-            // Multithreaded apartment: onze media-threads hebben geen message pump.
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET) {
                 tracing::error!(error = %e, "Media Foundation kon niet starten");
             }

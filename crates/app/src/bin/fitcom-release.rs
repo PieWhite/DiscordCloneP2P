@@ -62,6 +62,15 @@ enum Opdracht {
         #[arg(long, default_value = "latest.json")]
         manifest: PathBuf,
     },
+    /// Doet ná het publiceren precies wat een gebruikersmachine doet: het manifest bij
+    /// `MANIFEST_URL` ophalen, de handtekening controleren, en kijken of de exe waar het
+    /// naar wijst er ook werkelijk staat.
+    ///
+    /// Dat laatste is de reden dat dit bestaat. `sign --url` pint de download vast op zijn
+    /// eigen tag, dus tekenen vóórdat die tag bestaat levert een manifest op dat perfect
+    /// klopt boven een download die 404't — en de app meldt dan niets, want een
+    /// onbereikbare feed is een normale toestand.
+    Check,
 }
 
 fn main() -> Result<()> {
@@ -75,7 +84,32 @@ fn main() -> Result<()> {
             out,
         } => sign(&key, &exe, &version, &url, &out),
         Opdracht::Verify { manifest } => verify(&manifest),
+        Opdracht::Check => check(),
     }
+}
+
+fn check() -> Result<()> {
+    println!("feed: {}", fitcom::release::MANIFEST_URL);
+    let rel = fitcom::release::haal_manifest()?;
+    println!("manifest: versie {} ({} bytes)", rel.version, rel.size);
+    fitcom::release::controleer(&rel).context("het gepubliceerde manifest wordt geweigerd")?;
+    println!("handtekening: goedgekeurd door de sleutel in deze build");
+
+    let status = fitcom::release::bereikbaar(&rel)?;
+    println!("{} -> HTTP {status}", rel.url);
+    anyhow::ensure!(
+        (200..300).contains(&status),
+        "de exe uit het manifest staat er niet; \
+         is er wel een release met die tag, met fitcom.exe erin?"
+    );
+
+    let eigen = env!("CARGO_PKG_VERSION");
+    if fitcom_proto::is_newer(&rel.version, eigen) {
+        println!("deze build ({eigen}) zou hem aanbieden.");
+    } else {
+        println!("deze build ({eigen}) is al even nieuw; hij biedt niets aan.");
+    }
+    Ok(())
 }
 
 fn verify(manifest: &std::path::Path) -> Result<()> {

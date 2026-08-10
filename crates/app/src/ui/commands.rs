@@ -334,6 +334,11 @@ pub fn delete_channel(ui: State<'_, Ui>, channel: String) {
 }
 
 #[tauri::command]
+pub fn check_update(ui: State<'_, Ui>) {
+    send(&ui, UiCommand::ZoekUpdate);
+}
+
+#[tauri::command]
 pub fn apply_update(ui: State<'_, Ui>) {
     send(&ui, UiCommand::PasUpdateToe);
 }

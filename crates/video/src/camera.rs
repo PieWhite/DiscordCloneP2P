@@ -257,6 +257,9 @@ fn open_reader(bron: &Bron) -> Result<(IMFSourceReader, u32, u32, i32)> {
 pub struct Cameracapture {
     frames: Receiver<(Vec<u8>, i64)>,
     stop: Arc<AtomicBool>,
+    /// Wordt bij het opruimen afgewacht. Zie [`Cameracapture::drop`] voor waarom dat niet
+    /// optioneel is.
+    lezer: Option<std::thread::JoinHandle<()>>,
     d3d: D3dContext,
     afmeting: (u32, u32),
 }
@@ -274,9 +277,14 @@ impl Cameracapture {
 
         let bron_kopie = bron.clone();
         let stop_lees = stop.clone();
-        std::thread::Builder::new()
+        let lezer = std::thread::Builder::new()
             .name("fitcom-camera".into())
             .spawn(move || {
+                // Op *deze* thread, niet alleen op die van de aanroeper: het apartment
+                // van een thread geldt niet voor een andere, en het openen én weer
+                // vrijgeven van een apparaatbron gebeurt hier. Zie `crate::mf`.
+                crate::mf::zorg_dat_mf_draait();
+
                 let (reader, breedte, hoogte, stride) = match open_reader(&bron_kopie) {
                     Ok(v) => v,
                     Err(e) => {
@@ -368,15 +376,26 @@ impl Cameracapture {
             })
             .context("camera-thread starten")?;
 
-        let (breedte, hoogte) = klaar_rx
+        let uitkomst = klaar_rx
             .recv_timeout(EERSTE_BEELD_WACHT)
-            .context("camera reageert niet")??;
+            .context("camera reageert niet");
+        let (breedte, hoogte) = match uitkomst {
+            Ok(Ok(maat)) => maat,
+            Ok(Err(e)) | Err(e) => {
+                // Zonder dit blijft er een thread hangen die de camera nog vasthoudt, en
+                // dan mislukt een tweede poging met "in gebruik door iets anders".
+                stop.store(true, Ordering::Relaxed);
+                let _ = lezer.join();
+                return Err(e);
+            }
+        };
 
         tracing::info!(bron = %bron.naam, breedte, hoogte, "camera-opname gestart");
 
         Ok(Self {
             frames,
             stop,
+            lezer: Some(lezer),
             d3d: d3d.clone(),
             afmeting: (breedte, hoogte),
         })
@@ -413,5 +432,18 @@ impl Drop for Cameracapture {
         // De leesthread hangt in `ReadSample` en merkt dit pas bij het volgende beeld.
         // Dat is één beeldtijd, en daarna sluit hij de reader zelf via zijn Drop.
         self.stop.store(true, Ordering::Relaxed);
+
+        // **En daar wachten we op.** Zonder dit gaat het uitzetten van de camera verder
+        // terwijl de leesthread nog een reader en een geopende apparaatbron vasthoudt:
+        // het lampje blijft dan aan, meteen weer aanzetten mislukt met "in gebruik door
+        // iets anders", en het vrijgeven van die bron gebeurt naast alles wat de motor
+        // intussen aan het opruimen is. Eén beeldtijd wachten is de hele prijs, op een
+        // thread die toch aan het afsluiten is.
+        if let Some(lezer) = self.lezer.take() {
+            if lezer.join().is_err() {
+                tracing::warn!("de camera-leesthread eindigde met een paniek");
+            }
+        }
+        tracing::info!("camera-opname gestopt");
     }
 }

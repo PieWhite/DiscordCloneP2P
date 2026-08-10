@@ -764,6 +764,172 @@ bijwerken. Dat is inherent aan een vertrouwensanker; daarom staat hij buiten de 
 **Wat er nog open staat.** B-20 (TOCTOU: er wordt niet opnieuw geverifieerd vlak vóór het
 spawnen van de updater) is met deze wijziging niet aangeraakt.
 
+> **Eén punt hierboven is herroepen:** "wat er bewust níet is: een handmatige check
+> nu-knop". Die is er nu wel, en om een reden die pas bleek toen het pad kapot was — zie
+> beslissing 24 hieronder.
+
+### 24. Bijwerken vanaf GitHub deed één leesbeurt te veel (2026-08-10)
+
+Rick meldde dat het bijwerken niet werkt. Het zat niet in de handtekening, niet in TLS en
+niet in de beslislogica, maar in vier regels leeslus — en het faalde **elke keer**, ook bij
+een volstrekt correcte release:
+
+```rust
+let mut lezer = antwoord.body_mut().with_config().limit(rel.size).reader();
+loop {
+    let n = lezer.read(&mut buf)?;   // <- na de laatste byte: Err, niet Ok(0)
+    if n == 0 { break; }
+```
+
+De begrensde lezer van ureq (`ureq::body::limit::LimitReader`) geeft bij een `read` nadat
+zijn teller op nul staat geen einde-bestand terug maar `Error::BodyExceedsLimit`: hij kan
+"body is precies zo groot als aangekondigd" niet onderscheiden van "de host stuurt meer dan
+hij aankondigde". De grens stond op exact `rel.size`, dus de lus liep altijd door tot die
+ene leesbeurt te veel en elke download eindigde in "bytes ontvangen: body exceeds limit".
+Er is nooit een update binnengekomen.
+
+Gefixt door de lus zelf te laten aftellen (`while ontvangen < grootte`, en nooit meer dan
+het restant opvragen) in plaats van op einde-bestand te wachten. De grens blijft staan als
+tweede net. Regressietest:
+`release.rs::tests::een_body_van_exact_de_aangekondigde_grootte_komt_er_heel_door`, met een
+nabootsing van die lezer — zonder die nabootsing is dit alleen met een echte HTTP-server te
+zien, en dan zou dit bestand een testserver nodig hebben voor een bug van vier regels.
+
+**Twee dingen eromheen, want alleen de leeslus repareren maakt dit niet zichtbaar
+werkend:**
+
+- **Er is nu wél een "Check for updates"-knop** (Settings → Account), en die antwoordt
+  altijd: "Checking…", "You are on the newest version", of de letterlijke fout. Dat was
+  eerder bewust weggelaten (beslissing 23), en dat blijkt precies de verkeerde keuze bij
+  een pad dat stil faalt: de tik van zes uur meldt niets als de feed onbereikbaar is —
+  terecht, offline is normaal — dus was er geen enkele manier om "hij werkt niet" van
+  "er is niets nieuws" te onderscheiden. Een handmatige check meldt daarom élke uitkomst,
+  een automatische blijft stil (`Updates::zoeken_gestart(handmatig)`).
+- **`fitcom-release check`** doet vanaf de uitgeefmachine precies wat een gebruikersmachine
+  doet: manifest ophalen bij `MANIFEST_URL`, handtekening tegen de sleutel van deze build,
+  én controleren dat de exe waar het manifest naar wíjst er werkelijk staat. Dat laatste is
+  geen luxe: `sign --url` pint de download vast op zijn eigen tag, dus tekenen vóórdat die
+  tag bestaat levert een manifest op dat perfect klopt boven een download die 404't.
+  **Dat is precies de toestand waarin de live feed op 2026-08-10 stond**: het manifest op
+  release `v0.3.2` kondigt versie 0.3.3 aan met
+  `…/releases/download/v0.3.3/fitcom.exe`, en een release `v0.3.3` bestaat niet. Zelfs met
+  de leeslus gerepareerd komt daar niets binnen; er moet één keer opnieuw uitgegeven
+  worden (zie "Een release uitgeven" verderop).
+
+Verder een leesbare melding als `fitcom-updater.exe` niet naast `fitcom.exe` staat. Dat
+gaf eerst "Het systeem kan het opgegeven bestand niet vinden", waar niemand uit opmaakt dat
+er een tweede bestand uit de release naast de app hoort.
+
+### 25. Eén COM-apartment per *thread*, en de camera-thread wordt afgewacht (2026-08-10)
+
+Rick meldde dat de app crasht bij het uitzetten van de camera. Twee dingen op dat pad waren
+fout, en het tweede verklaart waarom het juist bij het *uitzetten* stukliep.
+
+**`zorg_dat_mf_draait` initialiseerde COM één keer per proces in plaats van per thread.**
+Het eigen modulecommentaar van `crates/video/src/mf.rs` zei het al goed — "verwacht dat de
+aanroepende thread een COM-apartment heeft" — maar `CoInitializeEx` stond samen met
+`MFStartup` in dezelfde `Once`. `MFStartup` is per proces; een apartment is **per thread**.
+Gevolg: precies één thread in het hele proces zat in een apartment en alle andere
+media-threads werkten zonder. Voor het aanmaken van een MFT kom je daar meestal mee weg;
+voor het openen en vooral het **vrijgeven** van een apparaatbron — een camera loopt via een
+KS-proxy in de driverlaag — is dat geen fout meer maar een crash. De camera-leesthread was
+de enige thread die zijn eigen `zorg_dat_mf_draait` nooit aanriep: `Cameracapture::start`
+deed dat op de thread van de aanroeper en spawnde daarna de thread die de reader
+werkelijk opent en sluit.
+
+Nu: de `Once` doet alleen `MFStartup`, en een thread-local doet het apartment. Elke thread
+die MF aanraakt roept het op zichzelf aan, inclusief de camera-thread als eerste statement.
+
+**Er hoort geen `CoUninitialize` tegenover te staan, en dat is opzet.** De nette
+tegenhanger is hier gevaarlijker dan de ziekte: het multithreaded apartment bestaat zolang
+er minstens één thread in zit, dus als media-threads het bij hun einde netjes verlaten kan
+de laatste vertrekker het hele MTA opdoeken terwijl `D3dContext::winrt_device` en de
+WinRT-capture-objecten nog bij de motor leven. Eén apartmentverwijzing per media-thread
+laten staan is precies het gedrag dat we willen. Staat als eigen sectie in de docstring,
+zodat niemand dit later "opruimt".
+
+**En `Cameracapture::drop` wacht nu op zijn leesthread.** Hij zette alleen een vlag en
+ging verder, dus het uitzetten van de camera liep door terwijl die thread nog een reader en
+een geopende apparaatbron vasthield: het lampje bleef aan, meteen weer aanzetten gaf "in
+gebruik door iets anders", en het vrijgeven van die bron gebeurde náást alles wat de motor
+intussen aan het opruimen was. Eén beeldtijd wachten is de hele prijs, op een thread die
+toch aan het afsluiten is. Om dezelfde reden wacht `DelerHandle::drop` op zijn deel-thread
+— maar **alleen voor een exclusieve bron** (een camera): een scherm mag je twee keer
+tegelijk opnemen, dus daar blijft het gedrag ongewijzigd en kost een stoppende stream niets.
+
+**Eerlijk over wat hier bewezen is:** deze twee fouten zijn met de hand gevonden door het
+pad na te lezen, niet gereproduceerd — er staat hier geen Windows. Beide zijn
+zelfstandig verkeerd en beide zitten precies op het pad dat crasht. Of de crash er
+daadwerkelijk mee weg is, moet C.7/C.8 in `docs/TESTPLAN.md` uitwijzen.
+
+### 26. Je eigen camera hangt aan de deler, niet aan een tweede opname (2026-08-10)
+
+Rick wilde zichzelf kunnen zien als hij de camera aanzet. De verleiding is een tweede
+opname met een eigen venster ernaast, en dat kán niet: Media Foundation geeft een camera aan
+één iemand tegelijk uit, dus die tweede opname zou de deler het apparaat afpakken (of
+andersom). Het venster hangt daarom aan de **deel-thread**, die de textuur toch al in
+handen heeft op weg naar de encoder: `DelerConfig::voorbeeld: Option<String>` zet het aan en
+geeft het zijn titel, en het is dezelfde `crate::venster::Venster` als het kijkvenster —
+dus ook op mac compileerbaar, met F11 en dubbelklik voor beeldvullend.
+
+Wat daarvoor moest wijken, en dat is de echte wijziging:
+
+- **Een deler bestaat nu ook zonder kijkers.** "Er wordt pas opgenomen als er iemand
+  kijkt" gold tot nu toe absoluut. Voor een camera is *jij* die iemand. `zet_camera(true)`
+  start daarom meteen een deler met een lege kijkerslijst, en `Actie::StopDelen` ruimt een
+  stream met een voorbeeldvenster niet op maar zet alleen zijn kijkerslijst leeg.
+  Het echte opruimen zit in `stop_met_delen`, expliciet, zodat het niet afhangt van de
+  vraag of er iemand kéék.
+- **Zonder kijkers wordt er niet gecodeerd.** De `kijkers.is_empty()`-controle is vóór
+  `encoder.encode` gaan staan in plaats van erna. Voor een gedeeld scherm scheelt dat de
+  paar beelden tussen de laatste kijker en het opruimen; voor een camera met alleen een
+  voorbeeldvenster is het de normale toestand. Eén GPU-kopie per beeld op 720p30, geen
+  encoder, geen socket.
+- **`DelerHandle::gestopt()` en `::fout()`** zijn er bijgekomen omdat de motor een dode
+  deler nu wél moet kunnen herkennen, en dat is een direct gevolg van het punt hierboven:
+  zodra de opname bij het *aanzetten* begint, kan het aanzetten zelf mislukken — de camera
+  is in gebruik door Teams, de encoder wil niet. Dat is precies het moment waarop iemand
+  staat te wachten, en de deler heeft geen kanaal terug naar de motor. Dus legt hij zijn
+  reden neer en haalt `Engine::ruim_gestopte_camera_op` die op de tik van 100 ms op: fout in
+  de foutbalk, knop terug op uit. Dat vangt tegelijk het nette geval — voorbeeldvenster
+  gesloten terwijl niemand kijkt — waar niets mis is maar de knop wel hoort terug te
+  springen in plaats van "aan" te blijven staan boven iets dat niet meer draait.
+  **Sluit je het venster terwijl er wél iemand kijkt, dan blijft het delen doorlopen**,
+  alleen zonder venster; de camera gaat dan uit zodra ook die laatste kijker weg is.
+  Alleen voor een camera: een gedeeld scherm heeft geen voorbeeldvenster en zijn
+  aankondiging blijft staan als een deler eruit klapt, precies zoals eerst.
+- **Het voorbeeldvenster niet kunnen openen is fataal voor de lus**, niet iets om
+  overheen te lopen. "Camera aan, maar je ziet niets" is van de drie uitkomsten de
+  slechtste; nu komt er een leesbare fout en springt de knop terug.
+
+**De prijs, expliciet: het lampje gaat nu aan zodra je de camera aanzet**, niet pas als
+iemand kijkt. Dat is geen verslapping van de regel maar de betekenis van wat er gevraagd
+is — een terugblik zonder opname bestaat niet. Voor een **scherm** verandert er niets:
+`voorbeeld` is daar `None` (naar je eigen scherm kijk je al), en de regel geldt onverkort.
+
+### 27. Geluidjes worden gemaakt, niet meegeleverd (2026-08-10)
+
+Er komt nu een korte toon bij het komen en gaan van iemand in het gesprek en bij een stream
+of camera die aan of uit gaat. Drie keuzes daarin:
+
+- **De tonen worden gerekend, niet meegeleverd.** Een wav naast de exe breekt "losse exe in
+  een zip"; zes wavs in de repo bakken levert zes bestandjes op die niemand kan nalezen.
+  `geluid.rs` schrijft ze bij het eerste gebruik zelf: sinus, korte in- en uitregeling
+  tegen klikken, en de noten staan als noten in de broncode.
+- **Niet via de voice-mixer.** Die bestaat alleen tijdens een gesprek, en het eerste
+  geluidje dat je wilt horen is dat van je eigen deelname. Dus rechtstreeks naar het
+  standaardapparaat: `PlaySound` met `SND_MEMORY | SND_ASYNC` op Windows (de bytes zijn
+  daarom `'static` — `SND_ASYNC` leest ze ná de aanroep nog), `afplay` op macOS. Zelfde
+  afweging als bij `notify.rs`: nul afhankelijkheden.
+- **Een stream-geluidje hangt aan een *verandering*, niet aan een bericht.** Een
+  `StreamAnnounce` komt bij elke herverbinding opnieuw langs voor een stream die we al
+  kenden. De motor telt daarom hoeveel zichtbare streams een peer heeft vóór en ná het
+  bericht (`zichtbare_streams_van`) en piept op het verschil. Bureaubladgeluid telt niet
+  mee: dat gaat automatisch met een scherm mee en is geen eigen gebeurtenis.
+
+Niet-storen zet ze uit, dezelfde regel als voor meldingen en om dezelfde reden. Mute en
+deafen doen hier níéts: die gaan over het gesprek, niet over de app.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -1604,6 +1770,37 @@ doet: wachten op een PID, een bestand hernoemen, opnieuw starten.
 - De volledige beslislogica van `Updates` (aanbieden, negeren, een nog nieuwere versie die
   wint, voortgang, mislukking, wegklikken) — twaalf pure unit-tests in
   `crates/app/src/updates.rs`, zonder netwerk of schijf.
+
+---
+
+## Een release uitgeven
+
+De volgorde hier is niet vrij: `sign --url` pint de download vast op een tag, en die tag
+moet er zijn vóórdat het manifest gepubliceerd is. Precies dát ging op 2026-08-10 mis (zie
+beslissing 24): op release `v0.3.2` stond een manifest dat 0.3.3 aankondigde met een URL
+naar een `v0.3.3` die niet bestond. Handtekening perfect, download 404, app zwijgt.
+
+1. Versie in `Cargo.toml` (`workspace.package.version`) op de nieuwe waarde zetten en
+   committen. Dat getal is `EIGEN_VERSIE`, dus dit moet vóór het bouwen.
+2. `cargo build --release` op Windows. Er komen twee bestanden uit die beide mee moeten:
+   `fitcom.exe` **en** `fitcom-updater.exe`.
+3. `fitcom-release sign --key <pad>\release-key.pk8 --exe target\release\fitcom.exe
+   --version <X.Y.Z> --url https://github.com/PieWhite/DiscordCloneP2P/releases/download/v<X.Y.Z>/fitcom.exe`
+4. `fitcom-release verify` — legt het net geschreven manifest langs de sleutel die *deze*
+   build meedraagt. Dit is het enige dat een verkeerd geplakte publieke sleutel aan het
+   licht brengt vóórdat iedereen stilletjes geen updates meer krijgt.
+5. **Release `v<X.Y.Z>` op GitHub aanmaken met `fitcom.exe`, `fitcom-updater.exe` én
+   `latest.json` erin.** De tag in stap 3 en die van de release moeten letterlijk gelijk
+   zijn.
+6. `fitcom-release check` — doet nu wat een gebruikersmachine doet: manifest bij
+   `MANIFEST_URL` ophalen (die volgt `releases/latest`), handtekening controleren, en
+   ophalen of de exe waar het manifest naar wijst er werkelijk staat. **Zolang deze stap
+   geen HTTP 200 meldt, krijgt niemand de update** — en niemand ziet waarom, want een
+   onbereikbare feed is voor de app een normale toestand.
+
+`latest.json` in de repo-root is een afdruk van de laatst uitgegeven release, geen bron:
+de app leest hem nooit, hij komt van de release-asset. Loopt hij achter, dan zegt dat niets
+over wat er live staat — daarvoor is stap 6.
 
 ---
 

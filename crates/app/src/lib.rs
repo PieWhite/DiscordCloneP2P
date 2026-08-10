@@ -8,6 +8,7 @@ pub mod chat;
 pub mod config;
 pub mod engine;
 pub mod files;
+pub mod geluid;
 pub mod notify;
 pub mod release;
 pub mod streams;

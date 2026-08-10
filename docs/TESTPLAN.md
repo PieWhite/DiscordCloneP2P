@@ -726,6 +726,68 @@ Op de mac hoort de camera-knop een foutbalk te geven (geen camera-opname op macO
 **kijken naar de camera van de Windows-peer moet gewoon werken** — venster, miniatuur,
 alles. Dit is de test dat het overslaan van de mac-kant niets anders gebroken heeft.
 
+## Camera, geluidjes en bijwerken (2026-08-10)
+
+Alle vier de wijzigingen van deze ronde zijn **op een Mac geschreven zonder Windows in de
+buurt**. De Windows-only bestanden zijn wel getypecheckt voor `x86_64-pc-windows-msvc` (de
+scratch-crate-omweg uit beslissing 22), en dat vangt elke API-vormfout — geen enkel gedrag.
+Dit zijn de gevallen die alleen op de echte machine iets bewijzen.
+
+**C.7 De camera uitzetten crasht niet meer** — de klacht die dit moest oplossen.
+Camera aan, camera uit. Dan met een kijker erbij: camera aan, iemand laten kijken, camera
+uit terwijl hij kijkt. Beide kanten moeten blijven leven. Daarna vijf keer snel aan/uit
+achter elkaar: geen crash, geen "in gebruik door iets anders", en het lampje moet echt
+uitgaan. In de log horen `camera-opname gestopt` en `delen gestopt` bij elkaar te staan.
+
+**C.8 Camera uit en meteen weer aan**
+Uit en binnen een halve seconde weer aan. Dit is het geval dat vóór deze ronde niet kón
+werken (de leesthread hield het apparaat nog vast) en waar nu maximaal een halve seconde op
+gewacht wordt. Werkt hij niet, kijk dan in de log naar `deel-thread stopte niet binnen`.
+
+**C.9 Je eigen camerabeeld**
+Camera aan → er komt een venster "You — <cameranaam>" met je eigen beeld, ook als er
+niemand kijkt. Controleren: staat het niet op zijn kop en niet in spiegelbeeld ten opzichte
+van wat de kijker ziet? Camera uit → venster sluit. F11 en dubbelklik doen beeldvullend,
+Escape eruit.
+Daarna: het voorbeeldvenster met de sluitknop dichtdoen terwijl er niemand kijkt → de
+opname hoort te stoppen (lampje uit) **en de camera-knop hoort terug op uit te springen**,
+binnen een tik. En met een kijker erbij: venster dicht → de kijker blijft gewoon beeld
+krijgen, en de camera gaat pas uit als ook die laatste kijker weg is.
+
+**C.9b Camera aanzetten terwijl hij bezet is**
+Teams of Zoom met de camera open laten staan en dan hier de camera aanzetten. Verwacht: een
+leesbare foutbalk ("camera: …") en de knop die terugspringt naar uit — niet een knop die
+"aan" blijft staan boven iets dat niet draait. Dit is het geval dat er pas kán zijn sinds de
+opname bij het aanzetten begint in plaats van bij de eerste kijker.
+
+**C.10 Gedeeld scherm is niets veranderd**
+Scherm delen, iemand laat kijken, laatste kijker weg, opnieuw kijken. Dit is de controle dat
+de deler-wijzigingen (geen encoder zonder kijkers, wachten bij het stoppen) alleen de camera
+raken: een scherm hoort zich exact als voorheen te gedragen, inclusief bureaubladgeluid dat
+mee aan- en uitgaat.
+
+**G.1 Geluidjes**
+Zes gevallen, en ze horen alle zes verschillend te klinken: zelf deelnemen (oplopend), zelf
+verlaten (aflopend), de ander komt erbij, de ander gaat eruit, de ander zet een scherm of
+camera aan, en weer uit. Let vooral op wat er **niet** hoort te klinken: bij een peer die
+opnieuw verbindt terwijl hij al deelt of al in het gesprek zit hoort het stil te blijven
+(dat is de her-aankondiging), en met niet-storen aan hoort er niets te komen. Te hard? De
+app staat in de volumemixer van Windows.
+
+**U.1 Bijwerken vanaf GitHub, met een echt versieverschil**
+Nog nooit gelukt (beslissing 24), dus dit is de eerste keer dat dit hele pad in het echt
+loopt. Volg "Een release uitgeven" in `docs/OVERDRACHT.md` — inclusief stap 6, en pas
+verder als die HTTP 200 zegt. Daarna op een machine met een óudere versie: Settings →
+Account → "Check for updates". Verwacht: "Fetching …" met een percentage dat oploopt, dan de
+chip in de statusbalk, dan "Update and restart" → app sluit, komt terug op de nieuwe versie,
+geschiedenis en instellingen intact. In `data\logs\` en in `updater.log` naast de exe staat
+wat er gebeurde.
+
+**U.2 Bijwerken als er niets nieuws is, en als de feed stuk is**
+Zelfde knop op de nieuwste versie → "You are on the newest version." Daarna met Tailscale
+en internet uit → de knop hoort de echte fout te melden, niet stil te blijven. Dat
+onderscheid is de reden dat die knop er is.
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

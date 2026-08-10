@@ -115,10 +115,34 @@ toegevoegd zonder protocolbump. Zie `docs/OVERDRACHT.md` beslissing 22.
 - **Bureaubladgeluid hangt aan een *scherm*, niet aan beeld.** Gebruik
   `StreamKind::is_scherm()`, nooit "alles wat geen geluid is" — anders stuurt een webcam
   ongevraagd je systeemgeluid mee.
+- **Een camera is een exclusieve bron.** Media Foundation geeft hem aan één iemand tegelijk
+  uit. Dus nooit een tweede opname ernaast zetten, en bij het stoppen wachten tot de vorige
+  thread er echt uit is (`Cameracapture::drop`, `DelerHandle::drop`). Zie beslissing 25.
+- **`crates/video/src/mf.rs`: een COM-apartment is per thread, `MFStartup` per proces.**
+  Elke thread die MF aanraakt roept `zorg_dat_mf_draait()` op *zichzelf* aan. Er staat
+  bewust geen `CoUninitialize` tegenover; de docstring legt uit waarom en dat is geen
+  omissie om op te ruimen. Beslissing 25.
+- **De camera heeft een eigen terugblikvenster** (`DelerConfig::voorbeeld`), en daarom
+  bestaat er voor een camera een deler zonder kijkers. "Er wordt pas opgenomen als er iemand
+  kijkt" geldt onverkort voor een **scherm**; bij een camera ben jij die iemand.
+  Beslissing 26.
 - **Windows-code is op de Mac te typechecken** met een losse crate die `camera.rs` via
   `#[path]` insluit (`cargo check --target x86_64-pc-windows-msvc` op de workspace zelf
   loopt stuk op `ring`). Recept in beslissing 22 — gebruik dit vóór je Windows-code
-  aanraakt zonder Windows.
+  aanraakt zonder Windows. Werkt ook voor `mf.rs`, `venster.rs` en `app/src/geluid.rs`.
+
+## Geluidjes (2026-08-10)
+`crates/app/src/geluid.rs` rekent zes korte tonen zelf uit en speelt ze buiten de
+voice-mixer om (`PlaySound` met de bytes in het geheugen; `afplay` op mac). Niets om mee te
+leveren, niets om te bundelen. Niet-storen onderdrukt ze; mute en deafen niet. Een
+stream-geluidje hangt aan een *verandering* in het aantal zichtbare streams van een peer,
+nooit aan een `StreamAnnounce` — die komt bij elke herverbinding opnieuw langs. Beslissing 27.
+
+## Releases uitgeven
+Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het
+manifest live gaat**. De volgorde staat in `docs/OVERDRACHT.md` § "Een release uitgeven";
+`fitcom-release check` is de laatste stap en die moet HTTP 200 melden, anders krijgt niemand
+de update en ziet niemand waarom. `latest.json` in de repo-root is een afdruk, geen bron.
 
 ## Bouwen
 Naast Rust (MSVC op Windows, gewoon stable op macOS) is `cmake` nodig: libopus wordt

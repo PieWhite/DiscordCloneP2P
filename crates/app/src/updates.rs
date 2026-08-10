@@ -17,6 +17,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateStatus {
+    /// Er wordt nu bij de feed gekeken. Alleen na een druk op de knop: een automatische
+    /// check hoort onzichtbaar te zijn.
+    Zoeken,
     Bezig {
         versie: String,
         ontvangen: u64,
@@ -26,6 +29,9 @@ pub enum UpdateStatus {
         versie: String,
         pad: PathBuf,
     },
+    /// De feed was bereikbaar en had niets nieuwers. Ook alleen na een druk op de knop —
+    /// zonder dit antwoord lijkt de knop stuk.
+    Actueel,
     Mislukt(String),
 }
 
@@ -33,7 +39,7 @@ impl UpdateStatus {
     pub fn versie(&self) -> Option<&str> {
         match self {
             Self::Bezig { versie, .. } | Self::KlaarOmToeTePassen { versie, .. } => Some(versie),
-            Self::Mislukt(_) => None,
+            Self::Zoeken | Self::Actueel | Self::Mislukt(_) => None,
         }
     }
 }
@@ -48,6 +54,9 @@ pub struct Updates {
     /// Er loopt een check of download. Voorkomt dat de periodieke tik er een tweede
     /// naast start terwijl de eerste nog bezig is.
     bezig: bool,
+    /// Of de lopende check op verzoek van de gebruiker is. Bepaalt of "niets gevonden"
+    /// een antwoord verdient of stilzwijgend voorbijgaat.
+    handmatig: bool,
 }
 
 impl Updates {
@@ -65,8 +74,20 @@ impl Updates {
         !self.bezig && !matches!(self.huidig, Some(UpdateStatus::KlaarOmToeTePassen { .. }))
     }
 
-    pub fn zoeken_gestart(&mut self) {
+    /// `handmatig` betekent: de gebruiker heeft erom gevraagd, dus elke uitkomst — ook
+    /// "niets nieuws" en "feed onbereikbaar" — hoort zichtbaar te worden. Een
+    /// automatische check laat het slot verder ongemoeid.
+    pub fn zoeken_gestart(&mut self, handmatig: bool) {
         self.bezig = true;
+        self.handmatig = handmatig;
+        if handmatig {
+            self.huidig = Some(UpdateStatus::Zoeken);
+        }
+    }
+
+    /// Of de lopende check er een is waar de gebruiker om gevraagd heeft.
+    pub fn is_handmatig(&self) -> bool {
+        self.handmatig
     }
 
     /// Wat de check-taak moet overslaan.
@@ -76,6 +97,7 @@ impl Updates {
 
     /// De feed had een nieuwere, getekende versie en de download is begonnen.
     pub fn gestart(&mut self, versie: String, totaal: u64) {
+        self.handmatig = false;
         self.huidig = Some(UpdateStatus::Bezig {
             versie,
             ontvangen: 0,
@@ -91,6 +113,7 @@ impl Updates {
 
     pub fn klaar(&mut self, pad: PathBuf) {
         self.bezig = false;
+        self.handmatig = false;
         if let Some(UpdateStatus::Bezig { versie, .. }) = &self.huidig {
             self.huidig = Some(UpdateStatus::KlaarOmToeTePassen {
                 versie: versie.clone(),
@@ -101,13 +124,22 @@ impl Updates {
 
     pub fn mislukt(&mut self, bericht: String) {
         self.bezig = false;
+        self.handmatig = false;
         self.huidig = Some(UpdateStatus::Mislukt(bericht));
     }
 
-    /// De feed was bereikbaar maar had niets nieuws (of alleen iets genegeerds). Laat een
-    /// eerdere melding staan; alleen het slot voor een volgende check gaat weer open.
+    /// De feed was bereikbaar maar had niets nieuws (of alleen iets genegeerds).
+    ///
+    /// Bij een automatische check laat dit een eerdere melding staan en gaat alleen het
+    /// slot weer open. Bij een handmatige check is "niets nieuws" het antwoord waar de
+    /// gebruiker op wacht, dus dan komt het in beeld.
     pub fn niets_gevonden(&mut self) {
         self.bezig = false;
+        if std::mem::take(&mut self.handmatig) {
+            self.huidig = Some(UpdateStatus::Actueel);
+        } else if self.huidig == Some(UpdateStatus::Zoeken) {
+            self.huidig = None;
+        }
     }
 
     /// De gebruiker klikt "negeren": deze versie wordt niet meer vanzelf aangeboden
@@ -135,7 +167,7 @@ mod tests {
     fn download_loopt_van_bezig_naar_klaar() {
         let mut u = Updates::new();
         assert!(u.mag_zoeken());
-        u.zoeken_gestart();
+        u.zoeken_gestart(false);
         assert!(!u.mag_zoeken(), "geen tweede check naast een lopende");
 
         u.gestart("0.3.0".into(), 1000);
@@ -163,7 +195,7 @@ mod tests {
     #[test]
     fn klaarstaande_update_blokkeert_een_nieuwe_check() {
         let mut u = Updates::new();
-        u.zoeken_gestart();
+        u.zoeken_gestart(false);
         u.gestart("0.3.0".into(), 10);
         u.klaar(PathBuf::from("x"));
         assert!(
@@ -182,7 +214,7 @@ mod tests {
     #[test]
     fn mislukking_geeft_het_slot_weer_vrij() {
         let mut u = Updates::new();
-        u.zoeken_gestart();
+        u.zoeken_gestart(false);
         u.mislukt("feed onbereikbaar".into());
         assert!(matches!(u.status(), Some(UpdateStatus::Mislukt(_))));
         assert!(u.mag_zoeken(), "een volgende tik mag het opnieuw proberen");
@@ -191,7 +223,7 @@ mod tests {
     #[test]
     fn niets_gevonden_geeft_het_slot_vrij_zonder_status() {
         let mut u = Updates::new();
-        u.zoeken_gestart();
+        u.zoeken_gestart(false);
         u.niets_gevonden();
         assert_eq!(u.status(), None);
         assert!(u.mag_zoeken());
@@ -200,7 +232,7 @@ mod tests {
     #[test]
     fn negeren_leegt_het_slot_en_belandt_in_de_overslaglijst() {
         let mut u = Updates::new();
-        u.zoeken_gestart();
+        u.zoeken_gestart(false);
         u.gestart("0.3.0".into(), 10);
         u.klaar(PathBuf::from("x"));
 
@@ -211,9 +243,46 @@ mod tests {
     }
 
     #[test]
+    fn een_handmatige_check_antwoordt_ook_als_er_niets_nieuws_is() {
+        // Zonder dit doet de knop "Check for updates" niets zichtbaars, en dat is niet te
+        // onderscheiden van "de knop is stuk" — precies de klacht die dit moet oplossen.
+        let mut u = Updates::new();
+        u.zoeken_gestart(true);
+        assert_eq!(u.status(), Some(&UpdateStatus::Zoeken));
+        u.niets_gevonden();
+        assert_eq!(u.status(), Some(&UpdateStatus::Actueel));
+        assert!(u.mag_zoeken(), "nog een keer kijken mag altijd");
+    }
+
+    #[test]
+    fn een_automatische_check_zonder_nieuws_blijft_onzichtbaar() {
+        let mut u = Updates::new();
+        u.zoeken_gestart(false);
+        u.niets_gevonden();
+        assert_eq!(u.status(), None);
+    }
+
+    #[test]
+    fn een_automatische_check_wist_het_antwoord_van_een_handmatige_niet() {
+        // De tik van zes uur mag "je bent bij" niet zomaar van het scherm halen, maar hij
+        // mag er ook geen stale "Zoeken" laten staan.
+        let mut u = Updates::new();
+        u.zoeken_gestart(true);
+        u.niets_gevonden();
+        u.zoeken_gestart(false);
+        assert_eq!(
+            u.status(),
+            Some(&UpdateStatus::Actueel),
+            "een automatische check hoort het beeld niet te veranderen"
+        );
+        u.niets_gevonden();
+        assert_eq!(u.status(), Some(&UpdateStatus::Actueel));
+    }
+
+    #[test]
     fn wis_melding_negeert_de_versie_niet() {
         let mut u = Updates::new();
-        u.zoeken_gestart();
+        u.zoeken_gestart(false);
         u.mislukt("stuk".into());
         u.wis_melding();
         assert_eq!(u.status(), None);

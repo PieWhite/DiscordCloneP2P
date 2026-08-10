@@ -693,12 +693,19 @@ function renderStatus() {
         : p.presence === "broken" ? "needs attention"
         : "offline"}</span></span>`;
 
-  const update = S.update && S.update.state === "ready"
-    ? `<button class="update-chip" id="btn-update">${ic("i-download")}Update to ${esc(S.update.version)} is ready</button>`
-    : S.update && S.update.state === "downloading"
-    ? `<span class="update-chip" aria-live="polite">${ic("i-download")}Fetching ${esc(S.update.version)} — ${Math.round(100 * S.update.received / Math.max(1, S.update.total))}%</span>`
-    : S.update && S.update.state === "failed"
-    ? `<button class="update-chip" id="btn-update-dismiss">${ic("i-alert")}Update failed</button>`
+  const u = S.update || {};
+  const update = u.state === "ready"
+    ? `<button class="update-chip" id="btn-update">${ic("i-download")}Update to ${esc(u.version)} is ready</button>`
+    : u.state === "downloading"
+    ? `<span class="update-chip" aria-live="polite">${ic("i-download")}Fetching ${esc(u.version)} — ${Math.round(100 * u.received / Math.max(1, u.total))}%</span>`
+    : u.state === "checking"
+    ? `<span class="update-chip" aria-live="polite">${ic("i-retry")}Checking for updates…</span>`
+    /* The error text matters here: a signed manifest pointing at a release asset that is
+       not there looks exactly like "nothing happens" without it. */
+    : u.state === "failed"
+    ? `<button class="update-chip" id="btn-update-dismiss" title="${esc(u.error || "")}">${ic("i-alert")}Update failed</button>`
+    : u.state === "uptodate"
+    ? `<button class="update-chip" id="btn-update-dismiss">${ic("i-check")}Up to date</button>`
     : "";
 
   el.innerHTML = `
@@ -765,6 +772,18 @@ const SET_TABS = [
     just plugged in appears. */
 let devices = null;
 
+/** What the Account tab says next to "Check for updates". The full error is spelled out
+    rather than summarised: every way this feed can break is a sentence the user needs. */
+function updateWord() {
+  const u = S.update || {};
+  if (u.state === "checking") return "Checking…";
+  if (u.state === "uptodate") return "You are on the newest version.";
+  if (u.state === "downloading") return `Fetching ${esc(u.version)}…`;
+  if (u.state === "ready") return `Version ${esc(u.version)} is downloaded and verified.`;
+  if (u.state === "failed") return esc(u.error || "The check failed.");
+  return "";
+}
+
 const deviceSelect = (id, list, chosen, label) => `
   <span class="select-wrap">
     <select id="${id}" style="min-width:300px" aria-label="${label}">
@@ -816,6 +835,18 @@ const SET_BODY = {
             app while you are gaming. Set in <code class="mono">config.toml</code>.</span>
         </div>
         <button class="switch" aria-pressed="${S.minimize_to_tray}" aria-label="Close button hides to tray" disabled></button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Version</span>
+      <span class="field-help">Updates come from the signed release feed on GitHub, checked
+        every six hours. Only a build signed with the release key is ever accepted.</span>
+      <div class="control-row">
+        <code class="mono code-inline">v${esc(S.app_version)}</code>
+        <button class="btn btn--ghost" id="btn-check-update"
+                ${S.update && (S.update.state === "checking" || S.update.state === "downloading") ? "disabled" : ""}>
+          ${ic("i-retry")}Check for updates</button>
+        <span class="field-help" style="margin:0" aria-live="polite">${updateWord()}</span>
       </div>
     </div>`,
 
@@ -1232,6 +1263,7 @@ document.addEventListener("click", async e => {
     });
   }
   if (t.closest("#btn-update-dismiss")) return invoke("dismiss_update");
+  if (t.closest("#btn-check-update")) return invoke("check_update");
 
   if (t.closest("#btn-wipe")) {
     return askConfirm({
