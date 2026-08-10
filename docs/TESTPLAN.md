@@ -788,6 +788,58 @@ Zelfde knop op de nieuwste versie → "You are on the newest version." Daarna me
 en internet uit → de knop hoort de echte fout te melden, niet stil te blijven. Dat
 onderscheid is de reden dat die knop er is.
 
+## Geluidsets en hun volume (1.0.1)
+
+De tonen zijn op een Mac ontworpen en daar alleen *nagemeten*, niet beoordeeld. Wat er
+gemeten is, per geluidje: duur, piek, luidheid, of het op stil begint en eindigt, of de
+grootste sprong tussen twee samples eruit springt ten opzichte van de rest (dát is wat een
+tik hoorbaar maakt, niet de sprong op zich — een partiaal op 5 kHz geeft legitiem grote
+sprongen), en of een stijgend motief werkelijk stijgt: niet "welke toon is het luidst in de
+eerste helft", want bij overlappende klanken klinken beide toonhoogtes de hele tijd door,
+maar of de verhouding tussen de twee toonhoogtes de goede kant op schuift. Alle 24 kwamen
+schoon door. Of ze prettig klínken kan alleen een mens.
+
+**S.1 Alle sets, alle zes**
+Instellingen → Audio → Notification sounds. Per set alle zes proefknoppen langs. Waar het om
+gaat: (a) klinkt het prettig en niet als een foutmelding, (b) hoor je zonder nadenken welke
+van de zes het is, (c) klinkt "erbij" hoorbaar anders dan "eraf", (d) is je eigen deelname te
+onderscheiden van die van iemand anders, (e) zit er geen tik, klik of ratel in.
+
+**S.2 Van set wisselen verandert het volume niet**
+Kies een set → hij speelt zichzelf één keer. Ga langs alle vier en let op of de ene set
+merkbaar harder is dan de andere. Dat hoort niet: elk geluidje wordt genormaliseerd op zijn
+*luidheid* (hoogste RMS over 200 ms, ongeveer de integratietijd van het oor) en niet op zijn
+piek. Op de piek genormaliseerd was dit verschil 5 tot 9 dB — een uitdovende klank is bij
+gelijke piek veel zachter dan een staande toon — en dat is precies waarom het nu op luidheid
+gaat. Klinkt er één set toch duidelijk harder of zachter, dan is de meting niet
+representatief voor wat jij hoort; meld welke set en welke kant op.
+
+Binnen een set hoort er wel verschil te zijn, en dat is bedoeld: wat een ander doet is
+2,3 dB zachter dan je eigen deelname, en een stream 3,4 dB.
+
+**S.3 Volume, en dat het bewaard blijft**
+De schuif naar 20%, 60% en 100% en bij elk een proefknop. Dan de app afsluiten en opnieuw
+starten: de gekozen set én het volume horen te staan waar je ze liet. In
+`data\config.toml` staat dan `[sound]` met `set` en `volume`.
+Schuif op 0 → er hoort niets te komen, ook niet zachtjes.
+
+**S.4 Het volume raakt alleen deze tonen**
+Met het volume op 20%: je eigen stem, de stem van de anderen en bureaubladgeluid horen
+onveranderd hard te blijven. En de Windows-melding bij een bericht dat jou tagt is Windows'
+eigen geluid — die verandert hier bewust niet mee.
+
+**S.5 In het echt, met een tweede machine**
+De vier echte gebeurtenissen langs: iemand komt in het gesprek, gaat eruit, zet een scherm
+of camera aan, en weer uit. Let op wat er níét hoort te klinken: bij een peer die opnieuw
+verbindt terwijl hij al deelt of al in het gesprek zit hoort het stil te blijven, en met
+niet-storen aan hoort er niets te komen behalve de proefknoppen.
+
+**S.6 Een config van 1.0.0 blijft werken**
+Start 1.0.1 met de `config.toml` van 1.0.0 (zonder `[sound]`-tabel). Hij hoort gewoon te
+starten, op de klassieke set en 70% volume, en pas iets weg te schrijven als je iets wijzigt.
+Dit is de test die de kanalen-uitbreiding indertijd niet had; er is nu ook een unittest voor
+(`config.rs::config_van_voor_de_geluidsinstellingen_krijgt_de_standaardset`).
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

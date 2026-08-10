@@ -157,6 +157,23 @@ pub fn run(
         constants: Constants {
             me,
             fallback_name: cfg.display_name.clone(),
+            // Built from the engine's own list, so adding a tone set is one edit in
+            // `geluid.rs` rather than one there and one in the frontend.
+            sound_sets: crate::geluid::Geluidset::ALLE
+                .iter()
+                .map(|s| state::SoundSetInfo {
+                    id: s.naam().to_string(),
+                    name: s.label().to_string(),
+                    description: s.beschrijving().to_string(),
+                })
+                .collect(),
+            sound_events: crate::geluid::Geluid::ALLE
+                .iter()
+                .map(|g| state::SoundEventInfo {
+                    id: g.naam().to_string(),
+                    name: g.label().to_string(),
+                })
+                .collect(),
             control_port: cfg.control_port,
             media_port: cfg.media_port,
             pictures_dir: pictures_dir.clone(),
@@ -226,6 +243,8 @@ pub fn run(
             commands::set_video_settings,
             commands::list_audio_devices,
             commands::set_audio_devices,
+            commands::set_sound_settings,
+            commands::preview_sound,
             commands::pick_download_dir,
             commands::set_display_name,
             commands::pick_and_offer_file,

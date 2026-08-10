@@ -131,12 +131,27 @@ toegevoegd zonder protocolbump. Zie `docs/OVERDRACHT.md` beslissing 22.
   loopt stuk op `ring`). Recept in beslissing 22 — gebruik dit vóór je Windows-code
   aanraakt zonder Windows. Werkt ook voor `mf.rs`, `venster.rs` en `app/src/geluid.rs`.
 
-## Geluidjes (2026-08-10)
-`crates/app/src/geluid.rs` rekent zes korte tonen zelf uit en speelt ze buiten de
+## Geluidjes (2026-08-10, sets erbij in 1.0.1)
+`crates/app/src/geluid.rs` rekent de zes korte tonen zelf uit en speelt ze buiten de
 voice-mixer om (`PlaySound` met de bytes in het geheugen; `afplay` op mac). Niets om mee te
 leveren, niets om te bundelen. Niet-storen onderdrukt ze; mute en deafen niet. Een
 stream-geluidje hangt aan een *verandering* in het aantal zichtbare streams van een peer,
-nooit aan een `StreamAnnounce` — die komt bij elke herverbinding opnieuw langs. Beslissing 27.
+nooit aan een `StreamAnnounce` — die komt bij elke herverbinding opnieuw langs.
+Beslissing 27 en 28.
+
+- **Een set is een parametertabel, geen tweede codepad.** `Geluidset::tonen` levert
+  `Vec<Toon>`; er is één `samples`-functie voor alle sets. Een set erbij is een tabel erbij
+  plus een variant — nergens anders iets.
+- **Genormaliseerd op luidheid, niet op de piek.** `DOEL_LUIDHEID × Geluidset::gewicht(g)`,
+  met de luidheid als hoogste RMS over 200 ms. Op de piek normaliseren gaf 5-9 dB verschil
+  tussen sets (gemeten); `PIEK_PLAFOND` is er alleen om vervorming onmogelijk te maken. Vier
+  tests bewaken dit, waaronder dat de klassieke set het niveau van 1.0.0 houdt.
+- **Fase doortellen, nooit `sin(2π f t)` met een veranderende `f`.** Dat laatste geeft een
+  fasesprong op elke frequentiewijziging, en een fasesprong is een tik.
+- **De lijst sets komt uit de motor** (`Constants::sound_sets`), niet uit de frontend. Eén
+  plek, anders lopen ze uit elkaar.
+- **Gekozen set en volume staan in `config.toml` onder `[sound]`**, met `#[serde(default)]`
+  op alles: een config van vóór 1.0.1 hoort gewoon te starten. Eigen test.
 
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het

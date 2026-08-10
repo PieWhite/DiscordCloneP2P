@@ -52,9 +52,71 @@ pub struct Config {
     #[serde(default)]
     pub video: VideoConfig,
 
+    #[serde(default)]
+    pub sound: SoundConfig,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
+}
+
+/// Welke tonen de app zelf maakt bij deelnemen, verlaten en delen, en hoe hard.
+///
+/// Los van de geluidsapparaten hierboven: die gaan over het *gesprek*, dit over de app.
+/// Deze tonen lopen ook niet via de voice-mixer (zie `crate::geluid`), dus ze hebben hun
+/// eigen volume nodig — de volumemixer van Windows kan de app alleen als geheel zachter
+/// zetten, en dan gaat je vriend mee.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SoundConfig {
+    /// Welke set tonen. Zie `crate::geluid::Geluidset::van_naam`; een onbekende naam valt
+    /// terug op de standaard in plaats van te weigeren, zodat een config van een nieuwere
+    /// build een oudere niet laat struikelen.
+    #[serde(default = "default_sound_set")]
+    pub set: String,
+
+    /// 0.0 tot 1.0. Nul is stil; dan wordt er niets afgespeeld in plaats van iets
+    /// onhoorbaars.
+    #[serde(default = "default_sound_volume")]
+    pub volume: f32,
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        Self {
+            set: default_sound_set(),
+            volume: default_sound_volume(),
+        }
+    }
+}
+
+impl SoundConfig {
+    /// Zet een met de hand geschreven waarde terug binnen wat hij kan betekenen.
+    ///
+    /// **TOML kent `nan` en `inf` als geldige floats.** `volume = nan` parseert dus gewoon,
+    /// en zou daarna elke sample op nul zetten: alle geluidjes stil, zonder foutmelding en
+    /// zonder dat er iets in de log staat. Dat is het soort stilte waar je een avond naar
+    /// zoekt. Een waarde buiten 0..1 valt hier ook onder — die klopt niet, maar hij hoort
+    /// afgekapt te worden en niet de app te weigeren.
+    pub fn herstel(&mut self) {
+        // Alleen `nan` valt terug op de standaard: die betekent niets, dus er is niets uit
+        // op te maken. `inf` en `-inf` hebben wél een richting ("zo hard/zacht mogelijk") en
+        // die wordt gewoon afgekapt, net als 3.0 of −0.5.
+        if self.volume.is_nan() {
+            tracing::warn!("geluidvolume in de config is geen getal; standaard gebruikt");
+            self.volume = default_sound_volume();
+        }
+        self.volume = self.volume.clamp(0.0, 1.0);
+    }
+}
+
+fn default_sound_set() -> String {
+    crate::geluid::Geluidset::STANDAARD.naam().to_string()
+}
+
+/// Niet 1.0: deze tonen komen langs terwijl er gegamed wordt, en het is prettiger om ze
+/// harder te moeten zetten dan om de eerste keer te schrikken.
+fn default_sound_volume() -> f32 {
+    0.7
 }
 
 /// Instellingen voor screenshare. Staan hier zodat ze te wijzigen zijn zonder opnieuw
@@ -164,6 +226,7 @@ impl Config {
                 },
             ],
             video: VideoConfig::default(),
+            sound: SoundConfig::default(),
             download_dir: None,
         }
     }
@@ -172,7 +235,10 @@ impl Config {
         if path.exists() {
             let text = std::fs::read_to_string(path)
                 .with_context(|| format!("config lezen uit {}", path.display()))?;
-            toml::from_str(&text).with_context(|| format!("config parsen uit {}", path.display()))
+            let mut cfg: Self = toml::from_str(&text)
+                .with_context(|| format!("config parsen uit {}", path.display()))?;
+            cfg.sound.herstel();
+            Ok(cfg)
         } else {
             let cfg = Self::template();
             cfg.save(path)?;
@@ -297,6 +363,62 @@ mod tests {
         assert_eq!(cfg.control_port, DEFAULT_CONTROL_PORT);
         assert_eq!(cfg.media_port, DEFAULT_MEDIA_PORT);
         assert!(cfg.peers.is_empty());
+    }
+
+    /// De reden dat dit een eigen test heeft: een config die vóór 1.0.1 geschreven is
+    /// heeft geen `[sound]`-tabel, en die moet gewoon de standaardwaarden krijgen in
+    /// plaats van de app te laten weigeren op te starten. Dat is precies één keer eerder
+    /// misgegaan (de schema-bump van de kanalen-uitbreiding, zie docs/OVERDRACHT.md).
+    #[test]
+    fn config_van_voor_de_geluidsinstellingen_krijgt_de_standaardset() {
+        let cfg: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [video]
+            codec = "h264"
+            fps = 60
+            bitrate = 12000000
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.sound, SoundConfig::default());
+    }
+
+    #[test]
+    fn een_halve_geluidstabel_vult_zichzelf_aan() {
+        let cfg: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [sound]
+            volume = 0.25
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.sound.volume, 0.25);
+        assert_eq!(
+            cfg.sound.set,
+            default_sound_set(),
+            "set hoort de standaard te zijn"
+        );
+    }
+
+    /// `nan` en `inf` zijn geldige TOML-floats, dus een met de hand geschreven config kan ze
+    /// bevatten — en dan zou alles stil zijn zonder dat er iets misgegaan lijkt.
+    #[test]
+    fn een_onmogelijk_volume_in_de_config_wordt_hersteld() {
+        for (tekst, verwacht) in [
+            ("nan", default_sound_volume()),
+            ("inf", 1.0),
+            ("-inf", 0.0),
+            ("-0.5", 0.0),
+            ("3.0", 1.0),
+            ("0.4", 0.4),
+        ] {
+            let mut s: SoundConfig =
+                toml::from_str(&format!("volume = {tekst}")).expect("moet parsen");
+            s.herstel();
+            assert_eq!(s.volume, verwacht, "volume = {tekst}");
+        }
     }
 
     #[test]

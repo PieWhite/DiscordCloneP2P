@@ -260,6 +260,31 @@ pub struct VideoSettings {
     pub bitrate: u32,
 }
 
+/// Which set of notification tones is picked, and how loud.
+#[derive(Debug, Clone, Serialize)]
+pub struct SoundSettings {
+    pub set: String,
+    /// 0.0 to 1.0. The slider shows whole percents.
+    pub volume: f32,
+}
+
+/// One choosable set of tones. Comes from the engine rather than being spelled out in the
+/// frontend, so adding a set is one place instead of two.
+#[derive(Debug, Clone, Serialize)]
+pub struct SoundSetInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// One event that can be auditioned, so all six can be judged instead of only the one the
+/// preview button happens to play.
+#[derive(Debug, Clone, Serialize)]
+pub struct SoundEventInfo {
+    pub id: String,
+    pub name: String,
+}
+
 /// Everything the window needs to draw itself, minus the timeline.
 ///
 /// The timeline is fetched per conversation with `get_timeline` instead of riding along
@@ -275,6 +300,11 @@ pub struct UiState {
     pub own_streams: Vec<OwnStreamState>,
     pub streams: Vec<StreamState>,
     pub video: VideoSettings,
+    pub sound: SoundSettings,
+    /// Constant for the life of the process; rides along so the Settings panel does not
+    /// need a second call to draw the picker.
+    pub sound_sets: Vec<SoundSetInfo>,
+    pub sound_events: Vec<SoundEventInfo>,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub do_not_disturb: bool,
@@ -299,6 +329,10 @@ pub struct UiState {
 pub struct Constants {
     pub me: PeerId,
     pub fallback_name: String,
+    /// The choosable tone sets and the events that can be auditioned. Built once from
+    /// `crate::geluid`, because the frontend must not carry a second copy of that list.
+    pub sound_sets: Vec<SoundSetInfo>,
+    pub sound_events: Vec<SoundEventInfo>,
     pub control_port: u16,
     pub media_port: u16,
     pub pictures_dir: std::path::PathBuf,
@@ -456,6 +490,12 @@ impl UiState {
                 fps: snap.video.fps,
                 bitrate: snap.video.bitrate,
             },
+            sound: SoundSettings {
+                set: snap.geluid.set.clone(),
+                volume: snap.geluid.volume,
+            },
+            sound_sets: c.sound_sets.clone(),
+            sound_events: c.sound_events.clone(),
             input_device: snap.input_device.clone(),
             output_device: snap.output_device.clone(),
             do_not_disturb: snap.niet_storen,

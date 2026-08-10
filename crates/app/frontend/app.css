@@ -1219,6 +1219,24 @@ select { appearance: none; padding-right: 30px; background-image: none; }
 .seg button:hover { background: var(--bg-hover); color: var(--text); }
 .seg button[aria-pressed="true"] { background: var(--bg-active); color: var(--text); }
 
+/* Kaartjes in plaats van een `.seg`: een set tonen heeft een naam én een regel uitleg
+   nodig, en die past niet in een knop van dertig pixels hoog. Wraps op een smal venster. */
+.sound-sets { display: flex; flex-wrap: wrap; gap: 8px; }
+.sound-set {
+  display: flex; flex-direction: column; gap: 3px;
+  min-width: 168px; max-width: 260px; flex: 1 1 168px;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  transition: background 90ms linear, border-color 90ms linear;
+}
+.sound-set:hover { background: var(--bg-hover); }
+.sound-set[aria-pressed="true"] { background: var(--bg-active); border-color: var(--accent); }
+.sound-set-name { font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.sound-set[aria-pressed="true"] .sound-set-name { color: var(--accent-text); }
+.sound-set-desc { font-size: 12px; line-height: 1.4; color: var(--text-dim); }
+
 .switch {
   position: relative;
   width: 38px; height: 22px;

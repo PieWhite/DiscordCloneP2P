@@ -41,6 +41,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
             control_port: ander,
         }],
         video: VideoConfig::default(),
+        sound: Default::default(),
         download_dir: None,
     }
 }

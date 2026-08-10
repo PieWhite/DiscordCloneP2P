@@ -13,7 +13,7 @@
 //! stilvallen zonder dat er iets misgaat.
 
 use crate::chat::Chat;
-use crate::config::{self, Config, VideoConfig};
+use crate::config::{self, Config, SoundConfig, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::geluid;
 use crate::notify;
@@ -142,6 +142,9 @@ pub struct Snapshot {
     pub eigen_streams: Vec<EigenStreamView>,
     pub streams: Vec<StreamView>,
     pub video: VideoConfig,
+    /// Welke set tonen de app zelf maakt en hoe hard. Alleen voor het instellingenscherm;
+    /// het afspelen leest de config rechtstreeks.
+    pub geluid: SoundConfig,
     /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
     /// instellingenscherm: de sessie leest dit bij het starten uit de config.
     pub input_device: Option<String>,
@@ -228,6 +231,11 @@ pub enum UiCommand {
     HernoemKanaal(TopicId, String),
     /// Subkanaal verwijderen. UI vraagt hier eerst een bevestiging voor.
     VerwijderKanaal(TopicId),
+    /// Welke set tonen en hoe hard. Wordt meteen weggeschreven naar `config.toml`.
+    ZetGeluidInstellingen(SoundConfig),
+    /// Eén toon laten horen om te kiezen. Negeert niet-storen: wie op de knop drukt vraagt
+    /// er expliciet om, en anders lijkt de knop stuk.
+    ProefGeluid(String),
     /// Nu bij de release-feed kijken, op verzoek van de gebruiker. Anders dan de tik van
     /// zes uur meldt deze elke uitkomst, ook "niets nieuws" en "feed onbereikbaar".
     ZoekUpdate,
@@ -1479,6 +1487,43 @@ impl Engine {
                 }
                 self.herstart_lopende_delers();
             }
+            UiCommand::ZetGeluidInstellingen(geluid) => {
+                // Volume begrenzen op wat het betekent, niet vertrouwen op de schuif: dit
+                // komt uit de webview en 1.4 zou de tonen laten vervormen.
+                // Door dezelfde opschoning als bij het inlezen: de webview kan een NaN of
+                // een 1.4 doorgeven, en dat zou stilte of vervorming opleveren.
+                let mut veilig = SoundConfig {
+                    // Een onbekende naam niet opslaan: dan zou de config iets bevatten dat
+                    // nergens naar verwijst en zou er in de kiezer niets geselecteerd staan.
+                    // De frontend stuurt alleen namen die hij van de motor kreeg, dus dit is
+                    // een grens en geen verwacht geval.
+                    set: match geluid::Geluidset::van_naam(&geluid.set) {
+                        Some(_) => geluid.set,
+                        None => {
+                            tracing::warn!(gekozen = %geluid.set, "onbekende geluidset geweigerd");
+                            self.cfg.sound.set.clone()
+                        }
+                    },
+                    volume: geluid.volume,
+                };
+                veilig.herstel();
+                if veilig == self.cfg.sound {
+                    // Niets veranderd: niet opslaan (dat is een schrijfactie per klik) en
+                    // niet afspelen (dan piept de app bij elk hertekenen van het scherm).
+                    return;
+                }
+                self.cfg.sound = veilig;
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    tracing::warn!(error = %format!("{e:#}"), "geluidsinstellingen niet opgeslagen");
+                    self.fout = Some(format!("instellingen opslaan: {e:#}"));
+                }
+                // Meteen laten horen wat je gekozen hebt.
+                self.speel_geluid(geluid::Geluid::EigenJoin);
+            }
+            UiCommand::ProefGeluid(naam) => match geluid::Geluid::van_naam(&naam) {
+                Some(g) => self.speel_geluid(g),
+                None => tracing::warn!(%naam, "onbekend geluid gevraagd voor de proef"),
+            },
             UiCommand::ZetGeluidsapparaten(invoer, uitvoer) => {
                 self.cfg.input_device = invoer;
                 self.cfg.output_device = uitvoer;
@@ -1705,7 +1750,24 @@ impl Engine {
         if self.niet_storen {
             return;
         }
-        geluid::speel(g);
+        self.speel_geluid(g);
+    }
+
+    /// Hetzelfde, maar zonder de niet-storencontrole: voor de proefknop in de instellingen.
+    /// Wie daarop drukt vraagt erom, en een knop die in niet-storen niets doet leest als
+    /// een stukke knop.
+    fn speel_geluid(&self, g: geluid::Geluid) {
+        geluid::speel(self.geluidset(), g, self.cfg.sound.volume);
+    }
+
+    /// De gekozen set uit de config. Een onbekende naam — een config van een nieuwere
+    /// build, of een typefout van de hand — valt terug op de standaard in plaats van
+    /// stilte, want stilte is niet te onderscheiden van "de geluidjes zijn stuk".
+    fn geluidset(&self) -> geluid::Geluidset {
+        geluid::Geluidset::van_naam(&self.cfg.sound.set).unwrap_or_else(|| {
+            tracing::warn!(gekozen = %self.cfg.sound.set, "onbekende geluidset in de config; standaard gebruikt");
+            geluid::Geluidset::STANDAARD
+        })
     }
 
     /// Hoeveel *zichtbare* streams (scherm, venster of camera) deze peer op dit moment
@@ -1851,6 +1913,7 @@ impl Engine {
             eigen_streams,
             streams,
             video: self.cfg.video.clone(),
+            geluid: self.cfg.sound.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),

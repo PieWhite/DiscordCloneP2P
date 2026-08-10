@@ -226,6 +226,23 @@ pub fn set_audio_devices(ui: State<'_, Ui>, input: Option<String>, output: Optio
     send(&ui, UiCommand::ZetGeluidsapparaten(input, output));
 }
 
+/// Which set of notification tones, and how loud. Saved to `config.toml` by the engine;
+/// picking a different set plays it once so you hear what you chose.
+#[tauri::command]
+pub fn set_sound_settings(ui: State<'_, Ui>, set: String, volume: f32) {
+    send(
+        &ui,
+        UiCommand::ZetGeluidInstellingen(crate::config::SoundConfig { set, volume }),
+    );
+}
+
+/// Play one tone so it can be judged. Ignores do-not-disturb on purpose: pressing the
+/// button is asking for it.
+#[tauri::command]
+pub fn preview_sound(ui: State<'_, Ui>, sound: String) {
+    send(&ui, UiCommand::ProefGeluid(sound));
+}
+
 /// Opens the Windows folder picker for the download folder. Same blocking-thread reason
 /// as `pick_and_offer_file` — the dialog is modal.
 #[tauri::command]

@@ -930,6 +930,122 @@ of camera die aan of uit gaat. Drie keuzes daarin:
 Niet-storen zet ze uit, dezelfde regel als voor meldingen en om dezelfde reden. Mute en
 deafen doen hier níéts: die gaan over het gesprek, niet over de app.
 
+### 28. Vier geluidsets met een eigen volume, en hoe ze ontworpen zijn zonder ze te horen (1.0.1, 2026-08-10)
+
+Rick vond de tonen uit beslissing 27 niet fijn genoeg en vroeg om drie alternatieven, in te
+stellen en te bewaren, met een eigen volume dat ook bewaard blijft.
+
+**Het probleem is niet de code maar het oordeel.** Deze machine kan geen geluid beoordelen,
+en aan een parametertabel is niet te hóren of hij klopt. Dus is het ontwerp niet door één
+partij bedacht: vier onafhankelijke voorstellen (elk drie sets) vanuit vier verschillende
+invalshoeken — psychoakoestiek, wat bestaande producten feitelijk doen, implementeerbaarheid,
+en de luistersituatie zelf (avond, headset, game eronder) — daarna vier juryrondes met elk
+één lens (onderscheidend vermogen, klinkt-het-prettig, implementeerbaar-zonder-gokken, past
+het bij dít product), en pas daarna één samenvoeging.
+
+Wat dat opleverde, en het is de reden om het zo te doen: **alle vier de invalshoeken kwamen
+onafhankelijk op dezelfde drie families uit** — aangeslagen glas, aangeslagen hout, en een
+geblazen/ademende klank. Die convergentie is een sterker signaal dan welk enkel voorstel ook,
+en ze wees ook iets áf: de ademende familie werd door meerdere lenzen als de zwakste
+beoordeeld, en is dus niet de derde set geworden. Glas stond bij alle vier de jury's in de
+top drie.
+
+De drie sets zijn daarmee **Glass**, **Wood** en **Keys**, met **Classic** als vierde:
+
+| Set | Waar de klank vandaan komt | Waarom hij van de andere verschilt |
+|---|---|---|
+| Classic | Kale sinus, vlakke omhulling | De set uit 1.0.0. Staat, dooft niet uit. |
+| Glass | Modes 1 : 2,76 : 5,40 (aangeslagen buis) | Ónhele partialen, dus geen toonhoogte-gevoel maar een voorwerp; hoge modes vallen 2-6× sneller weg, dus hij verkleurt van helder naar warm; twee grondtonen 2,5 Hz uiteen geven een langzame zweving. |
+| Wood | Modes 1 : 3,93 : 9,55 (vrij opgelegde balk) | De stemming van een marimba, een heel andere reeks dan glas. Kort en droog, met een ruistik van elf milliseconde als hamercontact eronder. |
+| Keys | FM, modulator 1:1, index 2,3 die in 48 ms wegvalt | Zijbanden op hele veelvouden, dus hij hóudt een toonhoogte waar glas dat juist niet doet. Hol bij de aanslag, vrijwel zuivere sinus als hij wegvalt. Het laagste register van de vier. |
+
+Binnen elke set: twee overlappende klanken voor je eigen gebeurtenissen en één voor die van
+iemand anders, zodat het *aantal* klanken de eerste aanwijzing is, nog vóór de toonhoogte.
+Erbij stijgt, eraf daalt. Het aan- en uitzetten van een stream staat een register hoger met
+een ánder interval — bij Wood is het zelfs geen slag meer maar één gebogen toon zonder
+hamertik. Dat is opzet: een stream is geen persoon die binnenkomt, dus hij mag ook niet als
+dezelfde klank een terts hoger klinken.
+
+**De samenvoegstap heeft het niet afgemaakt.** De vierde fase van die workflow (één agent die
+de winnaars samenvoegt) is na een kwartier nog bezig geweest en is afgebroken; de merge is
+daarna met de hand gedaan, uit dezelfde vier voorstellen en vier juryrapporten die die agent
+ook had. Dat staat hier omdat het het verschil uitmaakt tussen "dit is door een panel
+vastgesteld" en "dit is door mij gekozen op basis van wat een panel opleverde", en het tweede
+is wat het is.
+
+**Wat er van dat oordeel objectief na te meten valt, is nagemeten.** Ik kan ze niet horen,
+maar ik kan de wav-bestanden lezen. Alle 24 zijn langs: duur, piek, luidheid, of de eerste
+sample precies nul is en de laatste vrijwel, en twee dingen die een eerste poging fout deed:
+
+- **Klikken.** Niet "is er een sprong groter dan X tussen twee samples" — een partiaal op
+  5 kHz geeft bij deze amplitude legitiem sprongen van een kwart. Een klik is een
+  *losstaande* discontinuïteit, dus de grootste sprong wordt vergeleken met de 99,9e
+  percentiel van alle sprongen. Bij alle 24 zit die verhouding op 1,0 tot 1,3 — geen enkele
+  uitschieter.
+- **Of het gebaar de goede kant op gaat.** Niet "welke toon is het luidst in de eerste
+  helft": bij overlappende klanken klinken beide toonhoogtes de hele tijd door, en dan meet
+  je niets (de eerste versie van deze meting zei van een stijgende klank dat hij vlak was).
+  Wat het gebaar máákt is hoe de verhouding tussen de twee toonhoogtes over de tijd
+  verschuift. Zo gemeten stijgt elke join en daalt elke leave, in alle vier de sets.
+
+Er is een `#[ignore]`-test (`geluid.rs::schrijf_alle_geluidjes_weg`) die alle sets naar een
+map schrijft, precies zodat dit — en beluisteren door een mens — kan.
+
+**Het apparaat eronder.** Eén synthesefunctie voor alle sets; een set is een tabel.
+
+- `Partiaal { ratio, offset_hz, amp, aanslag_ms, tau_deel }`. `ratio` mag onheel zijn: dat is
+  het verschil tussen een klok en een orgelpijp. `offset_hz` is er voor zweving en staat in
+  hertz en niet als ratio — met een ratio zweeft een hoge noot sneller dan een lage en valt
+  de familie uit elkaar. `tau_deel` laat hoge partialen sneller wegvallen dan lage, en dat is
+  wat elk aangeslagen voorwerp doet.
+- `Omhulling::Vlak` (een toon die *staat* — de klassieke set) of `Aanslag { tau, release }`
+  (een toon die *wegvalt*). Die release is niet cosmetisch: een exponent bereikt nooit nul,
+  en de sprong van "wat er nog staat" naar stilte is een tik.
+- `Ruis` als optionele laag onder een toon: het geluid van het *contact*, niet van de toon.
+  Volgorde is dwingend — filteren, dán op piek 1 normaliseren, dán de omhulling erover.
+  Andersom is `amp` niet meer te lezen als "hoe hard het contact is" (de filterversterking
+  hangt van de afsnijfrequentie af) én is de eerste sample niet nul.
+- `Glijden::Naartoe` doet `f(t) = doel + (start − doel)·e^(−t/τ)`: hij schiet erheen en valt
+  op zijn plek. Lineair glijden klinkt als een sirene.
+- **De fase wordt doorgeteld, nooit `sin(2π f t)` met een veranderende `f`.** Dat laatste
+  geeft een fasesprong op elke frequentiewijziging, en dus een tik. Dit is de valkuil waar
+  drie van de vier voorstellen expliciet voor waarschuwden.
+
+**Genormaliseerd op luidheid, niet op de piek — en dat is gemeten, niet bedacht.** Eerst
+stond er één piekgrens van 0,22 voor alles, met een gewicht per gebeurtenis eroverheen. Dat
+klinkt eerlijk en is het niet: nameten gaf dat de glas-set bij dezelfde piek **5 tot 9 dB
+zachter** uitkwam dan de klassieke, want een aangeslagen klank van 380 ms zit maar de eerste
+honderd milliseconde in de buurt van zijn piek. Van set wisselen zou dan voelen alsof de
+geluidjes bijna weg waren — precies wat je niet wilt bij een instelling die je uitnodigt om
+te wisselen.
+
+Dus wordt er nu genormaliseerd op **luidheid**: de hoogste RMS over een schuivend venster van
+200 ms, ongeveer de integratietijd van het oor. Niet de piek (één sample kan die zetten, en
+hij zegt niets over hoe hard iets klinkt) en niet de RMS over het hele bestand (dan maakt een
+lange stille nagalm het begin "zachter"). Gemeten na de wijziging: alle vier de sets komen op
+0,00 dB van elkaar uit op gelijk gewicht, en het gewenste verschil binnen een set staat exact
+waar het hoort — −2,3 dB voor wat een ander doet, −3,4 dB voor een stream.
+
+Er staat nu een piek*plafond* van 0,6 in plaats van een piekdoel: een uitdovende klank heeft
+een hogere piek nodig om even luid te klinken (de hoogste van de 24 is 0,49), en het plafond
+garandeert alleen dat er nooit iets vervormt, wat er ook in een tabel gezet wordt. Vier tests
+bewaken het geheel: de luidheid staat precies op zijn gewicht, twee sets met hetzelfde gewicht
+klinken even luid, geen tabel raakt het plafond, en **de klassieke set houdt het niveau van
+1.0.0** — die is al goedgekeurd en mag door al dit normaliseren niet verschuiven.
+
+**Het volume is een eigen instelling omdat het niet anders kan.** Deze tonen gaan bewust
+langs de voice-mixer heen (beslissing 27), dus de enige andere knop zou de volumemixer van
+Windows zijn — en die zet de hele app zachter, inclusief de stem van je vriend. Dus
+`[sound] volume` in `config.toml`, met `set` ernaast. Alles `#[serde(default)]`: een config
+van 1.0.0 heeft geen `[sound]`-tabel en hoort gewoon te starten. Eigen test, want dat is
+precies wat bij de kanalen-uitbreiding één keer misging.
+
+**De standaard blijft de klassieke set.** Wie bijwerkt hoort te horen wat hij gewend is; de
+nieuwe sets staan één klik verderop, met een kaartje per set en zes proefknoppen om ze te
+beoordelen. Van set wisselen speelt hem meteen één keer — anders kies je op een naam.
+De proefknoppen negeren niet-storen: wie erop drukt vraagt erom, en een knop die niets doet
+leest als een stukke knop.
+
 ---
 
 ## Bugs die de tests eruit haalden

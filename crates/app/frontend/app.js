@@ -106,6 +106,8 @@ function fmtSize(bytes) {
 }
 
 const mbit = bits => Math.round(bits / 1_000_000);
+/** A 0..1 volume as whole percents, which is what every slider in this window speaks. */
+const volPct = v => Math.round((v || 0) * 100);
 
 const fmtTime = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -879,6 +881,42 @@ const SET_BODY = {
       <span class="field-help">Voice is only sent while you are actually speaking. When
         you are quiet, nothing goes over the line.</span>
       <span class="bar" style="max-width:320px;height:6px" id="input-level"><i style="transform:scaleX(0)"></i></span>
+    </div>
+
+    <h2 style="margin-top:32px">Notification sounds</h2>
+    <p>Short tones when someone joins or leaves the call, or starts and stops sharing. The
+       app generates them itself, so they do not go through the call and the others never
+       hear them. Do not disturb silences them.</p>
+    <div class="field">
+      <span class="field-label">Sound set</span>
+      <span class="field-help">Picking one plays it, so you hear what you chose.</span>
+      <div class="sound-sets" data-sound-sets>
+        ${(S.sound_sets || []).map(s => `
+          <button class="sound-set" data-set="${esc(s.id)}" aria-pressed="${S.sound.set === s.id}">
+            <span class="sound-set-name">${esc(s.name)}</span>
+            <span class="sound-set-desc">${esc(s.description)}</span>
+          </button>`).join("")}
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="set-sound-vol">Volume</label>
+      <span class="field-help">These tones only. Voice, desktop audio and the Windows sound
+        for a message that mentions you are all left alone — those follow the Windows volume
+        mixer.</span>
+      <div class="control-row">
+        <input type="range" min="0" max="100" value="${volPct(S.sound.volume)}"
+               style="--pct:${volPct(S.sound.volume)}%;max-width:280px"
+               id="set-sound-vol" aria-label="Notification sound volume">
+        <span class="mono readout" id="sound-vol-readout">${volPct(S.sound.volume)}%</span>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Hear them</span>
+      <span class="field-help">All six, at the volume set above. Ignores do not disturb.</span>
+      <div class="control-row" style="flex-wrap:wrap">
+        ${(S.sound_events || []).map(e =>
+          `<button class="btn btn--ghost" data-preview="${esc(e.id)}">${ic("i-head")}${esc(e.name)}</button>`).join("")}
+      </div>
     </div>`,
 
   video: () => `
@@ -1297,6 +1335,15 @@ document.addEventListener("click", async e => {
     next[group] = group === "fps" ? Number(video.dataset.v) : video.dataset.v;
     return invoke("set_video_settings", next);
   }
+
+  const soundSet = t.closest("[data-sound-sets] [data-set]");
+  if (soundSet) {
+    return invoke("set_sound_settings", {
+      set: soundSet.dataset.set, volume: S.sound.volume,
+    });
+  }
+  const audition = t.closest("[data-preview]");
+  if (audition) return invoke("preview_sound", { sound: audition.dataset.preview });
 });
 
 /* Right-click a sub-channel for the two things you can do to it. Renaming and removing a
@@ -1341,6 +1388,14 @@ document.addEventListener("input", e => {
     $("br-readout").textContent = `${br.value} Mbit/s`;
     return;
   }
+  /* Only the readout while dragging; the tone itself plays on `change`, so dragging does
+     not fire a beep per pixel. */
+  const sv = e.target.closest("#set-sound-vol");
+  if (sv) {
+    sv.style.setProperty("--pct", sv.value + "%");
+    $("sound-vol-readout").textContent = `${sv.value}%`;
+    return;
+  }
   const r = e.target.closest('input[type="range"]');
   if (r) r.style.setProperty("--pct", ((r.value - r.min) / (r.max - r.min) * 100) + "%");
 });
@@ -1349,6 +1404,11 @@ document.addEventListener("change", e => {
   if (e.target.id === "set-br") {
     return invoke("set_video_settings", {
       codec: S.video.codec, fps: S.video.fps, bitrate: Number(e.target.value) * 1_000_000,
+    });
+  }
+  if (e.target.id === "set-sound-vol") {
+    return invoke("set_sound_settings", {
+      set: S.sound.set, volume: Number(e.target.value) / 100,
     });
   }
   if (e.target.id === "set-in" || e.target.id === "set-out") {
