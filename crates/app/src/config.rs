@@ -90,13 +90,21 @@ impl Default for SoundConfig {
 }
 
 impl SoundConfig {
-    /// Zet een met de hand geschreven waarde terug binnen wat hij kan betekenen.
+    /// Zet met de hand geschreven waarden terug binnen wat ze kunnen betekenen.
     ///
     /// **TOML kent `nan` en `inf` als geldige floats.** `volume = nan` parseert dus gewoon,
     /// en zou daarna elke sample op nul zetten: alle geluidjes stil, zonder foutmelding en
     /// zonder dat er iets in de log staat. Dat is het soort stilte waar je een avond naar
     /// zoekt. Een waarde buiten 0..1 valt hier ook onder — die klopt niet, maar hij hoort
     /// afgekapt te worden en niet de app te weigeren.
+    ///
+    /// **Een onbekende `set` wordt hier bewust níet rechtgezet.** Dat is verleidelijk — met
+    /// een onbekende naam staat er in de kiezer niets geselecteerd — maar het zou de belofte
+    /// twee velden hierboven breken: een config die door een nieuwere build geschreven is
+    /// mag zijn keuze niet verliezen doordat je één keer een oudere versie start. Dezelfde
+    /// afspraak geldt voor `video.codec`. Het afspelen valt terug op de standaard (zie
+    /// `engine.rs::geluidset`) en de *weergave* laat zien wat er werkelijk klinkt
+    /// (`ui/state.rs`); de config houdt de bedoeling vast.
     pub fn herstel(&mut self) {
         // Alleen `nan` valt terug op de standaard: die betekent niets, dus er is niets uit
         // op te maken. `inf` en `-inf` hebben wél een richting ("zo hard/zacht mogelijk") en
@@ -419,6 +427,19 @@ mod tests {
             s.herstel();
             assert_eq!(s.volume, verwacht, "volume = {tekst}");
         }
+    }
+
+    /// De tegenhanger van de volume-test: een setnaam die deze build niet kent blijft staan.
+    /// Dat is voorwaartse compatibiliteit — één keer een oudere versie starten mag je keuze
+    /// niet wissen — en geen vergeten geval.
+    #[test]
+    fn een_onbekende_geluidset_blijft_in_de_config_staan() {
+        let mut s = SoundConfig {
+            set: "belletjes-uit-een-latere-build".into(),
+            volume: 0.5,
+        };
+        s.herstel();
+        assert_eq!(s.set, "belletjes-uit-een-latere-build");
     }
 
     #[test]

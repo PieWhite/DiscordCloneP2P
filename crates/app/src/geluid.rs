@@ -676,6 +676,21 @@ const TOETS_FM: Fm = Fm {
     tau_ms: 48,
 };
 
+/// Dezelfde tong, maar dover: de modulatie is minder diep en is sneller weg, dus de holle
+/// metaalklank aan het begin is er nauwelijks.
+///
+/// Voor wat *iemand anders* doet, en dat is precies het middel dat [`GLAS_DONKER`] ook
+/// gebruikt: het oor leest een dovere klank als verder weg. Zonder dit was Keys de enige van
+/// de vier sets zonder verschil vanaf de eerste sample — de eerste 120 ms van "iemand komt
+/// erbij" was meetbaar dezelfde golf als die van je eigen deelname (correlatie 0,9999), en
+/// dan hangt het onderscheid er volledig aan dat de tweede noot niet komt. Dat weet je pas
+/// 120 ms later. Gevonden in de review, met de meting erbij.
+const TOETS_FM_DONKER: Fm = Fm {
+    ratio: 1.0,
+    index: 1.5,
+    tau_ms: 26,
+};
+
 /// Eén partiaal is genoeg: alle kleur komt van de modulator hierboven. De goedkoopste van de
 /// vier sets, en klanklijk de warmste.
 const TOETS_PARTIALEN: [Partiaal; 2] = [
@@ -701,7 +716,6 @@ const TOETS_PARTIALEN: [Partiaal; 2] = [
 /// het verst van de andere drie af staat: niet kaal zoals klassiek, niet onheel zoals glas,
 /// en met een veel langere nagalm dan hout.
 fn toets(g: Geluid) -> Vec<Toon> {
-    const F3: f32 = 174.61;
     const C4: f32 = 261.63;
     const F4: f32 = 349.23;
     const A4: f32 = 440.00;
@@ -711,14 +725,28 @@ fn toets(g: Geluid) -> Vec<Toon> {
         fm: Some(TOETS_FM),
         ..Toon::aangeslagen(begin, duur, hz, tau, 60, amp, &TOETS_PARTIALEN, None)
     };
+    // Dezelfde noot, dovere klank. Zie `TOETS_FM_DONKER` voor waarom dit er is.
+    let dof = |begin, duur, hz, tau, amp| Toon {
+        fm: Some(TOETS_FM_DONKER),
+        ..Toon::aangeslagen(begin, duur, hz, tau, 60, amp, &TOETS_PARTIALEN, None)
+    };
     match g {
         // Een kwart omhoog, laag in het register: warm en niet opdringerig.
         Geluid::EigenJoin => vec![tine(0, 420, C4, 150, 1.00), tine(120, 300, F4, 190, 1.05)],
         Geluid::EigenLeave => vec![tine(0, 420, F4, 150, 1.00), tine(120, 300, C4, 210, 0.90)],
-        // Eén noot, en een octaaf lager dan je eigen gebeurtenissen: onmiskenbaar iemand
-        // anders, zonder dat het zachter hoeft.
-        Geluid::PeerJoin => vec![tine(0, 300, C4, 160, 1.00)],
-        Geluid::PeerLeave => vec![tine(0, 300, F3, 170, 1.00)],
+        // Eén dovere noot op de *aankomsttoon* van het eigen gebaar — precies wat
+        // [`Geluidset::Glas`] ook doet. Drie aanwijzingen die alle drie vanaf de eerste
+        // sample gelden: één noot in plaats van twee, een dovere klank, en een andere
+        // toonhoogte dan waar je eigen gebeurtenis begint.
+        //
+        // Dat laatste stond er eerst niet — peer-join begon op C4, de grondtoon van
+        // eigen-join — en toen waren de eerste 120 ms meetbaar dezelfde golf (correlatie
+        // 0,9999 tegen onder 0,15 bij de andere drie sets). Een octaaf naar beneden was de
+        // verleiding en zou fout zijn geweest: `luidheid` weegt niet naar frequentie, dus
+        // dezelfde RMS een octaaf lager klinkt merkbaar zachter dan de rest van de set.
+        // De aankomsttoon lost het op zonder het register te verlaten.
+        Geluid::PeerJoin => vec![dof(0, 300, F4, 160, 1.00)],
+        Geluid::PeerLeave => vec![dof(0, 300, C4, 170, 1.00)],
         // Hoger en korter, en met een kleine terts: het gaat over beeld, niet over stemmen.
         Geluid::StreamAan => vec![tine(0, 300, A4, 100, 1.00), tine(85, 215, C5, 120, 1.05)],
         Geluid::StreamUit => vec![tine(0, 300, C5, 100, 1.00), tine(85, 215, A4, 130, 0.92)],
@@ -1060,11 +1088,18 @@ fn onthoud(bytes: std::sync::Arc<Vec<u8>>) {
     static KLINKEND: Mutex<Vec<std::sync::Arc<Vec<u8>>>> = Mutex::new(Vec::new());
     const RING: usize = 4;
 
-    if let Ok(mut ring) = KLINKEND.lock() {
-        ring.push(bytes);
-        if ring.len() > RING {
-            ring.remove(0);
-        }
+    // **Een vergiftigd slot mag deze buffer niet kosten.** De aanroeper heeft er al een
+    // rauwe verwijzing van genomen en geeft die zo aan Windows; zou `bytes` hier weggegooid
+    // worden, dan leest `PlaySound` uit vrijgegeven geheugen. Vandaar `into_inner` in plaats
+    // van `if let Ok(..)`: een ring van bytebuffers heeft geen invariant die een paniek kán
+    // beschadigen, dus er is niets om tegen te beschermen en alles om te verliezen.
+    //
+    // Vergiftigen kan hier trouwens niet — er wordt niets gedaan dan pushen en verwijderen —
+    // maar "onmogelijk" is geen reden om een use-after-free open te laten staan.
+    let mut ring = KLINKEND.lock().unwrap_or_else(|e| e.into_inner());
+    ring.push(bytes);
+    if ring.len() > RING {
+        ring.remove(0);
     }
 }
 
@@ -1079,10 +1114,24 @@ pub fn speel(set: Geluidset, g: Geluid, volume: f32) {
     if volume <= 0.0 {
         return;
     }
-    let pad = std::env::temp_dir().join(format!("fitcom-{}-{}.wav", set.naam(), g.naam()));
-    if !pad.exists() && std::fs::write(&pad, wav(gecachte_samples(set, g), 1.0)).is_err() {
-        tracing::debug!(geluid = g.naam(), "geluidje niet weg te schrijven");
-        return;
+    let bytes = wav(gecachte_samples(set, g), 1.0);
+    // **De naam komt uit de inhoud, niet uit de gebeurtenis.** Met een vaste naam per
+    // gebeurtenis gold "het bestand bestaat" als bewijs dat het het juiste bestand was, en
+    // dat is het niet: na een wijziging in een tonentabel blijft de vorige build klinken
+    // (dat is precies het soort uur dat je kwijt bent aan "waarom hoor ik mijn wijziging
+    // niet"), en een half weggeschreven bestand uit een afgebroken run is niet van een heel
+    // bestand te onderscheiden. Met de hash erin kán het bestand alleen kloppen.
+    let naam = format!("fitcom-{}.wav", &blake3::hash(&bytes).to_hex()[..16]);
+    let pad = std::env::temp_dir().join(naam);
+    // Schrijven onder een andere naam en dan hernoemen: hernoemen is atomair, dus een
+    // tweede instantie ziet het bestand nooit halfaf.
+    if !pad.exists() {
+        let deel = pad.with_extension("part");
+        if std::fs::write(&deel, &bytes).is_err() || std::fs::rename(&deel, &pad).is_err() {
+            tracing::debug!(geluid = g.naam(), "geluidje niet weg te schrijven");
+            let _ = std::fs::remove_file(&deel);
+            return;
+        }
     }
     let gestart = std::process::Command::new("afplay")
         .arg("-v")
@@ -1440,6 +1489,49 @@ mod tests {
         }
     }
 
+    /// Genormaliseerde correlatie over de eerste `ms` van twee geluidjes: 1,0 betekent
+    /// dezelfde golf, 0 betekent niets met elkaar te maken. Op sterkte genormaliseerd, dus
+    /// een verschil in volume telt hier niet als verschil.
+    fn onset_correlatie(a: &[f32], b: &[f32], ms: u32) -> f32 {
+        let n = ms_naar_samples(ms).min(a.len()).min(b.len());
+        let (x, y) = (&a[..n], &b[..n]);
+        let na = x.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let nb = y.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if na <= 0.0 || nb <= 0.0 {
+            return 0.0;
+        }
+        x.iter().zip(y).map(|(p, q)| p * q).sum::<f32>() / (na * nb)
+    }
+
+    /// **Je eigen gebeurtenis en die van iemand anders moeten vanaf de eerste sample
+    /// verschillen**, niet pas als de tweede noot uitblijft.
+    ///
+    /// Dit is een echte fout die de review eruit haalde. Keys gebruikte voor alle zes
+    /// dezelfde partialen en dezelfde modulator, en peer-join begint op de grondtoon van
+    /// eigen-join — dus de eerste 120 ms waren meetbaar dezelfde golf (correlatie 0,9999) en
+    /// hing het hele onderscheid aan een noot die 120 ms later niet komt. De andere drie sets
+    /// zaten allemaal onder 0,15. Aan de tabel is dat niet te zien en te horen is het hier
+    /// niet, dus staat het nu als getal vast.
+    #[test]
+    fn een_eigen_gebeurtenis_klinkt_vanaf_het_begin_anders_dan_die_van_een_ander() {
+        for s in Geluidset::ALLE {
+            for (eigen, peer) in [
+                (Geluid::EigenJoin, Geluid::PeerJoin),
+                (Geluid::EigenLeave, Geluid::PeerLeave),
+            ] {
+                let c =
+                    onset_correlatie(gecachte_samples(s, eigen), gecachte_samples(s, peer), 120);
+                assert!(
+                    c < 0.9,
+                    "{}: {} en {} beginnen met vrijwel dezelfde golf (correlatie {c:.4})",
+                    s.naam(),
+                    eigen.naam(),
+                    peer.naam()
+                );
+            }
+        }
+    }
+
     #[test]
     fn elke_set_en_elk_geluid_is_op_naam_terug_te_vinden() {
         for s in Geluidset::ALLE {
@@ -1500,6 +1592,40 @@ mod tests {
             Geluidset::ALLE.len() * 6,
             map.display()
         );
+    }
+
+    /// Het macOS-afspeelpad echt aflopen, tot en met het bestand dat `afplay` krijgt.
+    ///
+    /// Dat pad had een echte fout: de naam hing aan de gebeurtenis, dus "het bestand bestaat"
+    /// gold als bewijs dat het het júiste bestand was. Na een wijziging in een tonentabel
+    /// bleef daardoor de vorige build klinken. De naam komt nu uit de inhoud, en dat is hier
+    /// nagelopen op de enige machine waar dit pad draait.
+    #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "speelt geluid af"]
+    fn het_mac_pad_schrijft_een_bestand_dat_bij_de_inhoud_hoort() {
+        let set = Geluidset::Glas;
+        let g = Geluid::EigenJoin;
+        let bytes = wav(gecachte_samples(set, g), 1.0);
+        let verwacht = std::env::temp_dir().join(format!(
+            "fitcom-{}.wav",
+            &blake3::hash(&bytes).to_hex()[..16]
+        ));
+        let _ = std::fs::remove_file(&verwacht);
+
+        speel(set, g, 0.4);
+
+        assert!(verwacht.exists(), "geen bestand op {}", verwacht.display());
+        assert_eq!(
+            std::fs::read(&verwacht).unwrap(),
+            bytes,
+            "het bestand hoort byte voor byte de inhoud te zijn waar zijn naam uit komt"
+        );
+        assert!(
+            !verwacht.with_extension("part").exists(),
+            "het deelbestand hoort na het hernoemen weg te zijn"
+        );
+        println!("{} ({} bytes)", verwacht.display(), bytes.len());
     }
 
     /// Buiten 0..1 komt uit de webview, niet uit deze code. Vertrouwen is hier niet nodig:

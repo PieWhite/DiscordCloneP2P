@@ -957,7 +957,7 @@ De drie sets zijn daarmee **Glass**, **Wood** en **Keys**, met **Classic** als v
 | Classic | Kale sinus, vlakke omhulling | De set uit 1.0.0. Staat, dooft niet uit. |
 | Glass | Modes 1 : 2,76 : 5,40 (aangeslagen buis) | Ónhele partialen, dus geen toonhoogte-gevoel maar een voorwerp; hoge modes vallen 2-6× sneller weg, dus hij verkleurt van helder naar warm; twee grondtonen 2,5 Hz uiteen geven een langzame zweving. |
 | Wood | Modes 1 : 3,93 : 9,55 (vrij opgelegde balk) | De stemming van een marimba, een heel andere reeks dan glas. Kort en droog, met een ruistik van elf milliseconde als hamercontact eronder. |
-| Keys | FM, modulator 1:1, index 2,3 die in 48 ms wegvalt | Zijbanden op hele veelvouden, dus hij hóudt een toonhoogte waar glas dat juist niet doet. Hol bij de aanslag, vrijwel zuivere sinus als hij wegvalt. Het laagste register van de vier. |
+| Keys | FM, modulator 1:1, index 2,3 die in 48 ms wegvalt | Zijbanden op hele veelvouden, dus hij hóudt een toonhoogte waar glas dat juist niet doet. Hol bij de aanslag, vrijwel zuivere sinus als hij wegvalt. Het laagste register van de vier; peer-gebeurtenissen krijgen een dovere modulator (`TOETS_FM_DONKER`). |
 
 Binnen elke set: twee overlappende klanken voor je eigen gebeurtenissen en één voor die van
 iemand anders, zodat het *aantal* klanken de eerste aanwijzing is, nog vóór de toonhoogte.
@@ -1039,6 +1039,46 @@ Windows zijn — en die zet de hele app zachter, inclusief de stem van je vriend
 `[sound] volume` in `config.toml`, met `set` ernaast. Alles `#[serde(default)]`: een config
 van 1.0.0 heeft geen `[sound]`-tabel en hoort gewoon te starten. Eigen test, want dat is
 precies wat bij de kanalen-uitbreiding één keer misging.
+
+**Wat de review erna opleverde.** Vijf lenzen over het resultaat, elke bevinding daarna door
+een aparte agent die hem probeerde te weerleggen. Zeven claims, twee bevestigd, vijf
+weerlegd — en twee van die weerleggingen waren nuttiger dan de bevinding die ze afwezen.
+(Eén lens, de frontend-lens, is halverwege op een API-fout gestrand en heeft niets
+opgeleverd; die kant is dus alleen door mij nagelezen.)
+
+- **Bevestigd:** op macOS hing de naam van het tijdelijke wav-bestand aan de gebeurtenis, dus
+  "het bestand bestaat" gold als bewijs dat het het júiste bestand was. Na een wijziging in
+  een tonentabel bleef de vorige build klinken. De naam komt nu uit een hash van de inhoud, en
+  het schrijven gaat via `.part` + hernoemen zodat een tweede instantie hem nooit halfaf ziet.
+  Nagelopen op deze Mac (`het_mac_pad_schrijft_een_bestand_dat_bij_de_inhoud_hoort`).
+- **Weerlegd, maar met een beter voorstel:** de vergiftigde-slot-tak in `onthoud` liet de
+  buffer vallen terwijl `PlaySound` er nog een verwijzing naar had. Onbereikbaar (er wordt
+  niets gedaan dan pushen en verwijderen, dus er kan niets paniceren), dus formeel geen
+  defect — maar de reviewer wees op `lock().unwrap_or_else(|e| e.into_inner())` als de nettere
+  oplossing dan mijn eerste poging, die de buffer lekte. Overgenomen.
+- **Bevestigd, en dit was de nuttigste bevinding van de hele ronde:** in Keys waren de eerste
+  120 ms van "iemand komt erbij" meetbaar *dezelfde golf* als die van je eigen deelname —
+  genormaliseerde correlatie **0,9999**, tegen onder 0,15 bij de andere drie sets. Oorzaak:
+  Keys gebruikte voor alle zes gebeurtenissen één partialentabel en één modulator, en
+  peer-join begon op de grondtoon van eigen-join. Het hele onderscheid hing dus aan een
+  tweede noot die 120 ms later niet komt. Bovendien beweerde het commentaar een octaafverschil
+  dat er alleen bij de leave was.
+  Gerepareerd zoals Glas het al deed: één dovere klank op de **aankomsttoon** van het eigen
+  gebaar (`TOETS_FM_DONKER`, en F4/C4 in plaats van C4/F3), dus drie aanwijzingen die alle
+  drie vanaf de eerste sample gelden — één noot in plaats van twee, dover, en een andere
+  toonhoogte. Nu 0,007. Een octaaf naar beneden was de verleiding en zou fout zijn geweest:
+  `luidheid` weegt niet naar frequentie, dus dezelfde RMS een octaaf lager klinkt merkbaar
+  zachter dan de rest van de set — die valkuil kwam uit de weerlegging, niet uit de bevinding.
+  Er staat nu een test op (`een_eigen_gebeurtenis_klinkt_vanaf_het_begin_anders_dan_die_van_een_ander`);
+  aan een parametertabel is dit niet te zien, en horen kan deze machine niet.
+- **Weerlegd, en dat heeft een wijziging van mij tegengehouden.** Ik had `herstel()` een
+  onbekende setnaam laten terugzetten op de standaard, omdat er anders niets geselecteerd
+  staat in de kiezer. Dat breekt de belofte die twee velden hogerop in datzelfde bestand
+  staat: een config van een nieuwere build mag zijn keuze niet verliezen doordat je één keer
+  een oudere versie start — en met zes `Config::save`-plekken in `engine.rs` zou die naam
+  daarna ook echt overschreven worden. Teruggedraaid; de kiezer laat nu in `ui/state.rs` zien
+  wat er *werkelijk klinkt*, terwijl de config de bedoeling vasthoudt. De weergave hoort de
+  werkelijkheid te tonen, de opslag de bedoeling.
 
 **De standaard blijft de klassieke set.** Wie bijwerkt hoort te horen wat hij gewend is; de
 nieuwe sets staan één klik verderop, met een kaartje per set en zes proefknoppen om ze te

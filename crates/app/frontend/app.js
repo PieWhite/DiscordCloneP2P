@@ -912,10 +912,13 @@ const SET_BODY = {
     </div>
     <div class="field">
       <span class="field-label">Hear them</span>
-      <span class="field-help">All six, at the volume set above. Ignores do not disturb.</span>
+      <span class="field-help">${S.sound.volume > 0
+        ? "All six, at the volume set above. Ignores do not disturb."
+        : "The volume is at zero, so there is nothing to hear. Turn it up first."}</span>
       <div class="control-row" style="flex-wrap:wrap">
         ${(S.sound_events || []).map(e =>
-          `<button class="btn btn--ghost" data-preview="${esc(e.id)}">${ic("i-head")}${esc(e.name)}</button>`).join("")}
+          `<button class="btn btn--ghost" data-preview="${esc(e.id)}"
+                   ${S.sound.volume > 0 ? "" : 'disabled title="The volume is at zero"'}>${ic("i-head")}${esc(e.name)}</button>`).join("")}
       </div>
     </div>`,
 
@@ -1042,6 +1045,14 @@ function renderSettings() {
    1. Switching conversation jumps to the newest message.
    2. Anything that shrinks the timeline — the stream strip appearing, the composer
       growing to three lines — must not slide the newest message out of view. */
+/** Staat de focus in een veld in de instellingen dat de gebruiker aan het bijstellen is? */
+function bezigMetInvoer() {
+  const a = document.activeElement;
+  const paneel = $("settings");
+  if (!a || !paneel || !paneel.contains(a)) return false;
+  return a.tagName === "INPUT" || a.tagName === "SELECT" || a.tagName === "TEXTAREA";
+}
+
 let lastConversation = null;
 const PIN_SLACK = 24;
 const wasPinned = tl => tl.scrollHeight - tl.clientHeight - tl.scrollTop <= PIN_SLACK;
@@ -1062,7 +1073,13 @@ function render() {
   renderOverlays();
   renderError();
   renderStatus();
-  if (V.view === "settings") renderSettings();
+  /* Niet hertekenen zolang de gebruiker in een veld staat. Een `change` op een schuif laat
+     de motor opslaan, dat geeft een state-event, en dat bouwde het hele paneel opnieuw op —
+     met het element waar de focus op stond erbij. Gevolg: pijltjestoetsen op een schuif
+     werkten precies één keer, en typen in "Display name" werd bij elke tik gewist.
+     Alleen voor invoervelden: een knop houdt geen toestand vast, en de kaartjes van de
+     geluidssets moeten juist wél meteen bijwerken als je er een kiest. */
+  if (V.view === "settings" && !bezigMetInvoer()) renderSettings();
 
   const tl = $("timeline");
   const key = `${V.view}:${activeChannel()}`;

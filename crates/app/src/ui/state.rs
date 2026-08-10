@@ -263,6 +263,13 @@ pub struct VideoSettings {
 /// Which set of notification tones is picked, and how loud.
 #[derive(Debug, Clone, Serialize)]
 pub struct SoundSettings {
+    /// The set that will actually be heard, which is not always the one in `config.toml`.
+    ///
+    /// A config written by a newer build may name a set this build does not have; the config
+    /// keeps that name on purpose, so downgrading once does not erase the choice (see
+    /// `config::SoundConfig::herstel`). The window has to show what is true rather than what
+    /// is stored, otherwise the picker highlights nothing at all — so the fallback is
+    /// resolved here, in the view, where showing reality is the whole job.
     pub set: String,
     /// 0.0 to 1.0. The slider shows whole percents.
     pub volume: f32,
@@ -491,7 +498,10 @@ impl UiState {
                 bitrate: snap.video.bitrate,
             },
             sound: SoundSettings {
-                set: snap.geluid.set.clone(),
+                set: crate::geluid::Geluidset::van_naam(&snap.geluid.set)
+                    .unwrap_or(crate::geluid::Geluidset::STANDAARD)
+                    .naam()
+                    .to_string(),
                 volume: snap.geluid.volume,
             },
             sound_sets: c.sound_sets.clone(),
