@@ -259,6 +259,7 @@ pub fn run(
             commands::apply_update,
             commands::ignore_update,
             commands::dismiss_update,
+            commands::open_link,
             commands::close_window,
             ready,
         ])

@@ -1206,6 +1206,14 @@ async function loadTimeline() {
 document.addEventListener("click", async e => {
   const t = e.target;
 
+  /* A link goes to the system browser, never to this webview — it is the whole app, and
+     there is no way back from a page it navigated to. */
+  const link = t.closest("a[href]");
+  if (link) {
+    e.preventDefault();
+    return invoke("open_link", { url: link.href });
+  }
+
   if (t.closest("#win-min")) return getCurrentWindow().minimize();
   if (t.closest("#win-max")) return getCurrentWindow().toggleMaximize();
   if (t.closest("#win-close")) return invoke("close_window");

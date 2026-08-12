@@ -370,6 +370,45 @@ pub fn dismiss_update(ui: State<'_, Ui>) {
     send(&ui, UiCommand::WisUpdateMelding);
 }
 
+/// A link from the chat, handed to the system browser. The webview itself must never
+/// navigate — it holds the whole app — so the frontend cancels the click and calls this.
+///
+/// The URL comes out of a message from another machine, so only `http(s)` gets through and
+/// it is passed as one argument to the shell, never through a command line it could break
+/// out of (`&` in a URL is ordinary; in `cmd /c start` it is a second command).
+#[tauri::command]
+pub fn open_link(url: String) {
+    let schema_ok = url.starts_with("https://") || url.starts_with("http://");
+    if !schema_ok || url.contains(['\n', '\r', '\0']) {
+        tracing::warn!(url, "link not opened: only http(s) is followed");
+        return;
+    }
+
+    #[cfg(windows)]
+    {
+        use windows::core::{w, HSTRING, PCWSTR};
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let doel = HSTRING::from(&url);
+        // Geen console-venster, geen shell-parsing: de URL is één argument.
+        unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(doel.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Err(e) = std::process::Command::new("open").arg(&url).spawn() {
+        tracing::warn!(error = %e, url, "opening the link failed");
+    }
+}
+
 /// The close button. With `minimize_to_tray` on — the default — it hides the window and
 /// leaves the engine running, because the state this app has to be good at is "away in
 /// the tray while a game is running".
