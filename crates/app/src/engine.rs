@@ -755,6 +755,38 @@ impl Engine {
         ));
     }
 
+    /// Het updater-proces naast de app, of niets.
+    ///
+    /// De naam mag afwijken. Een browser die hetzelfde bestand twee keer binnenhaalt maakt
+    /// er `fitcom-updater (1).exe` van, en dan stond de app te wachten op een bestand dat
+    /// er in de ogen van de gebruiker gewoon stond. Alles wat in de map van de app met
+    /// `fitcom-updater` begint en op `.exe` eindigt telt daarom mee — die map is dezelfde
+    /// vertrouwensgrens als `fitcom.exe` zelf.
+    fn zoek_updater(verwacht: &std::path::Path) -> Option<PathBuf> {
+        if verwacht.exists() {
+            return Some(verwacht.to_path_buf());
+        }
+        let mut kandidaten: Vec<PathBuf> = std::fs::read_dir(verwacht.parent()?)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let naam = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                naam.starts_with("fitcom-updater") && naam.ends_with(".exe")
+            })
+            .collect();
+        // Vast op naam, zodat twee kopieën niet per toeval om en om gekozen worden.
+        kandidaten.sort();
+        if let Some(p) = kandidaten.first() {
+            tracing::warn!(pad = %p.display(), "updater onder een afwijkende naam gevonden");
+        }
+        kandidaten.into_iter().next()
+    }
+
     /// De gebruiker bevestigt "nu bijwerken en herstarten": start het losse
     /// updater-proces (dat wacht tot wíj afgesloten zijn, want een exe kan zichzelf niet
     /// overschrijven terwijl hij draait) en sluit daarna net zo af als via het tray-menu.
@@ -771,21 +803,21 @@ impl Engine {
             }
         };
         // Naast de hoofd-exe, net als bij een gewone build (zie `crates/app/src/bin/fitcom-updater.rs`).
-        let updater = huidige_exe.with_file_name("fitcom-updater.exe");
+        let verwacht = huidige_exe.with_file_name("fitcom-updater.exe");
         // Zonder dit is de melding "updater starten mislukt: Het systeem kan het
         // opgegeven bestand niet vinden" — waar niemand uit opmaakt dat er een tweede
         // bestand naast fitcom.exe uit de zip hoort.
-        if !updater.exists() {
+        let Some(updater) = Self::zoek_updater(&verwacht) else {
             let bericht = format!(
                 "fitcom-updater.exe staat niet naast fitcom.exe ({}). \
                  Pak hem uit de release naast de app; zonder hem kan een draaiende exe \
                  zichzelf niet vervangen.",
-                updater.display()
+                verwacht.display()
             );
-            tracing::error!(pad = %updater.display(), "updater ontbreekt");
+            tracing::error!(pad = %verwacht.display(), "updater ontbreekt");
             self.fout = Some(bericht);
             return;
-        }
+        };
         let resultaat = std::process::Command::new(&updater)
             .arg("--new")
             .arg(&pad)
