@@ -66,7 +66,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const ic = (id, cls = "icon", extra = "") =>
-  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" ${extra}><use href="#${id}"/></svg>`;
+  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" ${extra}><use href="#${id}"/></svg>`;
 
 /* ---------------------------------------------------------------- derived */
 
@@ -443,7 +443,7 @@ function renderMessage(item, grouped, at) {
     </div>
     <div class="msg-body">
       ${grouped ? "" : `<div class="msg-head">
-        <span class="msg-author">${esc(item.author_name)}</span>
+        <span class="msg-author au-${author.avatar ?? item.avatar}">${esc(item.author_name)}</span>
         <span class="msg-stamp">${time}</span>
         ${item.edited ? '<span class="msg-edited">(edited)</span>' : ""}
       </div>`}
@@ -569,9 +569,9 @@ function memberRow(p, opts = {}) {
         </div>
       </div>` : ""}
       ${shared.filter(s => !s.watching).map(s =>
-        `<button class="share-chip" data-watch="${esc(p.id)}" data-stream="${s.stream_id}">${ic(s.is_camera ? "i-cam" : "i-monitor")}Watch ${esc(s.title)}</button>`).join("")}
+        `<button class="share-chip" data-watch="${esc(p.id)}" data-stream="${s.stream_id}">${ic(s.is_camera ? "i-cam" : "i-monitor")}<span>Watch</span> <span class="chip-src">${esc(s.title)}</span></button>`).join("")}
       ${shared.filter(s => s.watching).map(s =>
-        `<button class="share-chip" data-unwatch="${esc(p.id)}" data-stream="${s.stream_id}">${ic("i-x")}Stop watching ${esc(s.title)}</button>`).join("")}
+        `<button class="share-chip" data-unwatch="${esc(p.id)}" data-stream="${s.stream_id}">${ic("i-x")}<span>Stop watching</span> <span class="chip-src">${esc(s.title)}</span></button>`).join("")}
     </div>
   </div>`;
 }
@@ -593,7 +593,11 @@ function renderMembers() {
       ${list.map(p => memberRow(p, opts(p))).join("")}
     </div>` : "";
 
+  // The member column is a titled window like its two siblings; the strip is part of
+  // this render so the aside never shows content without its title bar.
   el.innerHTML =
+    `<div class="members-head"><h2>Members</h2><span class="num">${knownPeers().length + 1}</span></div>` +
+    `<div class="members-scroll">` +
     group("In the call", roster, p => ({
       sub: p.self
         ? (S.voice.muted ? "Microphone muted" : meSpeaking() ? "Speaking" : "Listening")
@@ -608,7 +612,8 @@ function renderMembers() {
     })) +
     group("Connecting", connecting, () => ({ sub: "Reconnecting" })) +
     group("Offline", away, p => ({ sub: p.problem || lastSeenLine(p) })) +
-    group("Not introduced yet", unknown, p => ({ sub: esc(p.address) }));
+    group("Not introduced yet", unknown, p => ({ sub: esc(p.address) })) +
+    `</div>`;
 }
 
 /* ---------------------------------------------------------------- strip */

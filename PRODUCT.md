@@ -209,32 +209,35 @@ Vastliggende technische randvoorwaarden die ontwerpwerk niet mag omzeilen:
   geen OS-thema-navolging.
 - Toon: nuchter en zonder marketingstem. De bestaande UI-teksten en foutmeldingen zeggen
   wat er aan de hand is en wat je eraan doet ("offline · peer reageert niet"). Dat blijft.
-### De visuele wereld: de categoriestandaard, met opzet
+### De visuele wereld: het zestienkleurenveld
 
-**Vastgelegd 2026-08-04.** In een richtingsronde met zeven afgeleide werelden en vier
-gepresenteerde kaarten heeft Rick de **staande uitgang** gekozen: de categoriestandaard,
-recht toe recht aan. Niet bij gebrek aan alternatieven — de aangewezen richting (een
-handbediende telefooncentrale: snoeren, jackveld, lampenveld) en drie uitdagers
-(vertrekbord, Teletekst, Schiphol-signering) lagen er volledig uitgewerkt naast.
+**Vastgelegd 2026-08-12, ter vervanging van de keuze van 2026-08-04.** Rick vroeg om een
+frissere, eigenzinnigere uitstraling en er is opnieuw een richtingsronde gedraaid (seed
+`c9bbaaa4`). Uit die ronde koos Rick de catalogus-uitdager **"PC-98 sixteen-color field"**
+— het Japanse zestienkleuren-computerscherm van begin jaren negentig — boven de toegewezen
+eigen richting (tactische squad-HUD) en boven het aanhouden van de categoriestandaard van
+2026-08-04 (die als vaste terugvaloptie op tafel lag).
 
-Dit is dus een **commitment, geen compromis**, en toekomstig werk behandelt het zo:
+Wat vastligt en wat toekomstig werk zo behandelt:
 
-- **De conventionele indeling is de opdracht**, uitgevoerd zonder ironie en zonder
-  eigenzinnigheid die er alsnog in gesmokkeld wordt. Icoonrail → kanaal/DM-lijst → tijdlijn
-  → ledenlijst. Ronde avatars, kanaalitems als lijstrijen, één accentkleur, donkere
-  kolommen. Wie van Discord komt moet het blind kunnen bedienen.
-- **De kwaliteitslat is Discord en Slack.** Hun afwerkingsniveau is de meetlat.
-- **Het oude egui-thema was geen anti-referentie**, maar een vroege, laag-fidelity
-  uitvoering van precies deze richting. Het is in fase 12 vervangen, niet verworpen.
-- **Het palet ligt nu wél vast.** De oude teal `#3ABFC0` en de vijf grijze lagen zijn
-  vervangen door de zes lagen en de getunede teal `#2FB3AE` uit `DESIGN.md`. Wat daar staat
-  is opgeschreven uit de gebouwde comp, niet vooraf bedacht.
-- **De informatiestructuur blijft staan**, op Ricks expliciete keuze — de vier zones zijn
-  uitgeprobeerd en je vindt alles blind.
+- **De informatiestructuur blijft staan**, op Ricks expliciete keuze: icoonrail →
+  kanaal/DM-lijst → tijdlijn → ledenlijst. Wie van Discord komt bedient het nog blind.
+  Donker blijft een eis. Het faalcriterium dat Rick voor deze ronde koos: **"moeilijker
+  af te lezen is een fout"** — leesbaarheid in een donkere kamer wint van elke vondst.
+- **De wereld zelf staat in `DESIGN.md`**, opgeschreven uit de gebouwde frontend:
+  zestien vaste kleuren op diep indigo, elke tussentint een geordende dither van twee
+  paletkleuren, papieren tekst, blauwe titelbalken op vierkante vensters, selectie die
+  zijn cellen inverteert, magenta als dé ene primaire-actievulling, DotGothic16 als
+  bitmapletter (lokaal gebundeld), harde offset-schaduwen, motion die klikt in `steps()`.
+- **De kwaliteitslat is dubbel:** de catalogkaart van de wereld voor de visuele
+  toewijding, Discord en Slack voor de gedragsafwerking (toetsenbord, staten, dichtheid).
+- **De oude wereld is anti-referentie geworden.** De comp `design/main-window.html` en
+  `design/shots/` documenteren de vervangen "Well-Made Standard" van 2026-08-04 en zijn
+  geen reproductiedoel meer; waarden daaruit terugkopiëren (de teal `#2FB3AE`, de zes
+  grijze lagen, afgeronde hoeken) is een fout, geen huisstijl.
 
-`DESIGN.md` is aan het eind van de bouw geschreven, uit de gebouwde wereld. De comp
-`design/main-window.html` en de 19 toestanden in `design/shots/` zijn de reproductie­doelen
-waartegen de Tauri-frontend gebouwd is.
+`DESIGN.md` is aan het eind van deze bouw herschreven uit de gebouwde wereld, na een
+finish-review met eindoordeel *ship*; `.impeccable/design.json` is meegegenereerd.
 
 ## Evidence on Hand
 

@@ -2,7 +2,7 @@
 version: 1
 slug: "crates-app-src-ui"
 primary_target: "crates/app/src/ui"
-related_targets: []
+related_targets: ["crates/app/frontend"]
 ---
 
 # Hoofdvenster — FitCommunication
@@ -36,7 +36,7 @@ Deze zijn geen randgevallen maar de normale toestand, en de UI moet ze rustig to
 
 - **Eén of twee peers offline.** Invariant 7: dit is gewoon, geen foutpad. Geen alarmkleur,
   geen dialoog, geen blokkade.
-- **Verbinden / herverbinden** met exponentiële backoff, plus RTT en verlies per peer.
+- **Verbinden / herverbinden** met exponentiële backoff, plus RTT per peer.
 - **Ongelezen per kanaal, per subkanaal en per DM**, los van elkaar geteld.
 - **Een `@jouwnaam`-tag** — gemarkeerd in de tijdlijn, en het enige wat een Windows-melding
   rechtvaardigt. Ook in een DM: geen melding zonder tag.
@@ -49,34 +49,45 @@ Deze zijn geen randgevallen maar de normale toestand, en de UI moet ze rustig to
 
 ## Gekozen richting
 
-**De categoriestandaard, met opzet.** Op 2026-08-04 gekozen boven vier volledig uitgewerkte
-alternatieven (handbediende telefooncentrale, vertrekbord, Teletekst, Schiphol-signering).
-De conventionele Discord-indeling is de opdracht, uitgevoerd zonder ironie en zonder
-eigenzinnigheid die er alsnog in gesmokkeld wordt.
+**Het zestienkleurenveld (2026-08-12).** In een tweede richtingsronde (seed `c9bbaaa4`)
+heeft Rick de catalogus-uitdager **"PC-98 sixteen-color field"** gekozen, boven de
+toegewezen eigen richting (tactische squad-HUD) en boven het aanhouden van de
+categoriestandaard uit 2026-08-04. De vier zones en het vaste donkere thema stonden vast;
+al het overige — palet, typografie, materiaal, dichtheid — is vervangen.
 
-**Kwaliteitslat: Discord en Slack.** Hun afwerkingsniveau is de meetlat.
+De wereld, kort: zestien vaste kleuren op diep indigo; elke tussentint is een geordende
+2px-dither van twee paletkleuren, nooit een blend; papierkleurige tekst; blauwe titelbalken
+op vierkante, dubbel-omrande vensters; magenta als dé primaire actie (Join the call en
+niets anders); cyaan voor links, focus en live voortgang; DotGothic16 als bitmapletter
+(één gewicht — hiërarchie is grootte, kleur en celinversie); selectie inverteert zijn
+cellen; afwezig dithert naar halve dichtheid (sprite en statusregel, nooit de naam);
+schaduwen zijn harde offsets; toestandswissels klikken in stappen (`steps()`), niets fadet
+en niets loopt oneindig. Het faalcriterium dat Rick koos: **"moeilijker af te lezen is een
+fout"** — leesbaarheid in een donkere kamer wint van elke stijlvondst.
 
-Vier zones blijven staan waar ze staan — expliciete keuze, ze zijn uitgeprobeerd en blind te
-bedienen. Materiaal, typografie, kleur, dichtheid, ritme en motion zijn vrij binnen de
-conventie. Donker is een eis, geen keuze: avondgebruik in het donker.
+De richtingsronde van 2026-08-04 ("de categoriestandaard, met opzet") is hiermee bewust
+verlaten; de comp `design/main-window.html` en `design/shots/` documenteren die oude wereld
+en zijn voor deze wereld anti-referentie, geen reproductiedoel.
 
-**Het memorabele moment moet in de precisie zitten, niet in een vondst.** Bij een gekozen
-conventie is dat de enige plek waar het verschil gemaakt wordt: uitlijning die klopt bij elke
-dichtheid, statusovergangen die niet springen, een tijdlijn die na duizend berichten nog
-ritme heeft, en toetsenbordgedrag dat nergens hapert.
+**Kwaliteitslat:** de catalogkaart van de wereld (board + hero) zet het afwerkingsniveau;
+Discord/Slack blijft de lat voor gedragsafwerking (toetsenbord, staten, dichtheid).
 
-## Beslist (fase 12, 2026-08-04)
+## Beslist (fase 12, 2026-08-04 — ongewijzigd geldig)
 
-- **UI-taal: Engels** voor de weergavelaag, de zichtbare strings én de Rust-identifiers in
-  `crates/app/src/ui/`. De motor en de vier andere crates blijven Nederlands; de vertaling
-  zit op één plek, `ui/state.rs`. Zie `docs/OVERDRACHT.md`, beslissing 20.
-- **Het palet ligt vast** in `DESIGN.md` en `.impeccable/design.json`: zes bijna-zwarte
-  lagen, één hairline-waarde, één getunede teal `#2FB3AE`, presence en danger als
-  gescheiden families.
-- **Typografie: Archivo** voor alles wat UI is, **JetBrains Mono** voor code en voor elk
-  gemeten getal. Beide lokaal gebundeld in `crates/app/frontend/fonts/` — remote laden
-  botst met invariant 1.
+- **UI-taal: Engels** voor de weergavelaag; de motor en de vier andere crates blijven
+  Nederlands; de vertaling zit op één plek, `ui/state.rs`.
+- **De `Snapshot`/`UiCommand`-grens blijft staan.** Deze herstyling raakte alleen
+  `frontend/` plus drie renderdetails in `app.js` (icoongrammatica, naamkleurklassen,
+  ledenlijst-titelbalk); geen enkel commando of event veranderde.
 
-De gebouwde uitvoering staat in `crates/app/frontend/`; de goedgekeurde comp
-`design/main-window.html` blijft de reproductiedoelstelling en `design/shots/` de
-vergelijkingsbeelden.
+## Beslist (2026-08-12, deze ronde)
+
+- **Palet en typografie staan in `DESIGN.md`** (herschreven uit de gebouwde wereld door de
+  documenter) en in `.impeccable/design.json`.
+- **DotGothic16** (OFL) lokaal gebundeld in `crates/app/frontend/fonts/`; Archivo is weg,
+  JetBrains Mono blijft voor code en gemeten getallen — een benoemde concessie: echte code
+  in de chat vraagt een echte mono.
+- **Eén decoratieve handtekening:** de horizonband (geditherde schemerstreep) — onderrand
+  titelbalk, onderrand instellingenvenster, streep onder lege-staat-koppen. Nergens anders.
+- **Iconen:** zelfde 29 symbolen, hertekend als grammatica: stroke 2, vierkante caps,
+  verstek-joins, geen afgeronde rects. De regel staat boven het `<defs>`-blok.
