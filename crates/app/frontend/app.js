@@ -58,8 +58,26 @@ const V = {
 };
 
 /** The level above which a peer counts as speaking. Matches the voice VAD closely
-    enough that the ring does not flicker on room noise. */
+    enough that the ring does not light on room noise. */
 const SPEAKING = 0.06;
+
+/** How long the speaking state survives a dip under the threshold. Natural speech dips
+    below any level threshold between words and syllables, and the 4 Hz meters tick
+    samples straight into those dips — gating the ring on a single sample made it strobe
+    while someone was talking continuously. Real VADs call the cure hangover: light the
+    moment the level is up, release only once it has stayed quiet this long. Two meter
+    ticks plus slack, so one or two quiet samples inside a sentence never show. */
+const SPEAK_HOLD_MS = 600;
+
+/** Per key: the last moment the level was above the threshold. The self entry is keyed
+    "@self" — peer ids are UUIDs, so the prefix cannot collide. */
+const speakAt = {};
+
+function heldSpeaking(key, level) {
+  const now = Date.now();
+  if ((level || 0) > SPEAKING) { speakAt[key] = now; return true; }
+  return now - (speakAt[key] || 0) < SPEAK_HOLD_MS;
+}
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c =>
@@ -80,8 +98,10 @@ const callRunning = () => callPeers().length > 0 || S.voice.joined;
 const totalDmUnread = () => knownPeers().reduce((n, p) => n + p.unread, 0);
 const sharingSelf = () => (S.own_streams || []).some(s => !s.is_audio && !s.is_camera);
 const watchedStreams = () => (S.streams || []).filter(s => s.watching);
-const isSpeaking = id => (M.peers[id]?.level || 0) > SPEAKING;
-const meSpeaking = () => S.voice.joined && !S.voice.muted && M.self.level > SPEAKING;
+const isSpeaking = id => heldSpeaking(id, M.peers[id]?.level);
+/* joined/muted gate first: while muted no timestamp is refreshed, so muting mid-sentence
+   drops the ring immediately instead of letting the hangover keep it lit. */
+const meSpeaking = () => S.voice.joined && !S.voice.muted && heldSpeaking("@self", M.self.level);
 
 const activeName = () => {
   if (V.view === "dms" && V.dm) return peerById(V.dm)?.name || "";
