@@ -73,10 +73,90 @@ fn main() {
     }
     log(&log_pad, "exe vervangen, nu opnieuw starten");
 
-    match std::process::Command::new(&args.target).spawn() {
-        Ok(_) => log(&log_pad, "nieuwe versie gestart"),
+    match start_zonder_handles(&args.target) {
+        Ok(()) => log(&log_pad, "nieuwe versie gestart"),
         Err(e) => log(&log_pad, &format!("nieuwe versie starten mislukt: {e}")),
     }
+}
+
+/// Het pad als nul-afgesloten UTF-16.
+#[cfg(windows)]
+fn wide(pad: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    pad.as_os_str().encode_wide().chain([0]).collect()
+}
+
+/// Hetzelfde, maar tussen aanhalingstekens: dit wordt de opdrachtregel van het kind, en
+/// zonder aanhalingstekens valt een pad met spaties (`fitcom (1).exe`) uit elkaar.
+#[cfg(windows)]
+fn geciteerd_wide(pad: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::iter::once(b'"' as u16)
+        .chain(pad.as_os_str().encode_wide())
+        .chain([b'"' as u16, 0])
+        .collect()
+}
+
+/// Start de bijgewerkte app **zonder er ook maar één handle aan door te geven**.
+///
+/// `std::process::Command` zet `bInheritHandles` op Windows altijd op TRUE — het moet wel,
+/// want zo komen de stdio-handles bij het kind terecht. Gevolg: élk erfelijk handle in dit
+/// proces gaat mee. Dat is precies hoe de mediapoort bezet raakte na een update: een app
+/// van vóór de `HANDLE_FLAG_INHERIT`-fix in `fitcom-net` gaf zijn gekloonde mediasocket
+/// door aan deze updater, en deze updater gaf hem door aan de nieuwe app, die daarna zijn
+/// eigen poort niet meer kon binden (os error 10048) tot iemand hem met de hand herstartte.
+///
+/// Die fix dicht de bron; deze dicht de doorgeefluik. Dat is nodig omdat een geërfd handle
+/// zelf ook weer erfelijk is: zonder dit blijft een zombie uit een oude generatie
+/// meereizen naar elke volgende update. Met `bInheritHandles = FALSE` stopt de ketting
+/// hier, wat de app die ons startte ook aan ons doorgaf.
+///
+/// Het kind krijgt zo geen stdio-handles. Dat is goed: de app is een GUI-programma
+/// (`windows_subsystem = "windows"`) en `Command::new` gaf hem in de praktijk de console
+/// van dit achtergrondproces, dus niets.
+#[cfg(windows)]
+fn start_zonder_handles(exe: &Path) -> Result<(), String> {
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::System::Threading::{
+        CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    let pad = wide(exe);
+    // CreateProcessW mag in deze buffer schrijven, dus hij moet van ons zijn en muteerbaar.
+    let mut opdrachtregel = geciteerd_wide(exe);
+
+    let start = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut proces = PROCESS_INFORMATION::default();
+
+    // SAFETY: beide buffers zijn nul-afgesloten en leven tot na de aanroep; `start` is
+    // volledig geïnitialiseerd met zijn eigen grootte in `cb`, en `proces` is een geldige
+    // uitvoerplek. Een leeg werkmappad betekent "erf die van ons", net als bij `Command`.
+    unsafe {
+        CreateProcessW(
+            PCWSTR(pad.as_ptr()),
+            Some(PWSTR(opdrachtregel.as_mut_ptr())),
+            None,
+            None,
+            false, // hierom bestaat deze functie
+            PROCESS_CREATION_FLAGS(0),
+            None,
+            PCWSTR::null(),
+            &start,
+            &mut proces,
+        )
+    }
+    .map_err(|e| e.to_string())?;
+
+    // De app draait nu op eigen benen; wij hoeven zijn proces- en threadhandle niet vast
+    // te houden en sluiten ze meteen.
+    unsafe {
+        let _ = CloseHandle(proces.hProcess);
+        let _ = CloseHandle(proces.hThread);
+    }
+    Ok(())
 }
 
 /// Wacht tot `pid` verdwenen is via `WaitForSingleObject` — geen polling-loop op
@@ -126,5 +206,34 @@ fn log(pad: &Path, regel: &str) {
         .open(pad)
     {
         let _ = writeln!(bestand, "[{tijd}] {regel}");
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Het pad van de app staat bij Rick in `Downloads` en heet `fitcom (1).exe` — met
+    /// spaties. Valt de opdrachtregel daar uit elkaar, dan start de nieuwe versie niet.
+    #[test]
+    fn een_pad_met_spaties_blijft_een_argument() {
+        let w = geciteerd_wide(Path::new(r"C:\Users\rick_\Downloads\fitcom (1).exe"));
+        assert_eq!(*w.last().unwrap(), 0, "CreateProcessW leest tot de nul");
+        assert_eq!(
+            String::from_utf16(&w[..w.len() - 1]).unwrap(),
+            "\"C:\\Users\\rick_\\Downloads\\fitcom (1).exe\""
+        );
+    }
+
+    /// `lpApplicationName` wil het kale pad, zonder aanhalingstekens.
+    #[test]
+    fn het_programmapad_gaat_er_kaal_in() {
+        let w = wide(Path::new(r"C:\map\fitcom.exe"));
+        assert_eq!(*w.last().unwrap(), 0);
+        assert_eq!(
+            String::from_utf16(&w[..w.len() - 1]).unwrap(),
+            r"C:\map\fitcom.exe"
+        );
     }
 }
