@@ -86,7 +86,7 @@ components:
 
 FitCommunication is drawn as a Japanese sixteen-color PC screen of the early nineties
 (PC-98 lineage, seed key c9bbaaa4, 2026-08-12): a locked sixteen-color palette on deep
-indigo, paper text, blue title strips on square double-bordered windows, and a machine
+indigo, paper text, tinted title strips on square double-bordered windows, and a machine
 that answers instantly — state changes snap like a palette swap, nothing fades, nothing
 pulses. This world replaced "The Well-Made Standard" (the deliberate category-standard
 direction of 2026-08-04) wholesale; `design/main-window.html` and `design/shots/`
@@ -96,7 +96,7 @@ changed.
 
 The material logic is the pixel grid. There is no translucency, no blur, no gradient
 blend anywhere in the resting system: every mid-tone is an ordered 2px dither of exactly
-two palette colors, hover is a texture rather than a lightening, the modal backdrop is a
+two palette colors, the modal backdrop is a
 checker of the void, and "unavailable" is a half-density dither laid over the thing
 itself. Depth is a hard offset shadow in the void, the way a sprite casts one. Selection
 is a full cell inversion — paper ground, space ink — inherited from the source machines'
@@ -110,10 +110,10 @@ with `color-scheme: dark` so native chrome (scrollbars, selects, caret) stays in
 **Key Characteristics:**
 - Sixteen locked colors; every other value is an alias into the table or a 2px ordered dither of two entries
 - Square everything: all radius tokens exist and are all zero
-- Blue title strips make each zone a titled window; the chrome is the composition
+- Tinted title strips make each zone a titled window — magenta channels, blue timeline, green members, amber settings nav — the chrome is the composition
 - One bitmap face at one weight; hierarchy is size, color and inversion
 - Hard offset shadows, no blur; motion in `steps()`, never eased fades
-- One decorative signature: the dithered dusk "horizon band"
+- One decorative signature: the full-strength evening-sky "horizon band"
 
 ## Colors
 
@@ -131,13 +131,15 @@ necessity, so meaning comes from placement and form, never from hue alone.
   (`2px solid`, offset 2px), progress fills, the caret, the update chip, share chips,
   and the "camera on / working" pressed state. Cyan is what you *use*; magenta is what
   you *commit*.
-- **Blue** (#3B58C4): Title strips only — the blue bar that makes a column a window.
-  Paper text sits on it; its bottom edge is a 1px line of space.
+- **Blue** (#3B58C4): The timeline's title strip and the content-window headings
+  (settings pane, dialog, autocomplete). The only strip dark enough to carry paper
+  text; every strip's bottom edge is a 1px line of space.
 
 ### Tertiary (signal colors)
-- **Green** (#62CE82): Presence and only presence — online, in call, the speaking frame.
+- **Green** (#62CE82): Presence — online, in call, the speaking frame — and the member
+  window's title strip (space ink), which is the presence column wearing its own color.
 - **Amber** (#E7BC5D): Connecting/reconnecting (a normal state, not a warning), code
-  numbers, the note icon.
+  numbers, the note icon, and the settings nav's title strip (space ink).
 - **Coral** (#F0716B): Failure, and only failure — error bars, delete/leave actions,
   the close button's hover. Coral and magenta must never share a value: DND is not danger.
 - **Orange** (#E08A48): The mention frame, identity hue 3, and the warm stop of the band.
@@ -147,8 +149,8 @@ necessity, so meaning comes from placement and form, never from hue alone.
   cells, the dark outer line of every double frame.
 - **Ink** (#10122A): Window frames, sidebars, cards, message hover.
 - **Indigo** (#191D3A): The canvas, the largest field.
-- **Violet** (#2E3464): Structure — hairline borders (`--border`) and the hover dither's
-  light cell.
+- **Violet** (#2E3464): Structure — hairline borders (`--border`) and the flat hover
+  slab (`--bg-hover`).
 - **Steel** (#4A5490): Interactive edges (`--border-strong`), disabled glyphs, the
   offline (unlit) presence square, scrollbar thumbs.
 - **Silver** (#A7AECC): Secondary text — the only quiet tier.
@@ -171,8 +173,8 @@ resting window. Counts and badges are inverted paper cells; DND, LIVE and the pr
 "off" toggles use magenta only as small marks. A second magenta fill demotes the first.
 
 **The Dither-Not-Blend Rule.** A mid-tone is `repeating-conic-gradient(A 0% 25%, B 25% 50%)`
-at 2px (4px when riding the band): hover is violet-on-indigo cells, the modal backdrop
-is space-on-window cells, primary-button hover flips a quarter of its cells to paper.
+at 2px: the modal backdrop is space-on-window cells, primary-button hover flips a
+quarter of its cells to paper, an absent peer's sprite and status dither to half density.
 No alpha, no gradient blends, no `color-mix`.
 
 ## Typography
@@ -263,9 +265,10 @@ title strip on blue, hard shadow behind. The primary button, the composer, the c
 dialog and its footer buttons all carry this chassis. Borders are 1px violet for
 structure, 1px steel for interactive edges, 2px paper for the heaviest frames.
 
-The one decorative signature is the **horizon band**: a hard-stop dusk gradient
-(indigo → violet → blue → magenta → orange → amber, `--band`) always broken into pixels
-by the 4px half-density checker riding on top. It appears in exactly three places: the
+The one decorative signature is the **horizon band**: a hard-stop evening sky running
+cold to warm at full strength (cyan → sky → blue → magenta → coral → orange, `--band`),
+edge to edge — never dimmed and never started in a dark hue, which made the first
+version fade into the ground. It appears in exactly three places: the
 titlebar's bottom edge (3px), the settings window's bottom edge (4px), and the
 empty-state heading's underline (4px × 96px). It is a signature, not a utility — do not
 put it on new surfaces without demoting one of these.
@@ -322,8 +325,9 @@ never hardcoded — icons inherit `currentColor` from the element they sit in.
 
 ### Navigation (rows: channels, tabs, pickers, autocomplete)
 - **Default:** silver text, steel icons, 32px rows.
-- **Hover:** the ordered violet-on-indigo dither (`--bg-hover`) — a texture, never a
-  lightening — text lifts to paper.
+- **Hover:** a flat violet slab (`--bg-hover`) with a 5×8px cyan ▶ marker clipped in at
+  the row's left edge — the source world's menu pointer; text lifts to paper. The
+  dithered hover was tried and read as mud on a real screen (2026-08-12).
 - **Current/selected:** full cell inversion — paper ground, space text/icons
   (`aria-current`, `aria-selected`, `aria-pressed` all share this grammar).
 - **Counts:** paper badge with space digits; on an inverted current row the badge
@@ -356,7 +360,8 @@ lifts the screen off the whole row.
   that sits on an inverted row.
 - **Do** snap state changes with `steps()` (90–400ms) and keep every transition on
   compositor properties (`transform`, `opacity`); honor `prefers-reduced-motion`.
-- **Do** give a new surface the window grammar: blue title strip, 1px space under-edge,
+- **Do** give a new surface the window grammar: a tinted title strip in the zone's own
+  color (bright fills carry space ink, blue carries paper), 1px space under-edge,
   violet/steel border, square corners, hard offset shadow only if it floats.
 - **Do** keep icons on the 24×24 stroke-2 square-cap miter grid, colored by
   `currentColor`; draw a missing glyph to these rules rather than substituting.

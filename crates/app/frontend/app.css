@@ -48,10 +48,11 @@
   --bg-code:    var(--c-space);
   --bg-well:    var(--c-space);
 
-  /* The two interaction steps of the menu-row grammar: hover is an ordered dither of
-     the two structural darks — a texture, not a lightening — and current/pressed is a
-     full cell inversion: paper ground, space ink. */
-  --bg-hover: repeating-conic-gradient(var(--c-violet) 0% 25%, var(--c-indigo) 25% 50%);
+  /* The two interaction steps of the menu-row grammar: hover is a flat violet slab with
+     a ▶ marker on menu rows (the dithered hover was tried and read as mud on a real
+     screen, not as texture — Rick, 2026-08-12), and current/pressed is a full cell
+     inversion: paper ground, space ink. */
+  --bg-hover: var(--c-violet);
   --bg-active: var(--c-paper);
   --on-invert: var(--c-space);
   --bg-msg-hover: var(--c-ink);
@@ -61,12 +62,13 @@
      over anything at 50%, in ordered 2px cells. */
   --dither-half: repeating-conic-gradient(var(--c-space) 0% 25%, transparent 25% 50%);
 
-  /* The horizon band: the one decorative signature, a hard-stop dusk gradient worn by
-     the titlebar and the settings heading. Cells, not a blend — pair it with
-     --dither-half at 4px to break the stops into pixels. */
+  /* The horizon band: the one decorative signature, a hard-stop evening sky running
+     cold to warm at full strength across the whole width. No dark hues and no dimming
+     overlay — the first version started in indigo and faded into the background, which
+     made it read as a printing error instead of a signature (Rick, 2026-08-12). */
   --band: linear-gradient(90deg,
-    var(--c-indigo) 0 18%, var(--c-violet) 0 34%, var(--c-blue) 0 50%,
-    var(--c-magenta) 0 66%, var(--c-orange) 0 84%, var(--c-amber) 0 100%);
+    var(--c-cyan) 0 17%, var(--c-sky) 0 34%, var(--c-blue) 0 50%,
+    var(--c-magenta) 0 67%, var(--c-coral) 0 84%, var(--c-orange) 0 100%);
 
   --border:        var(--c-violet);
   --border-strong: var(--c-steel);
@@ -222,11 +224,10 @@ input, textarea { font: inherit; color: inherit; }
   display: flex;
   align-items: center;
   background:
-    var(--dither-half) left bottom / 4px 4px repeat-x,
     var(--band) left bottom / 100% 3px no-repeat,
     var(--c-ink);
-  /* The band is 3px of dusk pinned to the bottom edge, dithered into cells by the
-     half-density checker riding on top of it. The one decorative stripe in the window. */
+  /* The band is 3px of evening sky pinned to the bottom edge, at full strength edge to
+     edge. The one decorative stripe in the window. */
   border-bottom: 0;
   padding-left: 10px;
   -webkit-app-region: drag;
@@ -348,13 +349,16 @@ input, textarea { font: inherit; color: inherit; }
   min-height: 0;
 }
 
-/* A title strip, not a header: the column is a window and this is its blue bar. */
+/* A title strip, not a header: the column is a window and this is its bar. Each zone
+   tints its own window — magenta for channels, blue for the timeline, green for the
+   members — the way the source world's software tinted its windows apart. Bright fills
+   carry space ink; only the darker blue carries paper. */
 .chan-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 8px 0 14px;
-  background: var(--c-blue);
+  background: var(--c-magenta);
   border-bottom: 1px solid var(--c-space);
-  color: var(--c-paper);
+  color: var(--c-space);
 }
 .chan-head h1 {
   margin: 0; font-size: 13px;
@@ -395,6 +399,22 @@ input, textarea { font: inherit; color: inherit; }
   text-align: left;
 }
 .chan-item:hover { background: var(--bg-hover); color: var(--text); }
+
+/* The ▶ pointer: the menu-row hover gesture of the source world, drawn as a clipped
+   block (a glyph would fall out of the bitmap face into a system fallback). It rides
+   the hover slab on every menu-like row; the current row keeps inversion instead. */
+.chan-item::before, .set-tab::before, .picker-item::before {
+  content: "";
+  position: absolute;
+  left: 1px; top: 50%;
+  width: 5px; height: 8px;
+  transform: translateY(-50%);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  background: var(--c-cyan);
+  opacity: 0;
+}
+.chan-item:hover::before, .set-tab:hover::before, .picker-item:hover::before { opacity: 1; }
+.chan-item[aria-current="true"]::before, .set-tab[aria-current="true"]::before { opacity: 0; }
 /* The current row inverts its cells — the world's one selection grammar. */
 .chan-item[aria-current="true"] { background: var(--c-paper); color: var(--on-invert); }
 .chan-item .icon { color: var(--c-steel); }
@@ -935,7 +955,7 @@ input, textarea { font: inherit; color: inherit; }
   height: 4px;
   margin: 8px auto 0;
   width: 96px;
-  background: var(--dither-half) 0 0 / 4px 4px, var(--band);
+  background: var(--band);
 }
 .empty p { margin: 0; font-size: 13px; color: var(--c-silver); max-width: 44ch; line-height: 1.55; }
 
@@ -1054,9 +1074,9 @@ input, textarea { font: inherit; color: inherit; }
 .members-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 14px;
-  background: var(--c-blue);
+  background: var(--c-green);
   border-bottom: 1px solid var(--c-space);
-  color: var(--c-paper);
+  color: var(--c-space);
 }
 .members-head h2 {
   margin: 0; font-size: 13px; font-weight: 400;
@@ -1231,18 +1251,19 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   padding: 0 8px 16px;
   overflow-y: auto;
 }
-/* The nav column is a titled window like the three main zones. */
+/* The nav column is a titled window like the three main zones — amber, its own tint. */
 .set-nav-title {
   height: 44px;
   display: flex; align-items: center;
   margin: 0 -8px 8px;
   padding: 0 14px;
-  background: var(--c-blue);
+  background: var(--c-amber);
   border-bottom: 1px solid var(--c-space);
-  color: var(--c-paper);
+  color: var(--c-space);
   font-size: 13px; letter-spacing: .08em; text-transform: uppercase;
 }
 .set-tab {
+  position: relative;
   display: flex; align-items: center; gap: 9px;
   width: 100%; height: 32px;
   padding: 0 8px;
@@ -1268,7 +1289,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   display: block;
   height: 4px;
   margin: 20px -20px -20px;
-  background: var(--dither-half) 0 0 / 4px 4px, var(--band);
+  background: var(--band);
 }
 .set-body h2 {
   margin: 0 -20px 0;
@@ -1496,6 +1517,7 @@ input, textarea { user-select: text; }
   gap: 2px;
 }
 .picker-item {
+  position: relative;
   display: flex; align-items: center; gap: 8px;
   width: 100%;
   height: 32px;
@@ -1504,7 +1526,7 @@ input, textarea { user-select: text; }
   font-size: 14px;
   text-align: left;
 }
-.picker-item:hover { background: var(--c-paper); color: var(--on-invert); }
+.picker-item:hover { background: var(--bg-hover); color: var(--text); }
 .picker-item .icon { flex: none; width: 15px; height: 15px; color: inherit; }
 .picker-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-empty { padding: 12px 22px 16px; color: var(--c-silver); font-size: 13px; }
