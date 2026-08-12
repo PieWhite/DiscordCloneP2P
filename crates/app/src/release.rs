@@ -62,6 +62,21 @@ const VERBIND_TIMEOUT: Duration = Duration::from_secs(10);
 /// bestandsoverdrachten.
 const VOORTGANG_INTERVAL: Duration = Duration::from_millis(200);
 
+/// Hoe vaak een GET in totaal geprobeerd wordt, en de pauze vóór elke herhaling (die
+/// oploopt: één keer, dan twee keer deze duur).
+///
+/// Gemeten op 2026-08-12: ongeveer de helft van de aanroepen strandde met
+/// `io: Peer disconnected` terwijl `curl` naar dezelfde URL op datzelfde moment tien van
+/// de tien haalde en een rauwe TCP+TLS-handshake naar de CDN evengoed. Het netwerk is dus
+/// niet stuk — de verbinding gaat dicht tijdens de redirectketen van `releases/latest`
+/// naar `release-assets.githubusercontent.com`. Elke `agent()` bouwt een verse Agent met
+/// een lege verbindingspool, dus een nieuwe poging is per definitie een schone verbinding.
+///
+/// Dit is invariant 7 (offline is normaal) toegepast op het updatepad: een haperende
+/// verbinding hoort geen foutmelding op te leveren zolang de volgende poging hem wel haalt.
+const POGINGEN: u32 = 3;
+const HERHAALPAUZE: Duration = Duration::from_millis(500);
+
 /// Eén release zoals het manifest hem beschrijft. Alle velden zijn verdacht tot
 /// `controleer` ze goedkeurt.
 #[derive(Debug, Clone, Deserialize)]
@@ -93,18 +108,37 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
+/// Voert `poging` uit en probeert het bij een fout opnieuw, hoogstens `POGINGEN` keer.
+///
+/// De laatste poging staat bewust buiten de lus: zijn fout is degene die de gebruiker te
+/// zien krijgt, en zo klopt het ook nog als `POGINGEN` ooit op 1 gezet wordt.
+fn met_herhaling<T>(mut poging: impl FnMut() -> Result<T>) -> Result<T> {
+    for nr in 1..POGINGEN {
+        match poging() {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                tracing::debug!("poging {nr} van {POGINGEN} mislukt, opnieuw: {e:#}");
+                std::thread::sleep(HERHAALPAUZE * nr);
+            }
+        }
+    }
+    poging()
+}
+
 /// Haalt het manifest op. Doet geen enkele uitspraak over of het te vertrouwen is —
 /// dat is `controleer`.
 pub fn haal_manifest() -> Result<Release> {
-    agent(MANIFEST_TIMEOUT)
-        .get(MANIFEST_URL)
-        .call()
-        .context("release-feed niet bereikbaar")?
-        .body_mut()
-        .with_config()
-        .limit(MAX_MANIFEST)
-        .read_json()
-        .context("release-feed staat vol met iets anders dan een manifest")
+    met_herhaling(|| {
+        agent(MANIFEST_TIMEOUT)
+            .get(MANIFEST_URL)
+            .call()
+            .context("release-feed niet bereikbaar")?
+            .body_mut()
+            .with_config()
+            .limit(MAX_MANIFEST)
+            .read_json()
+            .context("release-feed staat vol met iets anders dan een manifest")
+    })
 }
 
 /// Keurt een manifest goed en levert de hash waartegen de download straks moet kloppen.
@@ -162,13 +196,15 @@ fn controleer_met_sleutel(rel: &Release, sleutel: [u8; 32]) -> Result<[u8; 32]> 
 /// download die 404't. Dat is precies één keer gebeurd — zie `docs/OVERDRACHT.md`,
 /// beslissing 24.
 pub fn bereikbaar(rel: &Release) -> Result<u16> {
-    let antwoord = agent(MANIFEST_TIMEOUT)
-        .get(&rel.url)
-        .call()
-        .context("download-URL niet op te vragen")?;
-    // Body niet lezen: ureq breekt de verbinding af als hij ongelezen weggegooid wordt,
-    // dus dit kost geen 20 MB.
-    Ok(antwoord.status().as_u16())
+    met_herhaling(|| {
+        let antwoord = agent(MANIFEST_TIMEOUT)
+            .get(&rel.url)
+            .call()
+            .context("download-URL niet op te vragen")?;
+        // Body niet lezen: ureq breekt de verbinding af als hij ongelezen weggegooid wordt,
+        // dus dit kost geen 20 MB.
+        Ok(antwoord.status().as_u16())
+    })
 }
 
 /// Haalt de exe op, schrijft hem weg en legt hem tegen `verwachte_hash`. Blokkerend:
@@ -178,35 +214,42 @@ pub fn download(
     rel: &Release,
     verwachte_hash: [u8; 32],
     updates_dir: &Path,
-    voortgang: impl FnMut(u64),
+    mut voortgang: impl FnMut(u64),
 ) -> Result<PathBuf> {
     let deelpad = updates_dir.join(format!("update-{}.exe.part", rel.version));
+
+    // Ophalen en wegschrijven zitten samen in de herhaling, want een verbinding die
+    // halverwege dichtgaat is dezelfde hapering als een die meteen dichtgaat. Elke poging
+    // begint het deelbestand opnieuw (`File::create` kapt hem af) en de voortgang springt
+    // dus terug naar nul — eerlijker dan een balk die blijft staan.
+    //
     // Geen hervatten: zonder Range-verzoek is dit één rechte lijn, en een build van
     // enkele tientallen MB's opnieuw halen is goedkoper dan het hervatpunt bewaken.
-    let mut bestand = std::fs::File::create(&deelpad).context("deelbestand aanmaken")?;
+    let uitkomst = met_herhaling(|| {
+        let mut bestand = std::fs::File::create(&deelpad).context("deelbestand aanmaken")?;
 
-    let mut antwoord = agent(DOWNLOAD_TIMEOUT)
-        .get(&rel.url)
-        .call()
-        .context("update niet op te halen")?;
-    // `limit` op de aangekondigde grootte is het tweede net tegen een host die meer stuurt
-    // dan hij aankondigde. Het eerste is `lees_precies` zelf, die nooit meer opvraagt dan
-    // het restant — lees daar waarom die grens niet als lus-einde te gebruiken is.
-    let lezer = antwoord.body_mut().with_config().limit(rel.size).reader();
+        let mut antwoord = agent(DOWNLOAD_TIMEOUT)
+            .get(&rel.url)
+            .call()
+            .context("update niet op te halen")?;
+        // `limit` op de aangekondigde grootte is het tweede net tegen een host die meer stuurt
+        // dan hij aankondigde. Het eerste is `lees_precies` zelf, die nooit meer opvraagt dan
+        // het restant — lees daar waarom die grens niet als lus-einde te gebruiken is.
+        let lezer = antwoord.body_mut().with_config().limit(rel.size).reader();
 
-    let uitkomst = lees_precies(lezer, rel.size, &mut bestand, voortgang)
-        .and_then(|hash| {
-            ensure!(
-                hash == verwachte_hash,
-                "de opgehaalde update komt niet overeen met de ondertekende hash"
-            );
-            Ok(())
-        })
-        .and_then(|()| {
-            bestand.flush().context("deelbestand doorschrijven")?;
-            Ok(())
-        });
-    drop(bestand);
+        let hash = lees_precies(lezer, rel.size, &mut bestand, &mut voortgang)?;
+        bestand.flush().context("deelbestand doorschrijven")?;
+        Ok(hash)
+    })
+    // De hashcontrole staat buiten de herhaling: bytes die netjes zijn aangekomen en tóch
+    // niet kloppen zijn geen hapering, en dat mag geen drie downloads kosten.
+    .and_then(|hash| {
+        ensure!(
+            hash == verwachte_hash,
+            "de opgehaalde update komt niet overeen met de ondertekende hash"
+        );
+        Ok(())
+    });
     if let Err(e) = uitkomst {
         let _ = std::fs::remove_file(&deelpad);
         return Err(e);
@@ -304,6 +347,51 @@ mod tests {
         };
         rel.signature = bytes_naar_hex(paar.sign(rel.ondertekend_bericht().as_bytes()).as_ref());
         rel
+    }
+
+    /// De hapering waarvoor `met_herhaling` bestaat: de eerste poging strandt, de tweede
+    /// haalt hem. Zonder herhaling zag de gebruiker hier "Update failed".
+    #[test]
+    fn een_hapering_wordt_bij_de_volgende_poging_alsnog_gehaald() {
+        let mut keer = 0;
+        let uit = met_herhaling(|| {
+            keer += 1;
+            if keer < 2 {
+                bail!("io: Peer disconnected");
+            }
+            Ok(keer)
+        });
+        assert_eq!(uit.unwrap(), 2, "de tweede poging hoort te slagen");
+    }
+
+    /// Blijft het mislukken, dan is de fout van de láátste poging wat de gebruiker ziet —
+    /// en er wordt niet eindeloos doorgeprobeerd.
+    #[test]
+    fn blijvend_kapot_stopt_na_pogingen_met_de_laatste_fout() {
+        let mut keer = 0;
+        let uit: Result<()> = met_herhaling(|| {
+            keer += 1;
+            bail!("poging {keer} stuk");
+        });
+        assert_eq!(
+            keer, POGINGEN,
+            "er hoort precies POGINGEN keer geprobeerd te worden"
+        );
+        assert!(uit
+            .unwrap_err()
+            .to_string()
+            .contains(&format!("poging {POGINGEN}")));
+    }
+
+    /// Eén geslaagde poging blijft één poging: geen verkeer erbij op het gewone pad.
+    #[test]
+    fn meteen_goed_probeert_niet_nog_een_keer() {
+        let mut keer = 0;
+        let uit = met_herhaling(|| {
+            keer += 1;
+            Ok(keer)
+        });
+        assert_eq!((uit.unwrap(), keer), (1, 1));
     }
 
     #[test]
