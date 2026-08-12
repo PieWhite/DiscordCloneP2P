@@ -67,6 +67,37 @@ fn zorg_voor_fijne_timer() {
 #[cfg(not(windows))]
 fn zorg_voor_fijne_timer() {}
 
+/// Zorgt dat een socket **niet** meegaat naar een kindproces.
+///
+/// `UdpSocket::try_clone` dupliceert op Windows met `bInheritHandle = TRUE`: de kloon is
+/// erfelijk, het origineel niet (gemeten). Elk kindproces dat daarna start erft die kloon
+/// en houdt de poort bezet zolang het leeft. Dat is de fout die na een update opdook: de
+/// app start de updater, de updater start de nieuwe app, en die nieuwe app kan zijn eigen
+/// mediapoort niet meer binden — "Only one usage of each socket address (os error 10048)"
+/// — tot iemand hem met de hand opnieuw start. De controlepoort had het niet, want de
+/// QUIC-socket wordt nooit gekloond.
+///
+/// Unix zet hier `CLOEXEC` voor; Windows heeft daar in std geen equivalent voor.
+///
+/// Mislukken mag het opstarten niet tegenhouden: dan werkt alles gewoon, en is alleen
+/// bijwerken zonder herstart weer stuk.
+#[cfg(windows)]
+fn niet_doorgeven_aan_kindproces(sock: &UdpSocket) {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Foundation::{
+        SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT,
+    };
+    let handle = HANDLE(sock.as_raw_socket() as *mut std::ffi::c_void);
+    // SAFETY: het handle komt uit de socket die we hier vasthouden en leeft dus nog.
+    if let Err(e) = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
+    {
+        tracing::warn!(error = %e, "mediasocket blijft erfelijk; bijwerken kan een herstart vragen");
+    }
+}
+
+#[cfg(not(windows))]
+fn niet_doorgeven_aan_kindproces(_sock: &UdpSocket) {}
+
 pub struct MediaSocket {
     sock: UdpSocket,
 }
@@ -109,10 +140,13 @@ impl MediaSocket {
     }
 
     /// Kloont de socket zodat verzenden en ontvangen op eigen threads kunnen draaien.
+    ///
+    /// De kloon is op Windows erfelijk waar het origineel dat niet is; zie
+    /// [`niet_doorgeven_aan_kindproces`] voor wat dat kost als je het laat staan.
     pub fn probeer_clone(&self) -> Result<Self> {
-        Ok(Self {
-            sock: self.sock.try_clone().context("mediasocket klonen")?,
-        })
+        let sock = self.sock.try_clone().context("mediasocket klonen")?;
+        niet_doorgeven_aan_kindproces(&sock);
+        Ok(Self { sock })
     }
 
     pub fn stuur(&self, naar: SocketAddr, header: &MediaHeader, payload: &[u8]) -> Result<()> {
@@ -165,6 +199,33 @@ impl MediaSocket {
 mod tests {
     use super::*;
     use fitcom_proto::PayloadType;
+
+    /// De kloon van een mediasocket mag niet meegaan naar een kindproces.
+    ///
+    /// Zonder dit hield de app die de updater startte zijn eigen mediapoort vast via de
+    /// geërfde kloon, en kon de bijgewerkte app na de herstart geen voice meer openen —
+    /// gemeten op 2026-08-12, `os error 10048`. Het origineel is al niet erfelijk; de
+    /// kloon was dat wél, en dat is wat deze test bewaakt.
+    #[cfg(windows)]
+    #[test]
+    fn een_gekloonde_mediasocket_is_niet_erfelijk() {
+        use std::os::windows::io::AsRawSocket;
+        use windows::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+
+        let sock = MediaSocket::bind(0).unwrap();
+        let kloon = sock.probeer_clone().unwrap();
+
+        for (wat, s) in [("origineel", &sock), ("kloon", &kloon)] {
+            let handle = HANDLE(s.sock.as_raw_socket() as *mut std::ffi::c_void);
+            let mut vlaggen = 0u32;
+            unsafe { GetHandleInformation(handle, &mut vlaggen) }.expect("handle-vlaggen");
+            assert_eq!(
+                vlaggen & HANDLE_FLAG_INHERIT.0,
+                0,
+                "{wat} gaat mee naar kindprocessen"
+            );
+        }
+    }
 
     #[test]
     fn pakket_komt_heelhuids_aan() {
