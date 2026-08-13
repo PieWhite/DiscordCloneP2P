@@ -33,6 +33,37 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 > spawnen van de updater. Nieuw eraan: dit is de enige verbinding buiten het tailnet, en de
 > release-privésleutel is nu een vertrouwensanker dat kwijt kan raken.
 
+> **Addendum 2026-08-13 (1.0.0 t/m 1.2.2):** alle wijzigingen sinds het vorige addendum
+> zijn nagelopen (`6ee8197..6bb3aa3`: het zestienkleurenveld-frontend, de geluidsets,
+> linkafhandeling, de handmatige update-check en de updater/mediasocket-fixes). Wat het
+> beeld verandert:
+> - **B-55 is grotendeels gedicht (1.0.2):** de frontend vangt elke klik op een link af en
+>   geeft hem via het nieuwe `open_link`-commando aan de systeembrowser. `open_link` laat
+>   alleen `http(s)` door en geeft de URL als één argument door (`ShellExecuteW` op
+>   Windows, `open` op macOS), dus zonder shell-parsing. Er is nog steeds geen
+>   `on_navigation`-beleid aan de Rust-kant — de onderschepping leeft in de webview en dekt
+>   alleen gewone klikken — dus als diepteverdediging blijft de bevinding staan.
+> - **B-54 is breder geworden:** er zijn vier webview-bereikbare commando's bij
+>   (`open_link`, `check_update`, `preview_sound`, `set_sound_settings`). Elk is aan de
+>   Rust-kant begrensd (schema-allowlist; het zoekslot van `Updates::mag_zoeken`;
+>   naam-allowlists en een volumeclamp inclusief NaN in de motor), dus geen nieuwe ernst.
+> - **B-13 is nog half:** het updatepad dwingt de aangekondigde grootte inmiddels wél af
+>   (`release.rs::lees_precies` plus `limit`, en het `.part`-bestand wordt bij élke fout
+>   opgeruimd); de bestandsoverdracht tussen peers (`engine.rs`) is onveranderd en blijft
+>   open.
+> - **B-20 staat nog open:** de updater kreeg `start_zonder_handles` (geen handles meer
+>   naar het kindproces — hygiëne, geen beveiligingswijziging), maar verifieert nog steeds
+>   niet opnieuw vlak vóór het vervangen.
+> - **Nieuw: B-60 (LAAG)** — `zoek_updater` accepteert sinds 1.1.0 elk
+>   `fitcom-updater*.exe` naast de app als de exacte naam ontbreekt.
+> - **Gecontroleerd en goed bevonden:** de CSP heeft de frontend-herbouw overleefd
+>   (`tauri.conf.json`); de nieuwe interpolaties zijn schoon (de avatar-klasse is een
+>   lokaal berekende `u8`, fouttekst en geluidsnamen gaan door `esc()`); B-56 blijft latent
+>   (`voiceHint` rendert nog steeds alleen bij een leeg gesprek); de geluidjes nemen niets
+>   van de draad aan (tonen zelf berekend, bestandsnaam een inhoudshash, `afplay` met vaste
+>   argumenten); en de erfelijkheids-fixes op de mediasocket en in de updater zijn pure
+>   winst — een kindproces krijgt geen socket meer mee.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
@@ -106,7 +137,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 
 ## Overzicht
 
-59 bevindingen. De ID's zijn stabiel; verwijs ernaar in commits.
+60 bevindingen. De ID's zijn stabiel; verwijs ernaar in commits.
 
 | ID | Ernst | Bevinding | Waar |
 |---|---|---|---|
@@ -122,7 +153,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-10 | HOOG | Onbegrensde Opus-decoders per `stream_id` — 1,2 GB uit 3 MB verkeer | `audio/session.rs:964,1004` |
 | B-11 | HOOG | Eén UDP-pakket zet een videostream permanent vast | `video/fragment.rs:243-250,287` |
 | B-12 | HOOG | Fragmentbuffers: geen cap, geen timeout, en aanvallersbuckets zijn eviction-immuun | `video/fragment.rs:264,297-301` |
-| B-13 | HOOG | Onbegrensde downloadgrootte; aangekondigde `size` wordt nooit afgedwongen | `app/engine.rs:2030-2047,2092-2114` |
+| B-13 | HOOG | Onbegrensde downloadgrootte bij bestandsoverdracht (het updatepad dwingt de grootte sinds fase 13 wél af) | `app/engine.rs` (download_taak) |
 | B-14 | HOOG | `lamport` u64↔i64 → permanente, onherstelbare last-writer-wins-kaping | `store/lib.rs:417-423,437` |
 | B-15 | HOOG | Eén te grote op sloopt de control-verbinding permanent | `store/lib.rs:63`, `net/mesh.rs:985` |
 | B-16 | HOOG | Onbegrensde oplog-groei; hele store per wijziging opnieuw in RAM | `store/lib.rs:383-390`, `app/chat.rs:243` |
@@ -149,7 +180,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-35 | MIDDEL | `atty 0.2.14` — RUSTSEC-2021-0145, onbereikbaar maar aanwezig | `Cargo.lock` |
 | B-36 | MIDDEL | libopus wordt uit een 2021-snapshot meegebouwd | `audio/Cargo.toml:15` |
 | B-54 | MIDDEL | `apply_update` is een ongeconditioneerd IPC-commando | `app/ui/commands.rs:315-318` |
-| B-55 | MIDDEL | Geen navigatiebeleid; peer-links zijn onafgehandeld | `app/ui/mod.rs:162-276` |
+| B-55 | MIDDEL | Geen `on_navigation`-beleid; het klikpad gaat sinds 1.0.2 wél naar de systeembrowser | `app/ui/mod.rs`, `app/ui/commands.rs::open_link` |
 | B-56 | MIDDEL | Latente XSS: escaping is de verantwoordelijkheid van de aanroeper | `frontend/app.js:252-263,531` |
 | B-37 | LAAG | `frag_index + 1` overflow-paniek doodt de kijkerthread stil | `video/fragment.rs:262` |
 | B-38 | LAAG | `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
@@ -168,6 +199,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-57 | LAAG | Meldingen schakelen zichzelf permanent uit na één fout | `app/notify.rs:16,38-41` |
 | B-58 | LAAG | `highlight()` verminkt ge-escapete apostrofs | `frontend/app.js:178-187` |
 | B-59 | LAAG | `unwrap()` op een mutex in de `thumb://`-handler | `app/ui/mod.rs:168` |
+| B-60 | LAAG | Elk `fitcom-updater*.exe` naast de app telt als de updater | `app/engine.rs::zoek_updater` |
 | B-51 | INFO | `LamportClock` is dode code; de echte klok is `max_lamport()` | `proto/op.rs:150-172` |
 
 ---
@@ -651,6 +683,11 @@ lost meteen B-37, B-29 en B-51 mee op.
 
 **Waar:** `crates/app/src/engine.rs:2030-2047` (update) en `:2092-2114` (bestand).
 
+> **Update 2026-08-13:** de update-helft is vervallen — het updatepad loopt sinds fase 13
+> via `release.rs`, en dat pad dwingt de aangekondigde grootte af (`limit` op de body plus
+> `lees_precies`, dat precies `size` bytes telt) en ruimt het `.part`-bestand bij élke
+> fout op. De bestands-helft hieronder staat nog open.
+
 Beide lussen lezen tot EOF en schrijven weg zonder plafond. `entry.size` en
 `UpdateResponse.size` worden opgeslagen en getoond, maar nooit vergeleken met wat er
 werkelijk binnenkomt. Er is geen quotum en geen vrije-ruimtecheck. Het `.part`-bestand wordt
@@ -900,6 +937,9 @@ klik is onbegrensd, en de updater vervangt de exe blind. Alles wat in dat venste
 lokale code-uitvoering — maar B-02 schrijft juist naar willekeurige mappen, inclusief deze.
 **Oplossing:** geef de hash mee aan de updater (`--hash`) en laat die opnieuw verifiëren vlak
 vóór `vervang()`. Na B-01 hoort daar ook de handtekening bij.
+*Update 2026-08-13:* nog steeds open. De updater kreeg wel `start_zonder_handles`
+(`bInheritHandles = FALSE` — het kind erft geen sockets meer), maar dat is hygiëne; er
+wordt nog altijd niet opnieuw geverifieerd vóór het vervangen.
 
 ## B-21 — Elke peer kan op elk moment de draaiende exe ophalen
 `crates/app/src/engine.rs:562-565`. Een `UpdateRequest` wordt zonder enige controle
@@ -1049,6 +1089,12 @@ tweede helft van B-01/B-02. Hetzelfde geldt voor `delete_all_images` (`commands.
 **Oplossing:** zet onomkeerbare commando's achter een Rust-zijdige poort: een eenmalig token
 dat `get_state` alleen uitgeeft zolang `UpdateStatus::KlaarOmToeTePassen` leeft, of een
 native `rfd::MessageDialog` in `pas_update_toe` zelf.
+*Update 2026-08-13:* het commando-oppervlak is gegroeid met `open_link`, `check_update`,
+`preview_sound` en `set_sound_settings`. Elk is Rust-zijdig begrensd — `open_link` op
+`http(s)` zonder shell-parsing, `check_update` op het zoekslot, de geluidscommando's op
+naam-allowlists en een volumeclamp (inclusief NaN) — dus geen nieuwe ernst, maar het
+patroon blijft: elke poort die alleen in de frontend zit, is er voor een script in de
+webview niet.
 
 ## B-55 — Geen navigatiebeleid
 `crates/app/src/ui/mod.rs:162-276` registreert geen `on_navigation`. De linkifier
@@ -1060,6 +1106,13 @@ Remote-origin IPC staat *niet* aan, dus commando-uitvoering blijft buiten bereik
 phishingoppervlak binnen een vertrouwd venster is het wel.
 **Oplossing:** maak de keuze expliciet met een `on_navigation`-allowlist, en open externe
 links via de opener-plugin in de systeembrowser.
+*Update 2026-08-13:* grotendeels gedicht in 1.0.2. De frontend annuleert elke klik op een
+`<a>` en geeft de URL aan `commands.rs::open_link`, dat alleen `http(s)` doorlaat en de
+URL als één argument aan `ShellExecuteW`/`open` geeft — geen shell-parsing, dus een `&`
+in een URL is gewoon een `&`. Wat rest is de diepteverdediging: er is nog geen
+`on_navigation`-beleid, en de onderschepping leeft in de webview en dekt alleen het
+gewone klikpad (een middenklik of `window.open` valt erbuiten). De bevinding blijft
+daarom staan, met minder gewicht.
 
 ## B-56 — Latente XSS: escaping is de verantwoordelijkheid van de aanroeper
 `crates/app/frontend/app.js:252-263` (sink `:302`) en `:531` (aanroepers `:576-589`).
@@ -1147,6 +1200,14 @@ zijn. Beide zijn één refactor verwijderd van een echte injectie.
   cosmetisch; alle ingevoegde markup is vast.
 - **B-59** `crates/app/src/ui/mod.rs:168` (ook `:85,:100,:173,:179`) — `.lock().unwrap()` in de
   `thumb://`-handler paniekt op een vergiftigde mutex. *Fix:* `unwrap_or_else(|e| e.into_inner())`.
+- **B-60** *(sinds 1.1.0)* `crates/app/src/engine.rs::zoek_updater` — ontbreekt
+  `fitcom-updater.exe`, dan telt álles in de map van de app dat met `fitcom-updater`
+  begint en op `.exe` eindigt, en de eerste op alfabet wordt gestart. Bedoeld voor
+  browser-hernoemingen (`fitcom-updater (1).exe`), en de map is dezelfde vertrouwensgrens
+  als `fitcom.exe` zelf — maar in het zwakke-ACL-scenario van B-47 verbreedt dit wat een
+  neergezet bestand mag heten. *Fix:* dit staat of valt met de B-47-afspraak ("pak uit
+  onder je gebruikersprofiel"); wie meer wil, pint de updater op een hash die bij de
+  release in de app gebakken is.
 - **B-51** *(INFO)* `crates/proto/src/op.rs:150-172` — `LamportClock` is dode code; de enige
   verwijzing is zijn eigen unittest. De klok die echt gebruikt wordt is `max_lamport()`, en
   dáár zit de truncatie van B-14. Aansluiten of weggooien, zodat de volgende lezer niet
