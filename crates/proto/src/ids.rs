@@ -81,7 +81,24 @@ impl fmt::Debug for TopicId {
 /// die hem nog niet kent, net als `StreamKind` en `FileOutcome`. Een onbekende tag valt
 /// terug op "niet algemeen/publiek en niet aan mij gericht" — dus nooit doorsturen naar wie
 /// het niet aangaat. Zie `docs/ARCHITECTURE.md`, sectie "Kanalen".
+///
+/// # Waarom het decoderen valideert (B-08)
+///
+/// De velden zijn privé, dus *Rust*-code kan geen inconsistente waarde bouwen — serde wel,
+/// en een aanvaller schrijft de msgpack zelf. `{tag:1, peer:null}` en `{tag:0, peer:<uuid>}`
+/// decodeerden schoon en aliasten daarna in `channel_to_blob` allemaal op de opslagsleutel
+/// van het *algemene* kanaal: een botsing op de primary key `(author, kanaal, seq)` met een
+/// echte algemene op van dezelfde auteur, dus permanent dataverlies. Vandaar
+/// `#[serde(try_from)]`: geen enkele eerlijke encoder produceert die vormen, dus weigeren
+/// kost niets en de bekende tags 0, 1 en 2 decoderen onveranderd.
+///
+/// Een tag die *deze* build niet kent is bewust géén fout (uitbreidingsregel: onbekend
+/// loggen en negeren, niet weigeren), maar wordt genormaliseerd naar één vorm per tag —
+/// `peer` en `topic` eruit. Zonder dat zouden `{tag:3, peer:X}` en `{tag:3}` ongelijk
+/// vergelijken in Rust terwijl ze op dezelfde opslagsleutel landen, en dan is de aliasing
+/// van B-08 er nog steeds, alleen een tag verderop.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "ChannelWire")]
 pub struct Channel {
     tag: u8,
     peer: Option<PeerId>,
@@ -90,6 +107,48 @@ pub struct Channel {
     /// kost een oudere peer niets — die decodeert een `Channel` gewoon zonder dit veld.
     #[serde(default)]
     topic: Option<TopicId>,
+}
+
+/// De rauwe vorm van `Channel` op de draad. Exact dezelfde veldnamen en
+/// `#[serde(default)]` als `Channel` zelf — dit verandert geen byte aan het
+/// wire-formaat, het schuift alleen een controle tussen draad en type. Zie B-08.
+#[derive(Deserialize)]
+struct ChannelWire {
+    tag: u8,
+    peer: Option<PeerId>,
+    #[serde(default)]
+    topic: Option<TopicId>,
+}
+
+/// Een kanaalvorm die geen eerlijke encoder produceert. Zie B-08.
+#[derive(Debug)]
+pub struct KanaalFout(&'static str);
+
+impl fmt::Display for KanaalFout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "misvormd kanaal: {}", self.0)
+    }
+}
+
+impl std::error::Error for KanaalFout {}
+
+impl TryFrom<ChannelWire> for Channel {
+    type Error = KanaalFout;
+
+    fn try_from(w: ChannelWire) -> std::result::Result<Self, Self::Error> {
+        match (w.tag, w.peer, w.topic) {
+            (0, None, None) => Ok(Self::GENERAL),
+            (0, ..) => Err(KanaalFout("algemeen kanaal met peer of subkanaal-id")),
+            (1, Some(p), None) => Ok(Self::dm(p)),
+            (1, None, _) => Err(KanaalFout("DM zonder peer")),
+            (1, ..) => Err(KanaalFout("DM met subkanaal-id")),
+            (2, None, Some(t)) => Ok(Self::topic(t)),
+            (2, _, None) => Err(KanaalFout("subkanaal zonder id")),
+            (2, ..) => Err(KanaalFout("subkanaal met peer")),
+            // Kanaalsoort van een nieuwere peer: geen fout, wel genormaliseerd.
+            (tag, ..) => Ok(Self::onbekend(tag)),
+        }
+    }
 }
 
 impl Channel {
@@ -117,6 +176,29 @@ impl Channel {
             peer: None,
             topic: Some(id),
         }
+    }
+
+    /// De genormaliseerde vorm van een kanaalsoort die deze build niet kent: alleen de
+    /// tag, zonder `peer` of `topic`. Zo krijgt elke onbekende soort zijn eigen
+    /// opslagsleutelruimte in plaats van te botsen met het algemene kanaal (B-08), en
+    /// vergelijken twee gelijk-ogende waarden ook echt gelijk.
+    ///
+    /// Alleen bedoeld voor tags die deze build niet kent (op dit moment: 3 en hoger) en
+    /// voor het teruglezen daarvan uit de opslag. Voor 0, 1 en 2 zijn er `GENERAL`, `dm`
+    /// en `topic`.
+    pub fn onbekend(tag: u8) -> Self {
+        Self {
+            tag,
+            peer: None,
+            topic: None,
+        }
+    }
+
+    /// De rauwe tag, ook als deze build hem niet kent. Nodig voor de opslagencoder: die
+    /// moet totaal en injectief zijn over álles wat van de draad kan komen, anders aliast
+    /// een onbekende soort op het algemene kanaal (B-08).
+    pub fn raw_tag(&self) -> u8 {
+        self.tag
     }
 
     pub fn is_general(&self) -> bool {
@@ -240,5 +322,94 @@ mod channel_tests {
     fn twee_verschillende_subkanalen_zijn_ongelijk() {
         assert_ne!(Channel::topic(topic(1)), Channel::topic(topic(2)));
         assert_eq!(Channel::topic(topic(1)), Channel::topic(topic(1)));
+    }
+
+    /// Alles wat een eerlijke encoder produceert moet blijven decoderen — anders is de
+    /// validatie van B-08 een protocolbreuk in plaats van een reparatie.
+    #[test]
+    fn b08_de_drie_bekende_tags_overleven_de_draad_onveranderd() {
+        for c in [
+            Channel::GENERAL,
+            Channel::dm(peer(1)),
+            Channel::topic(topic(3)),
+        ] {
+            let bytes = rmp_serde::to_vec_named(&c).unwrap();
+            assert_eq!(rmp_serde::from_slice::<Channel>(&bytes).unwrap(), c);
+        }
+    }
+
+    #[test]
+    fn b08_misvormd_kanaal_is_een_decodeerfout_geen_algemeen_kanaal() {
+        // Precies de vormen uit B-08: geen enkele eerlijke encoder maakt ze, en vóór de
+        // fix decodeerden ze allemaal schoon om daarna op de opslagsleutel van het
+        // algemene kanaal te aliassen.
+        let dm_zonder_peer = rmp_serde::to_vec_named(&RauwKanaal {
+            tag: 1,
+            peer: None,
+            topic: None,
+        })
+        .unwrap();
+        assert!(rmp_serde::from_slice::<Channel>(&dm_zonder_peer).is_err());
+
+        let algemeen_met_peer = rmp_serde::to_vec_named(&RauwKanaal {
+            tag: 0,
+            peer: Some(peer(1)),
+            topic: None,
+        })
+        .unwrap();
+        assert!(rmp_serde::from_slice::<Channel>(&algemeen_met_peer).is_err());
+
+        let subkanaal_zonder_id = rmp_serde::to_vec_named(&RauwKanaal {
+            tag: 2,
+            peer: None,
+            topic: None,
+        })
+        .unwrap();
+        assert!(rmp_serde::from_slice::<Channel>(&subkanaal_zonder_id).is_err());
+    }
+
+    #[test]
+    fn b08_onbekende_tag_blijft_decoderen_maar_genormaliseerd() {
+        // Een kanaalsoort van een nieuwere peer mag geen decodeerfout geven (dat is de
+        // uitbreidingsregel), maar moet wel één vorm per tag opleveren: zonder dat
+        // vergelijken `{tag:3, peer:X}` en `{tag:3}` ongelijk terwijl ze op dezelfde
+        // opslagsleutel landen — de aliasing van B-08, een tag verderop.
+        let met_peer = rmp_serde::to_vec_named(&RauwKanaal {
+            tag: 3,
+            peer: Some(peer(1)),
+            topic: None,
+        })
+        .unwrap();
+        let zonder = rmp_serde::to_vec_named(&RauwKanaal {
+            tag: 3,
+            peer: None,
+            topic: None,
+        })
+        .unwrap();
+
+        let a: Channel = rmp_serde::from_slice(&met_peer).unwrap();
+        let b: Channel = rmp_serde::from_slice(&zonder).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, Channel::onbekend(3));
+        assert_eq!(a.raw_tag(), 3);
+
+        // En hij gedraagt zich als "gaat mij niet aan": niet publiek, niet aan mij gericht.
+        assert!(!a.is_public());
+        assert!(!a.is_general());
+        assert_eq!(a.dm_peer(), None);
+        assert_eq!(a.topic_id(), None);
+
+        // Wel een eigen sleutelruimte, dus niet gelijk aan het algemene kanaal.
+        assert_ne!(a, Channel::GENERAL);
+        assert_ne!(a, Channel::onbekend(4));
+    }
+
+    // `RauwKanaal` is privé en heeft alleen `Deserialize`; voor de tests hierboven moeten
+    // we hem juist wél kunnen *schrijven*, want dat is precies wat een aanvaller doet.
+    #[derive(Serialize)]
+    struct RauwKanaal {
+        tag: u8,
+        peer: Option<PeerId>,
+        topic: Option<TopicId>,
     }
 }

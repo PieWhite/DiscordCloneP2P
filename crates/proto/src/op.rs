@@ -15,8 +15,41 @@ use crate::{Channel, OpId, PeerId, TopicId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Hoogste `seq`/`lamport` die de opslag kan bewaren. SQLite kent geen `u64`, dus alles
+/// erboven wordt als negatief getal opgeslagen — zie `ProtoError::GetalTeGroot`, B-14 en
+/// B-34. Een eerlijke peer komt hier nooit in de buurt: dit zijn 9,2 × 10¹⁸ berichten.
+pub const MAX_WIRE_GETAL: u64 = i64::MAX as u64;
+
+/// Lengtegrenzen op de velden die van de draad komen (B-43). In **bytes**, niet in tekens:
+/// het gaat om wat er aan geheugen en frameruimte omgaat, en dat is wat een aanvaller
+/// stuurt. 4 KiB tekst is ruim 40 regels chat; een bestandsnaamcomponent kan op NTFS en
+/// APFS toch al niet boven 255.
+pub const MAX_BERICHT_LEN: usize = 4 * 1024;
+pub const MAX_BESTANDSNAAM_LEN: usize = 255;
+/// Voor een bijnaam en voor de titel van een subkanaal — beide korte labels in de UI.
+pub const MAX_NAAM_LEN: usize = 64;
+
+fn grens(veld: &'static str, waarde: &str, limiet: usize) -> crate::Result<()> {
+    if waarde.len() > limiet {
+        return Err(crate::ProtoError::VeldTeLang {
+            veld,
+            len: waarde.len(),
+            limiet,
+        });
+    }
+    Ok(())
+}
+
 /// Eén operatie in de log. Nooit muteren na aanmaak.
+///
+/// Het decoderen valideert (`#[serde(try_from)]`): `seq` en `lamport` moeten in een `i64`
+/// passen (B-14, B-34) en de strings in de payload hebben een lengtegrens (B-43). Dit
+/// verandert geen byte aan het wire-formaat — `OpWire` heeft exact dezelfde velden — maar
+/// het zet een controle tussen de draad en het type. Een payload die niet te decoderen
+/// valt, of een `kind_tag` die deze build niet kent, blijft bewust geen fout: die moet
+/// opslaanbaar en doorstuurbaar blijven (zie de moduledoc hierboven).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "OpWire")]
 pub struct Op {
     pub author: PeerId,
     /// Bepaalt wie deze op ooit mag zien. Staat, net als `author` en `seq`, altijd open
@@ -37,7 +70,65 @@ pub struct Op {
     pub payload: Vec<u8>,
 }
 
+/// De rauwe vorm van `Op` op de draad: exact dezelfde velden en serde-attributen als `Op`
+/// zelf, zodat de bytes identiek blijven. Zie de doc van `Op`.
+#[derive(Deserialize)]
+struct OpWire {
+    author: PeerId,
+    #[serde(default)]
+    channel: Channel,
+    seq: u64,
+    lamport: u64,
+    wall_clock: i64,
+    kind_tag: u16,
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>,
+}
+
+impl TryFrom<OpWire> for Op {
+    type Error = crate::ProtoError;
+
+    fn try_from(w: OpWire) -> crate::Result<Self> {
+        let op = Self {
+            author: w.author,
+            channel: w.channel,
+            seq: w.seq,
+            lamport: w.lamport,
+            wall_clock: w.wall_clock,
+            kind_tag: w.kind_tag,
+            payload: w.payload,
+        };
+        op.valideer_van_de_draad()?;
+        Ok(op)
+    }
+}
+
 impl Op {
+    /// Wat een eerlijke peer nooit stuurt en de opslag niet kan bewaren. Zie B-14, B-34
+    /// en B-43.
+    fn valideer_van_de_draad(&self) -> crate::Result<()> {
+        if self.seq > MAX_WIRE_GETAL {
+            return Err(crate::ProtoError::GetalTeGroot {
+                veld: "seq",
+                waarde: self.seq,
+            });
+        }
+        if self.lamport > MAX_WIRE_GETAL {
+            return Err(crate::ProtoError::GetalTeGroot {
+                veld: "lamport",
+                waarde: self.lamport,
+            });
+        }
+        // Een onbekende soort (`Ok(None)`) en een onleesbare payload (`Err`) blijven
+        // allebei toegestaan — zonder dat kan een oudere peer een op van een nieuwere niet
+        // meer doorgeven en convergeert de mesh niet meer. We begrenzen alleen wat we
+        // begrijpen.
+        if let Ok(Some(kind)) = self.kind() {
+            kind.valideer_lengtes()?;
+        }
+        Ok(())
+    }
+
     pub fn id(&self) -> OpId {
         OpId::new(self.author, self.channel, self.seq)
     }
@@ -57,6 +148,11 @@ impl Op {
         wall_clock: i64,
         kind: &OpKind,
     ) -> crate::Result<Self> {
+        // Ook bij het *maken* begrenzen, niet alleen bij het ontvangen: zou alleen de
+        // ontvangkant weigeren, dan zou een te lang eigen bericht wel lokaal in de log
+        // staan en bij iedereen anders geweigerd worden — stille divergentie in plaats
+        // van een fout die de aanroeper ziet. Zie B-43.
+        kind.valideer_lengtes()?;
         Ok(Self {
             author,
             channel,
@@ -146,28 +242,23 @@ op_kinds! {
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 
-/// Lamport-klok. Ophogen bij elke eigen op, en bijwerken bij elke ontvangen op.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LamportClock(u64);
-
-impl LamportClock {
-    pub fn from_raw(v: u64) -> Self {
-        Self(v)
-    }
-
-    pub fn raw(self) -> u64 {
-        self.0
-    }
-
-    /// Voor een nieuwe eigen op.
-    pub fn tick(&mut self) -> u64 {
-        self.0 += 1;
-        self.0
-    }
-
-    /// Voor elke ontvangen op, vóór opslag.
-    pub fn observe(&mut self, remote: u64) {
-        self.0 = self.0.max(remote);
+impl OpKind {
+    /// Lengtegrenzen per soort (B-43). Geldt zowel bij het maken als bij het decoderen;
+    /// zonder dit is `MAX_FRAME_LEN` (16 MiB) de enige rem op een berichttekst.
+    ///
+    /// Een nieuwe soort met een string erin hoort hier een regel bij te krijgen. Dat is
+    /// bewust met de hand en niet via de macro: welke grens bij een veld past is een
+    /// inhoudelijke keuze, geen mechanische.
+    pub fn valideer_lengtes(&self) -> crate::Result<()> {
+        match self {
+            Self::Post { body } => grens("berichttekst", body, MAX_BERICHT_LEN),
+            Self::Edit { body, .. } => grens("berichttekst", body, MAX_BERICHT_LEN),
+            Self::Delete { .. } => Ok(()),
+            Self::SetNick { name } => grens("bijnaam", name, MAX_NAAM_LEN),
+            Self::FileMeta { name, .. } => grens("bestandsnaam", name, MAX_BESTANDSNAAM_LEN),
+            Self::SetTopicTitle { title, .. } => grens("kanaaltitel", title, MAX_NAAM_LEN),
+            Self::DeleteTopic { .. } => Ok(()),
+        }
     }
 }
 
@@ -340,12 +431,154 @@ mod tests {
         }
     }
 
+    /// Een op zoals een aanvaller hem schrijft: velden zijn `pub`, dus Rust-code kan elke
+    /// waarde neerzetten. De heenweg (`encode`) valideert niets — dat is precies wat de
+    /// terugweg moet opvangen.
+    fn rauwe_op(seq: u64, lamport: u64, kind_tag: u16, payload: Vec<u8>) -> Op {
+        Op {
+            author: peer(1),
+            channel: Channel::GENERAL,
+            seq,
+            lamport,
+            wall_clock: 0,
+            kind_tag,
+            payload,
+        }
+    }
+
+    /// De reden waarom het decoderen faalde, als tekst. Serde kan een eigen foutsoort niet
+    /// door een `Deserializer` heen dragen — `#[serde(try_from)]` wikkelt hem via
+    /// `de::Error::custom` in de msgpack-fout — dus de reden staat in de melding en niet in
+    /// de variant. Voor het logpad (`framing::read_frame` logt hem en gaat door) is dat
+    /// genoeg; op de *maak*-kant blijft de nette variant wel bewaard.
+    fn draad_fout(op: &Op) -> String {
+        match over_de_draad(op) {
+            Err(e) => e.to_string(),
+            Ok(o) => panic!("had geweigerd moeten worden, kreeg {o:?}"),
+        }
+    }
+
+    fn over_de_draad(op: &Op) -> crate::Result<Op> {
+        let msg = crate::ControlMsg::OpBroadcast(crate::control::OpBroadcast { op: op.clone() });
+        let bytes = msg.encode().unwrap();
+        match crate::ControlMsg::decode(&bytes)? {
+            Some(crate::ControlMsg::OpBroadcast(b)) => Ok(b.op),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
     #[test]
-    fn lamport_loopt_voor_op_wat_hij_zag() {
-        let mut c = LamportClock::default();
-        c.tick();
-        c.observe(41);
-        assert_eq!(c.tick(), 42);
+    fn b14_lamport_boven_i64_max_wordt_bij_het_decoderen_geweigerd() {
+        // `u64::MAX` wordt in SQLite een `-1`, dus `MAX(lamport)` ziet hem nooit en de
+        // eerlijke klok kan nooit meer inlopen — terwijl `timeline::build` in `u64`
+        // vergelijkt en deze op dus élke last-writer-wins-vergelijking wint, voorgoed.
+        let payload = OpKind::Post { body: "x".into() }.encode_payload().unwrap();
+        let op = rauwe_op(1, u64::MAX, 1, payload);
+        assert!(draad_fout(&op).contains("lamport"), "{}", draad_fout(&op));
+
+        // De grenswaarde zelf mag nog wél: die is op te slaan.
+        let net_goed = rauwe_op(1, MAX_WIRE_GETAL, 1, op.payload.clone());
+        assert_eq!(over_de_draad(&net_goed).unwrap().lamport, MAX_WIRE_GETAL);
+    }
+
+    #[test]
+    fn b34_seq_boven_i64_max_wordt_bij_het_decoderen_geweigerd() {
+        // Zulke rijen zijn na opslag onbereikbaar voor `ops_range` en
+        // `advance_contiguous` (die met positieve grenzen werken) maar tellen wel mee in
+        // `op_count` en `all_ops()`: 2⁶³ permanent inerte sleutels.
+        let op = rauwe_op(
+            u64::MAX,
+            1,
+            1,
+            OpKind::Post { body: "x".into() }.encode_payload().unwrap(),
+        );
+        assert!(draad_fout(&op).contains("seq"), "{}", draad_fout(&op));
+    }
+
+    #[test]
+    fn b43_te_lange_velden_worden_geweigerd_bij_maken_en_bij_decoderen() {
+        let te_lang = "a".repeat(MAX_BERICHT_LEN + 1);
+
+        // Bij het maken, zodat een eigen te lang bericht niet stil bij de anderen
+        // sneuvelt terwijl het lokaal wel in de log staat.
+        assert!(matches!(
+            Op::new(
+                peer(1),
+                Channel::GENERAL,
+                1,
+                1,
+                0,
+                &OpKind::Post {
+                    body: te_lang.clone()
+                }
+            ),
+            Err(crate::ProtoError::VeldTeLang {
+                veld: "berichttekst",
+                ..
+            })
+        ));
+
+        // En bij het decoderen, want de afzender hoeft onze encoder niet te gebruiken.
+        let payload = OpKind::Post { body: te_lang }.encode_payload().unwrap();
+        let op = rauwe_op(1, 1, 1, payload);
+        assert!(
+            draad_fout(&op).contains("berichttekst"),
+            "{}",
+            draad_fout(&op)
+        );
+
+        for (kind, veld) in [
+            (
+                OpKind::SetNick {
+                    name: "n".repeat(MAX_NAAM_LEN + 1),
+                },
+                "bijnaam",
+            ),
+            (
+                OpKind::FileMeta {
+                    name: "f".repeat(MAX_BESTANDSNAAM_LEN + 1),
+                    size: 1,
+                    hash: [0; 32],
+                },
+                "bestandsnaam",
+            ),
+            (
+                OpKind::SetTopicTitle {
+                    id: crate::TopicId::from_bytes([1; 16]),
+                    title: "t".repeat(MAX_NAAM_LEN + 1),
+                },
+                "kanaaltitel",
+            ),
+        ] {
+            let op = rauwe_op(1, 1, kind.tag(), kind.encode_payload().unwrap());
+            let fout = draad_fout(&op);
+            assert!(
+                fout.contains(veld),
+                "{veld} had geweigerd moeten worden: {fout}"
+            );
+        }
+    }
+
+    #[test]
+    fn b43_normale_lengtes_blijven_gewoon_werken() {
+        // De grens mag niets kosten aan echt gebruik: een lang-maar-normaal bericht, een
+        // gewone bijnaam en een gewone bestandsnaam moeten er precies zo doorkomen.
+        for kind in [
+            OpKind::Post {
+                body: "a".repeat(MAX_BERICHT_LEN),
+            },
+            OpKind::SetNick {
+                name: "Rick".into(),
+            },
+            OpKind::FileMeta {
+                name: "vakantiefotos.zip".into(),
+                size: 1,
+                hash: [0; 32],
+            },
+        ] {
+            let op = Op::new(peer(1), Channel::GENERAL, 1, 1, 0, &kind).unwrap();
+            assert_eq!(over_de_draad(&op).unwrap().kind().unwrap(), Some(kind));
+        }
     }
 
     #[test]

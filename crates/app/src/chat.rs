@@ -288,9 +288,23 @@ impl Chat {
 
         // We hebben de ops nodig die écht nieuw waren; alleen die doorsturen, anders
         // blijft een broadcast eindeloos rondzingen tussen de peers.
+        //
+        // B-06: `_from` in plaats van de kale variant, zodat `van` — de geauthenticeerde
+        // afzender — meegaat tot in de store. Zonder dit werd `van` alleen voor een logregel
+        // gebruikt en kon iedereen een op namens een ander plaatsen: een DM namens A, of een
+        // `Edit`/`Delete` op A's bericht (die controle vergelijkt `target.author` met
+        // `op.author`, twee velden die de afzender allebei zelf kiest).
+        //
+        // De regel is niet "afzender == auteur", want een publieke op mag legitiem via een
+        // derde peer binnenkomen — dat is weg 3 uit ARCHITECTURE, "Drie wegen". Alleen voor
+        // een DM (en voor een kanaal met een onbekende tag) is doorsturen nooit legitiem, en
+        // daar weigert de store nu. Volledig sluiten kan alleen met een handtekening per op.
+        //
+        // Een geweigerde op geeft `false`, net als "hadden we al", dus hij wordt hieronder
+        // ook niet doorgestuurd.
         let mut nieuw: Vec<Op> = Vec::new();
         for op in ops {
-            if self.store.apply_remote(op)? {
+            if self.store.apply_remote_from(van, op)? {
                 nieuw.push(op.clone());
             }
         }

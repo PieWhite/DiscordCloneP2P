@@ -74,6 +74,20 @@ pub enum ProtoError {
     Encode(#[from] rmp_serde::encode::Error),
     #[error("msgpack decode mislukt: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
+    /// B-43: geen enkele string op de draad had een lengtegrens, en dat is het grondstofje
+    /// voor B-15 (één te grote op sloopt de verbinding) en B-16 (onbegrensde oplog-groei).
+    #[error("{veld} is {len} bytes; limiet is {limiet}")]
+    VeldTeLang {
+        veld: &'static str,
+        len: usize,
+        limiet: usize,
+    },
+    /// B-14 en B-34: SQLite kent geen `u64`. Een waarde boven `i64::MAX` wordt als negatief
+    /// getal opgeslagen, en dan zijn de opslag en de vergelijking in Rust het niet meer
+    /// eens over wat er staat. Weigeren bij het decoderen is de enige plek waar dat nog
+    /// goedkoop is.
+    #[error("{veld} = {waarde} past niet in een i64 en is dus niet op te slaan")]
+    GetalTeGroot { veld: &'static str, waarde: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, ProtoError>;

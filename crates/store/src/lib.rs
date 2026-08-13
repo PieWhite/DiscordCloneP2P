@@ -62,9 +62,96 @@ const ALGEMEEN_KANAAL_BLOB_V1: [u8; 17] = [0u8; 17];
 /// en voorkomt dat een inhaalslag na maanden offline één gigantisch bericht wordt.
 pub const SYNC_BATCH: usize = 500;
 
+/// Bytebudget per `SyncResponse`, náást [`SYNC_BATCH`] (B-15). Een aantal is geen
+/// bytebudget: 500 ops van elk net onder `MAX_OP_LEN` is 128 MiB en dus ver boven
+/// `MAX_FRAME_LEN` (16 MiB). `write_frame` gaf dan een fout en de schrijftaak brak af —
+/// bij herverbinding bouwde `beantwoord_sync` dezelfde batch opnieuw op en sneuvelde de
+/// verbinding opnieuw, permanent. 1 MiB laat ruimte voor msgpack-overhead en is nog altijd
+/// tien keer meer dan een normale inhaalslag van 500 chatberichten.
+pub const SYNC_BATCH_BYTES: usize = 1024 * 1024;
+
+/// Bovengrens voor één op (B-15). "Wat ik kan ontvangen, kan ik doorsturen" is de
+/// invariant die dit bewaakt: een op die geaccepteerd wordt maar niet meer in een frame
+/// past is een permanente breuk van de control-verbinding. Ruim boven [`MAX_BERICHT_LEN`]
+/// uit `proto` (4 KiB), zodat er plek is voor toekomstige soorten met meer inhoud.
+pub const MAX_OP_LEN: usize = 256 * 1024;
+
+/// Wat een op buiten `payload` kost op de draad: twee UUID's, drie getallen, een tag en de
+/// msgpack-veldnamen. Ruim naar boven afgerond — dit is een budget, geen boekhouding.
+const OP_VASTE_OVERHEAD: usize = 128;
+
+/// Hoogste `seq`/`lamport` die in een `i64` past, en dus in SQLite. Wordt door `proto` al
+/// bij het decoderen geweigerd (B-14, B-34); hier nog een keer, want een op kan ook uit
+/// een oudere database komen.
+const MAX_OPSLAG_GETAL: u64 = i64::MAX as u64;
+
+/// Hoeveel een ontvangen `lamport` boven onze eigen hoogste mag liggen (B-14). In een mesh
+/// van drie peers is een sprong van 2³² nooit legitiem — dat zijn vier miljard berichten
+/// die wij gemist zouden hebben. Zonder deze grens kan één op met `lamport = i64::MAX` de
+/// eigen klok voorgoed vastzetten: `max_lamport() + 1` is dan 2⁶³, dat als `i64::MIN`
+/// opgeslagen wordt, waarna `MAX(lamport)` op `i64::MAX` blijft staan en élke volgende
+/// eigen op exact dezelfde lamport krijgt. Eén bericht, permanent onordenbare tijdlijn.
+pub const MAX_LAMPORT_SPRONG: u64 = 1 << 32;
+
+/// Hoe ver voorbij de aaneengesloten frontier een `seq` mag liggen (B-16). Ops met een gat
+/// ervoor worden bewaard maar tellen nooit mee, en er is nergens een verwijderpad — dus
+/// zonder deze grens kan een peer onbeperkt sleutels vullen die nooit opgeruimd worden.
+/// Herordening heeft nooit meer dan een handvol nodig: de inhaalslag levert altijd vanaf
+/// `have + 1` en alleen een live broadcast kan vooruitlopen.
+pub const MAX_SEQ_VOORUIT: u64 = 1000;
+
+/// Plafond op wat [`Store::all_ops`] in één keer in het geheugen zet (B-16). `timeline()`
+/// wordt na *elke* wijziging opnieuw opgebouwd, dus dit is de rem op "hele opgeblazen log
+/// bij elk binnenkomend bericht opnieuw inladen en sorteren". Voor drie mensen is 100 000
+/// ops onbereikbaar in normaal gebruik; wordt de grens toch geraakt, dan valt de *oudste*
+/// geschiedenis buiten beeld en staat er een waarschuwing in het log.
+pub const MAX_TIMELINE_OPS: usize = 100_000;
+
+/// Waarom een ontvangen op geweigerd is. Alleen voor het log en voor de tests — een
+/// afwijzing is geen fout die omhoog hoort te bubbelen: een liegende of kapotte peer mag de
+/// verbinding niet slopen (invariant 7). Zie `docs/BEVEILIGING.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Afwijzing {
+    /// B-06: `op.author` is niet de geauthenticeerde afzender, en dit is geen publiek
+    /// kanaal waar doorsturen door een derde peer legitiem is.
+    VerkeerdeAfzender,
+    /// B-34: `seq` past niet in een `i64`.
+    SeqTeGroot,
+    /// B-14: `lamport` past niet in een `i64`.
+    LamportTeGroot,
+    /// B-14: `lamport` ligt onmogelijk ver boven de onze.
+    LamportSprong,
+    /// B-16: `seq` ligt buiten het venster voorbij de aaneengesloten frontier, of is 0.
+    SeqBuitenVenster,
+    /// B-15: de op past niet meer in een control-frame en zou dus niet doorstuurbaar zijn.
+    OpTeGroot,
+}
+
+impl std::fmt::Display for Afwijzing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::VerkeerdeAfzender => {
+                "auteur is niet de afzender en het kanaal is geen publiek kanaal (B-06)"
+            }
+            Self::SeqTeGroot => "seq past niet in een i64 (B-34)",
+            Self::LamportTeGroot => "lamport past niet in een i64 (B-14)",
+            Self::LamportSprong => "lamport springt onmogelijk ver vooruit (B-14)",
+            Self::SeqBuitenVenster => {
+                "seq ligt buiten het venster voorbij de aaneengesloten reeks (B-16)"
+            }
+            Self::OpTeGroot => "op is te groot om nog door te kunnen sturen (B-15)",
+        };
+        f.write_str(s)
+    }
+}
+
 pub struct Store {
     conn: Connection,
     me: PeerId,
+    /// Hoeveel sleutelbotsingen met *afwijkende* inhoud we gezien hebben (B-07). Een echt
+    /// duplicaat is byte-identiek, dus alles wat hier meetelt is een peer die een
+    /// `(auteur, kanaal, seq)` bezet met andere inhoud dan de eigenaar er neerzette.
+    botsingen: u64,
 }
 
 impl Store {
@@ -118,7 +205,11 @@ impl Store {
         )
         .context("schema aanmaken")?;
 
-        let mut store = Self { conn, me };
+        let mut store = Self {
+            conn,
+            me,
+            botsingen: 0,
+        };
         store.check_schema_version()?;
         Ok(store)
     }
@@ -224,8 +315,20 @@ impl Store {
     pub fn append_local(&mut self, channel: Channel, kind: &OpKind, wall_clock: i64) -> Result<Op> {
         // Onze eigen reeks heeft per definitie geen gaten, dus contiguous == maximum.
         let seq = self.contiguous(self.me, channel)? + 1;
-        let lamport = self.max_lamport()? + 1;
-        let op = Op::new(self.me, channel, seq, lamport, wall_clock, kind).context("op coderen")?;
+        let vorige = self.max_lamport()?;
+        // Onbereikbaar zolang `keur_op` de lamport-sprong begrenst — een ontvangen op kan
+        // hem niet meer hierheen tillen. Blijft staan als vangnet voor een database die van
+        // vóór die grens komt: doorgaan zou 2⁶³ als `i64::MIN` opslaan en daarna elke eigen
+        // op dezelfde lamport geven. Zie B-14.
+        if vorige >= MAX_OPSLAG_GETAL {
+            anyhow::bail!(
+                "lamport-klok staat op {vorige} en kan niet verder; de oplog is niet meer \
+                 ordenbaar (B-14). Verwijder de op met die lamport of begin met een nieuwe \
+                 database."
+            );
+        }
+        let op =
+            Op::new(self.me, channel, seq, vorige + 1, wall_clock, kind).context("op coderen")?;
 
         let tx = self.conn.transaction()?;
         insert_op(&tx, &op)?;
@@ -234,31 +337,98 @@ impl Store {
         Ok(op)
     }
 
-    /// Slaat een op van een andere peer op. `false` betekent: hadden we al.
+    /// Slaat een op van een andere peer op. `false` betekent: hadden we al, of geweigerd.
     ///
     /// Tweemaal toepassen is een no-op — dat is de volledige conflictafhandeling.
+    ///
+    /// **Zonder afzender, dus zonder de auteurscontrole van B-06.** Gebruik
+    /// [`Store::apply_remote_from`] zodra je weet wie het stuurde; dit blijft bestaan voor
+    /// lokaal gebruik en voor de tests, en doet alle overige controles wel.
     pub fn apply_remote(&mut self, op: &Op) -> Result<bool> {
         Ok(self.apply_remote_batch(std::slice::from_ref(op))? > 0)
+    }
+
+    /// Zelfde als [`Store::apply_remote`], maar met de geauthenticeerde afzender erbij, dus
+    /// mét de auteurscontrole van B-06.
+    ///
+    /// `false` betekent: hadden we al, óf de op is geweigerd. Dat is precies wat de
+    /// aanroeper nodig heeft — hij stuurt alleen door wat nieuw was, en een geweigerde op
+    /// mag hij niet doorsturen.
+    pub fn apply_remote_from(&mut self, van: PeerId, op: &Op) -> Result<bool> {
+        Ok(self.apply_remote_batch_from(van, std::slice::from_ref(op))? > 0)
     }
 
     /// Zelfde als [`Store::apply_remote`], maar voor een hele inhaalslag in één
     /// transactie. Levert het aantal ops op dat nieuw was.
     pub fn apply_remote_batch(&mut self, ops: &[Op]) -> Result<usize> {
+        self.apply_remote_intern(None, ops)
+    }
+
+    /// Zelfde als [`Store::apply_remote_batch`], maar mét de auteurscontrole van B-06.
+    pub fn apply_remote_batch_from(&mut self, van: PeerId, ops: &[Op]) -> Result<usize> {
+        self.apply_remote_intern(Some(van), ops)
+    }
+
+    /// Hoeveel sleutelbotsingen met afwijkende inhoud deze store gezien heeft (B-07).
+    /// Loopt alleen op bij een peer die een `(auteur, kanaal, seq)` van iemand anders bezet
+    /// hield; een echt duplicaat is byte-identiek en telt niet mee.
+    pub fn botsingen(&self) -> u64 {
+        self.botsingen
+    }
+
+    fn apply_remote_intern(&mut self, van: Option<PeerId>, ops: &[Op]) -> Result<usize> {
         if ops.is_empty() {
             return Ok(0);
         }
 
+        // Eén keer per batch opvragen in plaats van per op: de sprong die we bewaken is
+        // 2³², dus of we tegen de stand van vóór of tijdens de batch vergelijken maakt
+        // geen praktisch verschil.
+        let lokaal_max_lamport = self.max_lamport()?;
+
         let tx = self.conn.transaction()?;
         let mut nieuw = 0usize;
+        let mut botsingen = 0u64;
+        let mut geweigerd = 0usize;
         let mut geraakt: Vec<(PeerId, Channel)> = Vec::new();
+        // De aaneengesloten frontier per (auteur, kanaal), bijgehouden binnen de batch:
+        // een query per paar in plaats van per op, en hij schuift mee met elke op die het
+        // gat sluit. Dat laatste is nodig omdat een inhaalslag van 1..N in één batch kan
+        // komen en dan groter is dan `MAX_SEQ_VOORUIT`. Alleen `frontier + 1` schuift op —
+        // meebewegen met élke geaccepteerde seq zou het venster tot een glijdend venster
+        // maken en dan is B-16 weer open.
+        let mut frontier: Vec<((PeerId, Channel), u64)> = Vec::new();
 
         for op in ops {
-            if insert_op(&tx, op)? {
-                nieuw += 1;
-                let sleutel = (op.author, op.channel);
-                if !geraakt.contains(&sleutel) {
-                    geraakt.push(sleutel);
+            let sleutel = (op.author, op.channel);
+            let idx = match frontier.iter().position(|(k, _)| *k == sleutel) {
+                Some(i) => i,
+                None => {
+                    let c = contiguous_in(&tx, op.author, op.channel)?;
+                    frontier.push((sleutel, c));
+                    frontier.len() - 1
                 }
+            };
+
+            if let Err(reden) = keur_op(van, op, lokaal_max_lamport, frontier[idx].1) {
+                tracing::warn!(afzender = ?van, op = ?op.id(), %reden, "op geweigerd");
+                geweigerd += 1;
+                continue;
+            }
+
+            match insert_op(&tx, op)? {
+                Insert::Nieuw => {
+                    nieuw += 1;
+                    if !geraakt.contains(&sleutel) {
+                        geraakt.push(sleutel);
+                    }
+                }
+                Insert::Duplicaat => {}
+                Insert::Botsing => botsingen += 1,
+            }
+
+            if op.seq == frontier[idx].1 + 1 {
+                frontier[idx].1 += 1;
             }
         }
 
@@ -270,6 +440,15 @@ impl Store {
         }
 
         tx.commit()?;
+        self.botsingen += botsingen;
+        if geweigerd > 0 {
+            tracing::warn!(
+                afzender = ?van,
+                geweigerd,
+                aangeboden = ops.len(),
+                "ops geweigerd bij de invoercontrole"
+            );
+        }
         Ok(nieuw)
     }
 
@@ -328,6 +507,12 @@ impl Store {
         self.ops_missing_in_raw(&mine, theirs, max_ops)
     }
 
+    /// Budgetteert op **aantal én bytes** (B-15). Op alleen een aantal budgetteren geeft bij
+    /// grote ops een frame boven `MAX_FRAME_LEN`, en dan breekt de schrijftaak in `net` af —
+    /// bij herverbinding wordt dezelfde batch opnieuw opgebouwd en breekt hij opnieuw af.
+    /// Er komt altijd minstens één op uit als er iets te sturen valt, ook als die op zelf
+    /// al over het bytebudget gaat: anders zou een enkele te grote op (uit een database van
+    /// vóór `MAX_OP_LEN`) de sync voorgoed laten stilstaan.
     fn ops_missing_in_raw(
         &self,
         mine: &VersionVector,
@@ -335,14 +520,18 @@ impl Store {
         max_ops: usize,
     ) -> Result<Vec<Op>> {
         let mut out = Vec::new();
+        let mut bytes = 0usize;
 
         for (author, channel, from, to) in mine.ranges_missing_in(theirs) {
-            if out.len() >= max_ops {
+            if out.len() >= max_ops || bytes >= SYNC_BATCH_BYTES {
                 break;
             }
             let ruimte = (max_ops - out.len()) as u64;
             let tot = to.min(from + ruimte - 1);
-            out.extend(self.ops_range(author, channel, from, tot)?);
+            for op in self.ops_range(author, channel, from, tot, SYNC_BATCH_BYTES - bytes)? {
+                bytes += op_wire_len(&op);
+                out.push(op);
+            }
         }
         Ok(out)
     }
@@ -361,7 +550,17 @@ impl Store {
             .is_empty())
     }
 
-    fn ops_range(&self, author: PeerId, channel: Channel, from: u64, to: u64) -> Result<Vec<Op>> {
+    /// `budget_bytes` stopt de reeks zodra hij vol is, maar levert altijd minstens één op —
+    /// zie [`Store::ops_missing_in_raw`]. De rij-iterator van rusqlite is lui, dus wat we
+    /// niet meenemen wordt ook niet uit de database gehaald.
+    fn ops_range(
+        &self,
+        author: PeerId,
+        channel: Channel,
+        from: u64,
+        to: u64,
+        budget_bytes: usize,
+    ) -> Result<Vec<Op>> {
         let mut stmt = self.conn.prepare(
             "SELECT author, channel, seq, lamport, wall_clock, kind, payload FROM ops
              WHERE author = ?1 AND channel = ?2 AND seq >= ?3 AND seq <= ?4 ORDER BY seq",
@@ -375,18 +574,51 @@ impl Store {
             ],
             op_from_row,
         )?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+
+        let mut out = Vec::new();
+        let mut bytes = 0usize;
+        for row in rows {
+            let op = row?;
+            bytes += op_wire_len(&op);
+            out.push(op);
+            if bytes >= budget_bytes {
+                break;
+            }
+        }
+        Ok(out)
     }
 
-    /// Alle ops, op weergavevolgorde. Voor drie mensen blijft dit klein genoeg om in
-    /// één keer te laden; de UI bouwt de timeline alleen opnieuw bij een wijziging.
+    /// Alle ops, op weergavevolgorde — begrensd op [`MAX_TIMELINE_OPS`]. Voor drie mensen
+    /// blijft dit klein genoeg om in één keer te laden; de UI bouwt de timeline alleen
+    /// opnieuw bij een wijziging.
     pub fn all_ops(&self) -> Result<Vec<Op>> {
+        self.all_ops_limited(MAX_TIMELINE_OPS)
+    }
+
+    /// De **nieuwste** `limit` ops, op weergavevolgorde (B-16). `timeline()` wordt na elke
+    /// wijziging opnieuw opgebouwd uit dit resultaat; zonder plafond wordt bij een
+    /// opgeblazen log de complete log per binnenkomend bericht opnieuw ingeladen en
+    /// gesorteerd. De nieuwste houden en niet de oudste is de enige zinnige kant: de UI
+    /// toont het recente gesprek.
+    pub fn all_ops_limited(&self, limit: usize) -> Result<Vec<Op>> {
         let mut stmt = self.conn.prepare(
             "SELECT author, channel, seq, lamport, wall_clock, kind, payload FROM ops
-             ORDER BY lamport, author, seq",
+             ORDER BY lamport DESC, author DESC, seq DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([], op_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let rows = stmt.query_map(params![limit as i64], op_from_row)?;
+        let mut ops = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        // DESC gelezen zodat het plafond de nieuwste houdt; omdraaien geeft weer precies
+        // `ORDER BY lamport, author, seq`.
+        ops.reverse();
+        if ops.len() >= limit {
+            tracing::warn!(
+                limit,
+                totaal = self.op_count().unwrap_or(0),
+                "oplog is groter dan het plafond; de oudste geschiedenis valt buiten de \
+                 tijdlijn (B-16)"
+            );
+        }
+        Ok(ops)
     }
 
     pub fn timeline(&self) -> Result<Timeline> {
@@ -400,18 +632,7 @@ impl Store {
     }
 
     fn contiguous(&self, author: PeerId, channel: Channel) -> Result<u64> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT contiguous FROM authors WHERE author = ?1 AND channel = ?2",
-                params![
-                    author.as_bytes().to_vec(),
-                    channel_to_blob(channel).to_vec()
-                ],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?
-            .unwrap_or(0) as u64)
+        contiguous_in(&self.conn, author, channel)
     }
 
     fn max_lamport(&self) -> Result<u64> {
@@ -425,14 +646,71 @@ impl Store {
 
 // -- vrije functies zodat ze ook binnen een transactie bruikbaar zijn -------
 
-/// `false` als we deze op al hadden.
-fn insert_op(conn: &Connection, op: &Op) -> Result<bool> {
+/// Invoercontrole op een op die van het netwerk komt. `van` is de geauthenticeerde
+/// afzender, of `None` als die niet bekend is (lokaal gebruik en tests).
+///
+/// Alles hier weigert vormen die een eerlijke peer nooit produceert. Zie
+/// `docs/BEVEILIGING.md` bij de genoemde bevindingen voor het waarom per regel.
+fn keur_op(
+    van: Option<PeerId>,
+    op: &Op,
+    lokaal_max_lamport: u64,
+    frontier: u64,
+) -> std::result::Result<(), Afwijzing> {
+    // B-06. Een *publieke* op mag legitiem van een derde peer komen: dat is het
+    // doorstuurmechanisme uit ARCHITECTURE, "Drie wegen waarlangs een op zich verspreidt".
+    // Voor een DM bestaat dat mechanisme bewust niet, dus daar is de afzender altijd de
+    // auteur. Volledig sluiten kan alleen met een handtekening per op.
+    if let Some(van) = van {
+        if op.author != van && !op.channel.is_public() {
+            return Err(Afwijzing::VerkeerdeAfzender);
+        }
+    }
+
+    // B-34 en B-14: boven `i64::MAX` slaat SQLite een negatief getal op, en dan zijn de
+    // rij en de vergelijking in Rust het niet meer eens over wat er staat.
+    if op.seq > MAX_OPSLAG_GETAL {
+        return Err(Afwijzing::SeqTeGroot);
+    }
+    if op.lamport > MAX_OPSLAG_GETAL {
+        return Err(Afwijzing::LamportTeGroot);
+    }
+    if op.lamport > lokaal_max_lamport.saturating_add(MAX_LAMPORT_SPRONG) {
+        return Err(Afwijzing::LamportSprong);
+    }
+
+    // B-16. `seq` is 1-gebaseerd en dicht; 0 bestaat niet en een gat groter dan het venster
+    // wordt nooit meer gedicht, dus die rij zou voor altijd blijven staan zonder mee te
+    // tellen.
+    if op.seq == 0 || op.seq > frontier.saturating_add(MAX_SEQ_VOORUIT) {
+        return Err(Afwijzing::SeqBuitenVenster);
+    }
+
+    // B-15.
+    if op.payload.len().saturating_add(OP_VASTE_OVERHEAD) > MAX_OP_LEN {
+        return Err(Afwijzing::OpTeGroot);
+    }
+
+    Ok(())
+}
+
+/// Wat een insert opleverde. `Botsing` is de stille datavernietiging van B-07: de sleutel
+/// was al bezet door iets ánders dan deze op.
+enum Insert {
+    Nieuw,
+    Duplicaat,
+    Botsing,
+}
+
+fn insert_op(conn: &Connection, op: &Op) -> Result<Insert> {
+    let author_key = op.author.as_bytes().to_vec();
+    let channel_key = channel_to_blob(op.channel).to_vec();
     let n = conn.execute(
         "INSERT OR IGNORE INTO ops (author, channel, seq, lamport, wall_clock, kind, payload)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
-            op.author.as_bytes().to_vec(),
-            channel_to_blob(op.channel).to_vec(),
+            author_key.clone(),
+            channel_key.clone(),
             op.seq as i64,
             op.lamport as i64,
             op.wall_clock,
@@ -440,7 +718,66 @@ fn insert_op(conn: &Connection, op: &Op) -> Result<bool> {
             op.payload,
         ],
     )?;
-    Ok(n > 0)
+    if n > 0 {
+        return Ok(Insert::Nieuw);
+    }
+
+    // B-07: `INSERT OR IGNORE` gooide een latere, échte op met dezelfde sleutel
+    // stilzwijgend weg — geen foutpad, geen logregel, geen UI-signaal, en
+    // `advance_contiguous` schoof daarna over de vervalste rij heen zodat de version vector
+    // naar waarheid meldde "ik heb hem", waarna de eigenaar hem nooit meer opnieuw stuurt.
+    // Een echt duplicaat is byte-identiek, dus vergelijken kost geen valse meldingen. Deze
+    // extra query loopt alleen bij een botsing: een nieuwe op is met de insert al klaar.
+    let bestaand: Option<(i64, i64, i64, Vec<u8>)> = conn
+        .query_row(
+            "SELECT lamport, wall_clock, kind, payload FROM ops
+             WHERE author = ?1 AND channel = ?2 AND seq = ?3",
+            params![author_key, channel_key, op.seq as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+
+    let Some((lamport, wall_clock, kind, payload)) = bestaand else {
+        // Niet ingevoegd én niet te vinden: dat kan alleen als de rij tussen de twee
+        // queries verdween, en er is geen verwijderpad. Melden in plaats van negeren.
+        tracing::error!(op = ?op.id(), "insert genegeerd maar de rij bestaat niet");
+        return Ok(Insert::Duplicaat);
+    };
+
+    if lamport == op.lamport as i64
+        && wall_clock == op.wall_clock
+        && kind == op.kind_tag as i64
+        && payload == op.payload
+    {
+        return Ok(Insert::Duplicaat);
+    }
+
+    tracing::error!(
+        op = ?op.id(),
+        bestaande_lamport = lamport,
+        nieuwe_lamport = op.lamport,
+        bestaande_kind = kind,
+        nieuwe_kind = op.kind_tag,
+        "sleutelbotsing met afwijkende inhoud: deze op wordt niet opgeslagen (B-07). \
+         Iemand heeft deze (auteur, kanaal, seq) eerder met andere inhoud bezet."
+    );
+    Ok(Insert::Botsing)
+}
+
+/// Tot hoe ver de reeks van dit (auteur, kanaal)-paar aaneengesloten is. Vrije functie
+/// zodat de invoercontrole hem ook binnen een lopende transactie kan opvragen.
+fn contiguous_in(conn: &Connection, author: PeerId, channel: Channel) -> Result<u64> {
+    Ok(conn
+        .query_row(
+            "SELECT contiguous FROM authors WHERE author = ?1 AND channel = ?2",
+            params![
+                author.as_bytes().to_vec(),
+                channel_to_blob(channel).to_vec()
+            ],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0) as u64)
 }
 
 /// Schuift de aaneengesloten reeks van dit (auteur, kanaal)-paar zo ver mogelijk op.
@@ -479,6 +816,12 @@ fn advance_contiguous(conn: &Connection, author: PeerId, channel: Channel) -> Re
     Ok(())
 }
 
+/// Wat deze op op de draad kost, ruim geschat. Gebruikt voor het bytebudget van B-15;
+/// `payload` is het enige veld dat in grootte varieert.
+fn op_wire_len(op: &Op) -> usize {
+    op.payload.len().saturating_add(OP_VASTE_OVERHEAD)
+}
+
 fn peer_from_row(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<PeerId> {
     let bytes: Vec<u8> = row.get(idx)?;
     let arr: [u8; 16] = bytes.try_into().map_err(|_| {
@@ -496,13 +839,22 @@ fn peer_from_row(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<PeerId
 /// DM-peer: de twee sluiten elkaar uit (tag bepaalt welke het is), dus dit kost geen
 /// bredere blob en dus geen schema-migratie. Dezelfde aanpak als de
 /// bestandsoverdracht-header in `crates/net/src/filestream.rs`.
+///
+/// **Altijd de rauwe tag wegschrijven, ook een tag die deze build niet kent (B-08).** De
+/// oude vorm schreef alleen tag 1 en 2 en liet al het andere door naar 17 nulbytes — precies
+/// de blob van `Channel::GENERAL`. Een op op een onbekend kanaal landde daarmee op de
+/// *algemene* sleutel `(auteur, nullen, seq)`, botste daar met een échte algemene op van
+/// diezelfde auteur (`INSERT OR IGNORE`, dus stil) en schoof de algemene teller op. Deze
+/// functie moet totaal en injectief zijn over álles wat `Channel` kan zijn; dat is wat de
+/// primary key `(author, channel, seq)` van de ops-tabel eist.
+///
+/// De bytes voor tag 0, 1 en 2 zijn onveranderd, dus bestaande databases blijven leesbaar.
 fn channel_to_blob(channel: Channel) -> [u8; 17] {
     let mut buf = [0u8; 17];
+    buf[0] = channel.raw_tag();
     if let Some(p) = channel.dm_peer() {
-        buf[0] = 1;
         buf[1..].copy_from_slice(p.as_bytes());
     } else if let Some(t) = channel.topic_id() {
-        buf[0] = 2;
         buf[1..].copy_from_slice(t.as_bytes());
     }
     buf
@@ -517,6 +869,7 @@ fn channel_from_blob(bytes: &[u8]) -> rusqlite::Result<Channel> {
         ));
     }
     Ok(match bytes[0] {
+        0 => Channel::GENERAL,
         1 => {
             let mut peer = [0u8; 16];
             peer.copy_from_slice(&bytes[1..]);
@@ -527,7 +880,11 @@ fn channel_from_blob(bytes: &[u8]) -> rusqlite::Result<Channel> {
             id.copy_from_slice(&bytes[1..]);
             Channel::topic(fitcom_proto::TopicId::from_bytes(id))
         }
-        _ => Channel::GENERAL,
+        // Kanaalsoort van een nieuwere peer. Terugvallen op `GENERAL` zou de op alsnog in
+        // het algemene kanaal laten opduiken (B-08) én de rondgang blob → Channel → blob
+        // niet-injectief maken, waardoor het teruglezen op een andere sleutel uitkomt dan
+        // waar hij staat. Zie `Channel::onbekend`.
+        tag => Channel::onbekend(tag),
     })
 }
 
