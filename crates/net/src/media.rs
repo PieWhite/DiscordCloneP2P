@@ -98,6 +98,20 @@ fn niet_doorgeven_aan_kindproces(sock: &UdpSocket) {
 #[cfg(not(windows))]
 fn niet_doorgeven_aan_kindproces(_sock: &UdpSocket) {}
 
+/// Of deze fout betekent "het datagram paste niet in de buffer".
+///
+/// Windows meldt dat als `WSAEMSGSIZE`, macOS en de BSD's als `EMSGSIZE`, Linux gebruikt
+/// een ander nummer voor diezelfde naam. `std::io::ErrorKind` heeft er geen variant voor,
+/// dus het gaat via de rauwe code — en beide platforms bouwen deze binary, dus beide
+/// codes horen hier te staan.
+fn is_te_groot(e: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    const CODES: [i32; 1] = [10040]; // WSAEMSGSIZE
+    #[cfg(not(windows))]
+    const CODES: [i32; 2] = [40, 90]; // EMSGSIZE op macOS/BSD, en op Linux
+    e.raw_os_error().is_some_and(|c| CODES.contains(&c))
+}
+
 pub struct MediaSocket {
     sock: UdpSocket,
 }
@@ -190,6 +204,13 @@ impl MediaSocket {
             // Windows meldt een niet-bereikbare ontvanger op een verbindingsloze socket
             // met deze fout. Een peer die net weg is mag onze ontvangstlus niet stoppen.
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => Ok(None),
+            // Een datagram dat groter is dan onze buffer is precies zo goed rommel als
+            // een datagram dat te kort is: onze eigen pakketten passen altijd, dus dit
+            // komt van iemand anders. Het als fout teruggeven kostte per pakket één
+            // synchrone schrijfactie naar het logbestand — bij de twee consumenten die
+            // erop loggen en doorgaan — en dat op precies de audio- en videothreads die
+            // invariant 4 beschermt (B-27).
+            Err(e) if is_te_groot(&e) => Ok(None),
             Err(e) => Err(e).context("mediapakket ontvangen"),
         }
     }
@@ -266,6 +287,21 @@ mod tests {
 
         let mut buf = [0u8; MAX_PAKKET];
         assert!(b.ontvang(&mut buf).unwrap().is_none(), "mag niet omvallen");
+    }
+
+    #[test]
+    fn b27_een_te_groot_datagram_is_rommel_en_geen_fout() {
+        // Niet met een echt datagram te testen: op macOS kapt de kernel een te groot
+        // datagram stil af en komt er helemaal geen fout: dit pad is er voor Windows,
+        // waar `WSAEMSGSIZE` terugkomt. Wat hier te bewaken valt is dat de code herkend
+        // wordt op het platform waar hij vandaan komt — anders is elk zo'n pakket een
+        // logregel op de audio- of videothread.
+        let code = if cfg!(windows) { 10040 } else { 40 };
+        assert!(is_te_groot(&std::io::Error::from_raw_os_error(code)));
+        assert!(
+            !is_te_groot(&std::io::Error::from_raw_os_error(1)),
+            "een gewone fout mag niet stil weggeslikt worden"
+        );
     }
 
     #[test]

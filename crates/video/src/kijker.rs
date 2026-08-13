@@ -39,6 +39,9 @@ const KEYFRAME_PAUZE: Duration = Duration::from_millis(500);
 const MINIATUUR_INTERVAL: Duration = Duration::from_millis(500);
 /// Breedte van de miniatuur; de hoogte volgt de beeldverhouding van de bron.
 const MINIATUUR_BREEDTE: u32 = 192;
+/// Zo lang moet de vastgezette bronpoort stil liggen voordat een andere poort hem mag
+/// overnemen. Zie de poortcontrole in [`kijk_lus`] (B-28).
+const BRONPOORT_VERVALT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub enum KijkerEvent {
@@ -204,6 +207,7 @@ fn kijk_lus(
     // meter moet elke verandering zien, ook die van beelden die nooit afkwamen.
     let mut meter = Meter::nieuw(cfg.stream_id);
     let (mut gemeten_incompleet, mut gemeten_verworpen, mut gemeten_hersteld) = (0u64, 0u64, 0u64);
+    let mut gemeten_hersync = 0u64;
 
     let mut klok = Weergaveklok::nieuw();
     let mut uitvouwer = Uitvouwer::default();
@@ -222,6 +226,17 @@ fn kijk_lus(
     );
     let mut vorige_seq: Option<u32> = None;
     let mut vorig_pakket = Instant::now();
+
+    // Alleen het IP staat in de config: de deler stuurt vanaf een efemere poort
+    // (`MediaSocket::bind(0)` in `deler.rs`), dus de motor kan die niet meegeven. We
+    // zetten hem daarom vast op de eerste poort waarvan we iets accepteren en weigeren
+    // daarna de rest — wie het IP van de deler kan spoofen moet nu ook nog die poort
+    // raken, in plaats van fragmenten met de goede tijdstempel te kunnen bijschuiven
+    // (B-28). Valt de poort stil (deler herstart, nieuwe socket), dan mag een andere hem
+    // na `BRONPOORT_VERVALT` overnemen: anders bleef het venster na een herstart aan de
+    // andere kant voorgoed zwart, en offline-en-terug is hier de normale toestand.
+    let mut bronpoort: Option<u16> = None;
+    let mut laatst_van_bronpoort = Instant::now();
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
@@ -303,6 +318,21 @@ fn kijk_lus(
         if header.stream_id != cfg.stream_id || van.ip() != cfg.afzender {
             continue;
         }
+        match bronpoort {
+            Some(p) if p == van.port() => laatst_van_bronpoort = Instant::now(),
+            Some(_) if laatst_van_bronpoort.elapsed() < BRONPOORT_VERVALT => continue,
+            _ => {
+                // Eén regel per wissel, en die is zeldzaam: bij het eerste beeld en na
+                // een herstart van de deler. Niets per pakket.
+                tracing::info!(
+                    stream = cfg.stream_id,
+                    %van,
+                    "bronpoort van de deler vastgezet"
+                );
+                bronpoort = Some(van.port());
+                laatst_van_bronpoort = Instant::now();
+            }
+        }
 
         // De draad bepaalt de codec, niet onze eigen config: de deler encodeert met
         // zíjn instelling en de header zegt wat er echt in de pakketten zit. Zonder
@@ -377,9 +407,11 @@ fn kijk_lus(
         meter.incompleet += samensteller.incompleet - gemeten_incompleet;
         meter.verworpen += samensteller.verworpen - gemeten_verworpen;
         meter.hersteld += samensteller.hersteld - gemeten_hersteld;
+        meter.hersync += samensteller.hersynchronisaties - gemeten_hersync;
         gemeten_incompleet = samensteller.incompleet;
         gemeten_verworpen = samensteller.verworpen;
         gemeten_hersteld = samensteller.hersteld;
+        gemeten_hersync = samensteller.hersynchronisaties;
 
         let Some(frame) = klaar else {
             continue;
@@ -665,6 +697,10 @@ struct Meter {
     /// zonder pariteit een bevroren beeld van rond de honderd milliseconde geweest zijn,
     /// dus dit is het getal dat zegt of dat werkt. Zie `crate::fragment`.
     hersteld: u64,
+    /// Hoe vaak de samensteller opnieuw moest beginnen omdat de tijdstempel wegsprong.
+    /// Eén keer is een deler die herstartte; oplopend betekent dat er iemand pakketten met
+    /// rare tijdstempels bijschuift. Zonder deze regel is dat onzichtbaar (B-11).
+    hersync: u64,
     keyframe_verzoeken: u32,
     decode_us: u64,
     toon_us: u64,
@@ -689,6 +725,7 @@ impl Meter {
             incompleet: 0,
             verworpen: 0,
             hersteld: 0,
+            hersync: 0,
             keyframe_verzoeken: 0,
             decode_us: 0,
             toon_us: 0,
@@ -749,6 +786,7 @@ impl Meter {
             incompleet = self.incompleet,
             verworpen = self.verworpen,
             hersteld = self.hersteld,
+            hersync = self.hersync,
             keyframe_verzoeken = self.keyframe_verzoeken,
             decode_ms = per_beeld(self.decode_us),
             toon_ms = per_beeld(self.toon_us),
@@ -884,6 +922,63 @@ mod tests {
         assert_eq!(u.uitvouwen(u32::MAX), u64::from(u32::MAX));
         assert_eq!(u.uitvouwen(3), (1u64 << 32) + 3, "dit is een omloop");
         assert_eq!(u.uitvouwen(9), (1u64 << 32) + 9);
+    }
+
+    #[test]
+    fn b30_een_omlopende_tijdstempel_komt_door_de_hele_keten() {
+        // De test hierboven dekt `Uitvouwer` los, en dat is precies waarom B-30 zo lang
+        // onopgemerkt bleef: hij bleef groen terwijl de samensteller de sprong terug die
+        // een omloop *ís* juist weggooide, dus `hoog` kon nooit oplopen en na 13 uur 15
+        // minuten onafgebroken kijken stond het beeld stil. Deze test duwt daarom een
+        // omlopende reeks door `Reassembler` én `Uitvouwer` heen — de keten uit
+        // `kijk_lus`, in die volgorde.
+        use crate::fragment::{headers_voor, Reassembler};
+        use fitcom_proto::PayloadType;
+
+        let stap = 90_000 / 60; // 60 beelden per seconde in 90 kHz-tikken
+        let bron = vec![7u8; 2_000]; // twee fragmenten plus pariteit
+        let mut samensteller = Reassembler::new();
+        let mut uitvouwer = Uitvouwer::default();
+        let mut klok = Weergaveklok::nieuw();
+        let begin = Instant::now();
+
+        // Drie beelden vóór de omloop, vijf erna.
+        let eerste_ts = u32::MAX - 3 * stap;
+        let mut uitgevouwen = Vec::new();
+        let mut gepland = Vec::new();
+        for n in 0..8u32 {
+            let ts = eerste_ts.wrapping_add(n * stap);
+            let mut compleet = None;
+            for (h, s) in headers_voor(1, ts, PayloadType::H264, n == 0, n * 3, &bron) {
+                if let Some(f) = samensteller.push(&h, &s) {
+                    compleet = Some(f);
+                }
+            }
+            let frame = compleet.unwrap_or_else(|| {
+                panic!("beeld {n} (ts {ts}) kwam niet door de samensteller — B-30 is terug")
+            });
+            let ts64 = uitvouwer.uitvouwen(frame.timestamp);
+            uitgevouwen.push(ts64);
+            gepland.push(klok.plan(ts64, begin + Duration::from_micros(u64::from(n) * 16_667)));
+        }
+
+        for paar in uitgevouwen.windows(2) {
+            assert_eq!(
+                paar[1] - paar[0],
+                u64::from(stap),
+                "de uitgevouwen tijdstempel moet gelijkmatig doorlopen, ook over de omloop"
+            );
+        }
+        assert!(
+            uitgevouwen[7] > u64::from(u32::MAX),
+            "na de omloop hoort de teller boven het 32-bits bereik te liggen"
+        );
+        for paar in gepland.windows(2) {
+            assert!(
+                paar[1] > paar[0],
+                "de weergaveklok moet blijven doorlopen; anders staat het beeld stil"
+            );
+        }
     }
 
     #[test]

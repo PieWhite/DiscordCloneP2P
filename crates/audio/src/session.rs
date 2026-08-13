@@ -43,6 +43,21 @@ const VAD_DREMPEL: f32 = 0.65;
 /// is risico op onderloop.
 const WEERGAVE_DIEPTE: usize = 3;
 
+/// Zoveel geluidsbronnen mag één peer tegelijk hebben: zijn stem, zijn bureaubladgeluid,
+/// en ruim marge voor wat er nog bij kan komen.
+///
+/// De `stream_id` van de draad is een rauwe `u32` die we als sleutel gebruiken. Zonder
+/// plafond kocht 2,9 MB verkeer — één pakket van 17 bytes per id — ruim een gigabyte
+/// geheugen: elke sleutel is een jitterbuffer plus een Opus-decoder van ~18 kB. Erger nog
+/// voor invariant 4: de mixthread loopt elke 20 ms met de lock vast over álle buffers, dus
+/// bij tienduizenden haalt hij zijn frameperiode niet meer en valt de spraak weg (B-10).
+const MAX_BRONNEN_PER_PEER: usize = 8;
+
+/// Niet vaker dan dit melden dat er bronnen geweigerd worden. Dit zit op het ontvangstpad:
+/// één logregel per pakket is een synchrone schrijfactie per pakket, en dat is precies de
+/// belasting die het plafond hierboven moet voorkomen.
+const BRONWAARSCHUWING_PAUZE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone)]
 pub struct VoiceConfig {
     pub media_port: u16,
@@ -1225,6 +1240,7 @@ fn start_ontvangst(gedeeld: Arc<Gedeeld>, socket: MediaSocket) -> Result<()> {
         .name("fitcom-ontvangst".into())
         .spawn(move || {
             let mut buf = [0u8; fitcom_net::MAX_PAKKET];
+            let mut laatste_waarschuwing = std::time::Instant::now() - BRONWAARSCHUWING_PAUZE;
             while !gedeeld.stop.load(Ordering::Relaxed) {
                 let ontvangen = match socket.ontvang(&mut buf) {
                     Ok(v) => v,
@@ -1253,7 +1269,25 @@ fn start_ontvangst(gedeeld: Arc<Gedeeld>, socket: MediaSocket) -> Result<()> {
                 // jitterbuffer: zijn stem en zijn spelgeluid lopen niet gelijk op en
                 // mogen elkaars volgorde niet in de war schoppen.
                 if let Ok(mut j) = gedeeld.jitters.lock() {
-                    j.entry((peer, header.stream_id))
+                    let bron = (peer, header.stream_id);
+                    // Een nieuwe sleutel is een nieuwe buffer én straks een nieuwe
+                    // decoder. Alleen tellen als de bron nog niet bestaat, zodat het
+                    // gewone pad hier niets van merkt (B-10).
+                    if !j.contains_key(&bron)
+                        && j.keys().filter(|(p, _)| *p == peer).count() >= MAX_BRONNEN_PER_PEER
+                    {
+                        drop(j);
+                        if laatste_waarschuwing.elapsed() >= BRONWAARSCHUWING_PAUZE {
+                            laatste_waarschuwing = std::time::Instant::now();
+                            tracing::warn!(
+                                peer = %peer,
+                                stream = header.stream_id,
+                                "te veel audiobronnen van deze peer; genegeerd"
+                            );
+                        }
+                        continue;
+                    }
+                    j.entry(bron)
                         .or_default()
                         .push(header.seq, payload.to_vec());
                 }
@@ -1288,6 +1322,15 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
                     Ok(mut j) => j.iter_mut().map(|(&id, b)| (id, b.pop())).collect(),
                     Err(_) => Vec::new(),
                 };
+
+                // `decoders` is thread-lokaal en werd nooit opgeschoond: elke ~18 kB bleef
+                // staan nadat de bron verdween — na een peer die vertrok, en na een aanval
+                // ook nadat die gestopt was (B-10). `frames` bevat elke bron die nu nog
+                // leeft, dus dit is de complete lijst. Alleen doen als er echt iets weg is;
+                // in het normale geval kost dit één vergelijking.
+                if decoders.len() > frames.len() {
+                    decoders.retain(|bron, _| frames.iter().any(|(b, _)| b == bron));
+                }
 
                 let mut sprekers: Vec<(Vec<i16>, f32)> = Vec::new();
                 let mut niveaus: HashMap<Bron, f32> = HashMap::new();

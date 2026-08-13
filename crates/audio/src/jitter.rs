@@ -75,8 +75,13 @@ impl JitterBuffer {
     pub fn push(&mut self, seq: u32, payload: Vec<u8>) {
         // Al voorbij: dit pakket komt te laat om nog iets mee te kunnen. Wel meetellen,
         // want structureel te laat betekent dat de buffer dieper moet.
+        //
+        // Modulair vergelijken en niet met `<`: `volgende` loopt met `wrapping_add` door,
+        // dus vlak na de omloop van de 32-bits teller staat hij lager dan alles wat er nog
+        // binnenkomt. Met een gewone `<` gold dan élk pakket als te laat en viel de spreker
+        // stil (B-38).
         if let Some(v) = self.volgende {
-            if seq < v {
+            if seq.wrapping_sub(v) > u32::MAX / 2 {
                 self.te_laat_totaal += 1;
                 self.misser_teller += 1;
                 return;
@@ -125,12 +130,12 @@ impl JitterBuffer {
                 .next()
                 .expect("streefdiepte is minstens 2");
             let payload = self.frames.remove(&nu).expect("net opgezocht");
-            self.volgende = Some(nu + 1);
+            self.volgende = Some(nu.wrapping_add(1));
             return Frame::Data(payload);
         }
 
         if let Some(payload) = self.frames.remove(&volgende) {
-            self.volgende = Some(volgende + 1);
+            self.volgende = Some(volgende.wrapping_add(1));
             self.schoon_teller += 1;
             self.pas_diepte_aan();
             return Frame::Data(payload);
@@ -142,7 +147,7 @@ impl JitterBuffer {
             return Frame::Stilte;
         }
 
-        self.volgende = Some(volgende + 1);
+        self.volgende = Some(volgende.wrapping_add(1));
         self.verloren_totaal += 1;
         self.misser_teller += 1;
         self.pas_diepte_aan();
@@ -315,6 +320,26 @@ mod tests {
             b.pop();
         }
         assert!(b.aantal() <= MAX_DIEPTE);
+    }
+
+    #[test]
+    fn b38_de_volgnummers_mogen_omlopen() {
+        // `volgende + 1` overflowde op `u32::MAX`. De mixthread wordt één keer gestart en
+        // nooit herstart, dus die paniek maakte *alle* audio permanent stil terwijl de UI
+        // een gezonde sessie bleef tonen. Twee pakketten waren genoeg.
+        let mut b = JitterBuffer::new();
+        vul(&mut b, &[u32::MAX - 1, u32::MAX]);
+        assert_eq!(b.pop(), Frame::Data(vec![(u32::MAX - 1) as u8]));
+        assert_eq!(b.pop(), Frame::Data(vec![u32::MAX as u8]));
+
+        // `volgende` staat nu op 0: de teller is omgelopen. Wat daarna komt is nieuw en
+        // niet iets van vroeger — met een gewone `<`-vergelijking gold hier élk pakket
+        // als te laat en viel de spreker stil.
+        b.push(0, vec![10]);
+        b.push(1, vec![11]);
+        assert_eq!(b.te_laat_totaal, 0, "0 is na de omloop het eerstvolgende");
+        assert_eq!(b.pop(), Frame::Data(vec![10]));
+        assert_eq!(b.pop(), Frame::Data(vec![11]));
     }
 
     #[test]

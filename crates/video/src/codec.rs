@@ -597,15 +597,22 @@ impl Decoder {
     }
 
     fn maak_sample(&self, data: &[u8], tijd_hns: i64) -> Result<IMFSample> {
-        // SAFETY: de buffer is groot genoeg voor `data` en wordt netjes ontgrendeld.
+        // `as u32` kapte de lengte af terwijl de `copy_nonoverlapping` eronder de volle
+        // `usize` kopieert: een beeld van 4 GiB + 1 byte leverde een buffer van één byte
+        // op met een memcpy van 4 GiB eroverheen. Onbereikbaar zolang de framegrootte
+        // begrensd is (zie `fragment::MAX_FRAME_BYTES`), maar dat is een grens ergens
+        // anders — hier hoort hij hard te zijn (B-45).
+        let lengte = u32::try_from(data.len()).context("beeld te groot voor een MF-buffer")?;
+
+        // SAFETY: de buffer is met precies `lengte` bytes aangemaakt, `data` is even lang,
+        // en de buffer wordt hieronder netjes ontgrendeld.
         unsafe {
-            let buffer =
-                MFCreateMemoryBuffer(data.len() as u32).context("invoerbuffer aanmaken")?;
+            let buffer = MFCreateMemoryBuffer(lengte).context("invoerbuffer aanmaken")?;
             let mut ptr = std::ptr::null_mut();
             buffer.Lock(&mut ptr, None, None)?;
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
             let _ = buffer.Unlock();
-            buffer.SetCurrentLength(data.len() as u32)?;
+            buffer.SetCurrentLength(lengte)?;
 
             let sample = MFCreateSample().context("sample aanmaken")?;
             sample.AddBuffer(&buffer)?;
@@ -746,31 +753,72 @@ impl Decoder {
             }
         };
 
-        // SAFETY: de buffer wordt vergrendeld en hieronder weer losgelaten; `pitch`
-        // komt van de buffer zelf, dus de rijen liggen waar D3D11 ze verwacht.
+        // SAFETY: de buffer wordt vergrendeld en op élk pad hieronder weer losgelaten.
+        // `pitch` komt van de buffer zelf, dus de rijen liggen waar D3D11 ze verwacht, en
+        // de invariant waar de kopie op leunt — er staan minstens `pitch × even(hoogte) ×
+        // 3/2` leesbare bytes vanaf `ptr` — wordt hier afgedwongen en niet aangenomen.
         unsafe {
+            // Vóór het vergrendelen opvragen: `Lock` en `Lock2D` horen niet door elkaar
+            // gebruikt te worden, en dit is de enige plek waar de maat van de allocatie
+            // los van het vergrendelen te krijgen is. `0` betekent "meldt zijn maat niet".
+            let toegewezen = buffer.GetMaxLength().unwrap_or(0);
+
             let mut ptr = std::ptr::null_mut();
-            let mut lengte = 0u32;
-            let pitch = match buffer.cast::<IMF2DBuffer>() {
-                Ok(tweed) => {
+            let tweed = buffer.cast::<IMF2DBuffer>().ok();
+            let (pitch, beschikbaar) = match &tweed {
+                Some(t) => {
                     let mut stap = 0i32;
-                    tweed
-                        .Lock2D(&mut ptr, &mut stap)
+                    t.Lock2D(&mut ptr, &mut stap)
                         .context("beeld vergrendelen")?;
-                    stap.unsigned_abs()
+                    // Een bottom-up buffer geeft een **negatieve** stride: `ptr` wijst dan
+                    // naar de bovenste rij, `S·(h−1)` bytes verderop in de allocatie, en
+                    // `UpdateSubresource` leest vanaf `ptr` alleen maar vooruit — dus
+                    // `S·(h−1)` bytes voorbij het einde, op 1080p ~2,07 MB. Het teken
+                    // wegstrippen met `unsigned_abs` maakte daar stil een out-of-bounds
+                    // read van (B-19). Weigeren is hier het enige eerlijke: een bottom-up
+                    // NV12-buffer levert bovendien een beeld op zijn kop.
+                    if stap <= 0 {
+                        let _ = t.Unlock2D();
+                        bail!("decoder gaf een buffer met stride {stap}; die is niet te lezen");
+                    }
+                    (stap as u32, toegewezen)
                 }
-                Err(_) => {
+                None => {
+                    let mut lengte = 0u32;
                     buffer.Lock(&mut ptr, None, Some(&mut lengte))?;
-                    breedte
+                    (breedte, lengte)
                 }
             };
+
+            // Met `pDstBox = NULL` kopieert D3D de héle subresource: `pitch × even(hoogte)
+            // × 3/2` bytes vooruit vanaf `ptr`. Breedte en hoogte komen uit het uitvoertype
+            // dat de decoder uit de **SPS van de peer** onderhandelde, en dat wordt bij elke
+            // `MF_E_TRANSFORM_STREAM_CHANGE` opnieuw gedaan — de bitstroom van de andere
+            // kant bepaalt dus de leeslengte. Die hoort tegen de buffer aan gehouden te
+            // worden vóór de kopie, niet erna (B-19).
+            let nodig = u64::from(pitch) * u64::from(even(hoogte)) * 3 / 2;
+            if beschikbaar != 0 && u64::from(beschikbaar) < nodig {
+                match &tweed {
+                    Some(t) => {
+                        let _ = t.Unlock2D();
+                    }
+                    None => {
+                        let _ = buffer.Unlock();
+                    }
+                }
+                bail!("decoderbuffer meldt {beschikbaar} bytes voor een beeld van {nodig}");
+            }
+
             self.d3d
                 .context
                 .UpdateSubresource(&doel, 0, None, ptr as *const _, pitch, 0);
-            if let Ok(tweed) = buffer.cast::<IMF2DBuffer>() {
-                let _ = tweed.Unlock2D();
-            } else {
-                let _ = buffer.Unlock();
+            match &tweed {
+                Some(t) => {
+                    let _ = t.Unlock2D();
+                }
+                None => {
+                    let _ = buffer.Unlock();
+                }
             }
         }
 
