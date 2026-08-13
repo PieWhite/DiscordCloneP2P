@@ -210,7 +210,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-22 | MIDDEL | **Deels (2026-08-13)** — Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens | `app/engine.rs:636-658` |
 | B-23 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
 | B-24 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |
-| B-25 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Logvervuiling vanaf een niet-geautoriseerde verbinding stalt de mesh-actor | `net/mesh.rs:632-640` |
+| B-25 | ~~MIDDEL~~ | **Deels (2026-08-13)** — `?msg` weg en rate-limited; het vroeg sluiten van een niet-koppelbare verbinding blijft bewust achterwege (parkeren is by design) | `net/mesh.rs:632-640` |
 | B-26 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Onbegrensde `pending`-lijst voor niet-koppelbare verbindingen | `net/mesh.rs:380,476-480` |
 | B-27 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Te groot UDP-datagram is een fout i.p.v. rommel → logstorm op de mediathreads | `net/media.rs:153` |
 | B-28 | MIDDEL | **Deels (2026-08-13)** — Fragmentinjectie: bronpoort genegeerd en geen index-validatie | `video/kijker.rs:300`, `video/fragment.rs:154` |
@@ -229,7 +229,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-38 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
 | B-39 | LAAG | `read_kind` leest elk byte ≠ 1 als "bestand" | `net/filestream.rs:68` |
 | B-40 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `VersionMismatch` reset de backoff → handshake-lus van 1 Hz | `net/mesh.rs:823-836` |
-| B-41 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Door de peer opgegeven `media_port` wordt niet gevalideerd | `net/mesh.rs:565` |
+| B-41 | LAAG | **Bewust niet gedaan (2026-08-13)** — poort 0 weigeren sluit de verbinding, en de integratietests draaien met `media_port: 0`; invariant 7 gaat vóór. Reden staat bij `install` | `net/mesh.rs:565` |
 | B-42 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `wall_clock` is volledig door de afzender bepaald en wordt getoond | `store/timeline.rs:103` |
 | B-43 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Onbegrensde string- en collectielengtes op de draad | `proto/op.rs:126-145` |
 | B-44 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unreachable!()` bereikbaar bij extreme naamcollisie | `app/engine.rs:1650` |
