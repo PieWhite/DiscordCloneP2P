@@ -303,7 +303,21 @@ impl Chat {
         // Een geweigerde op geeft `false`, net als "hadden we al", dus hij wordt hieronder
         // ook niet doorgestuurd.
         let mut nieuw: Vec<Op> = Vec::new();
+        let me = self.me();
         for op in ops {
+            // B-23: het verzendfilter (`visible_to`) bestond alleen aan de *verzend*kant, dus
+            // een DM tussen twee anderen werd hier gewoon opgeslagen — en de ongelezen-teller
+            // liep op voor een gesprek waar je niet in zit. De weergavelaag hield wel stand,
+            // dus je zag hem niet; hij stond alleen wél op je schijf. Dit spiegelt het filter
+            // bij ontvangst, zodat wat je niet mag zien er ook niet komt te staan.
+            if !op.channel.is_public() && op.channel.dm_peer() != Some(me) && op.author != me {
+                tracing::warn!(
+                    van = ?van,
+                    auteur = ?op.author,
+                    "DM voor een gesprek waar wij niet in zitten geweigerd"
+                );
+                continue;
+            }
             if self.store.apply_remote_from(van, op)? {
                 nieuw.push(op.clone());
             }

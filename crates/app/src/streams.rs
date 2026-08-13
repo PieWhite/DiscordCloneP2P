@@ -379,18 +379,50 @@ impl Streams {
         // de gegevens bijwerken, de kijkstatus laten staan.
         if let Some(s) = self.vind_vreemd(van, a.stream_id) {
             s.kind = a.kind;
-            s.titel = a.title.clone();
+            // B-31: ook op dit pad afkappen — een herverbinding komt hier langs, niet
+            // hierboven, en anders is de grens met één reconnect te omzeilen.
+            s.titel = a
+                .title
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(64)
+                .collect();
             s.breedte = a.width;
             s.hoogte = a.height;
             return Vec::new();
         }
 
-        tracing::info!(peer = ?van, stream = a.stream_id, titel = %a.title, "peer deelt iets");
+        // B-31: een plafond per peer. Zonder dit kan één peer onbeperkt streams
+        // aankondigen — elk met een onbegrensde titel die opgeslagen, gelogd en getoond
+        // wordt. Acht is ruim: je deelt je schermen en je camera, niet meer. Wie erboven
+        // komt is niet iets aan het delen, maar iets aan het vullen.
+        const MAX_STREAMS_PER_PEER: usize = 8;
+        let van_deze_peer = self.vreemd.iter().filter(|s| s.eigenaar == van).count();
+        if van_deze_peer >= MAX_STREAMS_PER_PEER {
+            tracing::warn!(
+                peer = ?van,
+                aantal = van_deze_peer,
+                "te veel streams van deze peer; aankondiging genegeerd"
+            );
+            return Vec::new();
+        }
+
+        // B-31/B-33: de titel komt onbegrensd van de draad en gaat het log en de UI in.
+        // Afkappen op chars, niet op bytes: midden in een multibyte-teken knippen paniekt.
+        const MAX_TITEL: usize = 64;
+        let titel: String = a
+            .title
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_TITEL)
+            .collect();
+
+        tracing::info!(peer = ?van, stream = a.stream_id, titel = ?titel, "peer deelt iets");
         self.vreemd.push(VreemdeStream {
             eigenaar: van,
             id: a.stream_id,
             kind: a.kind,
-            titel: a.title.clone(),
+            titel,
             breedte: a.width,
             hoogte: a.height,
             kijken: false,

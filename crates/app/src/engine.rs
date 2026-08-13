@@ -50,6 +50,20 @@ const VOORTGANG_INTERVAL: Duration = Duration::from_millis(200);
 /// 13 waar de release-feed tegen vergeleken wordt (`fitcom_proto::is_newer`).
 const EIGEN_VERSIE: &str = env!("CARGO_PKG_VERSION");
 
+/// B-22: tot hier haalt de app een aangeboden afbeelding vanzelf op.
+///
+/// Een afbeelding is de enige soort die zichzelf downloadt én toont zonder dat er iemand
+/// klikt, dus dit is het enige pad waarlangs bytes ongevraagd binnenkomen. 16 MiB is ruim
+/// boven een schermafdruk of een foto uit een telefoon, en ver onder wat een schijf
+/// volschrijft. Groter blijft gewoon in de lijst staan met een downloadknop — dan is het
+/// een keuze in plaats van iets dat achter je rug gebeurt.
+///
+/// Dit begrenst het *ophalen*, niet het *decoderen*: de afmetingen van een PNG (een
+/// 30000×30000 "decompression bomb" is een paar honderd kB op de draad en gigabytes in de
+/// renderer) worden door WebView2 afgehandeld, en daar komen wij niet tussen. Dat blijft
+/// een open deel van B-22.
+const MAX_AUTO_AFBEELDING: u64 = 16 * 1024 * 1024;
+
 /// Hoe vaak de release-feed geraadpleegd wordt. Er is niets aan gelegen om er sneller
 /// bij te zijn, en dit is de enige verbinding die de app buiten het tailnet legt.
 const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -712,6 +726,14 @@ impl Engine {
                             f.author != me
                                 && !bekende_afbeeldingen.contains(&f.id)
                                 && files::is_afbeelding(&f.name)
+                                // B-22: alleen automatisch ophalen onder een plafond. Dit is
+                                // het enige pad waarop bytes zonder één klik binnenkomen —
+                                // een afbeelding haalt en toont zichzelf, live én bij het
+                                // inhalen van geschiedenis. Zonder grens is dat een
+                                // download-DoS met een `size` die niemand controleert.
+                                // Boven het plafond blijft het bestand gewoon aanklikbaar;
+                                // het gaat er alleen niet meer vanzelf achteraan.
+                                && f.size <= MAX_AUTO_AFBEELDING
                         })
                         .map(|f| f.id)
                         .collect();

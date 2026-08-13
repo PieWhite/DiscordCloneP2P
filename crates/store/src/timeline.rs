@@ -64,6 +64,26 @@ fn key(op: &Op) -> (u64, PeerId) {
     (op.lamport, op.author)
 }
 
+/// B-42: `wall_clock` is volledig door de afzender bepaald en wordt getoond.
+///
+/// De ordening gebruikt hem niet — die gaat op `(lamport, author)`, precies zodat de drie
+/// klokken niet hoeven te kloppen — dus dit is puur weergave. Maar mét B-06 kan een
+/// vervalst bericht zich als weken oud voordoen en zo tussen echte geschiedenis wegzakken,
+/// of juist in de toekomst gaan staan en bovenaan blijven plakken.
+///
+/// Klemmen op ±7 dagen rond de lokale tijd: ruim genoeg voor peers met een scheve klok en
+/// voor een inhaalslag na een lange vakantie, krap genoeg dat "dit bericht is van 1970" of
+/// "van 2049" niet meer kan. Buiten het bereik valt hij terug op de rand, niet op nu — dan
+/// blijft zichtbaar dát het oud bedoeld was.
+fn klem_wall_clock(ms: i64) -> i64 {
+    const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+    let nu = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    ms.clamp(nu.saturating_sub(WEEK_MS), nu.saturating_add(WEEK_MS))
+}
+
 pub fn build(ops: &[Op]) -> Timeline {
     let mut sorted: Vec<&Op> = ops.iter().collect();
     sorted.sort_by_key(|o| key(o));
@@ -101,7 +121,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                         author: op.author,
                         channel: op.channel,
                         body,
-                        created_at: op.wall_clock,
+                        created_at: klem_wall_clock(op.wall_clock),
                         edited: false,
                         lamport: op.lamport,
                     },
