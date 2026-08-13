@@ -28,6 +28,12 @@ pub enum UpdateStatus {
     KlaarOmToeTePassen {
         versie: String,
         pad: PathBuf,
+        /// B-20: de hash waartegen de download geverifieerd is, zodat de updater hem vlak
+        /// vóór het vervangen nóg een keer kan leggen. Het gat tussen "geverifieerd" en
+        /// "toegepast" is onbegrensd — de gebruiker klikt wanneer het hem uitkomt — en
+        /// alles wat in dat venster in de updatemap kan schrijven wisselt anders de payload
+        /// om zonder dat iemand het merkt.
+        hash: [u8; 32],
     },
     /// De feed was bereikbaar en had niets nieuwers. Ook alleen na een druk op de knop —
     /// zonder dit antwoord lijkt de knop stuk.
@@ -111,13 +117,14 @@ impl Updates {
         }
     }
 
-    pub fn klaar(&mut self, pad: PathBuf) {
+    pub fn klaar(&mut self, pad: PathBuf, hash: [u8; 32]) {
         self.bezig = false;
         self.handmatig = false;
         if let Some(UpdateStatus::Bezig { versie, .. }) = &self.huidig {
             self.huidig = Some(UpdateStatus::KlaarOmToeTePassen {
                 versie: versie.clone(),
                 pad,
+                hash,
             });
         }
     }
@@ -182,12 +189,14 @@ mod tests {
         );
 
         let pad = PathBuf::from("C:/data/updates/update-0.3.0.exe");
-        u.klaar(pad.clone());
+        u.klaar(pad.clone(), [7u8; 32]);
         assert_eq!(
             u.status(),
             Some(&UpdateStatus::KlaarOmToeTePassen {
                 versie: "0.3.0".into(),
-                pad
+                pad,
+                // B-20: de hash reist mee tot aan de updater.
+                hash: [7u8; 32],
             })
         );
     }
@@ -197,7 +206,7 @@ mod tests {
         let mut u = Updates::new();
         u.zoeken_gestart(false);
         u.gestart("0.3.0".into(), 10);
-        u.klaar(PathBuf::from("x"));
+        u.klaar(PathBuf::from("x"), [0u8; 32]);
         assert!(
             !u.mag_zoeken(),
             "eerst toepassen of wegklikken, anders halen we hem er twee keer bij"
@@ -234,7 +243,7 @@ mod tests {
         let mut u = Updates::new();
         u.zoeken_gestart(false);
         u.gestart("0.3.0".into(), 10);
-        u.klaar(PathBuf::from("x"));
+        u.klaar(PathBuf::from("x"), [0u8; 32]);
 
         u.negeer("0.3.0");
         assert_eq!(u.status(), None);

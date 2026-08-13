@@ -27,6 +27,26 @@ pub struct Config {
     #[serde(default = "default_media_port")]
     pub media_port: u16,
 
+    /// Op welk adres de control- en mediapoort luisteren. B-09.
+    ///
+    /// **Waarom dit bestaat.** Het hele vertrouwensmodel van deze app rust op "alleen
+    /// tailnet-verkeer bereikt ons", maar beide sockets binden op `0.0.0.0` — álle
+    /// interfaces. Daarmee is elke andere bevinding in `docs/BEVEILIGING.md` ook bereikbaar
+    /// vanaf het LAN, vanaf hotel- of congreswifi, en vanaf internet als een router de poort
+    /// doorstuurt. De firewallregel is op dit moment de enige echte grens (zie `README.md`).
+    ///
+    /// **Waarom de standaard tóch `0.0.0.0` is.** Een vast adres hier is niet gratis: staat
+    /// Tailscale nog niet omhoog als de app start, of verandert het tailnet-adres van deze
+    /// machine, dan bindt de app aan een adres dat er niet is en is hij onbereikbaar tot
+    /// iemand hem herstart. Dat is precies het soort stille breuk dat invariant 7 verbiedt.
+    /// Deze waarde is daarom een keuze die je bewust maakt en één keer test, niet iets dat
+    /// onder je vandaan verandert bij een update.
+    ///
+    /// **Wat je hier wilt invullen** is het `100.x.y.z`-adres van deze machine uit
+    /// `tailscale ip -4`. Dat maakt B-09 in één regel dicht voor deze machine.
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+
     /// Sluitknop verbergt naar de tray in plaats van af te sluiten. De app blijft dan
     /// synchroniseren en melden terwijl je iets anders doet.
     #[serde(default = "waar")]
@@ -186,6 +206,35 @@ fn default_media_port() -> u16 {
     DEFAULT_MEDIA_PORT
 }
 
+/// B-09: alle interfaces, zoals het altijd was. Zie het veld voor waarom dit de standaard
+/// blijft en wat je in plaats daarvan zou invullen.
+pub const ALLE_INTERFACES: &str = "0.0.0.0";
+
+fn default_bind_address() -> String {
+    ALLE_INTERFACES.to_string()
+}
+
+impl Config {
+    /// Het adres waarop we luisteren, met een waarschuwing als dat alles is.
+    ///
+    /// De waarschuwing staat er omdat "we binden op alles" anders nergens zichtbaar is: de
+    /// app werkt prima, en dat je bereikbaar bent vanaf de wifi van het hotel merk je pas
+    /// als iemand het gebruikt. Eén regel per start, op het moment dat er toch al gelogd
+    /// wordt.
+    pub fn bind_ip(&self) -> String {
+        if self.bind_address == ALLE_INTERFACES {
+            tracing::warn!(
+                "luistert op alle interfaces (B-09): op een gedeeld netwerk is de app dan \
+                 ook buiten het tailnet bereikbaar. Zet `bind_address` in config.toml op je \
+                 tailnet-adres (`tailscale ip -4`) om dat te sluiten."
+            );
+        } else {
+            tracing::info!(adres = %self.bind_address, "luistert op één adres (B-09)");
+        }
+        self.bind_address.clone()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
     /// Tailnet-IP (`100.x.x.x`) of MagicDNS-naam. MagicDNS heeft de voorkeur: die
@@ -215,6 +264,7 @@ impl Config {
             display_name: whoami_or("gebruiker"),
             control_port: DEFAULT_CONTROL_PORT,
             media_port: DEFAULT_MEDIA_PORT,
+            bind_address: default_bind_address(),
             minimize_to_tray: true,
             autostart: false,
             input_device: None,

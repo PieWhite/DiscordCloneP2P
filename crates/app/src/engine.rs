@@ -449,6 +449,8 @@ enum FileEvent {
     GeenUpdate,
     UpdateKlaar {
         pad: PathBuf,
+        /// B-20: de geverifieerde hash reist mee tot aan de updater.
+        hash: [u8; 32],
     },
     UpdateMislukt {
         bericht: String,
@@ -791,7 +793,8 @@ impl Engine {
     /// updater-proces (dat wacht tot wíj afgesloten zijn, want een exe kan zichzelf niet
     /// overschrijven terwijl hij draait) en sluit daarna net zo af als via het tray-menu.
     fn pas_update_toe(&mut self) {
-        let Some(UpdateStatus::KlaarOmToeTePassen { pad, .. }) = self.updates.status().cloned()
+        let Some(UpdateStatus::KlaarOmToeTePassen { pad, hash, .. }) =
+            self.updates.status().cloned()
         else {
             return;
         };
@@ -818,6 +821,9 @@ impl Engine {
             self.fout = Some(bericht);
             return;
         };
+        // B-20: de hash gaat mee, zodat de updater hem opnieuw legt vlak vóór het
+        // overschrijven. Hier verifiëren zou niets toevoegen — tussen hier en `vervang()`
+        // zit precies hetzelfde gat.
         let resultaat = std::process::Command::new(&updater)
             .arg("--new")
             .arg(&pad)
@@ -825,6 +831,8 @@ impl Engine {
             .arg(&huidige_exe)
             .arg("--pid")
             .arg(std::process::id().to_string())
+            .arg("--hash")
+            .arg(release::bytes_naar_hex(&hash))
             .spawn();
         match resultaat {
             Ok(_) => self.afsluiten_voor_update.store(true, Ordering::Relaxed),
@@ -1786,7 +1794,7 @@ impl Engine {
             }
             FileEvent::UpdateVoortgang { ontvangen } => self.updates.voortgang(ontvangen),
             FileEvent::GeenUpdate => self.updates.niets_gevonden(),
-            FileEvent::UpdateKlaar { pad } => self.updates.klaar(pad),
+            FileEvent::UpdateKlaar { pad, hash } => self.updates.klaar(pad, hash),
             FileEvent::UpdateMislukt { bericht } => {
                 tracing::warn!(%bericht, "update ophalen mislukt");
                 self.updates.mislukt(bericht);
@@ -2417,7 +2425,7 @@ fn haal_update_op(
     });
 
     match download_met_voortgang(&manifest, hash, updates_dir, events) {
-        Ok(pad) => melden(FileEvent::UpdateKlaar { pad }),
+        Ok(pad) => melden(FileEvent::UpdateKlaar { pad, hash }),
         Err(e) => melden(FileEvent::UpdateMislukt {
             bericht: format!("{e:#}"),
         }),

@@ -42,6 +42,44 @@ struct Args {
     /// PID van de hoofd-app, om op te wachten vóór het overschrijven.
     #[arg(long)]
     pid: u32,
+    /// B-20: de BLAKE3 die de app bij het downloaden tegen het ondertekende manifest legde,
+    /// als hex. Wordt hier opnieuw gelegd vlak vóór het overschrijven.
+    ///
+    /// Optioneel zodat een oudere app die deze vlag nog niet meestuurt blijft werken. Staat
+    /// hij er niet, dan gebeurt wat er hiervóór altijd gebeurde — en dat is precies de reden
+    /// dat hij er wél hoort te staan.
+    #[arg(long)]
+    hash: Option<String>,
+}
+
+/// B-20: klopt het bestand nog met wat de app geverifieerd heeft?
+///
+/// Het gat tussen "gedownload en geverifieerd" en "toegepast" is onbegrensd: de gebruiker
+/// klikt wanneer het hem uitkomt, en tot die tijd staat er een exe in de updatemap die
+/// straks over `fitcom.exe` heen gaat. Alles wat in dat venster in die map kan schrijven,
+/// wisselt de payload om. Op een eenpersoons-PC vergt dat lokale code-uitvoering — maar
+/// B-02 schreef juist naar willekeurige mappen, inclusief deze.
+///
+/// Een ontbrekende `--hash` is geen fout (zie het veld), een niet-kloppende wél: dan gaat er
+/// niets vervangen worden.
+#[cfg(windows)]
+fn hash_klopt(pad: &Path, verwacht_hex: &str) -> Result<(), String> {
+    let mut bestand = std::fs::File::open(pad).map_err(|e| format!("update openen: {e}"))?;
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut bestand, &mut hasher).map_err(|e| format!("update lezen: {e}"))?;
+    let werkelijk = hasher.finalize();
+    let werkelijk_hex: String = werkelijk
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if !werkelijk_hex.eq_ignore_ascii_case(verwacht_hex) {
+        return Err(format!(
+            "de update in de wachtrij is veranderd sinds hij geverifieerd werd \
+             (verwacht {verwacht_hex}, gevonden {werkelijk_hex}); er wordt niets vervangen"
+        ));
+    }
+    Ok(())
 }
 
 /// Hoe lang we maximaal wachten tot de hoofd-app afsluit. Ruim boven wat een nette
@@ -66,6 +104,23 @@ fn main() {
         return;
     }
     log(&log_pad, "hoofd-app is afgesloten");
+
+    // B-20: opnieuw verifiëren ná het wachten op de hoofd-app, niet ervoor — het venster dat
+    // telt loopt tot vlak vóór het overschrijven, en dit is het laatste moment waarop we er
+    // nog iets aan kunnen doen.
+    match &args.hash {
+        Some(hex) => match hash_klopt(&args.new, hex) {
+            Ok(()) => log(&log_pad, "hash van de update klopt nog"),
+            Err(e) => {
+                log(&log_pad, &format!("BIJWERKEN AFGEBROKEN: {e}"));
+                return;
+            }
+        },
+        None => log(
+            &log_pad,
+            "geen --hash meegekregen; overslaan van de herverificatie (oudere app)",
+        ),
+    }
 
     if let Err(e) = vervang(&args.new, &args.target) {
         log(&log_pad, &format!("exe vervangen mislukt: {e}"));

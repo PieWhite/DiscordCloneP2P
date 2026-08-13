@@ -30,6 +30,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         display_name: naam.to_string(),
         control_port: eigen,
         media_port: 0,
+        bind_address: fitcom::config::ALLE_INTERFACES.to_string(),
         minimize_to_tray: false,
         autostart: false,
         input_device: None,
