@@ -15,9 +15,10 @@ use crate::{framing, tls};
 use anyhow::{bail, Context, Result};
 use fitcom_proto::control::{Hello, HelloAck};
 use fitcom_proto::{ControlMsg, PeerId, PROTOCOL_VERSION};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -29,6 +30,25 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// Hoe vaak we een verse RTT naar de UI duwen.
 const STATUS_TICK: Duration = Duration::from_secs(1);
+
+/// Hoeveel inkomende verbindingen er tegelijk mogen lopen (B-17).
+///
+/// Er was geen enkele rem: elke inkomende verbinding kreeg een taak, een lezer en een
+/// framebuffer, van iemand die nog niets bewezen heeft.
+///
+/// Bewust rúim, want te krap is hier erger dan te ruim. Eén peer kan tegelijk meer dan
+/// één verbinding bij ons open hebben staan: tijdens een botsing twee, en na een harde
+/// herstart blijven zijn oude verbindingen hier hangen tot de idle-timeout van 15 s ze
+/// opruimt terwijl hij met een backoff van één seconde alweer belt. Zestien per
+/// geconfigureerde peer dekt dat geval met marge; de ondergrens van 32 houdt een kleine
+/// of lege config werkbaar. Ook zo blijft het eindig: het uitgangspunt van B-17 was
+/// 500 verbindingen × 16 MiB ≈ 8 GB, en hier is het plafond bij drie peers 32 × 2 MiB.
+///
+/// Wie erbuiten valt krijgt `refuse()` en dus meteen antwoord, en probeert het met zijn
+/// eigen backoff gewoon opnieuw — invariant 7 blijft staan.
+fn max_inkomend(targets: usize) -> usize {
+    targets.saturating_mul(16).max(32)
+}
 
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
@@ -331,6 +351,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
                 .collect(),
             events: event_tx,
             pending: Vec::new(),
+            gemelde_frames: HashSet::new(),
         }
         .run(int_rx),
     );
@@ -377,7 +398,14 @@ struct Actor {
     /// zodra onze eigen dialer dat adres heeft opgezocht. Belt de ander eerder dan dat,
     /// dan zouden we een volstrekt legitieme verbinding weigeren. Daarom parkeren we
     /// hem kort in plaats van hem weg te gooien.
+    ///
+    /// Begrensd op [`Actor::max_pending`] (B-26): elke wachtende verbinding houdt een
+    /// levende `quinn::Connection` met zijn taken vast, en `retry_pending` loopt de lijst
+    /// bij elke tik helemaal na.
     pending: Vec<(std::time::Instant, Box<Established>)>,
+    /// Verbindingen waarover we al een regel schreven over een frame dat nergens bij
+    /// hoorde (B-25). Eén regel per verbinding, niet één per frame.
+    gemelde_frames: HashSet<u64>,
 }
 
 /// Hoe lang een niet te koppelen inkomende verbinding blijft wachten voordat we
@@ -466,11 +494,34 @@ impl Actor {
             .await;
     }
 
+    /// Hoeveel verbindingen er tegelijk geparkeerd mogen staan (B-26).
+    ///
+    /// Vier per geconfigureerde peer, ondergrens acht. Ruim gekozen om dezelfde reden als
+    /// [`max_inkomend`]: bij het opstarten kan iedereen tegelijk bellen, tijdens een
+    /// botsing staan er heel even twee van dezelfde peer, en een geparkeerde verbinding
+    /// die we ten onrechte wegkieperen is een peer die pas na zijn volgende backoff weer
+    /// binnenkomt. Elke plek gaat sowieso na [`PENDING_GRACE`] weer open.
+    fn max_pending(&self) -> usize {
+        self.cfg.targets.len().saturating_mul(4).max(8)
+    }
+
     async fn on_established(&mut self, e: Established) {
         // Koppel een inkomende verbinding aan een geconfigureerde target.
         match e.target.or_else(|| self.match_inbound(&e)) {
             Some(target) => self.install(e, target).await,
             None => {
+                // B-26: de **oudste** wijkt, niet de nieuwste. Andersom zou een stroom
+                // verbindingen van een vreemde precies die ene legitieme peer buiten de
+                // deur houden die als eerste belde en nog op zijn adres wacht.
+                while self.pending.len() >= self.max_pending() {
+                    let (_, oud) = self.pending.remove(0);
+                    tracing::debug!(
+                        peer = ?oud.peer_id, remote = %oud.remote,
+                        "wachtrij vol: oudste ongekoppelde verbinding losgelaten"
+                    );
+                    oud.conn.close(1u32.into(), b"wachtrij vol");
+                    self.gemelde_frames.remove(&oud.conn_id);
+                }
                 tracing::debug!(
                     peer = ?e.peer_id, remote = %e.remote,
                     "inkomende verbinding nog niet te koppelen, geparkeerd"
@@ -497,6 +548,7 @@ impl Actor {
                         "verbinding geweigerd: deze peer staat niet in de config"
                     );
                     e.conn.close(1u32.into(), b"onbekende peer");
+                    self.gemelde_frames.remove(&e.conn_id);
                 }
             }
         }
@@ -504,6 +556,27 @@ impl Actor {
     }
 
     async fn install(&mut self, e: Established, target: usize) {
+        // B-24: dezelfde identiteit mag nooit aan twee targets hangen. Lossen twee
+        // adressen uit de config naar dezelfde peer op, dan verhuisde `active` naar het
+        // laatste target terwijl `bound` en `connected` van het eerste bleven staan: die
+        // peer stond daarna voorgoed "online" op een verbinding die al dicht was, en werd
+        // nooit meer gebeld. Het eerste target dat de identiteit leerde houdt hem.
+        if let Some(ander) = self.identiteit_op_ander_target(target, e.peer_id) {
+            tracing::warn!(
+                peer = ?e.peer_id, remote = %e.remote, target, ander,
+                "verbinding geweigerd: deze identiteit hoort al bij een ander target in de config"
+            );
+            e.conn.close(1u32.into(), b"dubbele identiteit in config");
+            self.set_status(
+                target,
+                PeerStatus::Offline {
+                    reason: "zelfde peer als een ander adres".to_string(),
+                },
+            )
+            .await;
+            return;
+        }
+
         // Identiteitscontrole: hetzelfde adres hoort dezelfde peer te zijn.
         match self.targets[target].known_id {
             Some(known) if known != e.peer_id => {
@@ -566,6 +639,15 @@ impl Actor {
         self.targets[target].bound = Some(e.conn_id);
         let _ = self.targets[target].connected.send(true);
 
+        // B-41 (de door de peer opgegeven mediapoort is ongevalideerd) is hier bewust
+        // blijven liggen. Het IP komt uit de verbinding, dus dit wijst nooit naar een
+        // derde; het kwaad is beperkt tot een peer die ons media naar een eigen poort
+        // laat sturen, of naar poort 0 en dan mislukt elk pakket apart. Poort 0 weigeren
+        // betekent de verbinding sluiten, en alle integratietests van `crates/app`
+        // (`chat_sync`, `file_deling`, `stream_deling`) draaien met `media_port: 0` omdat
+        // daar geen media loopt — die peers vonden elkaar daarna niet meer. Invariant 7
+        // gaat vóór een LAAG-bevinding. Wie dit alsnog wil: geef die tests een echte
+        // poort, of maak `media_addr` een `Option` (dat laatste raakt `crates/app`).
         let media_addr = SocketAddr::new(e.remote.ip(), e.media_port);
         let status = PeerStatus::Online {
             peer_id: e.peer_id,
@@ -589,6 +671,15 @@ impl Actor {
         );
 
         self.set_status(target, status).await;
+    }
+
+    /// Of deze identiteit al bij een *ander* target hoort (B-24). Levert dat andere
+    /// target op, zodat het log kan vertellen welke twee regels in de config botsen.
+    fn identiteit_op_ander_target(&self, target: usize, peer_id: PeerId) -> Option<usize> {
+        self.targets
+            .iter()
+            .position(|t| t.known_id == Some(peer_id))
+            .filter(|&i| i != target)
     }
 
     /// Bepaalt bij welke geconfigureerde peer een inkomende verbinding hoort.
@@ -635,11 +726,19 @@ impl Actor {
 
     async fn on_frame(&mut self, conn_id: u64, msg: ControlMsg) {
         let Some((&from, _)) = self.active.iter().find(|(_, a)| a.conn_id == conn_id) else {
-            tracing::warn!(
-                conn = conn_id,
-                ?msg,
-                "frame van onbekende verbinding genegeerd"
-            );
+            // B-25: alleen de tag, nooit `?msg`. Hier stond de volledige gedecodeerde
+            // `ControlMsg`, wat bij een `OpBroadcast` een logregel van megabytes werd — en
+            // de appender schrijft bewust synchroon, dus stonden peerstatus, ping/pong en
+            // `retry_pending` zolang stil. Eén regel per verbinding, want een nog niet
+            // gekoppelde verbinding mag dan wel legitiem zijn, tienduizend regels zijn dat
+            // nooit.
+            if self.gemelde_frames.insert(conn_id) {
+                tracing::debug!(
+                    conn = conn_id,
+                    tag = msg.tag(),
+                    "frame van nog niet gekoppelde verbinding genegeerd"
+                );
+            }
             return;
         };
 
@@ -660,21 +759,35 @@ impl Actor {
     }
 
     async fn on_closed(&mut self, conn_id: u64, reason: String) {
-        let Some((&peer, _)) = self.active.iter().find(|(_, a)| a.conn_id == conn_id) else {
-            return;
-        };
-        let active = self.active.remove(&peer).expect("net gevonden");
-        tracing::info!(peer = ?peer, %reason, "verbinding verbroken");
-
-        if let Some(t) = active.target {
-            // Alleen loslaten als deze verbinding ook echt de gebonden verbinding was;
-            // anders zou een verlaten botsings-verbinding de goede verbinding wegkicken.
-            if self.targets[t].bound == Some(conn_id) {
-                self.targets[t].bound = None;
-                let _ = self.targets[t].connected.send(false);
-                self.set_status(t, PeerStatus::Offline { reason }).await;
-            }
+        // B-24: losmaken gaat op `bound`, niet via een omgekeerde zoekactie in `active`.
+        // Die zoekactie vond niets zodra de verbinding daar al door een nieuwere vervangen
+        // was, en dan keerde deze functie vroeg terug — met `bound` en `connected` blijvend
+        // op de dode verbinding, dus zonder dat de dialer ooit weer aan de slag ging.
+        // `bound == Some(conn_id)` is bovendien nog steeds de test die voorkomt dat een
+        // verlaten botsings-verbinding de goede wegkickt.
+        if let Some(t) = self.targets.iter().position(|t| t.bound == Some(conn_id)) {
+            self.targets[t].bound = None;
+            let _ = self.targets[t].connected.send(false);
+            self.set_status(
+                t,
+                PeerStatus::Offline {
+                    reason: reason.clone(),
+                },
+            )
+            .await;
         }
+
+        // En pas daarna uit `active`, en alleen als deze verbinding daar nog echt staat.
+        if let Some((&peer, _)) = self.active.iter().find(|(_, a)| a.conn_id == conn_id) {
+            self.active.remove(&peer);
+            tracing::info!(peer = ?peer, %reason, "verbinding verbroken");
+        }
+
+        // Een geparkeerde verbinding kan ook sluiten voordat hij ooit gekoppeld werd;
+        // zonder dit bleef hij tot `PENDING_GRACE` een plek in de wachtrij bezet houden
+        // (B-26).
+        self.pending.retain(|(_, e)| e.conn_id != conn_id);
+        self.gemelde_frames.remove(&conn_id);
     }
 
     async fn on_tick(&mut self) {
@@ -754,9 +867,15 @@ async fn dial_forever(
         let _ = int.send(Internal::Connecting { target }).await;
 
         match try_dial(&endpoint, &cfg, target, &peer, &int).await {
-            Ok(()) => {
+            // B-40: alleen een sessie die er echt geweest is verdient een verse backoff.
+            // `VersionMismatch` keerde ook als `Ok` terug en zette hem daarmee terug op
+            // één seconde, dus tegen een peer die altijd een afwijkende versie meldt deden
+            // we elke seconde een volledige QUIC+TLS-handshake — voor niets, want die
+            // uitkomst verandert pas als iemand update.
+            Ok(Dialresultaat::Sessie) => {
                 backoff = BACKOFF_START;
             }
+            Ok(Dialresultaat::Afgewezen) => {}
             Err(e) => {
                 tracing::debug!(address = %peer.address, error = %format!("{e:#}"), "verbinden mislukt");
                 let _ = int
@@ -775,6 +894,16 @@ async fn dial_forever(
     }
 }
 
+/// Wat een dialpoging opleverde (B-40). `Afgewezen` is geen fout — de peer is bereikbaar
+/// maar we kunnen er niets mee — en mag daarom ook de backoff niet resetten.
+enum Dialresultaat {
+    /// De handshake slaagde en er heeft een sessie gedraaid.
+    Sessie,
+    /// Nette, verwachte afwijzing: de peer is bereikbaar maar draait een andere
+    /// protocolversie. Dat verandert pas als iemand update, dus doorproberen mag rustig.
+    Afgewezen,
+}
+
 /// Verbindt, doet de handshake en keert pas terug als de verbinding weer weg is.
 async fn try_dial(
     endpoint: &quinn::Endpoint,
@@ -782,7 +911,7 @@ async fn try_dial(
     target: usize,
     peer: &PeerTarget,
     int: &mpsc::Sender<Internal>,
-) -> Result<()> {
+) -> Result<Dialresultaat> {
     let host = format!("{}:{}", peer.address, peer.control_port);
     let addr = tokio::net::lookup_host(&host)
         .await
@@ -836,7 +965,7 @@ async fn try_dial(
             })
             .await;
         // Geen fout: dit is een nette, verwachte uitkomst waar de gebruiker wat mee moet.
-        return Ok(());
+        return Ok(Dialresultaat::Afgewezen);
     }
 
     if ack.peer_id == cfg.me {
@@ -857,8 +986,13 @@ async fn try_dial(
     )
     .await;
 
-    Ok(())
+    Ok(Dialresultaat::Sessie)
 }
+
+// B-41 (mediapoort 0 weigeren) staat hier bewust **niet**. Zie de uitleg bij `install`:
+// het weigeren van poort 0 sluit de verbinding, en `crates/app` zet in al zijn
+// integratietests `media_port: 0` omdat daar geen media loopt. Die tests zijn de bewaker
+// van invariant 7 en die weegt zwaarder dan een LAAG-bevinding.
 
 async fn accept_loop(
     endpoint: quinn::Endpoint,
@@ -866,6 +1000,9 @@ async fn accept_loop(
     int: mpsc::Sender<Internal>,
     mut stop: watch::Receiver<bool>,
 ) {
+    let grens = max_inkomend(cfg.targets.len());
+    let lopend = Arc::new(AtomicUsize::new(0));
+
     loop {
         let incoming = tokio::select! {
             _ = cancelled(&mut stop) => break,
@@ -875,13 +1012,46 @@ async fn accept_loop(
             },
         };
 
+        // B-17: pas op hoeveel er tegelijk lopen. Elke inkomende verbinding kost een taak,
+        // een lezer en een framebuffer, van iemand die nog niets bewezen heeft.
+        // `refuse()` stuurt meteen een weigering terug, dus een echte peer die hier tegenaan
+        // loopt hangt niet en probeert het gewoon opnieuw.
+        if lopend.load(Ordering::Relaxed) >= grens {
+            tracing::debug!(
+                grens,
+                remote = %incoming.remote_address(),
+                "inkomende verbinding geweigerd: te veel tegelijk"
+            );
+            incoming.refuse();
+            continue;
+        }
+
         let cfg = cfg.clone();
         let int = int.clone();
+        let teller = Teller::nieuw(&lopend);
         tokio::spawn(async move {
+            let _teller = teller;
             if let Err(e) = accept_one(incoming, cfg, int).await {
                 tracing::debug!(error = %format!("{e:#}"), "inkomende verbinding afgewezen");
             }
         });
+    }
+}
+
+/// Telt zolang hij leeft mee in [`accept_loop`]. Een guard en geen losse `fetch_sub`,
+/// zodat elk pad eruit — fout, timeout, of een sessie van uren — hem weer vrijgeeft.
+struct Teller(Arc<AtomicUsize>);
+
+impl Teller {
+    fn nieuw(n: &Arc<AtomicUsize>) -> Self {
+        n.fetch_add(1, Ordering::Relaxed);
+        Self(n.clone())
+    }
+}
+
+impl Drop for Teller {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -890,29 +1060,39 @@ async fn accept_one(
     cfg: MeshConfig,
     int: mpsc::Sender<Internal>,
 ) -> Result<()> {
-    let conn = incoming.await.context("inkomende QUIC-handshake")?;
-    let (mut send, mut recv) = conn
-        .accept_bi()
-        .await
-        .context("control-stream accepteren")?;
+    // B-17: alleen het opzetten krijgt een deadline, net als bij `try_dial`. De sessie
+    // erna mag uren duren, dus de timeout kan niet om deze hele functie heen: een peer die
+    // niets stuurt hield anders een taak, een verbinding en een leesbuffer bezet tot de
+    // idle-timeout, en niets belette hem dat duizend keer tegelijk te doen.
+    let (conn, send, recv, hello) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let conn = incoming.await.context("inkomende QUIC-handshake")?;
+        let (mut send, mut recv) = conn
+            .accept_bi()
+            .await
+            .context("control-stream accepteren")?;
 
-    let hello = match framing::read_frame(&mut recv).await? {
-        Some(Some(ControlMsg::Hello(h))) => h,
-        Some(_) => bail!("eerste bericht was geen Hello"),
-        None => bail!("verbinding sloot voor de Hello"),
-    };
+        let hello = match framing::read_frame(&mut recv).await? {
+            Some(Some(ControlMsg::Hello(h))) => h,
+            Some(_) => bail!("eerste bericht was geen Hello"),
+            None => bail!("verbinding sloot voor de Hello"),
+        };
 
-    framing::write_frame(
-        &mut send,
-        &ControlMsg::HelloAck(HelloAck {
-            protocol_version: PROTOCOL_VERSION,
-            peer_id: cfg.me,
-            display_name: cfg.display_name.clone(),
-            media_port: cfg.media_port,
-            app_version: cfg.app_version.clone(),
-        }),
-    )
-    .await?;
+        framing::write_frame(
+            &mut send,
+            &ControlMsg::HelloAck(HelloAck {
+                protocol_version: PROTOCOL_VERSION,
+                peer_id: cfg.me,
+                display_name: cfg.display_name.clone(),
+                media_port: cfg.media_port,
+                app_version: cfg.app_version.clone(),
+            }),
+        )
+        .await?;
+
+        Ok::<_, anyhow::Error>((conn, send, recv, hello))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("peer maakte de handshake niet af"))??;
 
     if hello.protocol_version != PROTOCOL_VERSION {
         // De ander ziet dit ook en meldt het aan zijn gebruiker; wij sluiten netjes.
@@ -946,7 +1126,6 @@ async fn accept_one(
     Ok(())
 }
 
-/// Draait tot de verbinding weg is. Splitst lezen en schrijven in twee taken zodat een
 /// B-33: bovengrens voor de twee strings die een peer in de handshake meestuurt. Een naam
 /// is een naam en een versie is een versie; alles daarboven is geen invoer maar een poging.
 const MAX_DISPLAY_NAME: usize = 64;
@@ -971,6 +1150,7 @@ fn schone_wirestring(s: &str, max: usize) -> String {
         .to_string()
 }
 
+/// Draait tot de verbinding weg is. Splitst lezen en schrijven in twee taken zodat een
 /// trage lezer het schrijven niet blokkeert.
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -1017,8 +1197,25 @@ async fn run_session(
 
     let writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
-            if let Err(e) = framing::write_frame(&mut send, &msg).await {
-                tracing::debug!(error = %format!("{e:#}"), "schrijven mislukt");
+            // B-15: een bericht dat niet in een frame past wordt **overgeslagen**, niet
+            // fataal. Hier stond één `break` voor beide gevallen, en dus sloopte één te
+            // grote op de control-verbinding permanent: bij herverbinding bouwde
+            // `beantwoord_sync` dezelfde batch opnieuw op en brak de schrijftaak opnieuw
+            // af — alleen te herstellen door de database weg te gooien.
+            let bytes = match framing::frame_bytes(&msg) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        tag = msg.tag(), error = %format!("{e:#}"),
+                        "bericht overgeslagen; de verbinding blijft staan"
+                    );
+                    continue;
+                }
+            };
+            // Een kapotte stream is wél het einde: dan mislukt alles wat hierna komt ook,
+            // en de sessie wordt zo meteen toch opgeruimd.
+            if let Err(e) = send.write_all(&bytes).await {
+                tracing::debug!(error = %e, "schrijven mislukt");
                 break;
             }
         }
@@ -1090,6 +1287,128 @@ mod tests {
         let mut b = [0u8; 16];
         b[0] = n;
         PeerId::from_bytes(b)
+    }
+
+    /// Een actor zonder netwerk eronder. `active` blijft leeg — daar hoort een echte
+    /// `quinn::Connection` in en die maak je niet zonder endpoint — maar alles wat met
+    /// targets, `bound` en de wachtrij te maken heeft is zo wél te testen.
+    ///
+    /// De ontvangkant van de `connected`-vlaggen gaat mee terug: in het echt houdt de
+    /// dialer die vast, en een `watch::Sender` zonder ontvangers laat zijn waarde staan.
+    fn kale_actor(
+        aantal_targets: usize,
+    ) -> (Actor, mpsc::Receiver<MeshEvent>, Vec<watch::Receiver<bool>>) {
+        let targets: Vec<PeerTarget> = (0..aantal_targets)
+            .map(|i| PeerTarget {
+                address: format!("100.64.0.{}", i + 1),
+                label: format!("peer{i}"),
+                known_id: None,
+                control_port: 41000,
+            })
+            .collect();
+        let (tx, rx) = mpsc::channel(32);
+        let mut vlaggen = Vec::new();
+        let mut target_state = Vec::new();
+        for _ in 0..aantal_targets {
+            let (vlag_tx, vlag_rx) = watch::channel(false);
+            vlaggen.push(vlag_rx);
+            target_state.push(TargetState {
+                connected: vlag_tx,
+                resolved: None,
+                known_id: None,
+                bound: None,
+                last_status: None,
+            });
+        }
+        let actor = Actor {
+            cfg: MeshConfig {
+                me: peer(9),
+                display_name: "ik".into(),
+                control_port: 41000,
+                media_port: 41700,
+                targets: targets.clone(),
+                app_version: "1.0.0".into(),
+            },
+            active: HashMap::new(),
+            targets: target_state,
+            events: tx,
+            pending: Vec::new(),
+            gemelde_frames: HashSet::new(),
+        };
+        (actor, rx, vlaggen)
+    }
+
+    #[tokio::test]
+    async fn b24_dode_verbinding_laat_het_target_los_ook_zonder_active() {
+        // Precies de desync uit B-24: de verbinding staat niet (meer) in `active` — daar
+        // is hij door een nieuwere vervangen — maar het target hangt er nog aan vast. De
+        // oude code zocht via `active`, vond niets en keerde vroeg terug; die peer stond
+        // daarna voorgoed "online" op een verbinding die al dicht was en werd nooit meer
+        // gebeld.
+        let (mut actor, mut events, _vlaggen) = kale_actor(2);
+        actor.targets[0].bound = Some(7);
+        let _ = actor.targets[0].connected.send(true);
+
+        actor.on_closed(7, "verbinding weg".into()).await;
+
+        assert_eq!(actor.targets[0].bound, None);
+        assert!(
+            !*actor.targets[0].connected.borrow(),
+            "de dialer moet weer aan de slag mogen"
+        );
+        match events.try_recv() {
+            Ok(MeshEvent::Status {
+                target: 0,
+                status: PeerStatus::Offline { .. },
+            }) => {}
+            anders => panic!("verwachtte Offline voor target 0, kreeg {anders:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn b24_een_andere_verbinding_kickt_het_target_niet_weg() {
+        // De keerzijde: een verlaten botsings-verbinding die sluit mag de verbinding die
+        // wél gebonden is niet meeslepen.
+        let (mut actor, mut events, _vlaggen) = kale_actor(2);
+        actor.targets[0].bound = Some(7);
+        let _ = actor.targets[0].connected.send(true);
+
+        actor.on_closed(8, "verliezer van de botsing".into()).await;
+
+        assert_eq!(actor.targets[0].bound, Some(7));
+        assert!(*actor.targets[0].connected.borrow());
+        assert!(events.try_recv().is_err(), "geen statuswijziging verwacht");
+    }
+
+    #[test]
+    fn b24_dezelfde_identiteit_hoort_bij_hoogstens_een_target() {
+        let (mut actor, _events, _vlaggen) = kale_actor(3);
+        actor.targets[0].known_id = Some(peer(1));
+
+        assert_eq!(actor.identiteit_op_ander_target(1, peer(1)), Some(0));
+        // Op zijn eigen target is het geen botsing maar een herverbinding.
+        assert_eq!(actor.identiteit_op_ander_target(0, peer(1)), None);
+        assert_eq!(actor.identiteit_op_ander_target(1, peer(2)), None);
+    }
+
+    #[test]
+    fn b26_wachtrij_schaalt_mee_met_de_config() {
+        // Invariant 3: het aantal peers komt uit de config, dus deze grens ook. Met
+        // ruimte voor botsingen — twee verbindingen per peer tegelijk is normaal.
+        assert!(kale_actor(3).0.max_pending() >= 3 * 2);
+        assert!(kale_actor(7).0.max_pending() >= 7 * 2);
+        assert!(kale_actor(0).0.max_pending() >= 1);
+    }
+
+    #[test]
+    fn b17_verbindingsgrens_schaalt_mee_met_de_config_en_heeft_ruimte() {
+        // Ruim boven één per peer: botsingen en een herstartende peer leveren er
+        // tijdelijk meer op, en een geweigerde legitieme peer is erger dan een ruime
+        // grens (invariant 7).
+        assert!(max_inkomend(3) >= 3 * 8);
+        assert!(max_inkomend(12) >= 12 * 8);
+        // Maar wel eindig, want dat is het hele punt van B-17.
+        assert!(max_inkomend(3) <= 64);
     }
 
     #[test]
