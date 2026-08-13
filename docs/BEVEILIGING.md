@@ -33,6 +33,49 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 > spawnen van de updater. Nieuw eraan: dit is de enige verbinding buiten het tailnet, en de
 > release-privésleutel is nu een vertrouwensanker dat kwijt kan raken.
 
+> **Addendum 2026-08-13 (herstelronde uitgevoerd).** Het herstelplan onderaan dit document
+> is uitgevoerd, met twee bewuste uitzonderingen. Wat er staat is geïmplementeerd én
+> getest: de workspace is groen (219+ tests over `proto`, `store`, `net`, `app`, `audio` en
+> `video`, waaronder ~45 nieuwe regressietests die per bevinding zijn genoemd).
+>
+> **Niet gedaan, en waarom:**
+> - **B-05 en B-18** (identiteit cryptografisch aan de verbinding binden; sessiesleutel plus
+>   MAC op het mediapad). Beide vereisen een `protocol_version`-bump, en dat is per
+>   `CLAUDE.md` invariant 5 een breuk die niet zonder overleg gemaakt wordt: alle drie de
+>   peers moeten dan tegelijk bij, anders kan niemand meer verbinden. Er was ook geen manier
+>   om een mac↔Windows-handshake te testen. **Dit is de grootste openstaande post** — zolang
+>   die er niet is, blijft de firewallregel uit blok 0 de enige echte grens (zie `README.md`).
+> - **B-09** is half: er is nu een `bind_address` in `config.toml` met een waarschuwing bij
+>   elke start, maar de standaard blijft `0.0.0.0`. Binden aan een tailnet-adres dat er bij
+>   het starten nog niet is (Tailscale nog niet omhoog, adres gewijzigd) maakt de app
+>   onbereikbaar tot een herstart — precies de stille breuk die invariant 7 verbiedt. Dit is
+>   een keuze die je één keer bewust maakt en test, niet iets dat een update onder je
+>   vandaan verandert.
+>
+> **Twee dingen die bij het uitvoeren bleken, en die dit document zelf fout had:**
+> 1. **De voorgestelde fix bij B-12 zou élk pariteitsfragment weggooien.**
+>    `PARITEIT_PAYLOAD_LEN` is `MAX_MEDIA_PAYLOAD + 2` en de `frag_index` van een
+>    pariteitspakket *ís* het aantal, dus de voorgestelde `>=`-controles verwerpen hem
+>    precies. Dat zou stilzwijgend de hele herstelweg voor één verloren fragment slopen — de
+>    70-156 ms bevriezingen uit `docs/ARCHITECTURE.md`. Pariteit heeft nu eigen maten, met
+>    een test die het vastpint. Om dezelfde reden is `MAX_FRAGMENTEN_PER_BEELD` 1024 en niet
+>    de voorgestelde 512: 512 × 1100 = 563 kB verwerpt een echt 1440p-keyframe op de 12
+>    Mbit-standaard uit `config.toml`.
+> 2. **B-08 had een tweede vindplaats die hier niet genoemd stond:**
+>    `crates/net/src/filestream.rs::encode_channel` aliaste elke onbekende tag op de vorm van
+>    het algemene kanaal, net als `channel_to_blob`. Ook gedicht, met tests die vastleggen dat
+>    tag 0/1/2 byte-identiek bleven.
+>
+> **B-06 is bewust gedeeltelijk.** De afzender wordt nu meegegeven tot in de store en een DM
+> namens iemand anders wordt geweigerd, maar een publieke op mág legitiem via een derde peer
+> binnenkomen (ARCHITECTURE, "Drie wegen"), dus de `Edit`/`Delete`-kaping op het algemene
+> kanaal blijft open. Volledig sluiten kan alleen met een handtekening per op.
+>
+> Verder open gebleven, met reden in de code: het *decoderen* van een afbeelding (B-22 — dat
+> doet WebView2 en daar komen we niet tussen), en de volledige `SocketAddr`-vergelijking van
+> B-28 (de deler bindt een efemere poort die niemand aankondigt; er is nu poort-pinning met
+> een re-pin-venster in plaats van zwart beeld na een herstart).
+
 > **Addendum 2026-08-13 (1.0.0 t/m 1.2.2):** alle wijzigingen sinds het vorige addendum
 > zijn nagelopen (`6ee8197..6bb3aa3`: het zestienkleurenveld-frontend, de geluidsets,
 > linkafhandeling, de handmatige update-check en de updater/mediasocket-fixes). Wat het
@@ -143,64 +186,64 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 |---|---|---|---|
 | B-01 | ~~KRITIEK~~ | **Opgelost (fase 13)** — updates komen uit een getekende feed | `app/release.rs` |
 | B-02 | ~~KRITIEK~~ | **Opgelost (fase 13)** — versie komt uit het getekende manifest en is begrensd | `app/release.rs::controleer` |
-| B-03 | KRITIEK | Padtraversal via `FileMeta.name` → willekeurig bestand schrijven | `app/engine.rs:1631-1632` |
-| B-04 | KRITIEK | Ongevraagde bulkstreams worden geaccepteerd; de afzender wordt weggegooid | `app/engine.rs:537` |
+| B-03 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Padtraversal via `FileMeta.name` → willekeurig bestand schrijven | `app/engine.rs:1631-1632` |
+| B-04 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Ongevraagde bulkstreams worden geaccepteerd; de afzender wordt weggegooid | `app/engine.rs:537` |
 | B-05 | KRITIEK | `PeerId` is een onbewezen claim → volledige impersonatie | `net/mesh.rs:598-604` |
-| B-06 | KRITIEK | `op.author` wordt nooit tegen de afzender gecontroleerd | `store/lib.rs:240`, `app/chat.rs:293` |
-| B-07 | KRITIEK | Seq-squatting: `INSERT OR IGNORE` + oplopende VV vernietigt stil echte berichten | `store/lib.rs:429-444` |
-| B-08 | KRITIEK | Misvormd `Channel` aliast op de opslagsleutel van het algemene kanaal | `store/lib.rs:499-509` |
-| B-09 | HOOG | Beide sockets binden op `0.0.0.0`; het tailnet is niet de feitelijke grens | `net/mesh.rs:235`, `net/media.rs:75` |
-| B-10 | HOOG | Onbegrensde Opus-decoders per `stream_id` — 1,2 GB uit 3 MB verkeer | `audio/session.rs:964,1004` |
-| B-11 | HOOG | Eén UDP-pakket zet een videostream permanent vast | `video/fragment.rs:243-250,287` |
-| B-12 | HOOG | Fragmentbuffers: geen cap, geen timeout, en aanvallersbuckets zijn eviction-immuun | `video/fragment.rs:264,297-301` |
-| B-13 | HOOG | Onbegrensde downloadgrootte bij bestandsoverdracht (het updatepad dwingt de grootte sinds fase 13 wél af) | `app/engine.rs` (download_taak) |
-| B-14 | HOOG | `lamport` u64↔i64 → permanente, onherstelbare last-writer-wins-kaping | `store/lib.rs:417-423,437` |
-| B-15 | HOOG | Eén te grote op sloopt de control-verbinding permanent | `store/lib.rs:63`, `net/mesh.rs:985` |
-| B-16 | HOOG | Onbegrensde oplog-groei; hele store per wijziging opnieuw in RAM | `store/lib.rs:383-390`, `app/chat.rs:243` |
+| B-06 | KRITIEK | **Deels (2026-08-13)** — `op.author` wordt nooit tegen de afzender gecontroleerd | `store/lib.rs:240`, `app/chat.rs:293` |
+| B-07 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Seq-squatting: `INSERT OR IGNORE` + oplopende VV vernietigt stil echte berichten | `store/lib.rs:429-444` |
+| B-08 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Misvormd `Channel` aliast op de opslagsleutel van het algemene kanaal | `store/lib.rs:499-509` |
+| B-09 | HOOG | **Deels (2026-08-13)** — Beide sockets binden op `0.0.0.0`; het tailnet is niet de feitelijke grens | `net/mesh.rs:235`, `net/media.rs:75` |
+| B-10 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde Opus-decoders per `stream_id` — 1,2 GB uit 3 MB verkeer | `audio/session.rs:964,1004` |
+| B-11 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Eén UDP-pakket zet een videostream permanent vast | `video/fragment.rs:243-250,287` |
+| B-12 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Fragmentbuffers: geen cap, geen timeout, en aanvallersbuckets zijn eviction-immuun | `video/fragment.rs:264,297-301` |
+| B-13 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde downloadgrootte bij bestandsoverdracht (het updatepad dwingt de grootte sinds fase 13 wél af) | `app/engine.rs` (download_taak) |
+| B-14 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `lamport` u64↔i64 → permanente, onherstelbare last-writer-wins-kaping | `store/lib.rs:417-423,437` |
+| B-15 | HOOG | **Deels (2026-08-13)** — store-helft (MAX_OP_LEN + bytebudget) gedaan; de schrijflus in `net` breekt nog steeds af i.p.v. over te slaan | `store/lib.rs:63`, `net/mesh.rs:985` |
+| B-16 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde oplog-groei; hele store per wijziging opnieuw in RAM | `store/lib.rs:383-390`, `app/chat.rs:243` |
 | B-17 | HOOG | Pre-auth geheugenuitputting: 16 MiB per frame × onbegrensd aantal verbindingen | `net/framing.rs:39`, `net/mesh.rs:865` |
 | B-18 | HOOG | Het UDP-mediapad kent geen authenticatie en geen replaybescherming | `net/media.rs:64-156` |
-| B-19 | HOOG | `UpdateSubresource` met genegeerde bufferlengte en gestript stride-teken | `video/codec.rs:741-765` |
-| B-52 | HOOG | `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief | `app/ui/commands.rs:241-246` |
-| B-53 | HOOG | `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%` | `app/ui/commands.rs:255-271` |
-| B-20 | MIDDEL | TOCTOU: de update wordt niet opnieuw geverifieerd vlak vóór toepassen | `app/engine.rs:707-736` |
+| B-19 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `UpdateSubresource` met genegeerde bufferlengte en gestript stride-teken | `video/codec.rs:741-765` |
+| B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief | `app/ui/commands.rs:241-246` |
+| B-53 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%` | `app/ui/commands.rs:255-271` |
+| B-20 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — TOCTOU: de update wordt niet opnieuw geverifieerd vlak vóór toepassen | `app/engine.rs:707-736` |
 | B-21 | ~~MIDDEL~~ | **Opgelost (fase 13)** — de eigen exe wordt nergens meer aangeboden | `app/engine.rs` |
-| B-22 | MIDDEL | Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens | `app/engine.rs:636-658` |
-| B-23 | MIDDEL | Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
+| B-22 | MIDDEL | **Deels (2026-08-13)** — Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens | `app/engine.rs:636-658` |
+| B-23 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
 | B-24 | MIDDEL | Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |
 | B-25 | MIDDEL | Logvervuiling vanaf een niet-geautoriseerde verbinding stalt de mesh-actor | `net/mesh.rs:632-640` |
 | B-26 | MIDDEL | Onbegrensde `pending`-lijst voor niet-koppelbare verbindingen | `net/mesh.rs:380,476-480` |
-| B-27 | MIDDEL | Te groot UDP-datagram is een fout i.p.v. rommel → logstorm op de mediathreads | `net/media.rs:153` |
-| B-28 | MIDDEL | Fragmentinjectie: bronpoort genegeerd en geen index-validatie | `video/kijker.rs:300`, `video/fragment.rs:154` |
-| B-29 | MIDDEL | Geen maximum framegrootte richting de OS-H.264-decoder | `video/kijker.rs:420` |
-| B-30 | MIDDEL | De tijdstempel-unwrapper is onbereikbaar; beeld bevriest na 13 u 15 m | `video/kijker.rs:589-599` |
-| B-31 | MIDDEL | Onbegrensde stream-aankondigingen en afdwingbare encoderbelasting | `app/streams.rs:342-350,372-388` |
-| B-32 | MIDDEL | Logbestanden zonder retentielimiet | `app/main.rs:160-165` |
-| B-33 | MIDDEL | Loginjectie via `display_name` en `app_version` | `net/mesh.rs:557-560` |
-| B-34 | MIDDEL | `seq` u64→i64 levert 2⁶³ permanent inerte maar opgeslagen sleutels | `store/lib.rs:436` |
-| B-35 | MIDDEL | `atty 0.2.14` — RUSTSEC-2021-0145, onbereikbaar maar aanwezig | `Cargo.lock` |
+| B-27 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Te groot UDP-datagram is een fout i.p.v. rommel → logstorm op de mediathreads | `net/media.rs:153` |
+| B-28 | MIDDEL | **Deels (2026-08-13)** — Fragmentinjectie: bronpoort genegeerd en geen index-validatie | `video/kijker.rs:300`, `video/fragment.rs:154` |
+| B-29 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen maximum framegrootte richting de OS-H.264-decoder | `video/kijker.rs:420` |
+| B-30 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — De tijdstempel-unwrapper is onbereikbaar; beeld bevriest na 13 u 15 m | `video/kijker.rs:589-599` |
+| B-31 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Onbegrensde stream-aankondigingen en afdwingbare encoderbelasting | `app/streams.rs:342-350,372-388` |
+| B-32 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Logbestanden zonder retentielimiet | `app/main.rs:160-165` |
+| B-33 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Loginjectie via `display_name` en `app_version` | `net/mesh.rs:557-560` |
+| B-34 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — `seq` u64→i64 levert 2⁶³ permanent inerte maar opgeslagen sleutels | `store/lib.rs:436` |
+| B-35 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — `atty 0.2.14` — RUSTSEC-2021-0145, onbereikbaar maar aanwezig | `Cargo.lock` |
 | B-36 | MIDDEL | libopus wordt uit een 2021-snapshot meegebouwd | `audio/Cargo.toml:15` |
 | B-54 | MIDDEL | `apply_update` is een ongeconditioneerd IPC-commando | `app/ui/commands.rs:315-318` |
 | B-55 | MIDDEL | Geen `on_navigation`-beleid; het klikpad gaat sinds 1.0.2 wél naar de systeembrowser | `app/ui/mod.rs`, `app/ui/commands.rs::open_link` |
-| B-56 | MIDDEL | Latente XSS: escaping is de verantwoordelijkheid van de aanroeper | `frontend/app.js:252-263,531` |
-| B-37 | LAAG | `frag_index + 1` overflow-paniek doodt de kijkerthread stil | `video/fragment.rs:262` |
-| B-38 | LAAG | `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
+| B-56 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Latente XSS: escaping is de verantwoordelijkheid van de aanroeper | `frontend/app.js:252-263,531` |
+| B-37 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `frag_index + 1` overflow-paniek doodt de kijkerthread stil | `video/fragment.rs:262` |
+| B-38 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
 | B-39 | LAAG | `read_kind` leest elk byte ≠ 1 als "bestand" | `net/filestream.rs:68` |
 | B-40 | LAAG | `VersionMismatch` reset de backoff → handshake-lus van 1 Hz | `net/mesh.rs:823-836` |
 | B-41 | LAAG | Door de peer opgegeven `media_port` wordt niet gevalideerd | `net/mesh.rs:565` |
-| B-42 | LAAG | `wall_clock` is volledig door de afzender bepaald en wordt getoond | `store/timeline.rs:103` |
-| B-43 | LAAG | Onbegrensde string- en collectielengtes op de draad | `proto/op.rs:126-145` |
-| B-44 | LAAG | `unreachable!()` bereikbaar bij extreme naamcollisie | `app/engine.rs:1650` |
-| B-45 | LAAG | `data.len() as u32` truncatie vlak vóór een volledige memcpy | `video/codec.rs:593` |
-| B-46 | LAAG | Release-profiel: geen CFG, geen `overflow-checks`, geen `strip` | `Cargo.toml:18-21` |
-| B-47 | LAAG | Portable modus zet schrijfbare data naast een zelf-overschrijvende exe | `app/config.rs:230-236` |
-| B-48 | LAAG | Devtools-capability zonder buildconditie | `app/capabilities/default.json:13` |
-| B-49 | LAAG | Mention-vervanging loopt ná linkificatie en breekt gegenereerde HTML | `frontend/app.js:162-172` |
-| B-50 | LAAG | `Spoor` groeit onbegrensd | `video/spoor.rs:31-33` |
-| B-57 | LAAG | Meldingen schakelen zichzelf permanent uit na één fout | `app/notify.rs:16,38-41` |
-| B-58 | LAAG | `highlight()` verminkt ge-escapete apostrofs | `frontend/app.js:178-187` |
-| B-59 | LAAG | `unwrap()` op een mutex in de `thumb://`-handler | `app/ui/mod.rs:168` |
+| B-42 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `wall_clock` is volledig door de afzender bepaald en wordt getoond | `store/timeline.rs:103` |
+| B-43 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Onbegrensde string- en collectielengtes op de draad | `proto/op.rs:126-145` |
+| B-44 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unreachable!()` bereikbaar bij extreme naamcollisie | `app/engine.rs:1650` |
+| B-45 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `data.len() as u32` truncatie vlak vóór een volledige memcpy | `video/codec.rs:593` |
+| B-46 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Release-profiel: geen CFG, geen `overflow-checks`, geen `strip` | `Cargo.toml:18-21` |
+| B-47 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Portable modus zet schrijfbare data naast een zelf-overschrijvende exe | `app/config.rs:230-236` |
+| B-48 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Devtools-capability zonder buildconditie | `app/capabilities/default.json:13` |
+| B-49 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Mention-vervanging loopt ná linkificatie en breekt gegenereerde HTML | `frontend/app.js:162-172` |
+| B-50 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `Spoor` groeit onbegrensd | `video/spoor.rs:31-33` |
+| B-57 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Meldingen schakelen zichzelf permanent uit na één fout | `app/notify.rs:16,38-41` |
+| B-58 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `highlight()` verminkt ge-escapete apostrofs | `frontend/app.js:178-187` |
+| B-59 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unwrap()` op een mutex in de `thumb://`-handler | `app/ui/mod.rs:168` |
 | B-60 | LAAG | Elk `fitcom-updater*.exe` naast de app telt als de updater | `app/engine.rs::zoek_updater` |
-| B-51 | INFO | `LamportClock` is dode code; de echte klok is `max_lamport()` | `proto/op.rs:150-172` |
+| B-51 | ~~INFO~~ | **Opgelost (2026-08-13)** — `LamportClock` is dode code; de echte klok is `max_lamport()` | `proto/op.rs:150-172` |
 
 ---
 
