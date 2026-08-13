@@ -577,8 +577,8 @@ impl Engine {
             // Een bulkoverdracht, los van de control-stream. Het kind-byte plus (voor een
             // bestand) de header erachteraan zegt om wat het gaat; `from` is hier niet
             // nodig om te routeren.
-            MeshEvent::IncomingFileStream { from: _, stream } => {
-                self.start_incoming_stream(stream);
+            MeshEvent::IncomingFileStream { from, stream } => {
+                self.start_incoming_stream(from, stream);
             }
 
             MeshEvent::Message { from, msg } => match msg {
@@ -1554,7 +1554,7 @@ impl Engine {
             }
             UiCommand::ProefGeluid(naam) => match geluid::Geluid::van_naam(&naam) {
                 Some(g) => self.speel_geluid(g),
-                None => tracing::warn!(%naam, "onbekend geluid gevraagd voor de proef"),
+                None => tracing::warn!(?naam, "onbekend geluid gevraagd voor de proef"),
             },
             UiCommand::ZetGeluidsapparaten(invoer, uitvoer) => {
                 self.cfg.input_device = invoer;
@@ -1660,6 +1660,28 @@ impl Engine {
         if naam.is_empty() {
             return;
         }
+        // B-43: de oplog weigert een bijnaam boven `MAX_NAAM_LEN` *bytes*. Hier klemmen in
+        // plaats van daar laten falen, want anders zou een te lange naam uit een
+        // handgeschreven `config.toml` bij élke start opnieuw stuklopen en nooit
+        // propageren — een foutmelding die je niet kunt wegnemen zonder het bestand te
+        // bewerken. Klemmen gebeurt op een char-grens: midden in een multibyte-teken
+        // knippen levert geen geldige `String` op (en 16 emoji zitten al op 64 bytes).
+        let naam: String = if naam.len() > fitcom_proto::op::MAX_NAAM_LEN {
+            let geknipt: String = naam
+                .char_indices()
+                .take_while(|(i, c)| i + c.len_utf8() <= fitcom_proto::op::MAX_NAAM_LEN)
+                .map(|(_, c)| c)
+                .collect();
+            tracing::warn!(
+                bytes = naam.len(),
+                max = fitcom_proto::op::MAX_NAAM_LEN,
+                "weergavenaam afgekapt"
+            );
+            geknipt
+        } else {
+            naam.to_string()
+        };
+        let naam = naam.as_str();
         self.cfg.display_name = naam.to_string();
         if let Err(e) = self.cfg.save(&self.config_path) {
             tracing::warn!(error = %format!("{e:#}"), "naam niet opgeslagen in config");
@@ -1706,16 +1728,25 @@ impl Engine {
 
     /// Leest eerst het kind-byte van een inkomende uni-stream en stuurt hem dan naar het
     /// bestandspad. Zie `fitcom_net::filestream::read_kind`.
-    fn start_incoming_stream(&mut self, stream: RecvStream) {
+    ///
+    /// B-04: `van` en de lijst lopende downloads gaan mee. Zonder die twee was elke
+    /// inkomende stream goed genoeg zolang er érgens een op met die `OpId` bestond, en dat
+    /// maakte ongevraagd wegschrijven mogelijk. De lijst wordt hier gekopieerd omdat de
+    /// taak `self` niet mag vasthouden; hij is een momentopname van "waar wachten wij nu
+    /// op", en dat is precies de vraag die telt op het moment dat de stream binnenkomt.
+    fn start_incoming_stream(&mut self, van: PeerId, stream: RecvStream) {
         let downloads_dir = self.downloads_dir.clone();
         let pictures_dir = self.pictures_dir.clone();
         let timeline = self.chat.timeline_arc();
         let events = self.file_tx.clone();
+        let verwacht = self.files.lopende_downloads();
         tokio::spawn(dispatch_inkomende_stream(
+            van,
             stream,
             downloads_dir,
             pictures_dir,
             timeline,
+            verwacht,
             events,
         ));
     }
@@ -1750,7 +1781,7 @@ impl Engine {
                     .zet_status(file, DownloadStatus::Mislukt(bericht));
             }
             FileEvent::UpdateGestart { versie, totaal } => {
-                tracing::info!(%versie, %totaal, "nieuwere versie in de release-feed; ophalen");
+                tracing::info!(?versie, %totaal, "nieuwere versie in de release-feed; ophalen");
                 self.updates.gestart(versie, totaal);
             }
             FileEvent::UpdateVoortgang { ontvangen } => self.updates.voortgang(ontvangen),
@@ -1995,24 +2026,80 @@ fn deelbestand_naam(entry: &FileEntry) -> String {
     format!("{}-{kanaal}-{}.part", entry.author.0.simple(), entry.id.seq)
 }
 
+/// B-03: maakt van een naam die van een peer komt een naam die gegarandeerd één
+/// bestandsnaam ís, en geen pad.
+///
+/// De reden dat dit bestaat: `FileEntry.name` is letterlijk overgenomen uit de op van de
+/// peer en `Path::join` normaliseert `..` niet. Op Windows vervangt een absoluut of rooted
+/// argument de basis zelfs volledig, dus `..\..\..\Startup\x.exe`,
+/// `C:\Users\...\Startup\x.exe` en `\\aanvaller\share\x` landden alle drie buiten de
+/// downloadmap — een exe in de Startup-map is code-uitvoering bij de volgende aanmelding,
+/// zonder dat de gebruiker ook maar iets aanklikt.
+///
+/// Waarom filteren en niet weigeren: een naam die niet door de beugel kan is geen reden om
+/// de overdracht te laten mislukken (dat zou een peer met een rare bestandsnaam onterecht
+/// stukmaken), maar wél om er een onschuldige naam van te maken.
+///
+/// De gereserveerde DOS-namen staan erbij omdat `CON`, `NUL` en `COM1` op Windows nog
+/// steeds apparaten zijn, ook mét extensie: schrijven naar `NUL.txt` schrijft naar het
+/// bit-vat in plaats van naar een bestand.
+fn veilige_bestandsnaam(naam: &str) -> String {
+    // `file_name()` haalt elk pad-voorvoegsel eraf; het filter daarna dekt de scheidingstekens
+    // die op het *andere* platform gelden (een Windows-peer die aan een mac levert, en
+    // andersom) plus wat NTFS toch al weigert.
+    let kaal = Path::new(naam)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let kaal: String = kaal
+        .chars()
+        .filter(|c| {
+            !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control()
+        })
+        .collect();
+    // Punten en spaties aan de randen: Windows kapt die zelf af, waardoor "evil.exe ." en
+    // "evil.exe" hetzelfde bestand zijn en een controle op de naam te omzeilen valt.
+    let kaal = kaal.trim_matches(|c: char| c == '.' || c == ' ');
+    const GERESERVEERD: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stam = kaal.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if kaal.is_empty() || GERESERVEERD.contains(&stam.as_str()) {
+        return "bestand".into();
+    }
+    // Afkappen op chars en niet op bytes: een multibyte-naam mag geen paniek geven.
+    kaal.chars().take(120).collect()
+}
+
 /// De naam waaronder het bestand definitief landt. Voegt `" (2)"` etc. toe als de naam
 /// al bestaat — bijvoorbeeld omdat twee peers hetzelfde bestand aanboden.
+///
+/// B-03: `naam` komt van een peer, dus hij gaat eerst door [`veilige_bestandsnaam`]. Het
+/// resultaat ligt daarna per constructie onder `dir`, en de `debug_assert!` onderaan houdt
+/// dat zo als hier ooit iets bijkomt.
 fn unieke_bestandsnaam(dir: &Path, naam: &str) -> PathBuf {
+    let naam = veilige_bestandsnaam(naam);
+    let naam = naam.as_str();
     let kandidaat = dir.join(naam);
     if !kandidaat.exists() {
+        debug_assert!(kandidaat.starts_with(dir), "B-03: pad buiten de doelmap");
         return kandidaat;
     }
 
     let pad = Path::new(naam);
     let stam = pad.file_stem().and_then(|s| s.to_str()).unwrap_or(naam);
     let ext = pad.extension().and_then(|s| s.to_str());
-    for i in 2u32.. {
+    // B-44: `2u64..` in plaats van `2u32..`, zodat de `unreachable!()` hieronder ook bij een
+    // extreme naamcollisie onbereikbaar blijft in plaats van te overflowen. Kost niets.
+    for i in 2u64.. {
         let naam_n = match ext {
             Some(e) => format!("{stam} ({i}).{e}"),
             None => format!("{stam} ({i})"),
         };
         let kandidaat = dir.join(&naam_n);
         if !kandidaat.exists() {
+            debug_assert!(kandidaat.starts_with(dir), "B-03: pad buiten de doelmap");
             return kandidaat;
         }
     }
@@ -2165,15 +2252,27 @@ async fn upload_bytes(
 /// Leest het kind-byte van een inkomende bulk-stream en stuurt hem naar het bestandspad.
 /// Zie `fitcom_net::filestream::read_kind`.
 async fn dispatch_inkomende_stream(
+    van: PeerId,
     mut stream: RecvStream,
     downloads_dir: PathBuf,
     pictures_dir: PathBuf,
     timeline: Arc<Timeline>,
+    verwacht: HashSet<OpId>,
     events: mpsc::Sender<FileEvent>,
 ) {
     match fitcom_net::filestream::read_kind(&mut stream).await {
         Ok(fitcom_net::filestream::Inkomend::Bestand(file)) => {
-            download_taak(stream, file, downloads_dir, pictures_dir, timeline, events).await;
+            download_taak(
+                van,
+                stream,
+                file,
+                downloads_dir,
+                pictures_dir,
+                timeline,
+                verwacht,
+                events,
+            )
+            .await;
         }
         // Fase 11-pad, sinds fase 13 dicht: een peer die ons een exe wil toeschuiven
         // wordt afgewezen, ongeacht wat hij erbij beweert. Zie B-01 in
@@ -2189,18 +2288,39 @@ async fn dispatch_inkomende_stream(
 
 /// Zoekt het bijbehorende bestand op in de (op het moment van binnenkomst al bekende)
 /// timeline, en downloadt het.
+#[allow(clippy::too_many_arguments)]
 async fn download_taak(
+    van: PeerId,
     mut stream: RecvStream,
     file: OpId,
     downloads_dir: PathBuf,
     pictures_dir: PathBuf,
     timeline: Arc<Timeline>,
+    verwacht: HashSet<OpId>,
     events: mpsc::Sender<FileEvent>,
 ) {
     let Some(entry) = timeline.files.iter().find(|f| f.id == file).cloned() else {
         tracing::warn!(?file, "bestandsstream voor een onbekend bestand genegeerd");
         return;
     };
+
+    // B-04, twee poorten. Eerst: komt deze stream van de peer die het bestand aanbood?
+    // `entry.author` is de aanbieder, en dat is de enige van wie de bytes mogen komen.
+    if entry.author != van {
+        tracing::warn!(
+            ?file,
+            van = ?van,
+            aanbieder = ?entry.author,
+            "bestandsstream van een andere peer dan de aanbieder geweigerd"
+        );
+        return;
+    }
+    // En: hebben wij hier zelf om gevraagd? Zonder dit kan een peer ongevraagd bytes op
+    // onze schijf zetten, en dat is de stap die B-03 van één klik naar nul klikken bracht.
+    if !verwacht.contains(&file) {
+        tracing::warn!(?file, van = ?van, "ongevraagde bestandsstream geweigerd");
+        return;
+    }
 
     if let Err(e) =
         download_bytes(&mut stream, &downloads_dir, &pictures_dir, &entry, &events).await
@@ -2341,6 +2461,21 @@ async fn download_bytes(
         match stream.read(&mut buf).await.context("bytes ontvangen")? {
             None => break,
             Some(n) => {
+                // B-13: de aangekondigde grootte wordt afgedwongen in plaats van alleen
+                // getoond. Zonder dit las deze lus tot EOF zonder plafond, dus een peer
+                // die bleef sturen schreef de schijf vol — en er was geen quotum en geen
+                // vrije-ruimtecontrole. Het deelbestand gaat hier weg, want een overdracht
+                // die de eigen aankondiging overschrijdt is geen hervatbare hapering maar
+                // een peer die zich niet aan zijn woord houdt.
+                if ontvangen + n as u64 > entry.size {
+                    drop(bestand);
+                    let _ = tokio::fs::remove_file(&deelpad).await;
+                    anyhow::bail!(
+                        "peer stuurde meer dan aangekondigd ({} > {})",
+                        ontvangen + n as u64,
+                        entry.size
+                    );
+                }
                 bestand
                     .write_all(&buf[..n])
                     .await
@@ -2392,4 +2527,98 @@ async fn download_bytes(
         .context("bestand hernoemen naar definitieve naam")?;
     let _ = events.send(FileEvent::Voltooid { file: entry.id }).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod beveiliging_tests {
+    use super::*;
+
+    /// B-03: dit is de bevinding waar het doorlichtingsdocument "als er maar één ding kon"
+    /// naar wijst, dus hij verdient een test die de aanvalsvormen letterlijk opnoemt.
+    ///
+    /// Alle drie de vormen kwamen langs `Path::join`, die `..` niet normaliseert en op
+    /// Windows bij een absoluut of rooted argument de basis volledig vervangt. Een exe in de
+    /// Startup-map is code-uitvoering bij de volgende aanmelding, zonder één klik.
+    #[test]
+    fn b03_een_bestandsnaam_van_een_peer_kan_geen_pad_meer_zijn() {
+        for aanval in [
+            r"..\..\..\Startup\evil.exe",
+            r"C:\Users\rick\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\evil.exe",
+            r"\\aanvaller\share\evil",
+            "../../../.zshrc",
+            "/etc/cron.d/evil",
+        ] {
+            let veilig = veilige_bestandsnaam(aanval);
+            assert!(
+                !veilig.contains('/') && !veilig.contains('\\') && !veilig.contains(':'),
+                "{aanval:?} leverde {veilig:?}, dat is nog een pad"
+            );
+            assert!(!veilig.is_empty(), "{aanval:?} leverde een lege naam op");
+        }
+    }
+
+    /// En het resultaat blijft onder de doelmap. Dit is de eigenschap die telt; de test
+    /// hierboven controleert de vorm, deze de uitkomst.
+    #[test]
+    fn b03_het_pad_blijft_onder_de_downloadmap() {
+        let dir = Path::new("/tmp/fitcom-test-downloads");
+        for aanval in [
+            r"..\..\..\Startup\evil.exe",
+            "../../../.zshrc",
+            r"C:\Windows\System32\evil.dll",
+        ] {
+            let pad = unieke_bestandsnaam(dir, aanval);
+            assert!(
+                pad.starts_with(dir),
+                "{aanval:?} landde op {pad:?}, buiten {dir:?}"
+            );
+        }
+    }
+
+    /// Stuurtekens horen er ook uit: een `\n` in een naam vervuilt logregels (B-33) en een
+    /// naam die alleen uit punten bestaat is op Windows geen naam.
+    #[test]
+    fn b03_stuurtekens_en_randpunten_verdwijnen() {
+        assert!(!veilige_bestandsnaam("regel\neen.txt").contains('\n'));
+        assert_eq!(veilige_bestandsnaam("..."), "bestand");
+        assert_eq!(veilige_bestandsnaam(""), "bestand");
+        // Windows kapt een punt aan het eind zelf af, dus "evil.exe ." en "evil.exe" zijn
+        // hetzelfde bestand; zonder trim valt een controle op de naam te omzeilen.
+        assert_eq!(veilige_bestandsnaam("evil.exe ."), "evil.exe");
+    }
+
+    /// `CON`, `NUL` en `COM1` zijn op Windows apparaten, ook mét extensie: naar `NUL.txt`
+    /// schrijven schrijft naar het bit-vat in plaats van naar een bestand.
+    #[test]
+    fn b03_gereserveerde_dos_namen_worden_geweigerd() {
+        for naam in ["CON", "nul.txt", "COM1.dat", "LPT9"] {
+            assert_eq!(
+                veilige_bestandsnaam(naam),
+                "bestand",
+                "{naam:?} is een apparaatnaam en hoort niet als bestandsnaam gebruikt te worden"
+            );
+        }
+    }
+
+    /// Een gewone naam mag hier niets aan overhouden — anders is de fix een regressie voor
+    /// iedereen die nooit iets kwaads stuurde.
+    #[test]
+    fn b03_een_normale_naam_blijft_ongemoeid() {
+        for naam in [
+            "vakantiefotos.zip",
+            "notulen 2026-08-13.pdf",
+            "スクリーン.png",
+        ] {
+            assert_eq!(veilige_bestandsnaam(naam), naam);
+        }
+    }
+
+    /// Een multibyte-naam boven de afkapgrens mag geen paniek geven: afkappen gebeurt op
+    /// chars, niet op bytes.
+    #[test]
+    fn b03_een_lange_multibyte_naam_paniekt_niet() {
+        let lang = "スクリーンショット".repeat(40);
+        let veilig = veilige_bestandsnaam(&lang);
+        assert_eq!(veilig.chars().count(), 120);
+    }
 }

@@ -3,7 +3,8 @@
 //! Een melding die niet lukt mag nooit iets breken: op sommige systemen zijn toasts
 //! uitgezet of geblokkeerd door "focus assist"/"niet storen". We loggen dat en gaan door.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Zonder een geregistreerde snelkoppeling accepteert Windows geen eigen app-id voor
 /// toasts. We lenen daarom die van PowerShell, wat de gangbare oplossing is voor een
@@ -12,9 +13,35 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const APP_ID: &str =
     "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-/// Blijft `false` zodra bleek dat meldingen hier niet werken, zodat we het niet elk
-/// bericht opnieuw proberen en de log niet vervuilen.
-static TOASTS_WERKEN: AtomicBool = AtomicBool::new(true);
+/// B-57: hoe lang we meldingen laten rusten na een mislukking.
+///
+/// Dit was een `AtomicBool` die één keer omging en daarna nooit meer terug: één tijdelijke
+/// WinRT-hik of een quotum kostte je *alle* mentionmeldingen tot een herstart, terwijl de
+/// oorzaak meestal binnen een minuut voorbij is. Een afkoelperiode houdt de oorspronkelijke
+/// bedoeling — niet elk bericht opnieuw proberen en de log niet vervuilen — zonder de app
+/// permanent stil te zetten.
+const AFKOELPERIODE: Duration = Duration::from_secs(300);
+
+/// Millis sinds procesbegin van de laatste mislukking, of 0 als er nog niets misging.
+/// Een `AtomicU64` in plaats van een `Mutex<Instant>`: dit zit op het meldingspad en hoeft
+/// niemand te laten wachten.
+static LAATSTE_MISLUKKING_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Vast startpunt om `Instant` als getal te kunnen bewaren.
+fn sinds_start() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// Of we het nu mogen proberen. Vlak na een mislukking niet; daarna weer wel.
+fn toasts_mogen() -> bool {
+    let laatste = LAATSTE_MISLUKKING_MS.load(Ordering::Relaxed);
+    laatste == 0 || sinds_start().saturating_sub(laatste) >= AFKOELPERIODE.as_millis() as u64
+}
+
+fn meld_mislukking() {
+    LAATSTE_MISLUKKING_MS.store(sinds_start().max(1), Ordering::Relaxed);
+}
 
 /// Lange berichten passen niet in een melding en maken hem onleesbaar.
 fn kort(tekst: &str) -> String {
@@ -29,7 +56,7 @@ fn kort(tekst: &str) -> String {
 pub fn nieuw_bericht(van: &str, tekst: &str) {
     speel_geluid();
 
-    if !TOASTS_WERKEN.load(Ordering::Relaxed) {
+    if !toasts_mogen() {
         return;
     }
 
@@ -40,8 +67,8 @@ pub fn nieuw_bericht(van: &str, tekst: &str) {
         .show();
 
     if let Err(e) = resultaat {
-        tracing::warn!(error = %e, "meldingen werken niet op dit systeem; verder zonder");
-        TOASTS_WERKEN.store(false, Ordering::Relaxed);
+        tracing::warn!(error = %e, "melding mislukt; even niet opnieuw proberen");
+        meld_mislukking();
     }
 }
 
@@ -52,7 +79,7 @@ pub fn nieuw_bericht(van: &str, tekst: &str) {
 /// die API weigert zonder geldige bundel-identiteit.
 #[cfg(target_os = "macos")]
 pub fn nieuw_bericht(van: &str, tekst: &str) {
-    if !TOASTS_WERKEN.load(Ordering::Relaxed) {
+    if !toasts_mogen() {
         return;
     }
 
@@ -74,8 +101,8 @@ pub fn nieuw_bericht(van: &str, tekst: &str) {
         .spawn();
 
     if let Err(e) = resultaat {
-        tracing::warn!(error = %e, "meldingen werken niet op dit systeem; verder zonder");
-        TOASTS_WERKEN.store(false, Ordering::Relaxed);
+        tracing::warn!(error = %e, "melding mislukt; even niet opnieuw proberen");
+        meld_mislukking();
     }
 }
 

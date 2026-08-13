@@ -55,6 +55,19 @@ pub struct Ui {
     /// The source list handed to the picker, so "share the third one" resolves to the
     /// same source the user saw. Replaced wholesale every time the picker opens.
     sources: Mutex<Vec<fitcom_video::Bron>>,
+    /// B-52: the paths from the last OS drop, kept on this side of the IPC boundary.
+    ///
+    /// They used to travel to the webview and straight back into `offer_files`, which made
+    /// "offer this file to every peer" reachable for *any* script running in the webview —
+    /// one line would have been enough to hash and hand out `identity.toml` or an SSH key.
+    /// There is no known XSS to deliver such a script (see `docs/BEVEILIGING.md`, "Wat er
+    /// goed zit"), and that is exactly why this is worth closing: it is the difference
+    /// between one XSS meaning screen damage and one XSS meaning data theft.
+    ///
+    /// The frontend now only ever sees indices into this list — the same pattern
+    /// `sources`/`share_source` already uses. Replaced wholesale on every drop, so a stale
+    /// index resolves to nothing instead of to an older file.
+    pub dropped: Mutex<Vec<PathBuf>>,
     /// Bumped when the op log or a transfer status changes. The frontend refetches the
     /// open conversation on a change instead of the whole history riding on every state
     /// event.
@@ -85,7 +98,7 @@ impl Ui {
     /// Not persisted, so the first run after a restart says plain "Offline" instead of
     /// making a time up.
     fn note_last_seen(&self, snap: &Snapshot) -> HashMap<PeerId, i64> {
-        let mut seen = self.last_seen.lock().unwrap();
+        let mut seen = self.last_seen.lock().unwrap_or_else(|e| e.into_inner());
         let now = chrono::Local::now().timestamp_millis();
         for p in &snap.peers {
             if let (Some(id), fitcom_net::PeerStatus::Online { .. }) = (p.peer_id, &p.status) {
@@ -117,7 +130,10 @@ impl Ui {
         }
         let vingerafdruk = hasher.finish();
 
-        let mut last = self.last_fingerprint.lock().unwrap();
+        let mut last = self
+            .last_fingerprint
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if *last != vingerafdruk {
             *last = vingerafdruk;
             self.timeline_revision.fetch_add(1, Ordering::Relaxed);
@@ -181,6 +197,7 @@ pub fn run(
             minimize_to_tray: cfg.minimize_to_tray,
         },
         sources: Mutex::new(Vec::new()),
+        dropped: Mutex::new(Vec::new()),
         timeline_revision: AtomicU64::new(0),
         last_fingerprint: Mutex::new(0),
         thumbnails: Mutex::new(HashMap::new()),
@@ -206,7 +223,7 @@ pub fn run(
             let app = ctx.app_handle();
             let ui: tauri::State<'_, Ui> = app.state();
             let key = request.uri().path().trim_start_matches('/').to_string();
-            let png = ui.thumbnails.lock().unwrap().get(&key).cloned();
+            let png = ui.thumbnails.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
             match png {
                 Some(png) => tauri::http::Response::builder()
                     .header("Content-Type", "image/png")
@@ -326,7 +343,18 @@ pub fn run(
                 }
                 tauri::DragDropEvent::Drop { paths, .. } => {
                     let _ = window.emit("drag", false);
-                    let _ = window.emit("dropped", paths.clone());
+                    // B-52: the paths stay here; the webview gets indices into them and
+                    // nothing else. See `Ui::dropped`.
+                    let indices: Vec<usize> = {
+                        let ui = window.state::<Ui>();
+                        let mut bewaard = ui
+                            .dropped
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        *bewaard = paths.clone();
+                        (0..bewaard.len()).collect()
+                    };
+                    let _ = window.emit("dropped", indices);
                 }
                 _ => {
                     let _ = window.emit("drag", false);

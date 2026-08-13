@@ -167,7 +167,12 @@ review, the verdict, and DESIGN.md.
               <svg class="icon-18 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><use href="#i-clip"/></svg>
               <span class="sr">Share a file</span>
             </button>
-            <textarea id="composer-input" rows="1" placeholder="Message #general"
+            <!-- maxlength matches fitcom_proto::MAX_BERICHT_LEN (B-43). The engine rejects a
+                 longer body outright, so without this the composer would let you type a
+                 pasted stacktrace and then fail on send. maxlength counts UTF-16 units and
+                 the limit is bytes, so this is deliberately the friendlier of the two: it
+                 stops the runaway case, and app.js reports the exact byte count. -->
+            <textarea id="composer-input" rows="1" placeholder="Message #general" maxlength="4096"
                       aria-autocomplete="list" aria-controls="ac-list" aria-expanded="false"></textarea>
           </div>
           <!-- after the composer in DOM, above it on screen: Tab from the textarea has to

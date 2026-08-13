@@ -159,6 +159,11 @@ fn init_logging(data_dir: &std::path::Path) -> Result<()> {
                         .rotation(tracing_appender::rolling::Rotation::DAILY)
                         .filename_prefix("fitcom")
                         .filename_suffix("log")
+                        // B-32: zonder dit stapelen dagbestanden zich onbeperkt op. Met
+                        // autostart aan draait dit maandenlang onbeheerd, en het volume is
+                        // vanaf het netwerk op te drijven (B-25, B-27). Twee weken is ruim
+                        // genoeg om een incident van afgelopen weekend te reconstrueren.
+                        .max_log_files(14)
                         .build(&log_dir)
                         .context("logbestand aanmaken")?,
                 )

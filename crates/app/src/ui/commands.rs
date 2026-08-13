@@ -173,13 +173,18 @@ pub fn list_sources(ui: State<'_, Ui>) -> Vec<SourceOption> {
             is_camera: matches!(b.soort, fitcom_video::BronSoort::Camera),
         })
         .collect();
-    *ui.sources.lock().unwrap() = sources;
+    *ui.sources.lock().unwrap_or_else(|e| e.into_inner()) = sources;
     listed
 }
 
 #[tauri::command]
 pub fn share_source(ui: State<'_, Ui>, index: usize) {
-    let source = ui.sources.lock().unwrap().get(index).cloned();
+    let source = ui
+        .sources
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(index)
+        .cloned();
     match source {
         Some(b) => send(&ui, UiCommand::DeelBron(b)),
         None => tracing::warn!(
@@ -276,9 +281,29 @@ pub async fn pick_and_offer_file(ui: State<'_, Ui>, channel: String) -> Result<(
 
 /// Files dropped onto the window from Explorer. Same flow as the picker — a new way in,
 /// not new logic.
+///
+/// B-52: takes **indices** into the paths the drop handler kept in `Ui::dropped`, never
+/// paths from the webview. A path coming over IPC would let any script in the webview
+/// offer any file on the disk to every peer; an index can only ever name a file the user
+/// physically dropped on the window. Out-of-range indices are dropped silently — a stale
+/// index is a race with the next drop, not something to report.
 #[tauri::command]
-pub fn offer_files(ui: State<'_, Ui>, paths: Vec<PathBuf>, channel: String) {
-    for path in paths {
+pub fn offer_files(ui: State<'_, Ui>, indices: Vec<usize>, channel: String) {
+    let paden: Vec<PathBuf> = {
+        let bewaard = ui.dropped.lock().unwrap_or_else(|e| e.into_inner());
+        indices
+            .iter()
+            .filter_map(|&i| bewaard.get(i).cloned())
+            .collect()
+    };
+    if paden.len() != indices.len() {
+        tracing::warn!(
+            gevraagd = indices.len(),
+            gevonden = paden.len(),
+            "drop-indices verwijzen niet allemaal naar een bewaard pad"
+        );
+    }
+    for path in paden {
         offer_path(&ui, path, &channel);
     }
 }
@@ -292,9 +317,14 @@ pub fn offer_files(ui: State<'_, Ui>, paths: Vec<PathBuf>, channel: String) {
 /// a dragged or picked file whose original it also leaves alone.
 #[tauri::command]
 pub fn offer_pasted_image(ui: State<'_, Ui>, bytes: Vec<u8>, extension: String, channel: String) {
-    let extension = match extension.trim_matches('.') {
-        "" => "png".to_string(),
-        e => e.to_ascii_lowercase(),
+    // B-53: een allowlist, niet een opschoning. `trim_matches('.')` haalde punten weg maar
+    // geen scheidingstekens, dus een "extensie" als `\..\..\..\Startup\evil.exe` loste op
+    // naar buiten `%TEMP%` — en `bytes` is volledig door de aanroeper bepaald, dus dat was
+    // een schrijfprimitief met vrije inhoud én vrije bestemming, bereikbaar voor elk script
+    // in de webview. Deze vijf zijn precies wat `is_afbeelding` verderop ook accepteert.
+    let extension = match extension.trim_matches('.').to_ascii_lowercase().as_str() {
+        e @ ("png" | "jpg" | "jpeg" | "gif" | "bmp") => e.to_string(),
+        _ => "png".to_string(),
     };
     let name = format!(
         "fitcom-paste-{}.{extension}",

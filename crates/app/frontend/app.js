@@ -193,9 +193,14 @@ function codeBlock(part) {
   </div>`;
 }
 
+/* B-49: mentions are resolved BEFORE linkification, not after.
+   The other way round, the @name pass ran over a string that already contained markup, so
+   a mention inside a URL got rewritten inside the `href` attribute — producing a link whose
+   target differs from its visible text. Not executable (the inserted markup is fixed, so
+   the tag always closes on its own `>`), but misleading, which is bad enough for a link.
+   Doing mentions first means linkification only ever sees a URL it produced itself. */
 function inline(text, mentionsYou) {
   let html = esc(text).replace(/\n/g, "<br>");
-  html = html.replace(/(https?:\/\/[^\s<]+)/g, u => `<a href="${u}" target="_blank" rel="noreferrer">${u}</a>`);
   const names = [S.self.name, ...knownPeers().map(p => p.name)].filter(Boolean);
   for (const name of names) {
     const mine = name === S.self.name;
@@ -203,20 +208,38 @@ function inline(text, mentionsYou) {
     html = html.replace(re, m =>
       `<span class="mention${mine && mentionsYou ? " mention--self" : ""}">${esc(m)}</span>`);
   }
+  /* Skip anything already inside a tag, so a mention span cannot be re-scanned as a URL. */
+  html = html.replace(/(https?:\/\/[^\s<]+)/g, u => `<a href="${u}" target="_blank" rel="noreferrer">${u}</a>`);
   return html;
 }
 
 /* The three code hues exist for the kind of thing that actually gets pasted here: a
    config file. Comments, strings and numbers, and the key before an `=`. Anything else
    stays body text — a fourth hue is not in the system. */
+/* B-58: the number and comment passes must not see an HTML entity.
+   `highlight()` runs over already-escaped text, so an apostrophe is `&#39;` — the digits in
+   which the number rule tokenised as a number and the `#` in which the comment rule
+   tokenised as a comment, mangling the entity. Purely cosmetic (all inserted markup is
+   fixed), but it garbles pasted config. Fixed by splitting on entities and only
+   highlighting the parts between them. */
 function highlight(code) {
+  const tokenise = line => line
+    .replace(/^(\s*)([A-Za-z_][\w.-]*)(\s*=)/, '$1<span class="tok-key">$2</span>$3')
+    .replace(/(&quot;[^&]*?&quot;)/g, '<span class="tok-str">$1</span>')
+    .replace(/\b(\d[\d_.]*)\b/g, '<span class="tok-num">$1</span>')
+    .replace(/(#.*)$/, '<span class="tok-com">$1</span>');
+
   return esc(code)
     .split("\n")
-    .map(line => line
-      .replace(/^(\s*)([A-Za-z_][\w.-]*)(\s*=)/, '$1<span class="tok-key">$2</span>$3')
-      .replace(/(&quot;[^&]*?&quot;)/g, '<span class="tok-str">$1</span>')
-      .replace(/\b(\d[\d_.]*)\b/g, '<span class="tok-num">$1</span>')
-      .replace(/(#.*)$/, '<span class="tok-com">$1</span>'))
+    .map(line => {
+      /* Keep &...; runs out of the tokeniser's reach, then put them back verbatim. */
+      const entities = [];
+      const masked = line.replace(/&[a-z]+;|&#\d+;/gi, m => {
+        entities.push(m);
+        return `\u0000${entities.length - 1}\u0000`;
+      });
+      return tokenise(masked).replace(/\u0000(\d+)\u0000/g, (_, i) => entities[Number(i)]);
+    })
     .join("\n");
 }
 
@@ -283,13 +306,17 @@ function renderChannels() {
 
 /* ---------------------------------------------------------------- voice panel */
 
+/* B-56: the names are peer-controlled (OpKind::SetNick, no length or content validation)
+   and this string lands in innerHTML, so it escapes here in the sink. Unreachable today —
+   this branch only runs with an empty roster, which by definition has no names in it — but
+   that is one refactor away from being a real injection. */
 function voiceHint() {
   const others = callPeers();
   if (others.length > 1) {
-    const names = others.map(p => p.name);
+    const names = others.map(p => esc(p.name));
     return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} are in the call.`;
   }
-  if (others.length === 1) return `${others[0].name} is in the call.`;
+  if (others.length === 1) return `${esc(others[0].name)} is in the call.`;
   if (onlinePeers().length === 0) {
     return "Nobody is online. Joining anyway is fine — the others arrive in the call when they come back.";
   }
@@ -569,7 +596,7 @@ function memberRow(p, opts = {}) {
         <span class="mem-name">${esc(p.name)}</span>
         ${me ? '<span class="mem-you">YOU</span>' : ""}
       </div>
-      ${opts.sub ? `<div class="mem-sub">${opts.sub}</div>` : ""}
+      ${opts.sub ? `<div class="mem-sub">${esc(opts.sub)}</div>` : ""}
       ${opts.tools ? `<div class="mem-tools">
         <button class="mem-mute" aria-pressed="${muted}" data-pmute="${esc(p.id)}" title="${muted ? `Unmute ${esc(p.name)}` : `Mute ${esc(p.name)}`}">
           ${ic(muted ? "i-mic-off" : "i-mic", "icon", 'style="width:14px;height:14px"')}
@@ -632,7 +659,10 @@ function renderMembers() {
     })) +
     group("Connecting", connecting, () => ({ sub: "Reconnecting" })) +
     group("Offline", away, p => ({ sub: p.problem || lastSeenLine(p) })) +
-    group("Not introduced yet", unknown, p => ({ sub: esc(p.address) })) +
+    /* B-56: no esc() here — memberRow escapes `sub` in the sink now, so escaping at the
+       caller would show &amp;-noise. One place decides, and it is the place that writes
+       the HTML. */
+    group("Not introduced yet", unknown, p => ({ sub: p.address })) +
     `</div>`;
 }
 
@@ -1646,7 +1676,9 @@ listen("drag", e => {
     renderOverlays();
   }
 });
-listen("dropped", e => invoke("offer_files", { paths: e.payload, channel: activeChannel() }));
+/* The payload is a list of indices, not paths — the paths stay in Rust on purpose, so a
+   script in this webview cannot name a file of its own. See `Ui::dropped`. */
+listen("dropped", e => invoke("offer_files", { indices: e.payload, channel: activeChannel() }));
 
 /* ---------------------------------------------------------------- narrow window */
 

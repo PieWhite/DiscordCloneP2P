@@ -69,6 +69,21 @@ impl Files {
         self.downloads.get(&file)
     }
 
+    /// B-04: welke downloads wíj hebben aangevraagd en nog lopen.
+    ///
+    /// Bestaat omdat een inkomende bulkstream verder niets bewijst: hij werd geaccepteerd
+    /// zodra er ergens een op met die `OpId` bestond, en de afzender werd weggegooid. Een
+    /// peer kon dus ongevraagd een bestand op onze schijf zetten — en dat is precies wat
+    /// B-03 van "één klik" naar "nul klikken" bracht. De ontvangtaak legt hier tegenaan of
+    /// dit een overdracht is waar wij om gevraagd hebben.
+    pub fn lopende_downloads(&self) -> std::collections::HashSet<OpId> {
+        self.downloads
+            .iter()
+            .filter(|(_, s)| matches!(s, DownloadStatus::Bezig { .. }))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     pub fn zet_status(&mut self, file: OpId, status: DownloadStatus) {
         self.downloads.insert(file, status);
     }

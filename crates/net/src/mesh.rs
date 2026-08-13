@@ -555,7 +555,11 @@ impl Actor {
         }
 
         tracing::info!(
-            peer = ?e.peer_id, name = %e.display_name, remote = %e.remote,
+            // B-33: `?` en niet `%` voor velden van de draad. `%` escapet niets, dus een
+            // naam met een nieuwe regel erin kon overtuigende neplogregels fabriceren —
+            // bijvoorbeeld een verzonnen "hash klopt niet" — precies wanneer je het log
+            // nodig hebt om een incident te reconstrueren.
+            peer = ?e.peer_id, name = ?e.display_name, remote = %e.remote,
             "verbonden"
         );
 
@@ -943,6 +947,30 @@ async fn accept_one(
 }
 
 /// Draait tot de verbinding weg is. Splitst lezen en schrijven in twee taken zodat een
+/// B-33: bovengrens voor de twee strings die een peer in de handshake meestuurt. Een naam
+/// is een naam en een versie is een versie; alles daarboven is geen invoer maar een poging.
+const MAX_DISPLAY_NAME: usize = 64;
+const MAX_APP_VERSION: usize = 32;
+
+/// Maakt van een string van de draad iets dat veilig in een logregel, de UI of een
+/// bestandsnaam past.
+///
+/// Twee dingen gaan eruit. **Stuurtekens**, want een `\n` in een weergavenaam kan een hele
+/// neplogregel fabriceren — een verzonnen "hash klopt niet" op precies het moment dat je het
+/// log gebruikt om een incident te reconstrueren. En **lengte**, want er staat op de draad
+/// geen enkele grens op deze velden (B-43) en de enige rem is `MAX_FRAME_LEN` van 16 MiB.
+///
+/// Afkappen gebeurt op chars en niet op bytes: midden in een multibyte-teken knippen zou
+/// hier een paniek geven op precies het pad dat een aanvaller kiest.
+fn schone_wirestring(s: &str, max: usize) -> String {
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// trage lezer het schrijven niet blokkeert.
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -959,6 +987,13 @@ async fn run_session(
 ) {
     let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
     let (out_tx, mut out_rx) = mpsc::channel::<ControlMsg>(256);
+
+    // B-33: hier is de ene plek waar beide handshakes samenkomen, dus hier worden deze twee
+    // velden schoongemaakt in plaats van bij elke consument apart. Ze komen onbegrensd en
+    // ongevalideerd van de draad en gaan daarna het log, de UI en (bij `app_version`) een
+    // bestandsnaam in; wie ze hier opschoont, hoeft elders niets te onthouden.
+    let display_name = schone_wirestring(&display_name, MAX_DISPLAY_NAME);
+    let app_version = schone_wirestring(&app_version, MAX_APP_VERSION);
 
     let established = Established {
         conn_id,
