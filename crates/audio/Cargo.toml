@@ -11,7 +11,10 @@ cpal = "0.18.1"
 crossbeam-channel = "0.5.16"
 fitcom-net.workspace = true
 fitcom-proto.workspace = true
-nnnoiseless = "0.5.2"
+# B-35: `default-features = false` haalt de `clap 3`-subboom eruit die `atty 0.2.14`
+# (RUSTSEC-2021-0145) meesleept. Wij gebruiken alleen de library-API (`DenoiseState`); die
+# `clap` is er voor de binaries van de crate zelf, die wij nooit bouwen.
+nnnoiseless = { version = "0.5.2", default-features = false }
 opus = "0.3.1"
 tracing = "0.1.44"
 

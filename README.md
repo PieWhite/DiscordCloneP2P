@@ -64,8 +64,32 @@ stemmen: identiteiten worden bij het eerste contact automatisch geleerd en vastg
 **MagicDNS-namen zijn te verkiezen boven IP's** — die blijven werken als een tailnet-IP
 verandert. Staat MagicDNS uit, gebruik dan de `100.x.x.x`-adressen uit `tailscale status`.
 
-Zorg dat de firewall `fitcom.exe` toestaat op het Tailscale-netwerk. Windows vraagt dit
-meestal bij de eerste start.
+#### Firewall: één vinkje, en het moet het juiste zijn
+
+Windows vraagt bij de eerste start of `fitcom.exe` mag netwerken, met "Privé" en "Openbaar"
+als twee losse vinkjes. **Zet alleen het Tailscale-netwerk aan, en laat "Privé" en
+"Openbaar" uit.** Doe dit op alle drie de PC's en controleer het ook als je het ooit al eens
+hebt weggeklikt — één verkeerd vinkje stelt de app open voor het hele subnet waar je op zit.
+
+Dat is nu geen theorie. De app luistert op álle netwerkinterfaces (`0.0.0.0`) en de
+identiteit die een peer claimt is nog niet cryptografisch aan zijn verbinding gebonden, dus
+deze firewallregel is op dit moment de enige echte grens tussen "onze drie PC's" en
+"iedereen op dezelfde wifi". Bij een LAN-party, in een hotel of op congres-wifi is dat het
+verschil dat telt. Volledige onderbouwing: `docs/BEVEILIGING.md`, bevindingen B-09 en B-05.
+
+Controleren of het goed staat:
+
+```powershell
+Get-NetFirewallRule -DisplayName "*fitcom*" | Get-NetFirewallAddressFilter
+```
+
+#### Waar je de zip uitpakt
+
+Pak de release uit **onder je gebruikersprofiel** (bijvoorbeeld
+`C:\Users\<jij>\FitCommunication`), niet in de root van `C:\`. De app schrijft in portable
+modus zijn data naast de exe, en een map in de root van `C:\` erft ruime rechten: een ander
+niet-admin-account op diezelfde PC kan daar dan een vervangende `fitcom.exe` neerzetten.
+Onder je profiel bestaat dat probleem niet. Zie B-47 in `docs/BEVEILIGING.md`.
 
 ### macOS
 

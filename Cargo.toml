@@ -19,6 +19,24 @@ fitcom-video = { path = "crates/video" }
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+# B-46. Drie dingen, elk met een eigen reden:
+#
+# `strip` — zonder dit blijven paniekpaden met absolute `C:\Users\<naam>\...`-paden in de
+# uitgeleverde exe staan. Dat is een gratis informatielek in een bestand dat we rondsturen.
+#
+# `overflow-checks` — de tests die je draait testen anders niet de code die je uitlevert.
+# B-37 (`frag_index + 1`) en B-38 (`volgende + 1`) zijn precies dat verschil: in debug een
+# paniek die je vindt, in release een stille wrap die je niet vindt. Een nette paniek op een
+# mediathread is hier het betere gedrag, want `panic = unwind` staat aan (bewust, zie
+# hieronder) en de motor blijft dan draaien.
+#
+# `panic` blijft expliciet op unwind en gaat *niet* naar `abort`: `abort` zou van elke paniek
+# in een taak een procesbrede crash maken, en dat is precies wat invariant 7 verbiedt —
+# offline en haperend is een normale toestand, niet een reden om iedereen uit het gesprek te
+# gooien. Dit staat hier zodat de volgende lezer het niet "optimaliseert".
+strip = true
+overflow-checks = true
+panic = "unwind"
 
 # Media-paden hebben ook in debug builds bruikbare performance nodig,
 # anders is handmatig testen van screenshare/voice zinloos.

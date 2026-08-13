@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Everything the main window is allowed to ask of the core. No plugins: file dialogs stay on the Rust side through rfd, which was already a dependency.",
+  "description": "Everything the main window is allowed to ask of the core. No plugins: file dialogs stay on the Rust side through rfd, which was already a dependency. B-48: the devtools toggle is deliberately NOT listed. It was inert in release (the feature is not compiled in), but a capability file is the wrong place to lean on that — nothing in the frontend ever called it, so the permission was pure surface. Debug builds still get devtools through Tauri's own debug behaviour.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -9,7 +9,6 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
-    "core:window:allow-hide",
-    "core:webview:allow-internal-toggle-devtools"
+    "core:window:allow-hide"
   ]
 }

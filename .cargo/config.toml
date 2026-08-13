@@ -6,3 +6,12 @@
 # Kan weg zodra er een nieuwere Opus-binding is die moderne CMake-policies hanteert.
 [env]
 CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+# B-46: Control Flow Guard. Op MSVC is dit opt-in, en deze binary is er een goede kandidaat
+# voor: hij linkt libopus (C uit 2021, zie B-36) en SQLite, en hij verwerkt netwerkinvoer van
+# buiten. CFG maakt van een overschreven functiepointer een nette crash in plaats van een
+# sprong naar waar de aanvaller hem wil hebben.
+#
+# Alleen op de MSVC-target: op macOS bestaat de vlag niet en zou hij het bouwen breken.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "control-flow-guard=yes"]

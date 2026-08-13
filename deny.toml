@@ -1,0 +1,58 @@
+# Configuratie voor `cargo deny check`. Zie docs/BEVEILIGING.md, bevindingen B-35 en B-36.
+#
+# Waarom dit bestand bestaat: het doorlichtingsdocument constateerde dat er nooit een
+# scanner over de afhankelijkheden is gegaan, en dat de ene bekende bevinding (`atty`)
+# alleen in een tekstdocument stond. Een advisory die alleen in proza staat, komt niet
+# terug wanneer je hem nodig hebt. Dit bestand maakt er een controle van die faalt.
+#
+# Draaien:
+#   cargo install cargo-deny     # eenmalig
+#   cargo deny check
+#
+# Dit is bewust géén CI-stap: er is geen CI (invariant 1 — nul servers), dus dit is iets
+# wat je met de hand draait voordat je een release uitgeeft.
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Geen enkele uitzondering op dit moment, en dat is nieuws.
+#
+# B-35 (`atty 0.2.14`, RUSTSEC-2021-0145) was hier de verwachte uitzondering. Die is op
+# 2026-08-13 níet vastgelegd maar echt weggehaald: `nnnoiseless` met
+# `default-features = false` (zie crates/audio/Cargo.toml) laat de hele `clap 3`-subboom
+# vallen, en daarmee `atty`. Gecontroleerd met `cargo tree -i atty`: de crate zit niet meer
+# in de graaf en niet meer in `Cargo.lock`.
+#
+# Komt hier ooit wél een `ignore` bij, zet de reden erbij en een datum. Een naakt
+# advisory-ID zonder onderbouwing is precies hoe B-35 vier jaar bleef staan.
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+# `wildcards = "deny"` zou hier niets toevoegen: alle directe afhankelijkheden staan al op
+# een concrete versie en `Cargo.lock` is gecommit, dus builds zijn per checksum vastgepind.
+wildcards = "allow"
+
+[licenses]
+# Dit is een privéproject voor drie mensen, geen distributie onder een licentieregime, dus
+# de licentiecontrole staat er om verrassingen te zien — niet om iets te blokkeren.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+  "Unlicense",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Alle 577 afhankelijkheden kwamen bij de doorlichting van crates.io, zonder git-bronnen en
+# zonder `[patch]`. Deze twee regels houden dat zo, in plaats van het één keer te constateren.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
