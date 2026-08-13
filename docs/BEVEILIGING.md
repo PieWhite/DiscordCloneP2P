@@ -198,9 +198,9 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-12 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Fragmentbuffers: geen cap, geen timeout, en aanvallersbuckets zijn eviction-immuun | `video/fragment.rs:264,297-301` |
 | B-13 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde downloadgrootte bij bestandsoverdracht (het updatepad dwingt de grootte sinds fase 13 wél af) | `app/engine.rs` (download_taak) |
 | B-14 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `lamport` u64↔i64 → permanente, onherstelbare last-writer-wins-kaping | `store/lib.rs:417-423,437` |
-| B-15 | HOOG | **Deels (2026-08-13)** — store-helft (MAX_OP_LEN + bytebudget) gedaan; de schrijflus in `net` breekt nog steeds af i.p.v. over te slaan | `store/lib.rs:63`, `net/mesh.rs:985` |
+| B-15 | ~~HOOG~~ | **Opgelost (2026-08-13)** — MAX_OP_LEN plus bytebudget in de store, en de schrijflus in `net` slaat over i.p.v. af te breken | `store/lib.rs:63`, `net/mesh.rs:985` |
 | B-16 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde oplog-groei; hele store per wijziging opnieuw in RAM | `store/lib.rs:383-390`, `app/chat.rs:243` |
-| B-17 | HOOG | Pre-auth geheugenuitputting: 16 MiB per frame × onbegrensd aantal verbindingen | `net/framing.rs:39`, `net/mesh.rs:865` |
+| B-17 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Pre-auth geheugenuitputting: 16 MiB per frame × onbegrensd aantal verbindingen | `net/framing.rs:39`, `net/mesh.rs:865` |
 | B-18 | HOOG | Het UDP-mediapad kent geen authenticatie en geen replaybescherming | `net/media.rs:64-156` |
 | B-19 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `UpdateSubresource` met genegeerde bufferlengte en gestript stride-teken | `video/codec.rs:741-765` |
 | B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief | `app/ui/commands.rs:241-246` |
@@ -209,9 +209,9 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-21 | ~~MIDDEL~~ | **Opgelost (fase 13)** — de eigen exe wordt nergens meer aangeboden | `app/engine.rs` |
 | B-22 | MIDDEL | **Deels (2026-08-13)** — Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens | `app/engine.rs:636-658` |
 | B-23 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
-| B-24 | MIDDEL | Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |
-| B-25 | MIDDEL | Logvervuiling vanaf een niet-geautoriseerde verbinding stalt de mesh-actor | `net/mesh.rs:632-640` |
-| B-26 | MIDDEL | Onbegrensde `pending`-lijst voor niet-koppelbare verbindingen | `net/mesh.rs:380,476-480` |
+| B-24 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |
+| B-25 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Logvervuiling vanaf een niet-geautoriseerde verbinding stalt de mesh-actor | `net/mesh.rs:632-640` |
+| B-26 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Onbegrensde `pending`-lijst voor niet-koppelbare verbindingen | `net/mesh.rs:380,476-480` |
 | B-27 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Te groot UDP-datagram is een fout i.p.v. rommel → logstorm op de mediathreads | `net/media.rs:153` |
 | B-28 | MIDDEL | **Deels (2026-08-13)** — Fragmentinjectie: bronpoort genegeerd en geen index-validatie | `video/kijker.rs:300`, `video/fragment.rs:154` |
 | B-29 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen maximum framegrootte richting de OS-H.264-decoder | `video/kijker.rs:420` |
@@ -228,8 +228,8 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-37 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `frag_index + 1` overflow-paniek doodt de kijkerthread stil | `video/fragment.rs:262` |
 | B-38 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
 | B-39 | LAAG | `read_kind` leest elk byte ≠ 1 als "bestand" | `net/filestream.rs:68` |
-| B-40 | LAAG | `VersionMismatch` reset de backoff → handshake-lus van 1 Hz | `net/mesh.rs:823-836` |
-| B-41 | LAAG | Door de peer opgegeven `media_port` wordt niet gevalideerd | `net/mesh.rs:565` |
+| B-40 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `VersionMismatch` reset de backoff → handshake-lus van 1 Hz | `net/mesh.rs:823-836` |
+| B-41 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Door de peer opgegeven `media_port` wordt niet gevalideerd | `net/mesh.rs:565` |
 | B-42 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `wall_clock` is volledig door de afzender bepaald en wordt getoond | `store/timeline.rs:103` |
 | B-43 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Onbegrensde string- en collectielengtes op de draad | `proto/op.rs:126-145` |
 | B-44 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unreachable!()` bereikbaar bij extreme naamcollisie | `app/engine.rs:1650` |
