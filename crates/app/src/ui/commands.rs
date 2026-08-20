@@ -603,6 +603,13 @@ pub fn wordle_guess(ui: State<'_, Ui>, word: String) {
     send(&ui, UiCommand::WordleGok(word));
 }
 
+/// Ask for today's puzzle now, instead of waiting for the quarter-hourly attempt. Same
+/// shape as `check_update`: the automatic path stays, this is the button beside it.
+#[tauri::command]
+pub fn fetch_wordle(ui: State<'_, Ui>) {
+    send(&ui, UiCommand::WordleOphalen);
+}
+
 /// The close button. With `minimize_to_tray` on — the default — it hides the window and
 /// leaves the engine running, because the state this app has to be good at is "away in
 /// the tray while a game is running".

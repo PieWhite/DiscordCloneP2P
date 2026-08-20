@@ -1474,8 +1474,12 @@ function wordleBoardHtml(w) {
 function wordleStatus(w) {
   const board = w.board;
   if (!board) {
-    return `<p class="wdl-line">Today's word could not be fetched yet. It is tried again every
-      quarter of an hour; without it there is nothing to guess.</p>`;
+    // A manual attempt puts its reason here. Without this the + button looks identical
+    // whether it failed or is still going, which is the one thing the presser needs to know.
+    return (w.error ? `<p class="wdl-line" data-error>${esc(w.error)}</p>` : "") +
+      `<p class="wdl-line">Today's word could not be fetched yet. It is tried again every
+      quarter of an hour; without it there is nothing to guess. The <b>+</b> button beside
+      the message box asks again right away.</p>`;
   }
   if (board.done && board.won) {
     return `<p class="wdl-line">Solved in ${board.rows.length} of ${w.tries}.</p>`;
@@ -1673,6 +1677,12 @@ document.addEventListener("click", async e => {
   if (t.closest("#btn-deaf")) return invoke("set_deafened", { deafened: !S.voice.deafened });
   if (t.closest("#btn-dnd")) return invoke("set_do_not_disturb", { on: !S.do_not_disturb });
   if (t.closest("#attach")) return invoke("pick_and_offer_file", { channel: activeChannel() });
+  if (t.closest("#get-wordle")) {
+    // Ask, then show the board: the window is where the outcome lands either way, and it
+    // repaints on the state event when the puzzle arrives.
+    invoke("fetch_wordle");
+    return openWordle();
+  }
   if (t.closest("#error-dismiss")) return invoke("dismiss_error");
 
   const source = t.closest("[data-source]");

@@ -294,6 +294,7 @@ pub fn run(
             commands::open_link,
             commands::youtube_preview,
             commands::wordle_guess,
+            commands::fetch_wordle,
             commands::close_window,
             ready,
         ])

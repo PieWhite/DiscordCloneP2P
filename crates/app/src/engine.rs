@@ -286,6 +286,10 @@ pub enum UiCommand {
     /// Eén gok op het Wordle-raadsel van vandaag. Het woord komt uit het venster; de
     /// motor beoordeelt het, want de oplossing blijft aan deze kant.
     WordleGok(String),
+    /// Het raadsel van nu alsnog opvragen, buiten de kwartierklok om. Zelfde gedachte als
+    /// [`UiCommand::ZoekUpdate`]: er loopt al een automatiek, dit is de knop ernaast voor
+    /// als die nog niet aan de beurt was of eerder niets kreeg.
+    WordleOphalen,
 }
 
 pub struct EngineHandle {
@@ -512,6 +516,9 @@ enum FileEvent {
     /// Het raadsel van vandaag is bij NYT opgehaald (2026-08-20). Zie `crate::wordle` voor
     /// waarom dat in de motor gebeurt en niet in de webview.
     WordleGeladen(wordle::Raadsel),
+    /// Een *handmatige* poging is misgegaan; de reden hoort in het venster. Een
+    /// automatische poging meldt niets — zie `wordle_taak`.
+    WordleMislukt(String),
 }
 
 impl Engine {
@@ -1734,6 +1741,7 @@ impl Engine {
             UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
             UiCommand::WisUpdateMelding => self.updates.wis_melding(),
             UiCommand::WordleGok(woord) => self.wordle_gok(&woord),
+            UiCommand::WordleOphalen => self.wordle_ophalen(),
         }
     }
 
@@ -1761,7 +1769,22 @@ impl Engine {
     fn wordle_tick(&mut self) {
         if let Some(datum) = self.wordle.moet_ophalen() {
             let tx = self.file_tx.clone();
-            tokio::spawn(wordle_taak(datum, tx));
+            tokio::spawn(wordle_taak(datum, false, tx));
+        }
+    }
+
+    /// De `+`-knop naast de composer: nú proberen, zonder op het kwartier te wachten.
+    ///
+    /// `nu_ophalen` geeft `None` als het raadsel er al is — dan valt er niets te halen en
+    /// laat het venster dat de knop opent gewoon het bord zien. Mislukt het wél, dan moet
+    /// dat te zien zijn: iemand die hierop drukt weet dat het er niet is, dus "nog steeds
+    /// niets" zonder reden is precies het antwoord waar hij niets aan heeft. Vandaar dat
+    /// een handmatige poging zijn fout terugmeldt en de automatische niet.
+    fn wordle_ophalen(&mut self) {
+        if let Some(datum) = self.wordle.nu_ophalen() {
+            tracing::info!(datum, "wordle handmatig opgevraagd");
+            let tx = self.file_tx.clone();
+            tokio::spawn(wordle_taak(datum, true, tx));
         }
     }
 
@@ -1963,6 +1986,7 @@ impl Engine {
                 );
                 self.wordle.neem_op(raadsel);
             }
+            FileEvent::WordleMislukt(reden) => self.wordle.fout = Some(reden),
         }
     }
 
@@ -2587,14 +2611,30 @@ async fn download_taak(
 /// Mislukken is geen fout: `debug` en niet `warn`, precies zoals bij een YouTube-preview.
 /// Offline is een normale toestand (invariant 7) en dit is een spelletje — er komt dan
 /// gewoon geen kaart, en over een kwartier probeert de tik het opnieuw.
-async fn wordle_taak(datum: String, events: mpsc::Sender<FileEvent>) {
+///
+/// Behalve als iemand er zelf om vroeg (`handmatig`). Dan is stil mislukken juist wél
+/// verkeerd: er staat iemand te kijken of er nu iets gebeurt. Alleen in dat geval komt de
+/// reden terug het venster in.
+async fn wordle_taak(datum: String, handmatig: bool, events: mpsc::Sender<FileEvent>) {
     let uitkomst = tokio::task::spawn_blocking(move || wordle::haal_op(&datum)).await;
-    match uitkomst {
+    let reden = match uitkomst {
         Ok(Ok(raadsel)) => {
             let _ = events.send(FileEvent::WordleGeladen(raadsel)).await;
+            return;
         }
-        Ok(Err(e)) => tracing::debug!(error = %format!("{e:#}"), "geen wordle van vandaag"),
-        Err(e) => tracing::warn!(error = %e, "de wordle-taak liep vast"),
+        Ok(Err(e)) => {
+            tracing::debug!(error = %format!("{e:#}"), "geen wordle van vandaag");
+            "Today's puzzle could not be fetched. Is there internet?"
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "de wordle-taak liep vast");
+            "Fetching today's puzzle went wrong."
+        }
+    };
+    if handmatig {
+        let _ = events
+            .send(FileEvent::WordleMislukt(reden.to_string()))
+            .await;
     }
 }
 
