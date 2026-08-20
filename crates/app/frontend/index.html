@@ -76,6 +76,9 @@ review, the verdict, and DESIGN.md.
     <g id="i-cam-off"><path d="M2.5 8.5v7a2 2 0 0 0 2 2h8.2M8 6.5h5a2 2 0 0 1 2 2v4.2"/><path d="m15 11.5 5-3v7l-2.4-1.4"/><path d="m3.5 3.5 17 17"/></g>
     <g id="i-open"><path d="M11.5 5.5h-6v13h13v-6"/><path d="M13.5 4.5h6v6M19.5 4.5 12 12"/></g>
     <g id="i-play"><path d="M8.5 4.5 19.5 12 8.5 19.5z"/></g>
+    <!-- Three tiles in a row: the puzzle of the day. Same 2px stroke and square joins as
+         the rest of the set, drawn on half pixels so the edges land on the grid. -->
+    <g id="i-tiles"><rect x="2.5" y="9.5" width="5" height="5"/><rect x="9.5" y="9.5" width="5" height="5"/><rect x="16.5" y="9.5" width="5" height="5"/></g>
   </defs>
 </svg>
 
@@ -244,6 +247,19 @@ review, the verdict, and DESIGN.md.
     <button class="btn btn--ghost" id="lightbox-size">Actual size</button>
     <button class="btn btn--ghost" id="lightbox-open">Open</button>
     <button class="btn btn--accent" id="lightbox-close">Close</button>
+  </div>
+</dialog>
+
+<!-- The puzzle of the day. The board, an on-screen keyboard and the leaderboard in one
+     window; the card in the log opens it. The answer is not in here until the game is
+     over — the engine marks each guess and sends back five colours (see `crate::wordle`). -->
+<dialog class="confirm wdl-dlg" id="wordle">
+  <div class="confirm-body">
+    <h2 id="wordle-title">Wordle</h2>
+  </div>
+  <div id="wordle-panel"><!-- filled by script --></div>
+  <div class="confirm-foot">
+    <button class="btn btn--accent" id="wordle-close">Close</button>
   </div>
 </dialog>
 

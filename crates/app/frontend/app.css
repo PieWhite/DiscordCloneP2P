@@ -116,6 +116,14 @@
   --av-2: var(--c-lime);
   --av-3: var(--c-orange);
 
+  /* The three tile states of the puzzle of the day. Aliases into the sixteen, like every
+     other colour here: green already means "right" everywhere in this window (presence,
+     "Downloaded"), amber already means "not there yet" (connecting), and steel is what a
+     dead edge is drawn in. Nothing new enters the palette for a game. */
+  --wdl-hit:  var(--c-green);
+  --wdl-near: var(--c-amber);
+  --wdl-miss: var(--c-steel);
+
   --code-key: var(--c-sky);
   --code-str: var(--c-lime);
   --code-num: var(--c-amber);
@@ -1702,6 +1710,148 @@ dialog.lightbox.is-full .lightbox-frame img {
   color: var(--c-silver);
 }
 .tile-idle .icon { width: 20px; height: 20px; }
+
+/* ------------------------------------------------- the puzzle of the day
+
+   A little titled window in the log, same chassis as an attachment card: one border, ink
+   field, 440px measure. It gets the blue title strip the dialogs have, because unlike an
+   attachment this thing is a surface you act on and not a row you read.
+
+   The three tile colours are aliases into the sixteen (--wdl-*, see :root); nothing new
+   entered the palette for a game. Winning a day is drawn the way this world draws "this
+   is the one" everywhere else: the cell inverts to paper. */
+
+.wdl {
+  margin: 6px 0 2px;
+  max-width: 440px;
+  border: 1px solid var(--border);
+  background: var(--c-ink);
+}
+.wdl-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--c-blue);
+  border-bottom: 1px solid var(--c-space);
+}
+.wdl-head .icon { width: 14px; height: 14px; flex: none; }
+.wdl-title { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.wdl-date { font-size: 11.5px; color: var(--c-paper); opacity: .8; margin-left: auto; }
+.wdl-body { padding: 10px; }
+.wdl-body .btn { width: 100%; justify-content: center; }
+
+/* One column per peer who played, side by side — a scoreboard reads across, not down. */
+.wdl-scores { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.wdl-body .btn + .wdl-scores { margin-top: 10px; }
+.wdl-score {
+  flex: 1 1 0; min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--c-violet);
+  background: var(--c-space);
+  text-align: center;
+}
+/* The day's point. Full cell inversion, the same grammar as the current row in a list. */
+.wdl-score[data-won="true"] { background: var(--bg-active); color: var(--on-invert); border-color: var(--c-paper); }
+.wdl-score[data-won="true"] .wdl-tries { color: var(--on-invert); }
+.wdl-who {
+  display: block;
+  font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wdl-tries { display: block; font-size: 11.5px; color: var(--c-silver); margin-top: 1px; }
+
+/* The shared squares. Five to a row, one row per guess — the rows a peer did not need are
+   simply not drawn, so a two-guess win is a short block and not six rows of nothing. */
+.wdl-grid { display: inline-grid; grid-template-columns: repeat(5, 8px); gap: 2px; margin-top: 6px; }
+.wdl-pip { width: 8px; height: 8px; background: var(--wdl-miss); }
+.wdl-pip[data-m="1"] { background: var(--wdl-near); }
+.wdl-pip[data-m="2"] { background: var(--wdl-hit); }
+
+.wdl-note { margin: 8px 0 0; font-size: 11.5px; color: var(--c-silver); line-height: 1.45; }
+
+/* A finished day has nothing to act on, so its one button sits under the scores at its own
+   size instead of spanning the card like a call to action. */
+.wdl-foot { margin-top: 8px; }
+.wdl-foot .btn { width: auto; }
+
+/* ---- the dialog ---- */
+
+/* The board, the keyboard and the standings are together taller than the smallest window
+   this app allows (460px). So the window is a column and the middle of it scrolls: the
+   title strip and Close stay put, which is what makes a short screen usable instead of
+   clipped. `[open]` and not the bare element — an author `display` on a `<dialog>` would
+   override the UA rule that keeps a closed one hidden. */
+dialog.wdl-dlg { width: min(340px, calc(100vw - 48px)); max-height: calc(100vh - 32px); }
+dialog.wdl-dlg[open] { display: flex; flex-direction: column; }
+#wordle-panel { padding: 14px 16px 0; overflow-y: auto; min-height: 0; }
+
+/* The board. Fixed cell size rather than a fraction of the width: five letters across a
+   340px window is 52px a cell, and a letter tile that changes size with the window stops
+   reading as a tile. */
+.wdl-board { display: grid; grid-template-columns: repeat(5, 46px); gap: 5px; justify-content: center; }
+.wdl-cell {
+  width: 46px; height: 46px;
+  display: grid; place-items: center;
+  border: 2px solid var(--c-violet);
+  background: var(--c-space);
+  font-size: 20px;
+  color: var(--text);
+}
+/* A marked cell is a filled cell: the colour is the answer, so the border goes with it. */
+.wdl-cell[data-m] { border-color: transparent; color: var(--on-invert); }
+.wdl-cell[data-m="0"] { background: var(--wdl-miss); }
+.wdl-cell[data-m="1"] { background: var(--wdl-near); }
+.wdl-cell[data-m="2"] { background: var(--wdl-hit); }
+/* The row being typed: paper edge, so it is obvious which row takes the letters. */
+.wdl-cell[data-live] { border-color: var(--border-input); }
+
+.wdl-line { margin: 12px 0 0; min-height: 18px; font-size: 12.5px; text-align: center; color: var(--c-silver); }
+.wdl-line[data-error] { color: var(--danger-text); }
+.wdl-line b { color: var(--c-paper); letter-spacing: .08em; }
+
+/* ---- the on-screen keyboard ---- */
+
+.wdl-keys { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.wdl-krow { display: flex; gap: 4px; }
+.wdl-key {
+  min-width: 26px; height: 34px; padding: 0 4px;
+  background: var(--c-space);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 12.5px;
+  text-transform: uppercase;
+}
+.wdl-key:hover { background: var(--c-paper); border-color: var(--c-paper); color: var(--on-invert); }
+.wdl-key--wide { min-width: 46px; font-size: 11px; }
+/* A letter that has been ruled out keeps its place but stops competing for attention. Not
+   with opacity: half-density dither is what "spent" looks like in this world, and it keeps
+   the letter itself readable where a faded key did not. */
+.wdl-key[data-m="0"] {
+  background: var(--dither-half), var(--wdl-miss);
+  background-size: 4px 4px, auto;
+  border-color: var(--wdl-miss);
+  color: var(--c-silver);
+}
+.wdl-key[data-m="1"] { background: var(--wdl-near); border-color: var(--wdl-near); color: var(--on-invert); }
+.wdl-key[data-m="2"] { background: var(--wdl-hit); border-color: var(--wdl-hit); color: var(--on-invert); }
+
+/* ---- the leaderboard ---- */
+
+.wdl-stand { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 10px; }
+.wdl-stand h3 {
+  margin: 0 0 6px; font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--c-silver);
+}
+.wdl-row {
+  display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px;
+  align-items: center;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.wdl-row[data-mine="true"] { background: var(--bg-hover); }
+.wdl-row-head { color: var(--c-silver); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+.wdl-pts { min-width: 26px; text-align: right; }
+.wdl-col { min-width: 46px; text-align: right; color: var(--c-silver); }
+.wdl-empty { font-size: 12px; color: var(--c-silver); line-height: 1.5; }
 
 /* macOS: native traffic lights (titleBarStyle Overlay) replace our window buttons;
    the titlebar keeps clear of them and stays the drag region. */

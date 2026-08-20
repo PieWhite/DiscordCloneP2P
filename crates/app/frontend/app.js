@@ -576,6 +576,85 @@ function itemContent(item) {
   return attachmentCard(item);
 }
 
+/* ------------------------------------------------------- the puzzle of the day
+
+   The card is not a message and not an op: every machine works out on its own that today
+   is today, so there is nothing to tell anybody. It is placed in the log by the clock, at
+   07:00 of the day it belongs to (see `ui/state.rs`).
+
+   The squares of the others stay hidden until you have finished today's puzzle. A pattern
+   is a real hint — that is why the real Wordle is shared after you play, not before — and
+   this card sits in the middle of the conversation where you cannot avoid looking. */
+
+const wordleTitle = item => item.number ? `Wordle ${item.number.toLocaleString()}` : "Wordle";
+
+const wordleButton = item => {
+  const tries = S.wordle.tries;
+  switch (item.action) {
+    case "play":
+      return `<button class="btn btn--accent" data-wordle="${item.day}">${ic("i-play")}Play today's puzzle</button>`;
+    case "continue":
+      return `<button class="btn btn--accent" data-wordle="${item.day}">${ic("i-play")}Continue &middot; ${item.progress}/${tries}</button>`;
+    case "done":
+      return `<button class="btn btn--ghost" data-wordle="${item.day}">${ic("i-tiles")}Show the board</button>`;
+    case "waiting":
+      return `<button class="btn" disabled>${ic("i-tiles")}Today's word has not arrived yet</button>`;
+    default:
+      return `<button class="btn btn--ghost" data-wordle="${item.day}">${ic("i-tiles")}Standings</button>`;
+  }
+};
+
+/** The shared squares of one result: five to a row, one row per guess made. */
+const wordleGrid = pattern => {
+  const cells = [...String(pattern)].filter(c => "012".includes(c));
+  if (cells.length < 5) return "";
+  return `<span class="wdl-grid">${cells.map(c => `<i class="wdl-pip" data-m="${c}"></i>`).join("")}</span>`;
+};
+
+function wordleCard(item) {
+  const tries = S.wordle.tries;
+  /* Their squares are a hint, so they wait until your own game is over. Only today's card
+     can be unfinished; a past day has nothing left to spoil. */
+  const spoilers = item.action === "past" || item.action === "done";
+  const scores = item.results.length
+    ? `<ul class="wdl-scores">${item.results.map(r => `<li class="wdl-score" data-won="${r.won}">
+        <span class="wdl-who au-${r.avatar}">${esc(r.mine ? "You" : r.name)}</span>
+        <span class="wdl-tries num">${r.solved ? `${r.guesses}/${tries}` : "failed"}</span>
+        ${spoilers ? wordleGrid(r.pattern) : ""}
+      </li>`).join("")}</ul>`
+    : "";
+
+  let note = "";
+  if (!item.results.length) {
+    note = item.action === "past"
+      ? "Nobody played this one."
+      : "Nobody has played yet today.";
+  } else if (!item.scored) {
+    const who = item.results[0].mine ? "You" : esc(item.results[0].name);
+    note = `${who} played alone, so this day is worth no point yet. It counts as soon as somebody else joins in.`;
+  } else if (!spoilers) {
+    note = "The squares appear once you have finished your own game.";
+  }
+
+  /* Today's card leads with its button — that is the thing to do. A past day leads with
+     the scores, because they are the thing to read, and its way into the standings sits
+     underneath at its own size. */
+  const past = item.action === "past";
+  return `<div class="wdl">
+    <div class="wdl-head">
+      ${ic("i-tiles")}
+      <span class="wdl-title">${esc(wordleTitle(item))}</span>
+      <span class="wdl-date">${esc(fmtDay(item.at))}</span>
+    </div>
+    <div class="wdl-body">
+      ${past ? "" : wordleButton(item)}
+      ${scores}
+      ${note ? `<p class="wdl-note">${note}</p>` : ""}
+      ${past ? `<div class="wdl-foot">${wordleButton(item)}</div>` : ""}
+    </div>
+  </div>`;
+}
+
 const sameOp = (a, b) => a && b && a.author === b.author && a.channel === b.channel && a.seq === b.seq;
 
 function renderMessage(item, grouped, at) {
@@ -657,6 +736,14 @@ function renderTimeline() {
       html += `<div class="newline">New</div>`;
       firstUnreadDrawn = true;
       lastAuthor = null;
+    }
+    if (item.kind === "wordle") {
+      /* Not a message: no author, no gutter, no grouping. The next message after it starts
+         a fresh block, which is what clearing `lastAuthor` does. */
+      html += wordleCard(item);
+      lastAuthor = null;
+      lastAt = at || lastAt;
+      return;
     }
     const grouped = item.author === lastAuthor
       && at && lastAt && at - lastAt < GROUP_WINDOW
@@ -1233,6 +1320,9 @@ function render() {
      Alleen voor invoervelden: een knop houdt geen toestand vast, en de kaartjes van de
      geluidssets moeten juist wél meteen bijwerken als je er een kiest. */
   if (V.view === "settings" && !bezigMetInvoer()) renderSettings();
+  /* The board is state like everything else: a guess lands in the engine and comes back in
+     the next event, so the window it is drawn in has to be redrawn with the rest. */
+  if (wordleDlg.open) renderWordle();
 
   const tl = $("timeline");
   const key = `${V.view}:${activeChannel()}`;
@@ -1325,6 +1415,139 @@ function submitPrompt() {
   promptDlg.close();
   if (value && promptAction) promptAction(value);
   promptAction = null;
+}
+
+/* ------------------------------------------------------- the wordle window
+
+   The board, an on-screen keyboard and the leaderboard. Everything drawn here comes out of
+   `S.wordle`, which the engine refreshes after every guess — so this repaints on the state
+   event like the rest of the window, and there is no second copy of the game on this side.
+
+   The answer is not in `S.wordle` until the game is over. Typing a guess sends the word to
+   the engine and five colours come back; this side never knows the word in advance. */
+
+const wordleDlg = $("wordle");
+const KEYS = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
+
+/** The letters typed into the row that is not sent yet. Cleared when a row lands. */
+let wordleTyped = "";
+let wordleRows = -1;
+
+$("wordle-close").addEventListener("click", () => wordleDlg.close());
+
+function openWordle() {
+  renderWordle();
+  if (!wordleDlg.open) wordleDlg.showModal();
+}
+
+/** The best mark each letter has earned so far, for colouring the keyboard. */
+function wordleLetters(board) {
+  const best = {};
+  (board?.rows || []).forEach(r => {
+    [...r.word.toLowerCase()].forEach((ch, i) => {
+      const m = r.marks[i];
+      if (best[ch] === undefined || m > best[ch]) best[ch] = m;
+    });
+  });
+  return best;
+}
+
+function wordleBoardHtml(w) {
+  const board = w.board;
+  const rows = board?.rows || [];
+  const live = board && !board.done ? wordleTyped : "";
+  let html = "";
+  for (let r = 0; r < w.tries; r++) {
+    for (let c = 0; c < 5; c++) {
+      if (r < rows.length) {
+        html += `<span class="wdl-cell" data-m="${rows[r].marks[c]}">${esc(rows[r].word[c] || "")}</span>`;
+      } else if (r === rows.length && board && !board.done) {
+        html += `<span class="wdl-cell" data-live>${esc((live[c] || "").toUpperCase())}</span>`;
+      } else {
+        html += `<span class="wdl-cell"></span>`;
+      }
+    }
+  }
+  return `<div class="wdl-board">${html}</div>`;
+}
+
+function wordleStatus(w) {
+  const board = w.board;
+  if (!board) {
+    return `<p class="wdl-line">Today's word could not be fetched yet. It is tried again every
+      quarter of an hour; without it there is nothing to guess.</p>`;
+  }
+  if (board.done && board.won) {
+    return `<p class="wdl-line">Solved in ${board.rows.length} of ${w.tries}.</p>`;
+  }
+  if (board.done) {
+    return `<p class="wdl-line">Out of guesses. The word was <b>${esc(board.solution || "")}</b>.</p>`;
+  }
+  if (w.error) return `<p class="wdl-line" data-error>${esc(w.error)}</p>`;
+  return `<p class="wdl-line">Guess ${board.rows.length + 1} of ${w.tries}.</p>`;
+}
+
+function wordleKeys(w) {
+  if (!w.board || w.board.done) return "";
+  const letters = wordleLetters(w.board);
+  const key = ch => {
+    const m = letters[ch];
+    return `<button class="wdl-key" data-wkey="${ch}"${m === undefined ? "" : ` data-m="${m}"`}>${ch}</button>`;
+  };
+  return `<div class="wdl-keys">
+    ${KEYS.map((row, i) => `<div class="wdl-krow">
+      ${i === 2 ? `<button class="wdl-key wdl-key--wide" data-wkey="enter">Enter</button>` : ""}
+      ${[...row].map(key).join("")}
+      ${i === 2 ? `<button class="wdl-key wdl-key--wide" data-wkey="back">Back</button>` : ""}
+    </div>`).join("")}
+  </div>`;
+}
+
+function wordleStandings(w) {
+  if (!w.standings.length) {
+    return `<div class="wdl-stand"><h3>Standings</h3>
+      <p class="wdl-empty">Nobody has finished a puzzle yet. A day is worth one point to
+        whoever solved it in the fewest guesses — and only when at least two of you
+        played.</p></div>`;
+  }
+  return `<div class="wdl-stand"><h3>Standings</h3>
+    <div class="wdl-row wdl-row-head"><span>Name</span><span class="wdl-pts">Pts</span>
+      <span class="wdl-col">Played</span><span class="wdl-col">Solved</span></div>
+    ${w.standings.map(st => `<div class="wdl-row" data-mine="${st.mine}">
+      <span class="au-${st.avatar}">${esc(st.mine ? "You" : st.name)}</span>
+      <span class="wdl-pts num">${st.points}</span>
+      <span class="wdl-col num">${st.played}</span>
+      <span class="wdl-col num">${st.solved}</span>
+    </div>`).join("")}
+  </div>`;
+}
+
+function renderWordle() {
+  const w = S.wordle;
+  /* A row that landed clears what was typed; a rejected guess keeps it, so you can fix a
+     typo instead of retyping the word. Both cases come through here, and the row count is
+     the only thing that tells them apart. */
+  const landed = w.board ? w.board.rows.length : 0;
+  if (landed !== wordleRows) {
+    wordleRows = landed;
+    wordleTyped = "";
+  }
+  const number = w.board ? ` ${w.board.number.toLocaleString()}` : "";
+  $("wordle-title").textContent = `Wordle${number}`;
+  $("wordle-panel").innerHTML = wordleBoardHtml(w) + wordleStatus(w) + wordleKeys(w) + wordleStandings(w);
+}
+
+function wordleKey(k) {
+  const w = S.wordle;
+  if (!w.board || w.board.done) return;
+  if (k === "enter") {
+    if (wordleTyped.length === 5) invoke("wordle_guess", { word: wordleTyped });
+    return;
+  }
+  if (k === "back") wordleTyped = wordleTyped.slice(0, -1);
+  else if (/^[a-z]$/.test(k) && wordleTyped.length < 5) wordleTyped += k;
+  else return;
+  renderWordle();
 }
 
 const picker = $("picker");
@@ -1482,6 +1705,11 @@ document.addEventListener("click", async e => {
 
   const shot = t.closest("[data-shot]");
   if (shot) return openLightbox(JSON.parse(shot.dataset.shot));
+
+  if (t.closest("[data-wordle]")) return openWordle();
+
+  const wkey = t.closest("[data-wkey]");
+  if (wkey) return wordleKey(wkey.dataset.wkey);
 
   const ed = t.closest("[data-edit]");
   if (ed) {
@@ -1722,9 +1950,18 @@ document.addEventListener("paste", async e => {
   invoke("offer_pasted_image", { bytes, extension, channel: activeChannel() });
 });
 
+/* Typing goes to the board while its window is open. Physical keys and the drawn keyboard
+   run through the same function, so there is one place where a letter means something. */
+document.addEventListener("keydown", e => {
+  if (!wordleDlg.open || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "Enter") { e.preventDefault(); return wordleKey("enter"); }
+  if (e.key === "Backspace") { e.preventDefault(); return wordleKey("back"); }
+  if (/^[a-zA-Z]$/.test(e.key)) { e.preventDefault(); return wordleKey(e.key.toLowerCase()); }
+});
+
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  if (dlg.open || promptDlg.open || picker.open || lightbox.open) return;   // <dialog> closes itself
+  if (dlg.open || promptDlg.open || picker.open || lightbox.open || wordleDlg.open) return;   // <dialog> closes itself
   if (V.editing) { V.editing = null; return render(); }
   if (V.overlay !== "none") { V.overlay = "none"; return renderOverlays(); }
 });
