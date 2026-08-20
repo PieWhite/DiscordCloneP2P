@@ -916,6 +916,59 @@ input, textarea { font: inherit; color: inherit; }
   transition: transform 400ms steps(8, jump-end);
 }
 
+/* A YouTube link, with its title and thumbnail. Same card chassis as an attachment —
+   one border, ink field, 440px measure — because it is the same kind of thing: a row in
+   the log that is not text. The thumbnail is fetched by the engine and read off our own
+   disk (see `crate::youtube`); nothing here reaches out to a host. */
+.yt {
+  display: flex;
+  margin: 6px 0 2px;
+  max-width: 440px;
+  border: 1px solid var(--border);
+  background: var(--c-ink);
+  color: var(--text);
+  text-decoration: none;
+}
+.yt:hover { border-color: var(--accent); }
+.yt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 160×90 out of a 480×360 source: `hqdefault` is 4:3 with black bands above and below a
+   widescreen video, and `cover` crops exactly those away. */
+.yt-thumb {
+  position: relative;
+  flex: none;
+  width: 160px; height: 90px;
+  background: var(--c-space);
+}
+.yt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.yt-play {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  color: var(--c-paper);
+}
+/* The play mark gets a plate. A thumbnail is somebody else's picture in colours we do not
+   control, and a paper-coloured glyph on a paper-coloured frame is no glyph. */
+.yt-play::before {
+  content: "";
+  position: absolute; inset: 0; margin: auto;
+  width: 38px; height: 28px;
+  background: var(--c-space);
+  border: 1px solid var(--c-paper);
+}
+.yt-play .icon { position: relative; }
+.yt-meta {
+  min-width: 0;
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+  padding: 8px 11px;
+}
+/* Two lines and then an ellipsis: a video title can be a paragraph, and the card may not
+   grow taller than its thumbnail. */
+.yt-title {
+  font-size: 13px; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.yt-sub { font-size: 11.5px; color: var(--c-silver); }
+
 .shot {
   margin: 6px 0 2px;
   border: 1px solid var(--border);
@@ -925,6 +978,17 @@ input, textarea { font: inherit; color: inherit; }
   display: block;
 }
 .shot svg { display: block; width: 100%; height: auto; }
+/* The comp only ever had SVG placeholders here, so the real `<img>` had no rule and came
+   out at its own pixel size — a 1440p screenshot showed its top-left 420 pixels and the
+   rest was cut off by the card's `overflow: hidden`. It is a preview: it takes the width
+   of the card, and the full size is one click away in the lightbox. */
+.shot img { display: block; width: 100%; height: auto; }
+.shot-btn {
+  display: block; width: 100%; padding: 0;
+  border: 0; background: none;
+  cursor: zoom-in;
+}
+.shot-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .shot-cap { padding: 5px 9px; font-size: 11px; color: var(--c-silver); background: var(--c-ink); }
 
 /* empty state */
@@ -1448,7 +1512,8 @@ dialog.confirm {
 }
 dialog.confirm::backdrop { background: var(--backdrop) 0 0 / 4px 4px; }
 .confirm-body { padding: 0; }
-.confirm-body h2 {
+.confirm-body h2,
+dialog.lightbox h2 {
   margin: 0;
   padding: 8px 14px;
   background: var(--c-blue);
@@ -1530,6 +1595,49 @@ input, textarea { user-select: text; }
 .picker-item .icon { flex: none; width: 15px; height: 15px; color: inherit; }
 .picker-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-empty { padding: 12px 22px 16px; color: var(--c-silver); font-size: 13px; }
+
+/* A picture at full size. Same chassis as the confirm dialog — paper frame, blue title
+   strip, hard shadow, dithered backdrop — but sized by its content instead of by a fixed
+   measure, because the content is the point.
+
+   Two states. Fitted: the picture is bounded by the window and the frame never scrolls.
+   `is-full`: the bounds come off, one image pixel per screen pixel, and the frame
+   scrolls. Centring has to give way in that state — a centred child that overflows its
+   scroll container puts its top-left corner out of reach. */
+dialog.lightbox {
+  padding: 0;
+  border: 2px solid var(--c-paper);
+  background: var(--c-ink);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+dialog.lightbox::backdrop { background: var(--backdrop) 0 0 / 4px 4px; }
+dialog.lightbox h2 {
+  max-width: calc(100vw - 52px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lightbox-frame {
+  max-width: calc(100vw - 52px);
+  max-height: calc(100vh - 150px);
+  overflow: auto;
+  background: var(--c-space);
+  display: grid;
+  place-items: center;
+}
+.lightbox-frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  cursor: zoom-in;
+}
+dialog.lightbox.is-full .lightbox-frame { place-items: start; }
+dialog.lightbox.is-full .lightbox-frame img {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.lightbox .confirm-foot { padding: 12px 14px; }
 
 /* The two prompts (new sub-channel, rename) reuse the confirm dialog wholesale and only
    add the field. */

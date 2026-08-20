@@ -16,3 +16,4 @@ pub mod tags;
 pub mod tray;
 pub mod ui;
 pub mod updates;
+pub mod youtube;

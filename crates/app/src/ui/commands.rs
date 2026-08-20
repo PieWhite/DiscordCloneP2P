@@ -11,7 +11,7 @@ use crate::engine::{self, UiCommand};
 #[cfg(windows)]
 use crate::tray;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{Manager, State};
 
 /// Commands are fire-and-forget: the result of one is a new snapshot, which arrives as a
@@ -352,6 +352,102 @@ pub fn download_file(ui: State<'_, Ui>, op: OpRef) {
     }
 }
 
+/// Opens a file we already have the bytes of — our own offer, or a finished download.
+///
+/// The frontend hands back the `OpRef` it was given, never a path: the path is looked up
+/// in the engine's own snapshot (`FileView::local_path`), so this command cannot be talked
+/// into opening something else. Same reasoning as `offer_files`, which takes indices into
+/// `Ui::dropped` rather than paths (B-52): the webview names *which item*, this side
+/// decides *which bytes*.
+///
+/// An extension the shell would execute gets the containing folder instead of the file.
+/// See `files::opent_als_code`.
+#[tauri::command]
+pub fn open_file(ui: State<'_, Ui>, op: OpRef) {
+    let Some(id) = op.to_op_id() else { return };
+    let snap = ui.engine.snapshot.borrow().clone();
+    let Some(path) = snap
+        .files
+        .iter()
+        .find(|f| f.id == id)
+        .and_then(|f| f.local_path.clone())
+    else {
+        tracing::warn!(?id, "open refused: this machine has no copy of that file");
+        return;
+    };
+    if !path.exists() {
+        tracing::warn!(path = %path.display(), "open refused: the file is gone");
+        return;
+    }
+
+    // Same call the timeline made when it labelled the button, so what happens is what
+    // the button said. See `files::opent_als_code`.
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if crate::files::opent_als_code(&name) {
+        tracing::info!(path = %path.display(), "executable: showing the folder instead of opening");
+        reveal_in_folder(&path);
+    } else {
+        open_with_shell(&path);
+    }
+}
+
+/// Hands a path to whatever the OS opens it with. Never used on a path that came from the
+/// webview — see [`open_file`].
+fn open_with_shell(path: &Path) {
+    #[cfg(windows)]
+    {
+        use windows::core::{w, HSTRING, PCWSTR};
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let target = HSTRING::from(path);
+        // One argument, no shell parsing — same reason as `open_link`: a filename may
+        // contain `&`, and through `cmd /c start` that would be a second command.
+        unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(target.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
+        tracing::warn!(error = %e, path = %path.display(), "opening the file failed");
+    }
+}
+
+/// Shows the file in Explorer/Finder with it selected, without opening it.
+fn reveal_in_folder(path: &Path) {
+    #[cfg(windows)]
+    {
+        // `/select,<path>` wants the path as part of that one argument, so it cannot go
+        // through `ShellExecuteW`'s verb form. No shell in between either: `Command` hands
+        // the argument to `CreateProcessW` as-is.
+        if let Err(e) = std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+        {
+            tracing::warn!(error = %e, path = %path.display(), "showing the folder failed");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Err(e) = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn()
+    {
+        tracing::warn!(error = %e, path = %path.display(), "showing the folder failed");
+    }
+}
+
 #[tauri::command]
 pub fn delete_all_images(ui: State<'_, Ui>) {
     send(&ui, UiCommand::VerwijderAlleAfbeeldingen);
@@ -437,6 +533,54 @@ pub fn open_link(url: String) {
     if let Err(e) = std::process::Command::new("open").arg(&url).spawn() {
         tracing::warn!(error = %e, url, "opening the link failed");
     }
+}
+
+/// What the chat shows next to a YouTube link. `thumbnail` is a path, not an URL: the
+/// frontend turns it into an `asset:` URL, the same way it does for a shared picture.
+#[derive(Serialize)]
+pub struct YoutubePreview {
+    pub title: String,
+    pub author: String,
+    pub thumbnail: String,
+}
+
+/// Title and thumbnail for one video, from the cache on disk or — once, ever — from
+/// YouTube. `None` means "no card": an unknown id, no internet, a video that was taken
+/// down. The link stays a link, which is what it was before this existed.
+///
+/// The frontend passes the eleven-character id it found in the message body, never an URL,
+/// and `youtube::geldig_id` checks it again on this side: the id ends up in a request URL
+/// and in a filename, and it came out of a message a peer typed.
+///
+/// `spawn_blocking`: ureq is synchronous, and this runs while the timeline is being drawn.
+/// On the IPC handler's thread the window would stall for the length of a round trip to
+/// Google.
+///
+/// The `Result` wrapper is Tauri's requirement, not a second failure channel: an async
+/// command that borrows state has to return one (same as `pick_download_dir`). Nothing
+/// ever comes back as `Err`; "no card" is `Ok(None)`.
+#[tauri::command]
+pub async fn youtube_preview(ui: State<'_, Ui>, id: String) -> Result<Option<YoutubePreview>, ()> {
+    let dir = ui.youtube_dir.clone();
+    let uitkomst =
+        tauri::async_runtime::spawn_blocking(move || crate::youtube::preview(&id, &dir)).await;
+    Ok(match uitkomst {
+        Ok(Ok(p)) => Some(YoutubePreview {
+            title: p.title,
+            author: p.author,
+            thumbnail: p.thumbnail.display().to_string(),
+        }),
+        Ok(Err(e)) => {
+            // Debug and not warn: being offline is a normal state here (invariant 7), and
+            // every message with a link would otherwise put a line in the log.
+            tracing::debug!(error = %format!("{e:#}"), "no youtube preview");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "the youtube preview task did not finish");
+            None
+        }
+    })
 }
 
 /// The close button. With `minimize_to_tray` on — the default — it hides the window and

@@ -50,6 +50,10 @@ pub struct Ui {
     pub me: PeerId,
     pub fallback_name: String,
     pub pictures_dir: PathBuf,
+    /// Where a fetched YouTube title and thumbnail are kept. Read here rather than in the
+    /// engine because the fetch is triggered by what the window is drawing — see
+    /// `commands::youtube_preview` and `crate::youtube`.
+    pub youtube_dir: PathBuf,
     pub minimize_to_tray: bool,
     constants: Constants,
     /// The source list handed to the picker, so "share the third one" resolves to the
@@ -163,12 +167,14 @@ pub fn run(
     me: PeerId,
     cfg: &Config,
     pictures_dir: PathBuf,
+    youtube_dir: PathBuf,
     runtime: tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
     let ui = Ui {
         me,
         fallback_name: cfg.display_name.clone(),
         pictures_dir: pictures_dir.clone(),
+        youtube_dir: youtube_dir.clone(),
         minimize_to_tray: cfg.minimize_to_tray,
         constants: Constants {
             me,
@@ -268,6 +274,7 @@ pub fn run(
             commands::offer_files,
             commands::offer_pasted_image,
             commands::download_file,
+            commands::open_file,
             commands::delete_all_images,
             commands::create_channel,
             commands::rename_channel,
@@ -277,6 +284,7 @@ pub fn run(
             commands::ignore_update,
             commands::dismiss_update,
             commands::open_link,
+            commands::youtube_preview,
             commands::close_window,
             ready,
         ])
@@ -284,8 +292,12 @@ pub fn run(
             let handle = app.handle().clone();
 
             // Images are read straight off disk by the webview through `asset:`, so the
-            // one folder they can live in is opened and nothing else is.
+            // one folder they can live in is opened and nothing else is. The YouTube cache
+            // is the second: those thumbnails are fetched by the engine and then read from
+            // disk exactly like a shared picture, which is what keeps the CSP closed to
+            // every host on the internet (see `crate::youtube`).
             app.asset_protocol_scope().allow_directory(&pictures_dir, false)?;
+            app.asset_protocol_scope().allow_directory(&youtube_dir, false)?;
 
             #[cfg(windows)]
             {

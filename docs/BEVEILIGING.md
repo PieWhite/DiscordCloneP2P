@@ -107,6 +107,38 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   argumenten); en de erfelijkheids-fixes op de mediasocket en in de updater zijn pure
 >   winst — een kindproces krijgt geen socket meer mee.
 
+> **Addendum 2026-08-20 (openknop en YouTube-previews).** Twee functies erbij, elk met een
+> stukje aanvalsoppervlak. Wat er tegen gedaan is:
+>
+> - **De openknop op een bestandskaart is een uitvoeringspad**, en dat is bewust
+>   afgeknepen. Een extensie die het systeem zou *uitvoeren* opent niet het bestand maar de
+>   map eromheen (`files::opent_als_code`, lijst van ~50 extensies over Windows, macOS en de
+>   gangbare runtimes), en het knoplabel zegt dan "Show". Geen viruscontrole en niet bedoeld
+>   als een: het punt is dat één klik in de tijdlijn nooit "start wat een ander mij stuurde"
+>   is — precies de lezing van het vriendenmodel die met B-01 is afgewezen.
+> - **Het pad komt nooit uit de webview.** `open_file` krijgt dezelfde `OpRef` als de
+>   downloadknop en zoekt het pad opnieuw op in `Snapshot::files`. Zelfde patroon als de
+>   B-52-fix (`offer_files` met indices in plaats van paden): de webview zegt *welk item*,
+>   deze kant beslist *welke bytes*. Een pad dat intussen weg is levert een logregel op en
+>   verder niets.
+> - **`<data>/bestandspaden.json`** is nieuw en puur lokaal (geen op, nooit op de draad).
+>   Het herstelt `Files::aangeboden` bij het starten, wat betekent dat een aanbod van vóór de
+>   herstart weer geleverd wordt — dat was kapot, niet onveilig, maar het verandert wél wat
+>   `verzoek_ontvangen` kan uitleveren. Het pad wordt bij het inlezen tegen de schijf
+>   gecontroleerd, en de DM-controle in `verzoek_ontvangen` staat er ongewijzigd voor.
+> - **Tweede verbinding buiten het tailnet:** `crates/app/src/youtube.rs`, na de
+>   release-feed. Bewust in de motor en niet in de webview, dus de CSP krijgt geen host
+>   erbij en een bericht van een peer kan geen request uit het venster laten vertrekken. Het
+>   video-id is het enige dat van buiten komt en het gaat een URL *en* een bestandsnaam in
+>   (de B-03-klasse): `youtube::geldig_id` eist elf tekens uit `[A-Za-z0-9_-]`, opnieuw
+>   gecontroleerd aan deze kant van de IPC-grens. De miniatuur-URL wordt zelf samengesteld
+>   in plaats van uit `thumbnail_url` overgenomen, de body's zijn begrensd (16 kB JSON, 4 MB
+>   JPEG) en de bytes worden op hun magische getal gecontroleerd voor ze op schijf gaan.
+>   Wat het wél lekt: dat deze pc die video-link gezien heeft. Dat is inherent aan de
+>   functie en de reden dat Rick er expliciet voor gekozen heeft.
+> - **Nog steeds latent:** een gecachte JPEG wordt door de webview gedecodeerd, net als een
+>   gedeelde afbeelding — zie B-22, die op dezelfde grond deels open staat.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35

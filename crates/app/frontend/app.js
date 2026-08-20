@@ -411,6 +411,7 @@ function attachmentCard(item) {
         <span class="att-name">${esc(item.name)}</span>
         <span class="att-sub num">${fmtSize(item.size)} &middot; offered by you</span>
       </span>
+      ${openButton(item)}
     </div>`;
   }
   if (t.state === "done") {
@@ -420,7 +421,7 @@ function attachmentCard(item) {
         <span class="att-name">${esc(item.name)}</span>
         <span class="att-sub num">${fmtSize(item.size)} &middot; in your download folder</span>
       </span>
-      <button class="btn btn--ghost" disabled>${ic("i-check")}Downloaded</button>
+      ${openButton(item) || `<button class="btn btn--ghost" disabled>${ic("i-check")}Downloaded</button>`}
     </div>`;
   }
   if (t.state === "failed") {
@@ -460,6 +461,95 @@ function attachmentCard(item) {
 
 const opAttr = op => esc(JSON.stringify(op));
 
+/* ------------------------------------------------------------ youtube cards
+
+   A link to a video shows its title and its thumbnail. The fetching is the engine's job
+   (`crate::youtube`) — nothing on this side ever talks to youtube.com, so a message from a
+   peer cannot make this window open a connection. What arrives here is a title, a channel
+   name and a path to a JPEG on our own disk.
+
+   Everything is keyed by the eleven-character video id: one entry per video, no matter how
+   many times or in how many messages the link appears.
+     undefined  never asked
+     "pending"  asked, waiting
+     null       asked, nothing came back (offline, deleted video) — stays a plain link
+     object     the card */
+const YT_ID = /https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:[\w=&%.-]*&)?v=|shorts\/|live\/|embed\/|v\/)|youtu\.be\/)([\w-]{11})/g;
+const ytPreviews = {};
+
+/** The video ids in one message body, in order, without repeats. Two at most: a card is
+    tall, and a message that pastes five links should stay a message. */
+function ytIds(text) {
+  const ids = [...String(text).matchAll(YT_ID)].map(m => m[1]);
+  return [...new Set(ids)].slice(0, 2);
+}
+
+/* A slot and not the card itself: while the answer is still coming there is nothing
+   sensible to draw, and an empty box that turns into a card moves the whole log under the
+   reader's eyes. The slot has no size until it is filled. */
+const ytReady = id => ytPreviews[id] instanceof Object;
+const ytSlots = text => ytIds(text).map(id =>
+  `<div class="yt-slot" data-yt="${esc(id)}">${ytReady(id) ? ytCard(id, ytPreviews[id]) : ""}</div>`).join("");
+
+const ytCard = (id, p) => `<a class="yt" href="https://www.youtube.com/watch?v=${esc(id)}">
+    <span class="yt-thumb">
+      <img src="${esc(convertFileSrc(p.thumbnail))}" alt="">
+      <span class="yt-play">${ic("i-play", "icon-20 icon")}</span>
+    </span>
+    <span class="yt-meta">
+      <span class="yt-title">${esc(p.title)}</span>
+      <span class="yt-sub">YouTube${p.author ? ` &middot; ${esc(p.author)}` : ""}</span>
+    </span>
+  </a>`;
+
+/** Fills the slots the last render left empty. One call per video for the life of the
+    process; the engine caches on disk, so it is also one call per video ever. */
+async function hydrateYt() {
+  const slots = [...document.querySelectorAll(".yt-slot[data-yt]")];
+  const wanted = [...new Set(slots.map(s => s.dataset.yt))]
+    .filter(id => ytPreviews[id] === undefined);
+  wanted.forEach(id => { ytPreviews[id] = "pending"; });
+
+  for (const id of wanted) {
+    let preview = null;
+    try {
+      preview = await invoke("youtube_preview", { id });
+    } catch (e) {
+      console.warn("youtube preview failed", e);
+    }
+    ytPreviews[id] = preview;
+    if (!preview) continue;
+    const tl = $("timeline");
+    const pinned = tl ? wasPinned(tl) : false;
+    document.querySelectorAll(`.yt-slot[data-yt="${CSS.escape(id)}"]`)
+      .forEach(slot => { slot.innerHTML = ytCard(id, preview); });
+    /* A card is ~100px tall. Landing one under a log that was scrolled to the bottom must
+       not push the newest message out of sight. */
+    if (tl && pinned) repin(tl, true);
+  }
+}
+
+/* The download button becomes an open button once the bytes are on this machine — same
+   card, same place in the log, so "where did that file go" is answered where it was
+   offered instead of in a file manager.
+
+   `local_path` is the engine's answer to "do we have it", not a path this side may act
+   on: what goes back over IPC is the same `OpRef` the download used, and `open_file`
+   looks the path up again on its own (see `ui/commands.rs`). Absent for a finished
+   download whose file has since been moved or deleted.
+
+   Something the system would *run* rather than open gets its folder instead, so the label
+   says Show. Promising Open and then doing something else is worse than the restriction
+   itself. */
+const openButton = item => {
+  if (!item.local_path) return "";
+  if (item.opens_folder) {
+    return `<button class="btn" data-open='${opAttr(item.id)}'
+      title="Show it in its folder. A file the system would run is never started from here.">${ic("i-open")}Show</button>`;
+  }
+  return `<button class="btn" data-open='${opAttr(item.id)}'>${ic("i-open")}Open</button>`;
+};
+
 function itemContent(item) {
   if (item.kind === "message") {
     if (V.editing && sameOp(V.editing, item.id)) {
@@ -468,11 +558,18 @@ function itemContent(item) {
         <p class="msg-edit-hint"><b>Enter</b> saves &middot; <b>Esc</b> cancels &middot; empty deletes</p>
       </div>`;
     }
-    return renderBody(item.body, item.mentions_you);
+    return renderBody(item.body, item.mentions_you) + ytSlots(item.body);
   }
   if (item.image_path) {
+    /* The picture in the log is a preview at the column's width; clicking it opens the
+       real thing. A button and not a bare `<img>` handler, so it is reachable from the
+       keyboard like every other action here. */
+    const src = convertFileSrc(item.image_path);
     return `<figure class="shot">
-      <img src="${convertFileSrc(item.image_path)}" alt="${esc(item.name)}">
+      <button class="shot-btn" title="Show at full size"
+              data-shot='${esc(JSON.stringify({ src, name: item.name, op: item.id }))}'>
+        <img src="${esc(src)}" alt="${esc(item.name)}">
+      </button>
       <figcaption class="shot-cap">${esc(item.name)} &middot; <span class="num">${fmtSize(item.size)}</span></figcaption>
     </figure>`;
   }
@@ -570,6 +667,7 @@ function renderTimeline() {
   });
 
   host.innerHTML = `<div class="tl-inner">${html}</div>`;
+  hydrateYt();
 }
 
 function unreadCount() {
@@ -1168,6 +1266,40 @@ $("confirm-yes").addEventListener("click", () => {
   confirmAction = null;
 });
 
+/* The picture at full size. Two sizes and no zoom control worth the name: fitted to the
+   window, or one image pixel per screen pixel with the frame scrolling. A screenshot of a
+   1440p screen is the common case here, and on a 1080p window "fit" is the useful default
+   while 1:1 is what you switch to for reading small text. */
+const lightbox = $("lightbox");
+let lightboxOp = null;
+
+function openLightbox({ src, name, op }) {
+  const img = $("lightbox-img");
+  img.src = src;
+  img.alt = name;
+  $("lightbox-name").textContent = name;
+  lightbox.classList.remove("is-full");
+  $("lightbox-size").textContent = "Actual size";
+  lightboxOp = op;
+  lightbox.showModal();
+}
+
+$("lightbox-close").addEventListener("click", () => lightbox.close());
+$("lightbox-size").addEventListener("click", () => {
+  const full = lightbox.classList.toggle("is-full");
+  $("lightbox-size").textContent = full ? "Fit to window" : "Actual size";
+});
+$("lightbox-open").addEventListener("click", () => {
+  if (lightboxOp) invoke("open_file", { op: lightboxOp });
+});
+/* Clicking the picture toggles the two sizes; clicking beside it closes. A modal
+   `<dialog>` paints its own backdrop, so a click that landed on the dialog itself or on
+   the empty part of the frame is a click that missed the picture. */
+$("lightbox-img").addEventListener("click", () => $("lightbox-size").click());
+lightbox.addEventListener("click", e => {
+  if (e.target === lightbox || e.target.id === "lightbox-frame") lightbox.close();
+});
+
 const promptDlg = $("prompt");
 let promptAction = null;
 
@@ -1344,6 +1476,12 @@ document.addEventListener("click", async e => {
 
   const dl = t.closest("[data-download]");
   if (dl) return invoke("download_file", { op: JSON.parse(dl.dataset.download) });
+
+  const op = t.closest("[data-open]");
+  if (op) return invoke("open_file", { op: JSON.parse(op.dataset.open) });
+
+  const shot = t.closest("[data-shot]");
+  if (shot) return openLightbox(JSON.parse(shot.dataset.shot));
 
   const ed = t.closest("[data-edit]");
   if (ed) {
@@ -1586,7 +1724,7 @@ document.addEventListener("paste", async e => {
 
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  if (dlg.open || promptDlg.open || picker.open) return;   // <dialog> closes itself
+  if (dlg.open || promptDlg.open || picker.open || lightbox.open) return;   // <dialog> closes itself
   if (V.editing) { V.editing = null; return render(); }
   if (V.overlay !== "none") { V.overlay = "none"; return renderOverlays(); }
 });

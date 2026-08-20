@@ -15,7 +15,7 @@ use fitcom_proto::control::{FileOutcome, FileRequest, FileResponse};
 use fitcom_proto::{ControlMsg, OpId, PeerId};
 use fitcom_store::FileEntry;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Toestand van een download, voor de UI.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +43,16 @@ pub struct Files {
     aangeboden: HashMap<OpId, PathBuf>,
     /// Downloads die wij aan het doen zijn of gedaan hebben.
     downloads: HashMap<OpId, DownloadStatus>,
+    /// Waar een gelukte download op deze pc is beland. Los van `downloads`, want de
+    /// definitieve naam is pas ná verificatie bekend en kan van `FileEntry::name`
+    /// afwijken — een tweede download van dezelfde naam wordt `naam (2).ext` (zie
+    /// `engine::unieke_bestandsnaam`). Zonder dit veld is dat pad daarna niet meer te
+    /// herleiden, en dan kan de UI een gedownload bestand niet openen.
+    ///
+    /// Bewust gescheiden van `aangeboden`: dat is de lijst die
+    /// `verzoek_ontvangen` uitlevert aan andere peers. Wat wij downloaden gaan we
+    /// daarmee niet zelf ook aanbieden — dat is geen functie die iemand gevraagd heeft.
+    gedownload: HashMap<OpId, PathBuf>,
 }
 
 impl Files {
@@ -61,12 +71,49 @@ impl Files {
     /// levert aan wie er zelf al de `OpId` van kende — schijnzekerheid in plaats van een
     /// echte intrekking. Doet niets als `file` niet iets is dat wij aanbieden (bijv. een
     /// verwijderd bericht, of andermans bestand) — dat is dan gewoon een no-op.
-    pub fn verwijder_aanbod(&mut self, file: OpId) {
-        self.aangeboden.remove(&file);
+    ///
+    /// Levert op of er werkelijk iets weg is, zodat de motor de padenindex alleen
+    /// herschrijft als hij ook veranderd is: dit pad loopt bij élk verwijderd bericht.
+    pub fn verwijder_aanbod(&mut self, file: OpId) -> bool {
+        self.aangeboden.remove(&file).is_some()
     }
 
     pub fn status(&self, file: OpId) -> Option<&DownloadStatus> {
         self.downloads.get(&file)
+    }
+
+    /// Legt vast waar een net afgeronde download is beland.
+    pub fn is_gedownload(&mut self, file: OpId, pad: PathBuf) {
+        self.gedownload.insert(file, pad);
+    }
+
+    /// Het pad op deze pc van een bestand waarvan wij de bytes hebben — ons eigen aanbod
+    /// of een afgeronde download. `None` betekent: niets om te openen.
+    ///
+    /// Eigen aanbod gaat voor: dat is het bestand van de gebruiker zelf, en van je eigen
+    /// aanbod download je nooit een tweede kopie.
+    pub fn lokaal_pad(&self, file: OpId) -> Option<&Path> {
+        self.aangeboden
+            .get(&file)
+            .or_else(|| self.gedownload.get(&file))
+            .map(PathBuf::as_path)
+    }
+
+    /// Beide padkaarten, om ze op te slaan zodat ze een herstart overleven. Zie
+    /// `engine::PadenIndex`.
+    pub fn paden(&self) -> (&HashMap<OpId, PathBuf>, &HashMap<OpId, PathBuf>) {
+        (&self.aangeboden, &self.gedownload)
+    }
+
+    /// Zet de padkaarten terug zoals ze bij het afsluiten waren. Alleen bij het starten,
+    /// vóór de eerste op verwerkt wordt.
+    pub fn herstel_paden(
+        &mut self,
+        aangeboden: HashMap<OpId, PathBuf>,
+        gedownload: HashMap<OpId, PathBuf>,
+    ) {
+        self.aangeboden = aangeboden;
+        self.gedownload = gedownload;
     }
 
     /// B-04: welke downloads wíj hebben aangevraagd en nog lopen.
@@ -200,6 +247,86 @@ pub fn is_afbeelding(naam: &str) -> bool {
         .any(|ext| laag.ends_with(ext))
 }
 
+/// Bestandsnamen die het besturingssysteem zou *uitvoeren* in plaats van openen.
+///
+/// Staat hier naast [`is_afbeelding`] omdat het dezelfde soort vraag is: wat voor ding is
+/// dit, op zijn naam af. Gebruikt op twee plekken die het eens moeten zijn — de openknop
+/// in de tijdlijn (`ui::state`) en wat die knop doet (`ui::commands::open_file`).
+///
+/// Geen viruscontrole en niet bedoeld als een. Het punt is dat een kaart in de tijdlijn
+/// één klik is, en één klik mag nooit "start wat een ander mij stuurde" betekenen. Het
+/// vertrouwensmodel zegt dat de drie peers vrienden zijn (`docs/BEVEILIGING.md`), maar
+/// B-01 is juist gesloten omdat "hun pc mag code op de mijne draaien" daar geen
+/// aanvaardbare lezing van is. Een `.docx` in Word openen is waar de knop voor is; een
+/// `.exe` starten niet — die krijgt de map te zien.
+const UITVOERBAAR: &[&str] = &[
+    // Windows
+    "exe",
+    "com",
+    "scr",
+    "msi",
+    "msp",
+    "bat",
+    "cmd",
+    "ps1",
+    "psm1",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "hta",
+    "cpl",
+    "msc",
+    "reg",
+    "lnk",
+    "pif",
+    "url",
+    "dll",
+    "ocx",
+    "gadget",
+    "inf",
+    "chm",
+    "iso",
+    "vhd",
+    "vhdx",
+    "appx",
+    "msix",
+    // macOS en unix
+    "app",
+    "pkg",
+    "dmg",
+    "command",
+    "sh",
+    "bash",
+    "zsh",
+    "csh",
+    "workflow",
+    "terminal",
+    "scpt",
+    "applescript",
+    "action",
+    "so",
+    "dylib",
+    // draait op een runtime die er misschien staat
+    "jar",
+    "py",
+    "pyw",
+    "pl",
+    "rb",
+    "php",
+];
+
+/// Of deze naam een bestand aanwijst dat het systeem zou uitvoeren. Zie [`UITVOERBAAR`].
+pub fn opent_als_code(naam: &str) -> bool {
+    let laag = naam.to_ascii_lowercase();
+    let Some((_, ext)) = laag.rsplit_once('.') else {
+        return false;
+    };
+    UITVOERBAAR.contains(&ext)
+}
+
 /// Content-adresseerbare bestandsnaam voor de `Pictures`-map: de hash die toch al voor
 /// verificatie gebruikt wordt (zie `FileEntry::hash`), als hex, met de originele
 /// extensie erachter.
@@ -222,6 +349,30 @@ pub fn hash_bestandsnaam(hash: &[u8; 32], oorspronkelijke_naam: &str) -> String 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uitvoerbare_namen_worden_herkend() {
+        for naam in [
+            "setup.exe",
+            "SETUP.EXE",
+            "script.PS1",
+            "iets.tar.sh",
+            "Mail.app",
+            "run.command",
+        ] {
+            assert!(super::opent_als_code(naam), "gemist: {naam}");
+        }
+        for naam in [
+            "notities.pdf",
+            "foto.png",
+            "geen-extensie",
+            "exe",
+            "iets.exe.txt",
+            "",
+        ] {
+            assert!(!super::opent_als_code(naam), "onterecht: {naam}");
+        }
+    }
+
     use super::*;
     use fitcom_proto::Channel;
 

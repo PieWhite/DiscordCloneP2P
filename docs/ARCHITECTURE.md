@@ -584,6 +584,31 @@ de tijdlijn staan; een download- of uploadpoging erna krijgt dezelfde nette afha
 als een bronbestand dat toevallig van schijf verdwijnt (zie hieronder). Dit is dus geen
 alternatief voor `OpKind::Delete` — die twee doen iets anders en kunnen allebei apart.
 
+### Waar de bytes op deze pc staan (2026-08-20)
+
+`files::Files` houdt twee padkaarten bij, en die staan sinds 2026-08-20 ook op schijf in
+`<datamap>/bestandspaden.json`:
+
+- `aangeboden` — het bestand van de gebruiker zelf, per `OpId` dat wij aanboden. Dit is de
+  lijst die `verzoek_ontvangen` uitlevert aan een andere peer.
+- `gedownload` — waar een geverifieerde download beland is.
+
+**Waarom dit niet uit de op te halen is:** een aanbod noemt een naam, geen pad, en dat is
+precies goed — het pad van de aanbieder is niets waar een andere peer iets mee te maken
+heeft. Aan de ontvangende kant is de naam ook niet genoeg: `unieke_bestandsnaam` maakt er
+bij een botsing `naam (2).ext` van, en dat gebeurt juist wanneer twee peers hetzelfde
+bestand aanbieden. De UI heeft dat pad nodig voor de openknop, en `verzoek_ontvangen` voor
+het aanbod zelf — dus wordt het onthouden.
+
+**Puur lokaal.** Dit is geen op, het synct niet en het staat nooit op de draad. Bij het
+inlezen valt elk pad af dat niet meer bestaat: dan is er geen openknop (in plaats van een
+knop die niets doet) en geeft een verzoek weer een eerlijke `NOT_AVAILABLE` (in plaats van
+een upload die halverwege stukloopt).
+
+**De twee kaarten blijven gescheiden.** Wat wij downloaden bij `aangeboden` gooien zou
+betekenen dat we het ook zelf gaan aanbieden. Dat is herverspreiden — een functie die
+niemand gevraagd heeft, en die verandert wie welke bytes kan opvragen.
+
 ### Wat hier niet zit
 
 - **Geen chunk-niveau voortgang van de aanbieder naar de aanvrager.** De aanvrager kent

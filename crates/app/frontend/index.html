@@ -26,7 +26,7 @@ c9bbaaa4.
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish
 review, the verdict, and DESIGN.md.
 -->
-<!-- The icon set, as a system rather than as 29 loose drawings.
+<!-- The icon set, as a system rather than as 31 loose drawings.
 
        Grid        24 × 24, drawn on whole and half pixels, no sub-pixel control points.
        Stroke      2, `fill="none"`, square caps and miter joins — the pixel-grid weight
@@ -74,6 +74,8 @@ review, the verdict, and DESIGN.md.
     <g id="i-share"><path d="M12 15.5V4.5M8 8.5 12 4.5l4 4"/><path d="M4.5 14v4.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14"/></g>
     <g id="i-cam"><rect x="2.5" y="6.5" width="12.5" height="11"/><path d="m15 11.5 5-3v7l-5-3z"/></g>
     <g id="i-cam-off"><path d="M2.5 8.5v7a2 2 0 0 0 2 2h8.2M8 6.5h5a2 2 0 0 1 2 2v4.2"/><path d="m15 11.5 5-3v7l-2.4-1.4"/><path d="m3.5 3.5 17 17"/></g>
+    <g id="i-open"><path d="M11.5 5.5h-6v13h13v-6"/><path d="M13.5 4.5h6v6M19.5 4.5 12 12"/></g>
+    <g id="i-play"><path d="M8.5 4.5 19.5 12 8.5 19.5z"/></g>
   </defs>
 </svg>
 
@@ -228,6 +230,20 @@ review, the verdict, and DESIGN.md.
   <div class="picker-list" id="picker-list"></div>
   <div class="confirm-foot">
     <button class="btn btn--ghost" id="picker-cancel">Cancel</button>
+  </div>
+</dialog>
+
+<!-- A picture from the log at full size. Same window grammar as the other dialogs: title
+     strip, body, foot. Two sizes and no zoom slider — see the script. -->
+<dialog class="lightbox" id="lightbox">
+  <h2 id="lightbox-name"></h2>
+  <div class="lightbox-frame" id="lightbox-frame">
+    <img id="lightbox-img" alt="">
+  </div>
+  <div class="confirm-foot">
+    <button class="btn btn--ghost" id="lightbox-size">Actual size</button>
+    <button class="btn btn--ghost" id="lightbox-open">Open</button>
+    <button class="btn btn--accent" id="lightbox-close">Close</button>
   </div>
 </dialog>
 

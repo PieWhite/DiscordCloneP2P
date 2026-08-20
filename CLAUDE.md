@@ -24,10 +24,16 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
 1. **Nul servers.** Geen signaling, geen TURN, geen database, geen cloud-API, geen
    accounts, geen CDN (ook niet voor fonts). Tailscale is de enige externe
    afhankelijkheid en wordt als draaiend verondersteld.
-   **Eén bewuste uitzondering, fase 13:** `crates/app/src/release.rs` haalt de
-   update-feed op bij een vaste HTTPS-URL. Alleen tijdens een check, en de app werkt
-   zonder internet volledig door. Onderbouwing: `docs/OVERDRACHT.md` beslissing 23. Dit
-   is geen precedent voor andere netwerkpaden.
+   **Twee bewuste uitzonderingen, allebei apart afgesproken. Dit is geen precedent voor
+   een derde:**
+   - *Fase 13:* `crates/app/src/release.rs` haalt de update-feed op bij een vaste
+     HTTPS-URL. Alleen tijdens een check, en de app werkt zonder internet volledig door.
+     Onderbouwing: `docs/OVERDRACHT.md` beslissing 23.
+   - *2026-08-20:* `crates/app/src/youtube.rs` haalt titel en miniatuur op bij
+     `youtube.com/oembed` en `i.ytimg.com`, één keer per video, daarna van schijf
+     (`<data>/youtube/`). **Het ophalen zit in de motor en nooit in de webview**: de CSP
+     blijft dicht, dus een bericht van een peer kan geen verbinding uit het venster laten
+     vertrekken. Mislukt het, dan blijft het een gewone link. Onderbouwing: beslissing 30.
 2. **Geen host-peer.** Alle peers zijn gelijkwaardig. Elke instantie initieert én
    accepteert. Geen enkele functie mag afhangen van "peer X is er".
 3. **N-agnostisch.** Nergens hardcoded 3. Het aantal peers komt uit config.
@@ -105,6 +111,22 @@ Zelfde codebase, cfg-geselecteerde siblingmodules onder `crates/video/src/mac/`
   Bouwplan in `TODO.md`.
 - TCC: schermopname en microfoon zijn permissies; ad-hoc signing betekent dat
   Screen Recording na elke nieuwe build opnieuw toegekend moet worden.
+
+## Bestanden openen en YouTube-previews (2026-08-20)
+Beslissing 29 en 30 in `docs/OVERDRACHT.md`. Wat je niet mag omdraaien:
+
+- **De webview noemt nooit een pad.** `open_file` krijgt dezelfde `OpRef` als de
+  downloadknop en zoekt het pad zelf op in de momentopname van de motor. Zelfde patroon als
+  B-52 (`offer_files` met indices).
+- **Een uitvoerbare extensie krijgt de map, niet het bestand** (`files::opent_als_code`),
+  en de knop zegt dan "Show". Eén klik in de tijdlijn mag nooit "start wat een ander mij
+  stuurde" zijn.
+- **`aangeboden` en `gedownload` blijven twee kaarten.** Ze samenvoegen betekent dat je
+  gaat herverspreiden wat je gedownload hebt, en dat verandert wie welke bytes kan
+  opvragen. Beide staan in `<data>/bestandspaden.json`; een pad dat niet meer bestaat valt
+  bij het inlezen af.
+- **Een video-id is elf tekens uit `[A-Za-z0-9_-]` en wordt in Rust opnieuw gecontroleerd.**
+  Het gaat een URL *en* een bestandsnaam in — dat is de B-03-klasse.
 
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`

@@ -203,6 +203,19 @@ pub enum TimelineItem {
         /// URL. `None` covers both "not an image" and "not downloaded yet", and the card
         /// falls back to the generic form — the same rule the egui build used.
         image_path: Option<String>,
+        /// Where the bytes are on this machine — our own offer, or a finished download.
+        /// `Some` is what turns the download button into an open button, so it is also
+        /// the answer to "may this be opened at all": the frontend never gets to name a
+        /// path, it hands back the `OpRef` and `open_file` looks it up here again.
+        ///
+        /// For an image this is the same path as `image_path`; for everything else it is
+        /// the file in the download folder under whatever name it actually got.
+        local_path: Option<String>,
+        /// Whether opening this one shows the folder instead of the file, because the
+        /// system would execute it. The button says so rather than promising "Open" and
+        /// doing something else; the decision itself is made again in `open_file`, from
+        /// the same `files::opent_als_code`.
+        opens_folder: bool,
     },
 }
 
@@ -585,6 +598,15 @@ pub fn timeline_of(
             .then(|| pictures_dir.join(files::hash_bestandsnaam(&f.hash, &f.name)))
             .filter(|p| p.exists())
             .map(|p| p.display().to_string());
+        // An image resolves through the content-addressed path even when the engine has
+        // no record of it — that path is derived, not remembered, so it survives a
+        // restart on its own. Everything else leans on `FileView::local_path`.
+        let local_path = image_path.clone().or_else(|| {
+            f.local_path
+                .as_deref()
+                .filter(|p| p.exists())
+                .map(|p| p.display().to_string())
+        });
 
         items.push((
             f.lamport,
@@ -615,6 +637,8 @@ pub fn timeline_of(
                     }
                 },
                 image_path,
+                local_path,
+                opens_folder: files::opent_als_code(&f.name),
             },
         ));
     }

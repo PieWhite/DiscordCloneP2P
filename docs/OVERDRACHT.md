@@ -1086,6 +1086,91 @@ beoordelen. Van set wisselen speelt hem meteen één keer — anders kies je op 
 De proefknoppen negeren niet-storen: wie erop drukt vraagt erom, en een knop die niets doet
 leest als een stukke knop.
 
+### 29. Een gedownload bestand is te openen waar het aangeboden werd (2026-08-20)
+
+Rick: als je een bestand of afbeelding gedownload hebt, moet die op dezelfde plek in de
+chat klikbaar zijn — de downloadknop wordt een openknop. Afbeeldingen gaan in een modaal
+venster op ware grootte open.
+
+**Het pad was er niet meer.** `DownloadStatus::Voltooid` zei dát het gelukt was, niet
+waar het bestand stond, en dat is niet te herleiden: `engine::unieke_bestandsnaam` maakt er
+bij een naambotsing `naam (2).ext` van, en dat gebeurt precies wanneer twee peers hetzelfde
+bestand aanbieden. Er is dus een nieuwe padkaart in `files::Files` bij gekomen
+(`gedownload`), naast de bestaande `aangeboden`.
+
+**Bewust twee kaarten en geen één.** `aangeboden` is de lijst die `verzoek_ontvangen` aan
+andere peers uitlevert. Wat wij downloaden daarin gooien zou betekenen dat we het ook zelf
+gaan aanbieden — dat is een functie (herverspreiden) die niemand gevraagd heeft, en die
+verandert wie welke bytes kan opvragen. `lokaal_pad` leest ze allebei; verder blijven ze
+gescheiden.
+
+**Beide kaarten staan nu op schijf** (`<data>/bestandspaden.json`, puur lokaal, nooit een
+op, nooit op de draad). Dat moest voor de openknop, en het loste iets op wat al kapot was
+zonder dat het opviel: `aangeboden` werd alleen gevuld door `FileEvent::NieuwAanbod`, dus
+**een peer kon een bestand dat jij aanbood niet meer ophalen zodra jij de app één keer had
+herstart** — hij kreeg `NOT_AVAILABLE` terug voor een kaart die er nog gewoon stond. Bij het
+inlezen valt elk pad af dat niet meer bestaat: liever geen knop dan een knop die niets doet,
+en liever een eerlijke `NOT_AVAILABLE` dan een upload die halverwege stukloopt.
+
+**Een openknop op een bestand van een ander is een uitvoeringspad.** Daarom opent de knop
+bij een uitvoerbare extensie niet het bestand maar de map eromheen
+(`files::opent_als_code`), en zegt hij dan ook "Show" in plaats van "Open" — een knop die
+iets anders doet dan hij belooft is erger dan de beperking zelf. Het vertrouwensmodel zegt
+dat de drie peers vrienden zijn, maar B-01 is juist gesloten omdat "hun pc mag code op de
+mijne draaien" daar geen aanvaardbare lezing van is. Geen viruscontrole en niet bedoeld als
+een: het punt is dat één klik in de tijdlijn nooit "start wat een ander mij stuurde" is.
+
+**Het pad reist niet door de webview.** De frontend geeft dezelfde `OpRef` terug die de
+downloadknop ook gebruikt; `open_file` zoekt het pad opnieuw op in de momentopname van de
+motor. Zelfde patroon als B-52 (`offer_files` met indices in plaats van paden): de webview
+zegt *welk item*, deze kant beslist *welke bytes*.
+
+**Onderweg gevonden:** een afbeelding in de tijdlijn had helemaal geen CSS-regel. De comp
+had daar alleen SVG-plaatshouders, dus `.shot svg` bestond en `.shot img` niet — een
+1080p-schermafdruk werd op zijn eigen pixelmaat getekend en door `overflow: hidden` van de
+kaart afgekapt op 420 px. Je zag de linkerbovenhoek en verder niets.
+
+### 30. YouTube-previews: de motor haalt ze op, de webview blijft dicht (2026-08-20)
+
+Rick: een YouTube-link in de chat moet zijn titel en miniatuur laten zien, zonder dat het
+geld kost.
+
+**Dit is de tweede bewuste uitzondering op invariant 1 (nul servers)**, na de release-feed
+uit fase 13. Een titel en een plaatje kunnen alleen bij YouTube vandaan komen, dus de vraag
+is niet *of* er een verbinding buiten het tailnet gelegd wordt maar wie hem legt en hoe
+vaak. Rick heeft de afweging gemaakt met deze drie opties op tafel; dit is de gekozen vorm.
+
+**`https://www.youtube.com/oembed`**: publiek, gratis, geen sleutel en geen account. De
+YouTube Data API zou een key vragen, en een key in een exe die bij drie mensen op de pc
+staat is geen key.
+
+**Het ophalen zit in de motor, niet in een `<img src="https://i.ytimg.com/...">`.** Dat is
+het hele verschil:
+
+- De CSP blijft dicht. Er komt geen host bij in `img-src`, dus een bericht van een peer kan
+  nooit een verbinding uit het venster laten vertrekken. De miniatuur komt over `asset:`
+  van de eigen schijf, net als een gedeelde afbeelding.
+- Geen cookies, geen referrer, geen request bij elk hertekenen. Eén keer per video, ooit,
+  daarna van schijf (`<data>/youtube/<id>.json` + `.jpg`).
+- Mislukt het, dan blijft het een gewone link. Invariant 7 (offline is normaal) geldt ook
+  hier: dit is versiering en mag nooit een foutmelding opleveren. Daarom `tracing::debug`
+  en niet `warn` — anders zet elk bericht met een link een regel in het log.
+
+**De miniatuur-URL wordt zelf samengesteld** (`i.ytimg.com/vi/<id>/hqdefault.jpg`) en komt
+**niet** uit `thumbnail_url` in het antwoord. Een URL uit een respons is een URL die je moet
+gaan valideren; `hqdefault.jpg` bestaat voor elke video.
+
+**Het video-id is het enige dat van buiten komt en het gaat twee injectiepaden in**: een
+URL (queryparameter én padsegment) en een bestandsnaam in de cachemap — dat laatste is de
+B-03-klasse. `youtube::geldig_id` eist precies elf tekens uit `[A-Za-z0-9_-]`, en dat kan
+geen van beide iets anders worden. De frontend zoekt het id op met een eigen regex; deze
+kant controleert het opnieuw, want de frontend is niet de plek waar dat vaststaat.
+
+**De echte URL-vormen zijn niet offline na te kijken**, en fout betekent hier "de kaart
+verschijnt nooit" zonder dat iemand ziet waarom. Daarom staat er één `#[ignore]`-test die
+echt met YouTube praat — zelfde patroon als de rooktest op de echte geluidskaart:
+`cargo test -p fitcom --lib youtube -- --ignored --nocapture`.
+
 ---
 
 ## Bugs die de tests eruit haalden

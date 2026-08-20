@@ -840,6 +840,65 @@ starten, op de klassieke set en 70% volume, en pas iets weg te schrijven als je 
 Dit is de test die de kanalen-uitbreiding indertijd niet had; er is nu ook een unittest voor
 (`config.rs::config_van_voor_de_geluidsinstellingen_krijgt_de_standaardset`).
 
+## Bestanden openen en YouTube-previews (2026-08-20)
+
+De motorkant is met de hand niet meer te breken dan de tests al doen: `file_deling.rs`
+loopt een echte overdracht door en controleert dat het pad van de download én van een eigen
+aanbod in de momentopname staat en een herstart overleeft, en `youtube.rs` heeft een
+`#[ignore]`-test die echt met YouTube praat. Wat er overblijft, is wat alleen een mens kan
+zien: dat het openen op jouw pc met jouw programma's ook echt gebeurt.
+
+**O.1 Een gedownload bestand openen**
+Laat de ander een pdf of een zip aanbieden, download hem, en klik dan **Open** op dezelfde
+kaart in de chat. Hij hoort in het programma te openen dat Windows er standaard voor
+gebruikt. De kaart blijft staan waar hij stond.
+
+**O.2 Je eigen aanbod openen**
+Bied zelf een bestand aan en klik **Open** op je eigen kaart. Dat opent het *originele*
+bestand op de plek waar je het vandaan sleepte, niet een kopie.
+
+**O.3 Na een herstart werkt de knop nog**
+Sluit de app helemaal af (ook uit de tray) en start hem opnieuw. Bij de kaarten uit O.1 en
+O.2 hoort **Open** er nog te staan. Verplaats daarna het gedownloade bestand naar een andere
+map en herstart nog eens: dan hoort de knop weg te zijn in plaats van niets te doen.
+Onderdeel van dezelfde zaak: laat de ander na jouw herstart een bestand ophalen dat jij vóór
+die herstart aanbood — dat werkte niet en hoort nu wel te werken.
+
+**O.4 Een uitvoerbaar bestand krijgt de map**
+Bied een `.exe` aan (bijvoorbeeld de installer van iets) en klik de knop bij de ander. De
+knop hoort **Show** te heten en Verkenner te openen met het bestand geselecteerd — hij mag
+het bestand *niet* starten. Ditzelfde geldt voor `.bat`, `.ps1`, `.msi` en `.lnk`.
+
+**O.5 Een afbeelding op ware grootte**
+Klik een afbeelding in de chat aan. Er hoort een venster open te gaan met de afbeelding
+passend in het scherm, met de bestandsnaam in de titelbalk. **Actual size** zet hem op één
+beeldpunt per schermpunt en het kader gaat scrollen — controleer dat je de linkerbovenhoek
+en de rechteronderhoek allebei kunt bereiken. Klikken op de afbeelding wisselt tussen die
+twee. **Open** opent hem in je gewone afbeeldingsprogramma. Esc, **Close** en een klik
+naast de afbeelding sluiten hem allemaal.
+Doe dit één keer met een 1440p-schermafdruk: de kaart in de chat hoort de hele afbeelding
+verkleind te tonen (dat was afgekapt op 420 px) en het venster de echte maat.
+
+**O.6 Een YouTube-link**
+Stuur `https://www.youtube.com/watch?v=dQw4w9WgXcQ`. Onder het bericht hoort binnen een
+seconde een kaart te komen met de miniatuur, de titel en de kanaalnaam; de link zelf blijft
+gewoon staan. Klikken op de kaart opent de video in je browser, niet in de app.
+Probeer ook `youtu.be/...`, een `shorts/`-link en een link met `&t=42` erachter.
+
+**O.7 De preview komt maar één keer van internet**
+Wissel van kanaal en terug, of herstart de app: de kaart hoort er meteen te staan zonder te
+knipperen. In `data\youtube\` staan dan een `.json` en een `.jpg` per video. Gooi die map
+weg → bij het volgende bericht wordt hij opnieuw gevuld.
+
+**O.8 Zonder internet blijft het een gewone link**
+Zet Wi-Fi/ethernet uit (Tailscale mag weg, de peers hoeven niet te werken voor deze test) en
+stuur een YouTube-link. Er hoort **geen** foutmelding en geen leeg kader te komen — alleen
+de link. Met `FITCOM_LOG=debug` staat er één regel `no youtube preview` in het log.
+
+**O.9 Een link die geen video is**
+`https://www.youtube.com/playlist?list=...` en een gewone link naar een andere site horen
+géén kaart te krijgen.
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

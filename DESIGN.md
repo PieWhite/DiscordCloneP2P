@@ -273,7 +273,7 @@ titlebar's bottom edge (3px), the settings window's bottom edge (4px), and the
 empty-state heading's underline (4px × 96px). It is a signature, not a utility — do not
 put it on new surfaces without demoting one of these.
 
-Icons are a system, not 29 loose drawings: 24×24 grid on whole and half pixels,
+Icons are a system, not 31 loose drawings: 24×24 grid on whole and half pixels,
 stroke 2, `fill="none"`, square caps, miter joins, no rounded rects, one visual weight
 for the whole set, rendered at 12–20px with size set by the caller. Toggling states ship
 as pairs with the same silhouette plus a slash from (3.5,3.5) to (20.5,20.5). Color is
@@ -310,6 +310,25 @@ never hardcoded — icons inherit `currentColor` from the element they sit in.
 - **Border:** 1px violet (structure) or steel (interactive); dialogs wear 2px paper.
 - **Shadow:** only if floating (see Elevation).
 - **Internal Padding:** 10–20px.
+
+### Link cards in the log (attachment, picture, video)
+Three things sit in the message column that are not text, and they share one chassis: a
+440px measure (the picture card 420px), 1px violet border, ink ground, `6px 0 2px` margin.
+- **Attachment:** 34px space icon plate, name over a silver sub-line, one `.btn` on the
+  right. The button is the state — Download, Downloading, Try again, Open, or Show.
+- **Picture:** the image scaled to the card width with an ink caption strip under it
+  (11px silver). It is a preview, not the picture: clicking opens the lightbox.
+- **Video (`.yt`):** a 160×90 thumbnail cropped with `cover` out of a 4:3 source, a play
+  glyph on a space plate with a paper frame (a thumbnail is somebody else's colours, so
+  the mark needs its own ground), then the title clamped to two lines over a silver
+  `YouTube · channel` line. Hover moves the border to cyan — it is a link.
+
+### Lightbox (a picture at full size)
+Same chassis as the confirm dialog — 2px paper frame, blue title strip, modal shadow,
+dithered backdrop — but sized by its content rather than to a measure. Two states and no
+zoom control: fitted (bounded by the window, no scrolling) and `is-full` (one image pixel
+per screen pixel, the frame scrolls). Centring gives way in `is-full`, because a centred
+child that overflows its scroll container puts its own top-left corner out of reach.
 
 ### Inputs / Fields
 - **Style:** space ground, 1px steel border, square, 32px tall, 13.5px; the composer is

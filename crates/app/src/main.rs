@@ -102,6 +102,7 @@ fn main() -> Result<()> {
     // De motor draait op de tokio-runtime, niet op de UI-thread: chat en synchronisatie
     // moeten doorlopen terwijl het venster geminimaliseerd is of naar de tray staat.
     let pictures_dir = config::resolve_pictures_dir(&data_dir);
+    let youtube_dir = config::resolve_youtube_dir(&data_dir);
 
     if let Err(e) = tray::zet_autostart(cfg.autostart) {
         // Geen reden om de app niet te starten; alleen melden.
@@ -125,6 +126,7 @@ fn main() -> Result<()> {
         identity.peer_id,
         &cfg_voor_ui,
         pictures_dir,
+        youtube_dir,
         runtime,
     )
 }

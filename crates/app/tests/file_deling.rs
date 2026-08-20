@@ -85,6 +85,37 @@ fn start(
     .unwrap()
 }
 
+/// Zelfde motor, maar met een oplog op schijf, zodat een tweede start dezelfde
+/// aanbiedingen terugziet. Alleen nodig voor de herstart-test.
+fn start_op_schijf(
+    id: PeerId,
+    naam: &str,
+    eigen: u16,
+    dir: &Path,
+    downloads: &Path,
+) -> EngineHandle {
+    let mesh = fitcom_net::spawn(MeshConfig {
+        me: id,
+        display_name: naam.to_string(),
+        control_port: eigen,
+        media_port: 0,
+        app_version: "0.1.0".to_string(),
+        targets: vec![],
+    })
+    .unwrap();
+
+    engine::spawn(
+        mesh,
+        Store::open(&dir.join("chat.sqlite"), id).unwrap(),
+        Config {
+            peers: vec![],
+            ..config(naam, eigen, eigen, downloads)
+        },
+        dir.join("config.toml"),
+    )
+    .unwrap()
+}
+
 /// Wacht tot de momentopname aan een voorwaarde voldoet. Levert hem op, of niets als
 /// het binnen de tijd niet gebeurt.
 async fn wacht(
@@ -161,6 +192,74 @@ async fn aanbieden_en_downloaden_via_de_motor() {
     let gedownload = std::fs::read(downloads_b.join("vakantiefotos.zip"))
         .expect("het gedownloade bestand moet onder zijn oorspronkelijke naam staan");
     assert_eq!(gedownload, inhoud, "de bytes moeten exact overeenkomen");
+
+    // Waar het beland is, is wat de openknop in de tijdlijn nodig heeft. Zonder dit pad
+    // wordt de downloadknop nooit een openknop — en het is niet uit `name` te herleiden,
+    // want bij een tweede download van dezelfde naam wordt het `naam (2).zip`.
+    let snap = b.snapshot.borrow().clone();
+    let view = snap.files.iter().find(|f| f.id == file).unwrap();
+    assert_eq!(
+        view.local_path.as_deref(),
+        Some(downloads_b.join("vakantiefotos.zip").as_path()),
+        "de motor moet weten waar de download staat"
+    );
+
+    // Bij de aanbieder wijst hetzelfde veld naar zijn eigen bestand; die hoeft niets te
+    // downloaden om het te kunnen openen.
+    let snap = a.snapshot.borrow().clone();
+    assert_eq!(
+        snap.files[0].local_path.as_deref(),
+        Some(dir.join("vakantiefotos.zip").as_path())
+    );
+}
+
+/// Het pad waar de openknop op staat, moet een herstart overleven — anders is een bestand
+/// van gisteren morgen weer alleen een downloadknop, en kan een andere peer een bestand
+/// dat jij aanbood niet meer ophalen zodra jij de app één keer hebt herstart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn het_pad_van_een_aanbod_overleeft_een_herstart() {
+    let dir = tempdir();
+    let downloads = dir.join("downloads");
+    let id = PeerId::new_random();
+
+    let bron = dir.join("notulen.pdf");
+    std::fs::write(&bron, testinhoud(1_000)).unwrap();
+
+    {
+        let e = start_op_schijf(id, "solo", free_port().await, &dir, &downloads);
+        e.commands
+            .send(UiCommand::BiedBestandAan(bron.clone(), Channel::GENERAL))
+            .await
+            .unwrap();
+        wacht(&e, "eigen aanbod", |s| {
+            s.files
+                .first()
+                .and_then(|f| f.local_path.as_ref())
+                .is_some()
+        })
+        .await;
+    }
+    assert!(
+        dir.join("bestandspaden.json").exists(),
+        "het aanbod hoort op schijf te staan"
+    );
+
+    // Nieuwe motor, zelfde datamap. Andere poort: de vorige socket kan nog even blijven
+    // hangen, en dat heeft niets met deze vraag te maken.
+    let e = start_op_schijf(id, "solo", free_port().await, &dir, &downloads);
+    let snap = wacht(&e, "aanbod terug", |s| !s.files.is_empty()).await;
+    assert_eq!(
+        snap.files[0].local_path.as_deref(),
+        Some(bron.as_path()),
+        "na een herstart moet het pad er nog zijn"
+    );
+
+    // En een pad dat niet meer bestaat valt af, in plaats van een knop die niets doet.
+    drop(e);
+    std::fs::remove_file(&bron).unwrap();
+    let e = start_op_schijf(id, "solo", free_port().await, &dir, &downloads);
+    let snap = wacht(&e, "aanbod terug", |s| !s.files.is_empty()).await;
+    assert_eq!(snap.files[0].local_path, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

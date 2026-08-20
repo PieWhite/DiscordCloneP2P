@@ -145,6 +145,10 @@ pub struct FileView {
     /// Voor een afbeelding: samen met `name`'s extensie het pad in `pictures_dir` waar
     /// de UI een miniatuur vandaan kan laden, zie `files::hash_bestandsnaam`.
     pub hash: [u8; 32],
+    /// Waar de bytes op deze pc staan, als we ze hebben: ons eigen aanbod of een
+    /// afgeronde download. `None` betekent dat er niets te openen valt. Zie
+    /// `files::Files::lokaal_pad`.
+    pub local_path: Option<PathBuf>,
 }
 
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
@@ -299,6 +303,10 @@ pub fn spawn(
     std::fs::create_dir_all(&pictures_dir).context("picturesmap aanmaken")?;
     let updates_dir = config::resolve_updates_dir(&data_dir);
     std::fs::create_dir_all(&updates_dir).context("updatesmap aanmaken")?;
+    let paden_index = data_dir.join("bestandspaden.json");
+    let mut files = Files::new();
+    let (aangeboden, gedownload) = lees_paden_index(&paden_index);
+    files.herstel_paden(aangeboden, gedownload);
     let afsluiten_voor_update = Arc::new(AtomicBool::new(false));
 
     let peers = cfg
@@ -337,9 +345,10 @@ pub fn spawn(
         kijkers: HashMap::new(),
         miniaturen: HashMap::new(),
         stream_volumes: HashMap::new(),
-        files: Files::new(),
+        files,
         downloads_dir,
         pictures_dir,
+        paden_index,
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -402,6 +411,8 @@ struct Engine {
     /// Content-adresseerbare map voor afbeeldingen: `<hash-hex>.<ext>`, zowel voor wat
     /// wij aanbieden als voor wat we downloaden. Zie `files::hash_bestandsnaam`.
     pictures_dir: PathBuf,
+    /// Waar de padkaarten van `files` op schijf staan. Zie [`PadenIndex`].
+    paden_index: PathBuf,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -442,6 +453,9 @@ enum FileEvent {
     },
     Voltooid {
         file: OpId,
+        /// Waar het bestand na verificatie is beland. Niet te herleiden uit
+        /// `FileEntry::name`: bij een naambotsing wordt het `naam (2).ext`.
+        pad: PathBuf,
     },
     Mislukt {
         file: OpId,
@@ -1504,7 +1518,9 @@ impl Engine {
                 // echt niet meer serveren — anders verdwijnt alleen de kaart uit de
                 // tijdlijn terwijl het bestand nog gewoon downloadbaar blijft voor wie
                 // de OpId al kende. Een no-op als `doel` geen eigen aanbod is.
-                self.files.verwijder_aanbod(doel);
+                if self.files.verwijder_aanbod(doel) {
+                    self.bewaar_paden();
+                }
                 let r = self.chat.verwijder_bericht(doel);
                 self.verwerk(r);
             }
@@ -1721,6 +1737,16 @@ impl Engine {
         self.verwerk(r);
     }
 
+    /// Schrijft de padkaarten van `files` naar schijf. Zie [`PadenIndex`] voor het
+    /// waarom; falen is nooit fataal — dan werkt "openen" deze sessie nog wel en na een
+    /// herstart niet meer.
+    fn bewaar_paden(&self) {
+        let (aangeboden, gedownload) = self.files.paden();
+        if let Err(e) = schrijf_paden_index(&self.paden_index, aangeboden, gedownload) {
+            tracing::warn!(error = %format!("{e:#}"), "bestandspaden niet opgeslagen");
+        }
+    }
+
     /// Start (of hervat) een download. Het hervatpunt komt van wat er al op schijf staat
     /// van een eerdere, onderbroken poging.
     fn download_bestand(&mut self, file: OpId) {
@@ -1792,6 +1818,7 @@ impl Engine {
             } => match self.chat.deel_bestand(&naam, grootte, hash, channel) {
                 Ok((id, cmds)) => {
                     self.files.biedt_aan(id, pad);
+                    self.bewaar_paden();
                     self.stuur_alles(cmds);
                 }
                 Err(e) => {
@@ -1802,8 +1829,10 @@ impl Engine {
             FileEvent::Voortgang { file, ontvangen } => {
                 self.files.zet_voortgang(file, ontvangen);
             }
-            FileEvent::Voltooid { file } => {
+            FileEvent::Voltooid { file, pad } => {
                 self.files.zet_status(file, DownloadStatus::Voltooid);
+                self.files.is_gedownload(file, pad);
+                self.bewaar_paden();
             }
             FileEvent::Mislukt { file, bericht } => {
                 tracing::warn!(?file, %bericht, "bestandsoverdracht mislukt");
@@ -1996,6 +2025,7 @@ impl Engine {
                 status: self.files.status(f.id).cloned(),
                 lamport: f.lamport,
                 hash: f.hash,
+                local_path: self.files.lokaal_pad(f.id).map(Path::to_path_buf),
             })
             .collect();
 
@@ -2100,6 +2130,68 @@ fn veilige_bestandsnaam(naam: &str) -> String {
     }
     // Afkappen op chars en niet op bytes: een multibyte-naam mag geen paniek geven.
     kaal.chars().take(120).collect()
+}
+
+/// Waar de bytes van elk bestand op *deze* pc staan, over een herstart heen.
+///
+/// Puur lokaal: dit gaat nooit de draad op en is geen op. Het staat er omdat het pad niet
+/// te herleiden is uit wat wél gesynct wordt. Bij een aanbod is dat het bestand van de
+/// gebruiker zelf, ergens op schijf; bij een download de definitieve naam ná verificatie,
+/// die bij een botsing `naam (2).ext` is geworden. Zonder deze afdruk kon de UI na een
+/// herstart geen gedownload bestand meer openen, en — dat was al zo vóór dit bestand
+/// bestond — kon een andere peer een bestand dat jij aanbood niet meer ophalen zodra jij
+/// de app één keer had herstart.
+///
+/// JSON en geen TOML: de sleutel is een `OpId` (auteur + kanaal + seq) en dat is geen
+/// TOML-tabelnaam. Een lijst van paren dus, geen map.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct PadenIndex {
+    #[serde(default)]
+    aangeboden: Vec<(OpId, PathBuf)>,
+    #[serde(default)]
+    gedownload: Vec<(OpId, PathBuf)>,
+}
+
+/// Leest de padkaarten terug. Elk pad dat er niet meer is valt af: een bestand dat de
+/// gebruiker intussen verplaatst of weggegooid heeft levert dan gewoon geen openknop op,
+/// in plaats van een knop die niets doet — en een aanbod dat wij niet meer kunnen leveren
+/// wordt weer eerlijk `NOT_AVAILABLE` in plaats van een upload die halverwege stukloopt.
+///
+/// Een ontbrekend of onleesbaar bestand is geen fout: dan is er niets te herstellen.
+fn lees_paden_index(pad: &Path) -> (HashMap<OpId, PathBuf>, HashMap<OpId, PathBuf>) {
+    let Ok(tekst) = std::fs::read_to_string(pad) else {
+        return (HashMap::new(), HashMap::new());
+    };
+    let index: PadenIndex = match serde_json::from_str(&tekst) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, pad = %pad.display(), "bestandspaden onleesbaar; genegeerd");
+            return (HashMap::new(), HashMap::new());
+        }
+    };
+    let bestaand = |paren: Vec<(OpId, PathBuf)>| -> HashMap<OpId, PathBuf> {
+        paren.into_iter().filter(|(_, p)| p.exists()).collect()
+    };
+    (bestaand(index.aangeboden), bestaand(index.gedownload))
+}
+
+fn schrijf_paden_index(
+    pad: &Path,
+    aangeboden: &HashMap<OpId, PathBuf>,
+    gedownload: &HashMap<OpId, PathBuf>,
+) -> Result<()> {
+    let index = PadenIndex {
+        aangeboden: aangeboden.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        gedownload: gedownload.iter().map(|(k, v)| (*k, v.clone())).collect(),
+    };
+    let tekst = serde_json::to_string_pretty(&index).context("bestandspaden serialiseren")?;
+    // Via een tijdelijk bestand: een halve schrijfactie bij een stroomstoring mag geen
+    // onleesbare index achterlaten — en dan zou `lees_paden_index` bij de volgende start
+    // alles weggooien in plaats van één regel.
+    let tijdelijk = pad.with_extension("json.tmp");
+    std::fs::write(&tijdelijk, tekst).context("bestandspaden schrijven")?;
+    std::fs::rename(&tijdelijk, pad).context("bestandspaden op hun plek zetten")?;
+    Ok(())
 }
 
 /// De naam waaronder het bestand definitief landt. Voegt `" (2)"` etc. toe als de naam
@@ -2555,7 +2647,12 @@ async fn download_bytes(
     tokio::fs::rename(&deelpad, &definitief)
         .await
         .context("bestand hernoemen naar definitieve naam")?;
-    let _ = events.send(FileEvent::Voltooid { file: entry.id }).await;
+    let _ = events
+        .send(FileEvent::Voltooid {
+            file: entry.id,
+            pad: definitief,
+        })
+        .await;
     Ok(())
 }
 

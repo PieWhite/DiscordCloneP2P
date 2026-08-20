@@ -385,6 +385,13 @@ pub fn resolve_pictures_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("Pictures")
 }
 
+/// Waar de titel en de miniatuur van een YouTube-link blijven staan zodra ze één keer
+/// zijn opgehaald. Zelfde niet-instelbare-plumbing-patroon als `resolve_pictures_dir`.
+/// Weggooien mag altijd: dan wordt er bij de volgende link opnieuw één keer opgehaald.
+pub fn resolve_youtube_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("youtube")
+}
+
 /// Waar een van een peer opgehaalde nieuwere exe landt (fase 11), tot hij toegepast
 /// wordt. Zelfde niet-instelbare-plumbing-patroon als `resolve_pictures_dir` — geen
 /// gebruikersbestand, dus geen `config.toml`-veld.
