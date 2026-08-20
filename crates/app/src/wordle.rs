@@ -172,7 +172,12 @@ pub enum Gok {
     /// Aangenomen, het spel loopt door.
     Verder,
     /// Aangenomen en klaar. Dit moet de oplog in — de motor doet dat.
+    ///
+    /// `dag` reist mee en wordt door de aanroeper niet opnieuw opgevraagd: precies op 07:00
+    /// zou een tweede `huidige_dag()` de volgende dag kunnen opleveren, en dan werd de
+    /// uitslag van het ene raadsel op de dag van het andere geboekt.
     Klaar {
+        dag: u32,
         pogingen: u8,
         gewonnen: bool,
         patroon: String,
@@ -268,10 +273,6 @@ impl Wordle {
     /// Het bord van de huidige dag, of `None` zolang het raadsel niet binnen is.
     pub fn bord(&self) -> Option<Bord> {
         let dag = self.huidige_dag();
-        self.bord_van(dag)
-    }
-
-    fn bord_van(&self, dag: u32) -> Option<Bord> {
         let d = self.dagen.get(&dag)?;
         let klaar = d.klaar();
         Some(Bord {
@@ -291,14 +292,10 @@ impl Wordle {
         })
     }
 
-    /// Het raadselnummer van een dag, als we die dag kennen. Voor de kop van de kaart.
-    pub fn nummer(&self, dag: u32) -> Option<u32> {
-        self.dagen.get(&dag).map(|d| d.nummer)
-    }
-
-    /// De dagen waar we een raadsel van hebben, oud naar nieuw.
-    pub fn bekende_dagen(&self) -> impl Iterator<Item = u32> + '_ {
-        self.dagen.keys().copied()
+    /// De dagen waar we een raadsel van hebben met hun raadselnummer, oud naar nieuw.
+    /// Eén doorloop: dit wordt bij elke momentopname opnieuw gelezen.
+    pub fn bekende_dagen(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.dagen.iter().map(|(dag, d)| (*dag, d.nummer))
     }
 
     /// Een gok op het raadsel van vandaag. Alleen op vandaag: een oudere dag naspelen zou
@@ -338,6 +335,7 @@ impl Wordle {
         let klaar = d.klaar();
         let uitkomst = if klaar {
             Gok::Klaar {
+                dag,
                 pogingen: d.gokken.len() as u8,
                 gewonnen: d.gewonnen(),
                 patroon: d.patroon(),
@@ -347,14 +345,6 @@ impl Wordle {
         };
         self.bewaar();
         uitkomst
-    }
-
-    /// Heeft deze pc de dag van vandaag al afgerond? Voor het geval de uitslag-op nog niet
-    /// in de log staat omdat het vastleggen mislukte.
-    pub fn klaar_vandaag(&self) -> bool {
-        self.dagen
-            .get(&self.huidige_dag())
-            .is_some_and(|d| d.klaar())
     }
 
     /// Wat er van de huidige dag in de oplog hoort te staan, als het spel klaar is.
@@ -866,6 +856,7 @@ mod tests {
         assert_eq!(
             w2.gok("MURKY"),
             Gok::Klaar {
+                dag: w2.huidige_dag(),
                 pogingen: 2,
                 gewonnen: true,
                 patroon: "0100022222".into(),
@@ -879,7 +870,6 @@ mod tests {
             Gok::Geweigerd("Today's puzzle is already finished.")
         );
         assert_eq!(w2.te_melden().map(|t| (t.1, t.2)), Some((2, true)));
-        assert!(w2.klaar_vandaag());
 
         let _ = std::fs::remove_dir_all(&map);
     }
@@ -897,6 +887,7 @@ mod tests {
         assert_eq!(
             w.gok("poets"),
             Gok::Klaar {
+                dag: w.huidige_dag(),
                 pogingen: 6,
                 gewonnen: false,
                 patroon: "0".repeat(30),

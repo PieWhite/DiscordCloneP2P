@@ -1708,12 +1708,12 @@ impl Engine {
     /// hem zien zonder dat er iets extra's over de draad hoeft.
     fn wordle_gok(&mut self, woord: &str) {
         if let wordle::Gok::Klaar {
+            dag,
             pogingen,
             gewonnen,
             patroon,
         } = self.wordle.gok(woord)
         {
-            let dag = self.wordle.huidige_dag();
             tracing::info!(dag, pogingen, gewonnen, "wordle afgerond");
             let r = self.chat.meld_wordle(dag, pogingen, gewonnen, patroon);
             self.verwerk(r);
@@ -2127,11 +2127,7 @@ impl Engine {
             wordle: WordleView {
                 dag: self.wordle.huidige_dag(),
                 bord: self.wordle.bord(),
-                nummers: self
-                    .wordle
-                    .bekende_dagen()
-                    .filter_map(|d| self.wordle.nummer(d).map(|n| (d, n)))
-                    .collect(),
+                nummers: self.wordle.bekende_dagen().collect(),
                 fout: self.wordle.fout.clone(),
             },
             fout: self.fout.clone(),
