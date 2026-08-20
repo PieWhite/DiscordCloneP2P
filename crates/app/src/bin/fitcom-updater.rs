@@ -20,8 +20,6 @@
 fn main() {}
 
 #[cfg(windows)]
-use clap::Parser;
-#[cfg(windows)]
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::time::Duration;
@@ -31,16 +29,13 @@ use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 
 #[cfg(windows)]
-#[derive(Parser)]
+#[derive(Debug)]
 struct Args {
     /// De gedownloade, al geverifieerde exe.
-    #[arg(long)]
     new: PathBuf,
     /// Waar hij naartoe moet — de exe van de draaiende app.
-    #[arg(long)]
     target: PathBuf,
     /// PID van de hoofd-app, om op te wachten vóór het overschrijven.
-    #[arg(long)]
     pid: u32,
     /// B-20: de BLAKE3 die de app bij het downloaden tegen het ondertekende manifest legde,
     /// als hex. Wordt hier opnieuw gelegd vlak vóór het overschrijven.
@@ -48,8 +43,68 @@ struct Args {
     /// Optioneel zodat een oudere app die deze vlag nog niet meestuurt blijft werken. Staat
     /// hij er niet, dan gebeurt wat er hiervóór altijd gebeurde — en dat is precies de reden
     /// dat hij er wél hoort te staan.
-    #[arg(long)]
     hash: Option<String>,
+}
+
+/// Bewust geen clap, en dat is de hele reden dat deze functie bestaat.
+///
+/// **De opdrachtregel hier is een contract tussen twee *versies*.** De app die de updater
+/// start is de nieuwe; de updater op schijf is de oude, want de automatische update
+/// vervangt `fitcom.exe` en dit bestand niet. Dus geldt hier invariant 5 uit `CLAUDE.md`
+/// woordelijk, net als op de draad: alleen additief, en **een onbekende vlag wordt gelogd
+/// en genegeerd, nooit fataal**.
+///
+/// Precies dat ging op 2026-08-20 mis. v1.3.0 stuurde het nieuwe `--hash` mee; de updater
+/// van v1.2.4 die er nog naast stond antwoordde met `error: unexpected argument '--hash'
+/// found` en exitcode 2 — uit `Args::parse()`, dus vóór de eerste logregel, en zonder
+/// console omdat dit een GUI-binary is. De app zag een geslaagde `spawn()`, sloot af, en er
+/// werd niets vervangen. Stil, en voor alle drie de peers tegelijk.
+///
+/// Een waarde achter een onbekende vlag (het volgende woord, als dat niet met `--` begint)
+/// gaat mee de prullenbak in; `--vlag=waarde` werkt ook. Wat we *wel* nodig hebben blijft
+/// verplicht: liever een leesbare fout in `updater.log` dan een `vervang()` naar een leeg pad.
+#[cfg(windows)]
+fn lees_args(argv: impl Iterator<Item = String>) -> (Result<Args, String>, Vec<String>) {
+    let (mut new, mut target, mut pid, mut hash) = (None, None, None, None);
+    let mut genegeerd = Vec::new();
+    let mut it = argv.peekable();
+
+    while let Some(arg) = it.next() {
+        let Some(naam) = arg.strip_prefix("--") else {
+            genegeerd.push(arg);
+            continue;
+        };
+        let (naam, waarde) = match naam.split_once('=') {
+            Some((n, w)) => (n.to_string(), Some(w.to_string())),
+            // Een vlag zonder waarde slikt niet per ongeluk de volgende vlag op.
+            None => {
+                let w = it.next_if(|v| !v.starts_with("--"));
+                (naam.to_string(), w)
+            }
+        };
+        match naam.as_str() {
+            "new" => new = waarde,
+            "target" => target = waarde,
+            "pid" => pid = waarde,
+            "hash" => hash = waarde,
+            _ => genegeerd.push(arg),
+        }
+    }
+
+    let ontleed = || -> Result<Args, String> {
+        let nodig = |v: Option<String>, wat: &str| {
+            v.ok_or_else(|| format!("verplichte vlag --{wat} ontbreekt of heeft geen waarde"))
+        };
+        Ok(Args {
+            new: PathBuf::from(nodig(new, "new")?),
+            target: PathBuf::from(nodig(target, "target")?),
+            pid: nodig(pid, "pid")?
+                .parse()
+                .map_err(|e| format!("--pid is geen getal: {e}"))?,
+            hash,
+        })
+    };
+    (ontleed(), genegeerd)
 }
 
 /// B-20: klopt het bestand nog met wat de app geverifieerd heeft?
@@ -90,14 +145,27 @@ const MAX_WACHTTIJD: Duration = Duration::from_secs(30);
 
 #[cfg(windows)]
 fn main() {
-    let args = Args::parse();
-    let log_pad = args
-        .target
-        .parent()
-        .map(|p| p.join("updater.log"))
+    // Het logpad komt uit ons *eigen* pad en niet uit `--target`, want een fout in de
+    // argumenten moet juist wél gelogd worden en dan is er geen `--target`. Het is dezelfde
+    // map: de app zoekt de updater naast `fitcom.exe` (`engine.rs::zoek_updater`).
+    let log_pad = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("updater.log")))
         .unwrap_or_else(|| PathBuf::from("updater.log"));
 
     log(&log_pad, "updater gestart");
+
+    let (ontleed, genegeerd) = lees_args(std::env::args().skip(1));
+    for arg in &genegeerd {
+        log(&log_pad, &format!("onbekend argument genegeerd: {arg}"));
+    }
+    let args = match ontleed {
+        Ok(a) => a,
+        Err(e) => {
+            log(&log_pad, &format!("BIJWERKEN AFGEBROKEN: {e}"));
+            return;
+        }
+    };
 
     if let Err(e) = wacht_op_afsluiten(args.pid) {
         log(&log_pad, &format!("wachten op hoofd-app mislukt: {e}"));
@@ -268,6 +336,81 @@ fn log(pad: &Path, regel: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(v: &[&str]) -> (Result<Args, String>, Vec<String>) {
+        lees_args(v.iter().map(|s| s.to_string()))
+    }
+
+    const BASIS: [&str; 6] = [
+        "--new",
+        r"C:\up\fitcom.exe",
+        "--target",
+        r"C:\app\fitcom.exe",
+        "--pid",
+        "1234",
+    ];
+
+    #[test]
+    fn de_vier_vlaggen_komen_binnen() {
+        let mut v = BASIS.to_vec();
+        v.extend(["--hash", "AABB"]);
+        let (a, genegeerd) = args(&v);
+        let a = a.unwrap();
+        assert_eq!(a.new, PathBuf::from(r"C:\up\fitcom.exe"));
+        assert_eq!(a.target, PathBuf::from(r"C:\app\fitcom.exe"));
+        assert_eq!(a.pid, 1234);
+        assert_eq!(a.hash.as_deref(), Some("AABB"));
+        assert!(genegeerd.is_empty());
+    }
+
+    /// De hele reden dat clap hier weg is: dit was op 2026-08-20 exitcode 2 vóór de eerste
+    /// logregel, en daarmee een app die afsloot zonder ooit bijgewerkt te worden.
+    #[test]
+    fn een_onbekende_vlag_uit_een_nieuwere_app_is_niet_fataal() {
+        let mut v = BASIS.to_vec();
+        v.extend(["--iets-van-later", "waarde", "--vlag-zonder-waarde"]);
+        let (a, genegeerd) = args(&v);
+        assert_eq!(a.unwrap().pid, 1234, "de rest hoort gewoon door te lopen");
+        assert_eq!(genegeerd, vec!["--iets-van-later", "--vlag-zonder-waarde"]);
+    }
+
+    /// Zonder dit slikt een waardeloze vlag de vlag erna op en verdwijnt `--pid` stil.
+    #[test]
+    fn een_lege_vlag_eet_de_volgende_vlag_niet_op() {
+        let mut v = vec!["--onbekend"];
+        v.extend(BASIS);
+        let (a, genegeerd) = args(&v);
+        assert_eq!(a.unwrap().pid, 1234);
+        assert_eq!(genegeerd, vec!["--onbekend"]);
+    }
+
+    #[test]
+    fn vlag_is_waarde_werkt_ook() {
+        let (a, _) = args(&[
+            r"--new=C:\up\fitcom.exe",
+            r"--target=C:\app\fitcom.exe",
+            "--pid=7",
+        ]);
+        let a = a.unwrap();
+        assert_eq!(a.pid, 7);
+        assert_eq!(a.hash, None, "een oude app stuurt geen --hash mee");
+    }
+
+    /// Tolerant naar onbekende vlaggen, niet naar een ontbrekend doel: dan is er niets te
+    /// vervangen en moet er een leesbare regel in `updater.log` staan.
+    #[test]
+    fn een_ontbrekende_verplichte_vlag_is_wel_fataal() {
+        let (a, _) = args(&["--new", r"C:\up\fitcom.exe", "--pid", "1"]);
+        assert!(a.unwrap_err().contains("--target"));
+
+        let (a, _) = args(&BASIS[..4]);
+        assert!(a.unwrap_err().contains("--pid"));
+
+        let mut v = BASIS.to_vec();
+        v[5] = "geen-getal";
+        let (a, _) = args(&v);
+        assert!(a.unwrap_err().contains("--pid"));
+    }
 
     /// Het pad van de app staat bij Rick in `Downloads` en heet `fitcom (1).exe` — met
     /// spaties. Valt de opdrachtregel daar uit elkaar, dan start de nieuwe versie niet.

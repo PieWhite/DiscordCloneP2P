@@ -901,11 +901,46 @@ impl Engine {
             .arg("--hash")
             .arg(release::bytes_naar_hex(&hash))
             .spawn();
-        match resultaat {
-            Ok(_) => self.afsluiten_voor_update.store(true, Ordering::Relaxed),
+        let mut kind = match resultaat {
+            Ok(k) => k,
             Err(e) => {
                 tracing::error!(error = %e, pad = %updater.display(), "updater niet te starten");
                 self.fout = Some(format!("updater starten mislukt: {e}"));
+                return;
+            }
+        };
+        // Een geslaagde `spawn()` zegt alleen dat het proces bestónd, niet dat het leeft.
+        // Op 2026-08-20 viel de updater van v1.2.4 die nog naast de app stond meteen om op
+        // het nieuwe `--hash` (exitcode 2, vóór zijn eerste logregel, en zonder console
+        // omdat hij een GUI-binary is). Wij zagen alleen "gelukt", sloten het venster, en
+        // niemand verving iets: de app was weg, de update niet uitgevoerd, geen enkele
+        // aanwijzing waarom. Zolang de updater leeft blokkeert hij op ons PID, dus een
+        // proces dat binnen deze tijd al weg is, is per definitie stuk.
+        //
+        // ponytail: 300 ms slapen op de UI-draad; dit is de klik "nu bijwerken en
+        // herstarten" en we sluiten hierna toch af. Een wachtdraad met terugkoppeling
+        // pas als er ooit iets anders na deze plek moet gebeuren.
+        std::thread::sleep(Duration::from_millis(300));
+        match kind.try_wait() {
+            Ok(None) => self.afsluiten_voor_update.store(true, Ordering::Relaxed),
+            Ok(Some(status)) => {
+                tracing::error!(
+                    %status,
+                    pad = %updater.display(),
+                    "updater stopte meteen; er wordt niets vervangen"
+                );
+                self.fout = Some(format!(
+                    "de updater stopte meteen ({status}) en heeft niets vervangen. \
+                     Meestal staat er dan een oude fitcom-updater.exe naast de app: \
+                     haal hem uit de nieuwste release en zet hem naast fitcom.exe. \
+                     Zie ook updater.log in die map."
+                ));
+            }
+            // Niet te bepalen — dan liever doorgaan zoals hiervoor dan een werkende
+            // update tegenhouden op een vraag die we niet beantwoord krijgen.
+            Err(e) => {
+                tracing::warn!(error = %e, "updater-status niet op te vragen; toch afsluiten");
+                self.afsluiten_voor_update.store(true, Ordering::Relaxed);
             }
         }
     }
