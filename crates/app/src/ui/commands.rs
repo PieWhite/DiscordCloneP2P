@@ -427,11 +427,20 @@ fn open_with_shell(path: &Path) {
 fn reveal_in_folder(path: &Path) {
     #[cfg(windows)]
     {
-        // `/select,<path>` wants the path as part of that one argument, so it cannot go
-        // through `ShellExecuteW`'s verb form. No shell in between either: `Command` hands
-        // the argument to `CreateProcessW` as-is.
+        use std::os::windows::process::CommandExt;
+        // `/select,<path>` is one argument, so it cannot go through `ShellExecuteW`'s verb
+        // form. And it has to be `raw_arg`, not `arg`: Rust quotes an argument containing
+        // spaces, which would produce `"/select,C:\dir with spaces\a.txt"` — a form
+        // explorer answers by opening its default folder and selecting nothing. The
+        // quotes belong around the *path* only, which is why the command line is written
+        // out by hand here.
+        //
+        // Nothing to escape: `"` is not a legal character in a Windows filename, so the
+        // quoted path cannot end early. No shell is involved either — this string goes
+        // straight to `CreateProcessW`.
+        let arg = format!("/select,\"{}\"", path.display());
         if let Err(e) = std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", path.display()))
+            .raw_arg(arg)
             .spawn()
         {
             tracing::warn!(error = %e, path = %path.display(), "showing the folder failed");
