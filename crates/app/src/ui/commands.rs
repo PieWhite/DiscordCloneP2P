@@ -33,13 +33,7 @@ pub fn get_state(ui: State<'_, Ui>) -> UiState {
 pub fn get_timeline(ui: State<'_, Ui>, channel: String) -> Vec<TimelineItem> {
     let snap = ui.engine.snapshot.borrow().clone();
     let channel = state::parse_channel(&channel);
-    state::timeline_of(
-        &snap,
-        channel,
-        ui.me,
-        &ui.display_name(&snap),
-        &ui.pictures_dir,
-    )
+    state::timeline_of(&snap, channel, ui.me, &ui.display_name(&snap))
 }
 
 #[tauri::command]
@@ -250,11 +244,23 @@ pub fn preview_sound(ui: State<'_, Ui>, sound: String) {
 
 /// Opens the Windows folder picker for the download folder. Same blocking-thread reason
 /// as `pick_and_offer_file` — the dialog is modal.
+///
+/// The picture folder lives inside the download folder, so a new download folder means a
+/// new picture folder, and the webview may read images from there over `asset:`. Opening
+/// it here rather than at startup only: the engine moves the files, this side moves the
+/// permission, and both use `config::pictures_in` so they cannot disagree.
 #[tauri::command]
-pub async fn pick_download_dir(ui: State<'_, Ui>) -> Result<(), ()> {
+pub async fn pick_download_dir(app: tauri::AppHandle, ui: State<'_, Ui>) -> Result<(), ()> {
     let picked = rfd::AsyncFileDialog::new().pick_folder().await;
     if let Some(dir) = picked {
-        send(&ui, UiCommand::ZetDownloadMap(dir.path().to_path_buf()));
+        let dir = dir.path().to_path_buf();
+        if let Err(e) = app
+            .asset_protocol_scope()
+            .allow_directory(crate::config::pictures_in(&dir), false)
+        {
+            tracing::warn!(error = %e, "the new picture folder could not be opened for reading");
+        }
+        send(&ui, UiCommand::ZetDownloadMap(dir));
     }
     Ok(())
 }

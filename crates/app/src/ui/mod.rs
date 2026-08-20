@@ -49,7 +49,6 @@ pub struct Ui {
     pub engine: EngineHandle,
     pub me: PeerId,
     pub fallback_name: String,
-    pub pictures_dir: PathBuf,
     /// Where a fetched YouTube title and thumbnail are kept. Read here rather than in the
     /// engine because the fetch is triggered by what the window is drawing — see
     /// `commands::youtube_preview` and `crate::youtube`.
@@ -181,7 +180,6 @@ pub fn run(
     let ui = Ui {
         me,
         fallback_name: cfg.display_name.clone(),
-        pictures_dir: pictures_dir.clone(),
         youtube_dir: youtube_dir.clone(),
         minimize_to_tray: cfg.minimize_to_tray,
         constants: Constants {
@@ -206,7 +204,6 @@ pub fn run(
                 .collect(),
             control_port: cfg.control_port,
             media_port: cfg.media_port,
-            pictures_dir: pictures_dir.clone(),
             autostart: cfg.autostart,
             minimize_to_tray: cfg.minimize_to_tray,
         },
@@ -305,6 +302,9 @@ pub fn run(
             // is the second: those thumbnails are fetched by the engine and then read from
             // disk exactly like a shared picture, which is what keeps the CSP closed to
             // every host on the internet (see `crate::youtube`).
+            //
+            // The picture folder sits inside the download folder, so picking another one
+            // moves it — `commands::pick_download_dir` opens the new place there and then.
             app.asset_protocol_scope().allow_directory(&pictures_dir, false)?;
             app.asset_protocol_scope().allow_directory(&youtube_dir, false)?;
 

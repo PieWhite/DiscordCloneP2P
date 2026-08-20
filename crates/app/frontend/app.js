@@ -1205,12 +1205,14 @@ const SET_BODY = {
 
   files: () => `
     <h2>Files</h2>
-    <p>Shared files land in a fixed folder. Images go to a separate content-addressed
-       folder so a thumbnail resolves to the same path for the sender and the receiver.</p>
+    <p>Shared files land in the folder you pick. Images go to a <code class="mono">Pictures</code>
+       folder inside it, named after the content hash, so a thumbnail resolves to the same
+       path for the sender and the receiver.</p>
     <div class="field">
       <span class="field-label">Download folder</span>
       <span class="field-help">Already downloaded files stay where they are — only new
-        downloads land in the new folder.</span>
+        downloads land in the new folder. Images do move along: their path is worked out
+        from the folder, so leaving them behind would drop them from the timeline.</span>
       <div class="control-row">
         <code class="mono code-inline">${esc(S.download_dir)}</code>
         <button class="btn btn--ghost" id="btn-download-dir">Change…</button>
@@ -1219,7 +1221,9 @@ const SET_BODY = {
     <div class="field">
       <span class="field-label">Images</span>
       <span class="field-help">Kept under <code class="mono">${esc(S.pictures_dir)}</code>,
-        named after the content hash so both sides resolve the same file.</span>
+        named after the content hash so both sides resolve the same file. Inside the
+        download folder on purpose: a half-finished download cannot be moved across a
+        drive boundary when it is done.</span>
       <div class="control-row">
         <button class="btn btn--danger" id="btn-wipe">${ic("i-trash")}Delete all images</button>
         <span class="field-help" style="margin:0">Only clears them from this machine.</span>

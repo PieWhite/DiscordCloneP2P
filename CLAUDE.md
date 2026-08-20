@@ -134,6 +134,24 @@ Beslissing 29 en 30 in `docs/OVERDRACHT.md`. Wat je niet mag omdraaien:
 - **Een video-id is elf tekens uit `[A-Za-z0-9_-]` en wordt in Rust opnieuw gecontroleerd.**
   Het gaat een URL *en* een bestandsnaam in — dat is de B-03-klasse.
 
+## Afbeeldingen: één map, in de downloadmap (2026-08-20)
+Beslissing 32 in `docs/OVERDRACHT.md`. `config::resolve_pictures_dir` is de enige plek waar
+de regel staat: `<downloadmap>/Pictures`, bestandsnaam is de inhoudshash.
+
+- **Het halve bestand van een afbeelding staat in dezelfde map als zijn eindbestemming**
+  (`deelpad_van`). Dat is geen opruimkwestie: `rename` kan niet over een schijfgrens heen,
+  en een downloadmap op een andere schijf dan de datamap liet zo elke afbeelding stuklopen.
+  Zet het `.part` van een afbeelding nooit terug in de downloadmap.
+- **De afbeeldingen verhuizen mee met de downloadmap, gewone downloads niet.** Het pad van
+  een afbeelding is *afgeleid* (uit de hash) en niet onthouden; laten staan betekent uit de
+  tijdlijn verdwijnen. `verhuis_afbeeldingen` + `verhuisd_pad` voor de onthouden paden.
+- **Het venster leest de map uit `Snapshot::pictures_dir`**, niet uit `ui::Constants`: hij
+  kan tijdens het draaien wijzigen. `pick_download_dir` opent de nieuwe map ook voor het
+  `asset:`-protocol, anders laadt de webview er geen enkele afbeelding uit.
+- **De laatste stap is `zet_op_zijn_plek` en geen kale `rename`.** Staat het doel er al met
+  de juiste grootte, dan zijn dat dezelfde bytes (de naam is de hash) en is er niets te
+  vervangen — op Windows mislukt vervangen van een bestand dat een ander proces net leest.
+
 ## Wordle van de dag (2026-08-20)
 Beslissing 31 in `docs/OVERDRACHT.md`. `crates/app/src/wordle.rs` is de hele motorkant.
 Wat je niet mag omdraaien:

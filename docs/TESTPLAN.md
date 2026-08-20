@@ -224,8 +224,9 @@ Start een download van een groter bestand, sluit tijdens de overdracht bij je vr
 app af (of trek de netwerkkabel eruit). Herstart hem en klik nogmaals downloaden (of
 "opnieuw proberen" als de status al op mislukt staat). De overdracht moet verdergaan
 vanaf ongeveer waar hij was, niet vanaf 0. *Bevestig dit ook door te kijken of het
-tussentijdse `.part`-bestand in de downloadmap groter is dan 0 bytes vlak na de
-onderbreking.*
+tussentijdse `.part`-bestand groter is dan 0 bytes vlak na de onderbreking — voor een
+gewoon bestand staat dat in de downloadmap, voor een afbeelding in `Pictures` daarbinnen
+(beslissing 32).*
 
 **6.5 Aanbieder heeft het bestand niet meer** ✅ bevestigd
 Bied een bestand aan, verwijder of verplaats het daarna van schijf bij de aanbieder, en
@@ -413,6 +414,24 @@ downloadknop verschijnen zoals altijd — geen automatische download.
 Sluit je vriend zijn app, deel intussen een paar foto's, laat hem opstarten: de
 miniaturen moeten er vanzelf staan zodra hij weer verbindt, net als bij een live gedeelde
 foto.
+
+**S.4 Een downloadmap op een andere schijf** — te doen na beslissing 32
+Dit is de melding zelf: bij een downloadmap buiten `%APPDATA%` (het duidelijkst op een
+*andere schijf*, bijv. `D:\Downloads`) mislukte élke afbeelding, met een rode tekst over
+hernoemen op de kaart en geen miniatuur.
+
+1. Zet in Settings → Files de downloadmap op een pad op een andere schijf.
+2. Laat de ander een screenshot plakken (Ctrl+V in de chat).
+3. De miniatuur hoort gewoon te verschijnen, en het bestand hoort te staan in
+   `<die downloadmap>\Pictures\<64 hex-tekens>.png` — niet in `%APPDATA%`, en er hoort
+   geen `.part` achter te blijven.
+4. Kijk ook of de afbeeldingen van *vóór* de wijziging er nog staan: bij de eerste start na
+   deze versie verhuizen ze van `%APPDATA%\FitCommunication\Pictures` naar de nieuwe map,
+   en de oude kaarten in de tijdlijn moeten hun miniatuur houden. Het logbestand meldt
+   `afbeeldingen verhuisd naar de nieuwe afbeeldingenmap` met een aantal.
+5. Verzet de downloadmap daarna nóg een keer, met afbeeldingen in de tijdlijn. Ze moeten
+   meeverhuizen (miniaturen blijven staan) en een oude afbeelding moet nog te downloaden
+   zijn door de ánder — dat laatste bewijst dat de onthouden paden meegeschoven zijn.
 
 ---
 

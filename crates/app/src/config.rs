@@ -375,14 +375,27 @@ pub fn resolve_download_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| data_dir.join("downloads"))
 }
 
-/// Waar een afbeelding landt die je zelf aanbiedt of van een ander downloadt — apart van
-/// `download_dir`, want dit is geen gebruikersbestand met een leesbare naam maar een
-/// content-adresseerbare cache (zie `crates/app/src/files.rs::hash_bestandsnaam`) die de
-/// aanbieder en elke downloadende peer op exact hetzelfde pad laat uitkomen, zodat een
-/// afbeelding voor beide kanten inline te tonen is. Niet instelbaar: dit is intern
-/// plumbing, geen gebruikersbestand zoals een download.
-pub fn resolve_pictures_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("Pictures")
+/// Waar een afbeelding landt die je zelf aanbiedt of van een ander downloadt: een eigen
+/// map *in de downloadmap*. De bestandsnaam is de inhoudshash
+/// (`crates/app/src/files.rs::hash_bestandsnaam`) en geen leesbare naam, zodat de
+/// aanbieder en elke downloadende peer op exact hetzelfde pad uitkomen en een afbeelding
+/// voor beide kanten inline te tonen is — daarom een eigen map en niet los tussen de
+/// downloads.
+///
+/// **In de downloadmap en niet in de datamap** (dat was het tot 2026-08-20): wie zijn
+/// downloadmap naar een andere schijf verzet, kreeg geen enkele afbeelding meer binnen.
+/// Het halve bestand stond dan op de ene schijf en de eindbestemming op de andere, en
+/// `rename` kan niet over een schijfgrens heen — op Windows `os error 17`, op unix
+/// `EXDEV`. Zie `docs/OVERDRACHT.md` beslissing 32.
+pub fn resolve_pictures_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
+    pictures_in(&resolve_download_dir(cfg, data_dir))
+}
+
+/// Dezelfde regel als [`resolve_pictures_dir`], maar op een downloadmap die nog niet in
+/// de config staat — de map die de gebruiker net in de kiezer heeft aangewezen. Eén
+/// functie voor de regel, zodat de motor en het venster niet uit elkaar kunnen lopen.
+pub fn pictures_in(download_dir: &Path) -> PathBuf {
+    download_dir.join("Pictures")
 }
 
 /// Waar de titel en de miniatuur van een YouTube-link blijven staan zodra ze één keer
@@ -419,6 +432,34 @@ mod tests {
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.peers.len(), cfg.peers.len());
         assert_eq!(back.control_port, cfg.control_port);
+    }
+
+    /// De afbeeldingenmap hoort in de downloadmap te zitten, ook — juist — als de
+    /// gebruiker die naar een andere schijf verzet heeft. Anders staat het halve bestand
+    /// op de ene schijf en de eindbestemming op de andere, en dat is precies de
+    /// hernoeming die niet kan (beslissing 32).
+    #[test]
+    fn de_afbeeldingenmap_volgt_de_downloadmap() {
+        let data = Path::new("/data/fitcom");
+
+        let standaard = Config {
+            download_dir: None,
+            ..Config::template()
+        };
+        assert_eq!(
+            resolve_pictures_dir(&standaard, data),
+            resolve_download_dir(&standaard, data).join("Pictures")
+        );
+
+        let eigen = Config {
+            download_dir: Some(PathBuf::from("/volumes/schijf-d/Downloads")),
+            ..Config::template()
+        };
+        assert_eq!(
+            resolve_pictures_dir(&eigen, data),
+            Path::new("/volumes/schijf-d/Downloads/Pictures"),
+            "een eigen downloadmap moet de afbeeldingen meenemen"
+        );
     }
 
     #[test]

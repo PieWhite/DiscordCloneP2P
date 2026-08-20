@@ -310,6 +310,123 @@ async fn downloaden_van_een_ingetrokken_bestand_geeft_een_nette_fout() {
     .await;
 }
 
+/// Een afbeelding gaat een andere weg dan een gewoon bestand: hij landt onder zijn
+/// inhoudshash in `<downloadmap>/Pictures`, aan *beide* kanten op precies hetzelfde pad,
+/// zodat de kaart in de tijdlijn bij de aanbieder én bij de ontvanger een miniatuur kan
+/// laden. En hij haalt zichzelf op, zonder klik.
+///
+/// Deze weg had geen enkele test, en dat is precies waar het misging: de afbeeldingenmap
+/// stond in de datamap en het halve bestand in de downloadmap, dus bij iedereen die zijn
+/// downloadmap naar een andere schijf verzet had, mislukte de laatste stap — `rename` kan
+/// niet over een schijfgrens. Zie `docs/OVERDRACHT.md` beslissing 32.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn een_afbeelding_landt_bij_beiden_op_hetzelfde_pad_in_de_downloadmap() {
+    let dir = tempdir();
+    let (poort_a, poort_b) = (free_port().await, free_port().await);
+    let (id_a, id_b) = (PeerId::new_random(), PeerId::new_random());
+
+    let downloads_a = dir.join("downloads-a");
+    let downloads_b = dir.join("downloads-b");
+    let a = start(id_a, "aanbieder", poort_a, poort_b, &dir, &downloads_a);
+    let b = start(id_b, "downloader", poort_b, poort_a, &dir, &downloads_b);
+
+    wacht(&b, "verbinding", |s| {
+        s.peers.iter().any(|p| p.peer_id == Some(id_a))
+    })
+    .await;
+
+    // De inhoud doet niet mee: niets in de motor decodeert een afbeelding, het is de
+    // extensie die de weg bepaalt (`files::is_afbeelding`).
+    let bron = dir.join("schermafdruk.png");
+    let inhoud = testinhoud(120_000);
+    std::fs::write(&bron, &inhoud).unwrap();
+
+    a.commands
+        .send(UiCommand::BiedBestandAan(bron.clone(), Channel::GENERAL))
+        .await
+        .unwrap();
+
+    let snap = wacht(&a, "eigen aanbod", |s| !s.files.is_empty()).await;
+    let aanbod = snap.files[0].clone();
+    let naam = fitcom::files::hash_bestandsnaam(&aanbod.hash, &aanbod.name);
+
+    // Bij de aanbieder: een eigen kopie onder de hash, en het origineel ongemoeid.
+    assert_eq!(
+        aanbod.local_path.as_deref(),
+        Some(downloads_a.join("Pictures").join(&naam).as_path()),
+        "de aanbieder hoort zijn kopie in <downloadmap>/Pictures te hebben"
+    );
+    assert!(
+        bron.exists(),
+        "het bestand van de gebruiker blijft waar het is"
+    );
+
+    // Bij de ontvanger: niemand klikt, de afbeelding haalt zichzelf op.
+    wacht(&b, "afbeelding vanzelf binnen", |s| {
+        matches!(
+            s.files
+                .iter()
+                .find(|f| f.id == aanbod.id)
+                .and_then(|f| f.status.as_ref()),
+            Some(fitcom::files::DownloadStatus::Voltooid)
+        )
+    })
+    .await;
+
+    let bij_b = downloads_b.join("Pictures").join(&naam);
+    assert_eq!(
+        std::fs::read(&bij_b).expect("de afbeelding hoort onder zijn hash te staan"),
+        inhoud
+    );
+    assert_eq!(
+        std::fs::read_dir(&downloads_b)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_file())
+            .count(),
+        0,
+        "een afbeelding hoort niet los in de downloadmap te belanden, ook geen .part"
+    );
+    // Hetzelfde pad aan beide kanten, op de map na — dat is wat de miniatuur mogelijk maakt.
+    assert_eq!(bij_b.file_name(), Some(std::ffi::OsStr::new(&naam)));
+}
+
+/// De eenmalige verhuizing bij het starten: tot 2026-08-20 stonden de afbeeldingen in de
+/// datamap. Ze horen bij de eerste start onder de downloadmap terecht te komen, want hun
+/// pad wordt afgeleid en niet onthouden — laten staan is uit de tijdlijn verdwijnen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn afbeeldingen_uit_de_oude_map_verhuizen_bij_het_starten() {
+    let dir = tempdir();
+    let downloads = dir.join("downloads");
+
+    // Zoals een 1.3.0-installatie het achterlaat: <datamap>/Pictures.
+    let oud = dir.join("Pictures");
+    std::fs::create_dir_all(&oud).unwrap();
+    let naam = format!("{}.png", "ab".repeat(32));
+    std::fs::write(oud.join(&naam), testinhoud(64)).unwrap();
+
+    let e = start_op_schijf(
+        PeerId::new_random(),
+        "solo",
+        free_port().await,
+        &dir,
+        &downloads,
+    );
+    // De momentopname vertelt het venster waar hij ze moet zoeken; dat is dezelfde map.
+    let snap = wacht(&e, "afbeeldingenmap in de momentopname", |s| {
+        s.pictures_dir == downloads.join("Pictures")
+    })
+    .await;
+    assert_eq!(snap.pictures_dir, downloads.join("Pictures"));
+
+    assert_eq!(
+        std::fs::read(downloads.join("Pictures").join(&naam)).unwrap(),
+        testinhoud(64),
+        "de afbeelding hoort mee verhuisd te zijn"
+    );
+    assert!(!oud.exists(), "de oude map hoort opgeruimd te zijn");
+}
+
 fn testinhoud(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
 }

@@ -105,8 +105,10 @@ impl Files {
         (&self.aangeboden, &self.gedownload)
     }
 
-    /// Zet de padkaarten terug zoals ze bij het afsluiten waren. Alleen bij het starten,
-    /// vóór de eerste op verwerkt wordt.
+    /// Zet beide padkaarten in één keer. Bij het starten (terug zoals ze bij het
+    /// afsluiten waren, vóór de eerste op verwerkt wordt) en als de afbeeldingenmap
+    /// verhuist — dan verhuizen de paden die erin wijzen mee, zie
+    /// `engine::Engine::verhuis_padkaarten`.
     pub fn herstel_paden(
         &mut self,
         aangeboden: HashMap<OpId, PathBuf>,

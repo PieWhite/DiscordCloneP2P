@@ -187,6 +187,11 @@ pub struct Snapshot {
     /// Waar downloads nu landen. Volgt `cfg.download_dir`, dus reactief zodra de
     /// gebruiker hem via het instellingenscherm wijzigt.
     pub download_dir: PathBuf,
+    /// Waar de content-adresseerbare afbeeldingen staan (`<downloadmap>/Pictures`). Staat
+    /// hier en niet in `ui::Constants`, want hij verhuist mee met de downloadmap en de UI
+    /// leidt het pad van elke afbeelding er zelf uit af — zie
+    /// `config::resolve_pictures_dir` en `files::hash_bestandsnaam`.
+    pub pictures_dir: PathBuf,
     pub files: Vec<FileView>,
     pub ongelezen: usize,
     /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
@@ -321,13 +326,18 @@ pub fn spawn(
         .unwrap_or_else(|| PathBuf::from("."));
     let downloads_dir = config::resolve_download_dir(&cfg, &data_dir);
     std::fs::create_dir_all(&downloads_dir).context("downloadmap aanmaken")?;
-    let pictures_dir = config::resolve_pictures_dir(&data_dir);
+    let pictures_dir = config::resolve_pictures_dir(&cfg, &data_dir);
     std::fs::create_dir_all(&pictures_dir).context("picturesmap aanmaken")?;
     let updates_dir = config::resolve_updates_dir(&data_dir);
     std::fs::create_dir_all(&updates_dir).context("updatesmap aanmaken")?;
+    // Tot 2026-08-20 stonden de afbeeldingen in de datamap. Ze verhuizen één keer mee,
+    // want hun pad is *afgeleid* (uit de hash) en niet onthouden: laten staan zou
+    // betekenen dat elke afbeelding van gisteren uit de tijdlijn verdwijnt.
+    let oude_picturesmap = data_dir.join("Pictures");
+    verhuis_afbeeldingen(&oude_picturesmap, &pictures_dir);
     let paden_index = data_dir.join("bestandspaden.json");
     let mut files = Files::new();
-    let (aangeboden, gedownload) = lees_paden_index(&paden_index);
+    let (aangeboden, gedownload) = lees_paden_index(&paden_index, &oude_picturesmap, &pictures_dir);
     files.herstel_paden(aangeboden, gedownload);
     let afsluiten_voor_update = Arc::new(AtomicBool::new(false));
 
@@ -1659,7 +1669,22 @@ impl Engine {
                         tracing::warn!(error = %format!("{e:#}"), "downloadmap niet opgeslagen");
                         self.fout = Some(format!("instellingen opslaan: {e:#}"));
                     }
-                    self.downloads_dir = pad;
+                    self.downloads_dir = pad.clone();
+                    // Gedownloade bestanden blijven waar ze zijn — dat staat ook zo in het
+                    // instellingenscherm. Afbeeldingen kunnen dat niet: hun pad is
+                    // afgeleid uit waar de afbeeldingenmap staat, dus blijven staan
+                    // betekent uit de tijdlijn verdwijnen. Ze verhuizen mee.
+                    let nieuw = config::pictures_in(&pad);
+                    if nieuw != self.pictures_dir {
+                        if let Err(e) = std::fs::create_dir_all(&nieuw) {
+                            tracing::warn!(error = %e, pad = %nieuw.display(), "afbeeldingenmap aanmaken mislukt");
+                            self.fout = Some(format!("afbeeldingenmap aanmaken: {e}"));
+                        } else {
+                            let oud = std::mem::replace(&mut self.pictures_dir, nieuw.clone());
+                            verhuis_afbeeldingen(&oud, &nieuw);
+                            self.verhuis_padkaarten(&oud, &nieuw);
+                        }
+                    }
                 }
             }
             UiCommand::StopDelen(id) => self.stop_met_delen(id),
@@ -1755,6 +1780,12 @@ impl Engine {
         let mut verwijderd = 0u32;
         for entry in lezing.flatten() {
             let pad = entry.path();
+            // Een `.part` is een download die nu bezig is (die staat sinds beslissing 32
+            // hier en niet meer in de downloadmap). Die weggooien maakt van "ruim mijn
+            // afbeeldingen op" een mislukte overdracht, en dat vroeg niemand.
+            if pad.extension().is_some_and(|e| e == "part") {
+                continue;
+            }
             if pad.is_file() {
                 match std::fs::remove_file(&pad) {
                     Ok(()) => verwijderd += 1,
@@ -1817,6 +1848,21 @@ impl Engine {
         }
     }
 
+    /// Laat de onthouden paden een verhuisde afbeeldingenmap volgen, en schrijft ze weg.
+    /// Zonder dit wijst `Files::aangeboden` na een verhuizing naar bestanden die er niet
+    /// meer zijn, en kan een peer een afbeelding die wij aanbieden niet meer ophalen.
+    fn verhuis_padkaarten(&mut self, van: &Path, naar: &Path) {
+        let verhuis = |m: &HashMap<OpId, PathBuf>| -> HashMap<OpId, PathBuf> {
+            m.iter()
+                .map(|(id, p)| (*id, verhuisd_pad(p, van, naar)))
+                .collect()
+        };
+        let (aangeboden, gedownload) = self.files.paden();
+        let (aangeboden, gedownload) = (verhuis(aangeboden), verhuis(gedownload));
+        self.files.herstel_paden(aangeboden, gedownload);
+        self.bewaar_paden();
+    }
+
     /// Start (of hervat) een download. Het hervatpunt komt van wat er al op schijf staat
     /// van een eerdere, onderbroken poging.
     fn download_bestand(&mut self, file: OpId) {
@@ -1833,8 +1879,16 @@ impl Engine {
         if entry.author == self.chat.me() {
             return; // ons eigen aanbod; er valt niets te downloaden
         }
+        // Al onderweg: een tweede aanvraag levert een tweede uploadstream op, en die zou
+        // in hetzelfde halve bestand schrijven als de eerste. De knop staat tijdens een
+        // download uit, maar twee klikken vóór de eerste toestandswijziging het venster
+        // bereikt halen dat in. Hervatten na een mislukte poging kan wel: dat is
+        // `Mislukt`, niet `Bezig`.
+        if matches!(self.files.status(file), Some(DownloadStatus::Bezig { .. })) {
+            return;
+        }
 
-        let deelpad = self.downloads_dir.join(deelbestand_naam(&entry));
+        let deelpad = deelpad_van(&entry, &self.downloads_dir, &self.pictures_dir);
         let bestaand = std::fs::metadata(&deelpad).map(|m| m.len()).unwrap_or(0);
 
         let cmd = self.files.download_aanvragen(&entry, bestaand);
@@ -2118,6 +2172,7 @@ impl Engine {
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),
+            pictures_dir: self.pictures_dir.clone(),
             files,
             ongelezen: self.chat.ongelezen,
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
@@ -2159,6 +2214,26 @@ pub fn deelbare_bronnen() -> Result<Vec<Bron>> {
 /// alleen — zonder dat zou een algemeen bestand, een DM-bestand en een bestand in een
 /// subkanaal van dezelfde auteur met toevallig dezelfde `seq` op dezelfde tijdelijke naam
 /// uitkomen.
+/// Waar het halve bestand tijdens het downloaden staat.
+///
+/// Voor een afbeelding in de afbeeldingenmap, want daar landt hij straks ook: dan is de
+/// laatste stap een hernoeming *binnen één map*. Dat is precies waarom deze functie
+/// bestaat — het was een verhuizing van de downloadmap naar de afbeeldingenmap, en die
+/// twee kunnen op verschillende schijven staan. `rename` kan dat niet (`os error 17` op
+/// Windows, `EXDEV` op unix), dus wie zijn downloadmap naar een andere schijf verzette
+/// kreeg geen enkele afbeelding meer binnen — alleen een foutmelding over hernoemen op de
+/// kaart in de chat. Zie `docs/OVERDRACHT.md` beslissing 32.
+///
+/// Alle andere bestanden blijven in de downloadmap, waar ze ook blijven liggen.
+fn deelpad_van(entry: &FileEntry, downloads_dir: &Path, pictures_dir: &Path) -> PathBuf {
+    let dir = if files::is_afbeelding(&entry.name) {
+        pictures_dir
+    } else {
+        downloads_dir
+    };
+    dir.join(deelbestand_naam(entry))
+}
+
 fn deelbestand_naam(entry: &FileEntry) -> String {
     let kanaal = if let Some(p) = entry.channel.dm_peer() {
         format!("dm-{}", p.0.simple())
@@ -2241,8 +2316,17 @@ struct PadenIndex {
 /// in plaats van een knop die niets doet — en een aanbod dat wij niet meer kunnen leveren
 /// wordt weer eerlijk `NOT_AVAILABLE` in plaats van een upload die halverwege stukloopt.
 ///
+/// `van`/`naar` is de verhuizing die [`verhuis_afbeeldingen`] net gedaan heeft: een pad
+/// dat nog naar de oude afbeeldingenmap wijst, wijst daarna naar de nieuwe. Dat moet
+/// *vóór* het wegfilteren gebeuren, anders valt precies wat we net verhuisd hebben eruit
+/// — en dan kan een peer een afbeelding die wij aanbieden niet meer ophalen.
+///
 /// Een ontbrekend of onleesbaar bestand is geen fout: dan is er niets te herstellen.
-fn lees_paden_index(pad: &Path) -> (HashMap<OpId, PathBuf>, HashMap<OpId, PathBuf>) {
+fn lees_paden_index(
+    pad: &Path,
+    van: &Path,
+    naar: &Path,
+) -> (HashMap<OpId, PathBuf>, HashMap<OpId, PathBuf>) {
     let Ok(tekst) = std::fs::read_to_string(pad) else {
         return (HashMap::new(), HashMap::new());
     };
@@ -2254,9 +2338,80 @@ fn lees_paden_index(pad: &Path) -> (HashMap<OpId, PathBuf>, HashMap<OpId, PathBu
         }
     };
     let bestaand = |paren: Vec<(OpId, PathBuf)>| -> HashMap<OpId, PathBuf> {
-        paren.into_iter().filter(|(_, p)| p.exists()).collect()
+        paren
+            .into_iter()
+            .map(|(id, p)| (id, verhuisd_pad(&p, van, naar)))
+            .filter(|(_, p)| p.exists())
+            .collect()
     };
     (bestaand(index.aangeboden), bestaand(index.gedownload))
+}
+
+/// `pad` met `van` als voorvoegsel vervangen door `naar`, of onveranderd als het pad daar
+/// niet onder valt. Zie [`verhuis_afbeeldingen`].
+fn verhuisd_pad(pad: &Path, van: &Path, naar: &Path) -> PathBuf {
+    match pad.strip_prefix(van) {
+        Ok(rest) => naar.join(rest),
+        Err(_) => pad.to_path_buf(),
+    }
+}
+
+/// Verhuist de content-adresseerbare afbeeldingen van `van` naar `naar`.
+///
+/// Nodig omdat het pad van een afbeelding *afgeleid* is en niet onthouden: het volgt uit
+/// de inhoudshash en uit waar de afbeeldingenmap nu staat (`config::resolve_pictures_dir`).
+/// Verandert die map — bij de overstap van de datamap naar de downloadmap, of doordat de
+/// gebruiker een andere downloadmap kiest — dan moeten de bestanden mee, anders staat elke
+/// afbeelding van gisteren op een pad dat niemand meer uitrekent en verdwijnt hij uit de
+/// tijdlijn.
+///
+/// Kopiëren-en-weggooien als `rename` niet lukt: dit is de ene plek waar de verhuizing
+/// wél over een schijfgrens kan gaan (van `%APPDATA%` naar `D:\Downloads`), en dat is
+/// precies wat `rename` niet kan. Een bestand dat niet mee wil, blijft staan en wordt
+/// gelogd; de rest gaat door. Doet niets als `van` en `naar` dezelfde map zijn of als er
+/// niets te verhuizen is — dat is het geval bij elke normale start.
+fn verhuis_afbeeldingen(van: &Path, naar: &Path) {
+    if van == naar || !van.is_dir() {
+        return;
+    }
+    let Ok(inhoud) = std::fs::read_dir(van) else {
+        return;
+    };
+    let mut verhuisd = 0usize;
+    for regel in inhoud.flatten() {
+        let bron = regel.path();
+        if !bron.is_file() {
+            continue;
+        }
+        let doel = naar.join(regel.file_name());
+        if doel.exists() {
+            // Dezelfde naam betekent dezelfde inhoud (het is de hash), dus dit is
+            // hetzelfde bestand en de oude kopie mag weg.
+            let _ = std::fs::remove_file(&bron);
+            continue;
+        }
+        let uitkomst = std::fs::rename(&bron, &doel).or_else(|_| {
+            std::fs::copy(&bron, &doel).map(|_| {
+                let _ = std::fs::remove_file(&bron);
+            })
+        });
+        match uitkomst {
+            Ok(()) => verhuisd += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, bestand = %bron.display(), "afbeelding niet verhuisd")
+            }
+        }
+    }
+    if verhuisd > 0 {
+        tracing::info!(
+            aantal = verhuisd,
+            van = %van.display(),
+            naar = %naar.display(),
+            "afbeeldingen verhuisd naar de nieuwe afbeeldingenmap"
+        );
+    }
+    // Lukt dit niet, dan stond er nog iets in en is dat de volgende keer weer een poging.
+    let _ = std::fs::remove_dir(van);
 }
 
 fn schrijf_paden_index(
@@ -2658,6 +2813,49 @@ fn download_met_voortgang(
     })
 }
 
+/// De laatste stap van een download: het gecontroleerde halve bestand op zijn definitieve
+/// plek zetten.
+///
+/// Twee dingen die een kale `rename` niet doet, en die allebei uit een echte melding
+/// komen (beslissing 32):
+///
+/// - **Staat het er al met de juiste grootte, dan zijn we klaar.** Bij een afbeelding is
+///   de naam de hash van de inhoud, dus hetzelfde pad bewijst dezelfde bytes — dan is er
+///   niets te vervangen. Dat scheelt niet alleen werk: op Windows *mislukt* het vervangen
+///   van een bestand dat een ander proces net aan het lezen is (de webview die hem in de
+///   tijdlijn tekent, een virusscanner), en dat leverde een foutmelding op voor een
+///   afbeelding die al gewoon binnen was.
+/// - **Eén keer opnieuw proberen.** Diezelfde scanner pakt een net weggeschreven bestand
+///   soms een fractie van een seconde vast. Op unix bestaat dat probleem niet; dit is de
+///   Windows-realiteit waar de mac-kant van het team nooit tegenaan liep.
+async fn zet_op_zijn_plek(deelpad: &Path, definitief: &Path, verwacht: u64) -> Result<()> {
+    if tokio::fs::metadata(definitief)
+        .await
+        .is_ok_and(|m| m.len() == verwacht)
+    {
+        let _ = tokio::fs::remove_file(deelpad).await;
+        return Ok(());
+    }
+
+    let mut poging = 0;
+    loop {
+        match tokio::fs::rename(deelpad, definitief).await {
+            Ok(()) => return Ok(()),
+            Err(e) if poging < 3 => {
+                poging += 1;
+                tracing::debug!(error = %e, poging, doel = %definitief.display(), "plek nog bezet; opnieuw");
+                tokio::time::sleep(Duration::from_millis(150 * poging)).await;
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context(format!(
+                    "het bestand op zijn plek zetten ({})",
+                    definitief.display()
+                )))
+            }
+        }
+    }
+}
+
 async fn download_bytes(
     stream: &mut RecvStream,
     downloads_dir: &Path,
@@ -2665,7 +2863,7 @@ async fn download_bytes(
     entry: &FileEntry,
     events: &mpsc::Sender<FileEvent>,
 ) -> Result<()> {
-    let deelpad = downloads_dir.join(deelbestand_naam(entry));
+    let deelpad = deelpad_van(entry, downloads_dir, pictures_dir);
     let mut bestand = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -2739,15 +2937,14 @@ async fn download_bytes(
     // downloadmap: dat is het pad waar de UI een miniatuur vandaan leest, en het is
     // precies hetzelfde pad dat de aanbieder er zelf ook voor gebruikt (zie
     // `files::hash_bestandsnaam`) — zo is een afbeelding voor beide kanten inline te
-    // tonen, niet alleen bij wie hem aanbood.
+    // tonen, niet alleen bij wie hem aanbood. Het halve bestand stond daar al (zie
+    // `deelpad_van`), dus dit is een hernoeming binnen dezelfde map.
     let definitief = if files::is_afbeelding(&entry.name) {
         pictures_dir.join(files::hash_bestandsnaam(&entry.hash, &entry.name))
     } else {
         unieke_bestandsnaam(downloads_dir, &entry.name)
     };
-    tokio::fs::rename(&deelpad, &definitief)
-        .await
-        .context("bestand hernoemen naar definitieve naam")?;
+    zet_op_zijn_plek(&deelpad, &definitief, entry.size).await?;
     let _ = events
         .send(FileEvent::Voltooid {
             file: entry.id,
@@ -2848,5 +3045,142 @@ mod beveiliging_tests {
         let lang = "スクリーンショット".repeat(40);
         let veilig = veilige_bestandsnaam(&lang);
         assert_eq!(veilig.chars().count(), 120);
+    }
+}
+
+/// Rond de afbeeldingenmap: dat hij verhuist, en dat de laatste stap van een download
+/// niet meer op een bezette plek stukloopt. Zie `docs/OVERDRACHT.md` beslissing 32.
+#[cfg(test)]
+mod afbeeldingenmap_tests {
+    use super::*;
+
+    fn tempdir(naam: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fitcom-{naam}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn een_verhuizing_neemt_de_bestanden_en_de_onthouden_paden_mee() {
+        let basis = tempdir("verhuizing");
+        let oud = basis.join("oud");
+        let nieuw = basis.join("nieuw");
+        std::fs::create_dir_all(&oud).unwrap();
+        std::fs::create_dir_all(&nieuw).unwrap();
+        std::fs::write(oud.join("aa.png"), b"een").unwrap();
+        std::fs::write(oud.join("bb.png"), b"twee").unwrap();
+        // Dezelfde naam betekent dezelfde inhoud (het is de hash), dus deze hoeft niet mee.
+        std::fs::write(nieuw.join("bb.png"), b"twee").unwrap();
+
+        verhuis_afbeeldingen(&oud, &nieuw);
+
+        assert_eq!(std::fs::read(nieuw.join("aa.png")).unwrap(), b"een");
+        assert_eq!(std::fs::read(nieuw.join("bb.png")).unwrap(), b"twee");
+        assert!(!oud.exists(), "de oude map hoort leeg en weg te zijn");
+
+        // En het pad dat we van een aanbod onthouden hebben, wijst mee.
+        assert_eq!(
+            verhuisd_pad(&oud.join("aa.png"), &oud, &nieuw),
+            nieuw.join("aa.png")
+        );
+        // Iets buiten de afbeeldingenmap (een gewone download) blijft waar het is.
+        let elders = basis.join("downloads").join("notulen.pdf");
+        assert_eq!(verhuisd_pad(&elders, &oud, &nieuw), elders);
+    }
+
+    #[test]
+    fn verhuizen_naar_dezelfde_map_of_uit_niets_doet_niets() {
+        let basis = tempdir("verhuizing-noop");
+        std::fs::write(basis.join("aa.png"), b"een").unwrap();
+        verhuis_afbeeldingen(&basis, &basis);
+        verhuis_afbeeldingen(&basis.join("bestaat-niet"), &basis);
+        assert!(basis.join("aa.png").exists(), "niets mag zijn aangeraakt");
+    }
+
+    /// De Windows-fout die de melding opleverde: het vervangen van een bestand dat een
+    /// ander proces net leest, mislukt. Staat het er al *met de juiste grootte*, dan is er
+    /// niets te vervangen — de naam is de hash van de inhoud, dus dat zijn dezelfde bytes.
+    #[tokio::test]
+    async fn een_bestand_dat_er_al_staat_wordt_niet_vervangen() {
+        let dir = tempdir("op-zijn-plek");
+        let deelpad = dir.join("halfweg.part");
+        let definitief = dir.join("af.png");
+        std::fs::write(&deelpad, b"vier bytes").unwrap();
+        std::fs::write(&definitief, b"vier bytes").unwrap();
+
+        zet_op_zijn_plek(&deelpad, &definitief, 10).await.unwrap();
+
+        assert!(!deelpad.exists(), "het deelbestand hoort opgeruimd te zijn");
+        assert_eq!(std::fs::read(&definitief).unwrap(), b"vier bytes");
+    }
+
+    /// Staat er iets van de verkeerde grootte (een afgebroken eerdere poging), dan is het
+    /// géén bewijs van dezelfde bytes en gaat het er alsnog over.
+    #[tokio::test]
+    async fn een_half_bestand_op_de_eindplek_wordt_wel_vervangen() {
+        let dir = tempdir("op-zijn-plek-half");
+        let deelpad = dir.join("halfweg.part");
+        let definitief = dir.join("af.png");
+        std::fs::write(&deelpad, b"vier bytes").unwrap();
+        std::fs::write(&definitief, b"half").unwrap();
+
+        zet_op_zijn_plek(&deelpad, &definitief, 10).await.unwrap();
+
+        assert!(!deelpad.exists());
+        assert_eq!(std::fs::read(&definitief).unwrap(), b"vier bytes");
+    }
+
+    /// De onthouden paden moeten de verhuizing volgen, en dat moet *vóór* het wegfilteren
+    /// van paden die niet meer bestaan. Doet het dat niet, dan valt een aanbod dat we net
+    /// verhuisd hebben uit de index en kan een peer die afbeelding niet meer ophalen.
+    #[test]
+    fn de_padenindex_volgt_de_verhuisde_afbeeldingenmap() {
+        let basis = tempdir("padenindex");
+        let oud = basis.join("oud-pictures");
+        let nieuw = basis.join("nieuw-pictures");
+        std::fs::create_dir_all(&nieuw).unwrap();
+        // Het bestand staat al op zijn nieuwe plek (de verhuizing is net gebeurd), de
+        // index kent alleen nog het oude pad.
+        std::fs::write(nieuw.join("aa.png"), b"een").unwrap();
+
+        let id = OpId::new(PeerId::new_random(), Channel::GENERAL, 1);
+        let index_pad = basis.join("bestandspaden.json");
+        let index = PadenIndex {
+            aangeboden: vec![(id, oud.join("aa.png"))],
+            gedownload: vec![],
+        };
+        std::fs::write(&index_pad, serde_json::to_string(&index).unwrap()).unwrap();
+
+        let (aangeboden, _) = lees_paden_index(&index_pad, &oud, &nieuw);
+        assert_eq!(
+            aangeboden.get(&id).map(PathBuf::as_path),
+            Some(nieuw.join("aa.png").as_path()),
+            "het onthouden pad hoort mee te schuiven met de map"
+        );
+    }
+
+    /// Het halve bestand van een afbeelding hoort in de afbeeldingenmap te staan en niet
+    /// in de downloadmap: dan is de laatste stap een hernoeming binnen één map, en kan er
+    /// geen schijfgrens tussen zitten. Alles wat geen afbeelding is blijft in de
+    /// downloadmap.
+    #[test]
+    fn een_afbeelding_wordt_in_de_afbeeldingenmap_gedownload() {
+        let downloads = Path::new("/volumes/schijf-d/Downloads");
+        let pictures = Path::new("/volumes/schijf-d/Downloads/Pictures");
+        let auteur = PeerId::new_random();
+        let maak = |naam: &str| FileEntry {
+            id: OpId::new(auteur, Channel::GENERAL, 1),
+            author: auteur,
+            channel: Channel::GENERAL,
+            name: naam.to_string(),
+            size: 10,
+            hash: [0u8; 32],
+            lamport: 1,
+        };
+
+        let afbeelding = deelpad_van(&maak("plaatje.png"), downloads, pictures);
+        assert_eq!(afbeelding.parent(), Some(pictures));
+        let zip = deelpad_van(&maak("vakantie.zip"), downloads, pictures);
+        assert_eq!(zip.parent(), Some(downloads));
     }
 }

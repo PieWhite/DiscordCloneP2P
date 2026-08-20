@@ -20,7 +20,6 @@ use fitcom_net::PeerStatus;
 use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 
 /// How a `Channel` travels to the frontend and back: `general`, `topic:<uuid>` or
 /// `dm:<uuid>`. A string rather than a nested object because it is used as an object key
@@ -448,7 +447,6 @@ pub struct Constants {
     pub sound_events: Vec<SoundEventInfo>,
     pub control_port: u16,
     pub media_port: u16,
-    pub pictures_dir: std::path::PathBuf,
     pub autostart: bool,
     pub minimize_to_tray: bool,
 }
@@ -639,7 +637,7 @@ impl UiState {
             control_port: c.control_port,
             media_port: c.media_port,
             download_dir: snap.download_dir.display().to_string(),
-            pictures_dir: c.pictures_dir.display().to_string(),
+            pictures_dir: snap.pictures_dir.display().to_string(),
             autostart: c.autostart,
             minimize_to_tray: c.minimize_to_tray,
             timeline_revision,
@@ -655,7 +653,6 @@ pub fn timeline_of(
     channel: Channel,
     me: PeerId,
     my_name: &str,
-    pictures_dir: &Path,
 ) -> Vec<TimelineItem> {
     let name_of = |peer: PeerId| display_name(snap, peer, &peer.to_string()[..8]);
     let hues = avatar_hues(me, &snap.peers);
@@ -692,7 +689,10 @@ pub fn timeline_of(
             continue;
         }
         let image_path = files::is_afbeelding(&f.name)
-            .then(|| pictures_dir.join(files::hash_bestandsnaam(&f.hash, &f.name)))
+            .then(|| {
+                snap.pictures_dir
+                    .join(files::hash_bestandsnaam(&f.hash, &f.name))
+            })
             .filter(|p| p.exists())
             .map(|p| p.display().to_string());
         // An image resolves through the content-addressed path even when the engine has
@@ -1027,7 +1027,7 @@ mod tests {
             ..Default::default()
         };
 
-        let soorten: Vec<&str> = timeline_of(&snap, Channel::GENERAL, peer(1), "me", Path::new(""))
+        let soorten: Vec<&str> = timeline_of(&snap, Channel::GENERAL, peer(1), "me")
             .iter()
             .map(|i| match i {
                 TimelineItem::Wordle { .. } => "card",
@@ -1037,11 +1037,9 @@ mod tests {
         assert_eq!(soorten, ["message", "card", "message", "message"]);
 
         // And nowhere else: a DM is not where the daily puzzle shows up.
-        assert!(
-            !timeline_of(&snap, Channel::dm(peer(2)), peer(1), "me", Path::new(""))
-                .iter()
-                .any(|i| matches!(i, TimelineItem::Wordle { .. }))
-        );
+        assert!(!timeline_of(&snap, Channel::dm(peer(2)), peer(1), "me")
+            .iter()
+            .any(|i| matches!(i, TimelineItem::Wordle { .. })));
     }
 
     /// A day this machine never fetched still gets a card as soon as somebody's result
@@ -1077,7 +1075,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dagen: Vec<u32> = timeline_of(&snap, Channel::GENERAL, peer(1), "me", Path::new(""))
+        let dagen: Vec<u32> = timeline_of(&snap, Channel::GENERAL, peer(1), "me")
             .iter()
             .filter_map(|i| match i {
                 TimelineItem::Wordle { day, .. } => Some(*day),

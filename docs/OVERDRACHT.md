@@ -258,7 +258,8 @@ de **inhoudshash die er al lag** (`FileMeta.hash`, ook gebruikt voor verificatie
 al vóór het downloaden vast en is bij aanbieder en ontvanger identiek — in tegenstelling tot
 een losse randomizer, die bij elke peer onafhankelijk een andere waarde zou opleveren en dus
 niets zou oplossen. Elke afbeelding (aangeboden of gedownload) landt daarom nu onder
-`<hex(hash)>.<extensie>` in een eigen map (`pictures_dir`, standaard `<datamap>/Pictures`),
+`<hex(hash)>.<extensie>` in een eigen map (`pictures_dir`; sinds beslissing 32
+`<downloadmap>/Pictures`, daarvóór `<datamap>/Pictures`),
 apart van de gewone downloadmap:
 
 - **Aanbieden:** `hash_en_bied_aan` (`engine.rs`) kopieert, ná het hashen, zelf een kopie
@@ -1259,6 +1260,66 @@ bericht dat op je wacht), een aparte plek in het menu (de kaart van vandaag staa
 `#general`), en een eigen subkanaal (dan zou de app ongevraagd een `SetTopicTitle` moeten
 plaatsen).
 
+### 32. De afbeeldingenmap hoort in de downloadmap, niet in de datamap (2026-08-20)
+
+**Gemeld door Rick:** "wanneer ik een screenshot post, krijgt mijn vriend vaak de error dat
+hij de naam moet aanpassen ofzo". Zijn eigen vermoeden was dat de twee kanten een
+verschillende naam voor dezelfde afbeelding verzinnen, met als voorstel er een UUID aan te
+hangen die aan beide kanten hetzelfde is.
+
+**Dat was het niet, en dat is het goede nieuws:** die gedeelde naam bestaat al sinds
+beslissing 12 en is de blake3-hash van de inhoud. Ik heb de hele weg van een geplakt
+plaatje nagelopen — aanbieder en downloader komen aantoonbaar op exact dezelfde
+bestandsnaam uit. Een UUID zou er niets aan toevoegen; per peer opnieuw getrokken zou hij
+zelfs precies het probleem terugbrengen dat beslissing 12 oploste.
+
+**Waar het wél op stuk liep, was de láátste stap.** Het halve bestand (`.part`) stond in de
+downloadmap, de eindbestemming in `<datamap>/Pictures`, en tussen die twee zat één kale
+`tokio::fs::rename`. Rick's vriend heeft zijn downloadmap verzet naar een pad buiten
+`%APPDATA%` — en `rename` kan niet over een schijfgrens heen (`os error 17` op Windows,
+`EXDEV` op unix). Dus mislukte bij hem *elke* afbeelding, altijd, met de tekst
+"bestand hernoemen naar definitieve naam: …" op de kaart in de chat. Die tekst is precies
+wat hij las als "ik moet de naam aanpassen". Gewone bestanden bleven werken, want die
+verhuizen nergens naartoe: hun `.part` staat al in de map waar ze blijven liggen.
+
+**De regel is nu: de afbeeldingen staan in de downloadmap.** `<downloadmap>/Pictures`
+(`config::resolve_pictures_dir`, één functie voor de regel). Dat lost twee dingen in één
+keer op — de map staat waar de gebruiker zijn downloads wil hebben, in plaats van
+onaangekondigd in `%APPDATA%`, en de eindbestemming staat per definitie op dezelfde schijf
+als het halve bestand. Het `.part` van een afbeelding staat er ook al in (`deelpad_van`),
+dus de laatste stap is een hernoeming *binnen één map*.
+
+**Afbeeldingen verhuizen mee, downloads niet.** Dat lijkt inconsequent en is het niet: het
+pad van een gewone download wordt *onthouden* (`bestandspaden.json`), dat van een
+afbeelding wordt *afgeleid* uit de hash en de huidige map. Laat je de bestanden staan waar
+ze stonden, dan rekent niemand dat pad nog uit en verdwijnt elke afbeelding van gisteren
+uit de tijdlijn. Vandaar `verhuis_afbeeldingen` — bij de eerste start na deze wijziging
+(van `<datamap>/Pictures` naar de nieuwe plek) en bij het kiezen van een andere
+downloadmap. Kopiëren-en-weggooien als `rename` niet lukt, want dit is de ene plek waar de
+verhuizing wél over een schijfgrens gaat. De onthouden paden schuiven mee (`verhuisd_pad`),
+anders kan een peer een afbeelding die wij aanbieden niet meer ophalen.
+
+**Twee dingen die onderweg meekwamen, allebei uit dezelfde regel code:**
+
+- `zet_op_zijn_plek` in plaats van een kale `rename`: staat het doel er al mét de juiste
+  grootte, dan is het klaar. Bij een afbeelding is de naam de hash, dus hetzelfde pad
+  bewijst dezelfde bytes — en op Windows *mislukt* het vervangen van een bestand dat een
+  ander proces net leest (de webview die het in de tijdlijn tekent, een virusscanner).
+  Dat gaf een foutmelding voor een afbeelding die al gewoon binnen was. Verder een paar
+  korte pogingen, voor de scanner die een net weggeschreven bestand een fractie van een
+  seconde vasthoudt. Op de mac bestaat die klasse fouten niet — daar vervangt `rename` een
+  open bestand gewoon — en dat is waarom dit alleen bij hem gebeurde en niet bij Rick.
+- `download_bestand` weigert een tweede download voor iets dat al `Bezig` is. Twee klikken
+  vóór de eerste toestandswijziging het venster bereikt leverden twee uploadstreams op die
+  in hetzelfde halve bestand schreven. De knop staat tijdens een download al uit, dus dit
+  is een smalle race — maar het is drie regels.
+
+**Het gat dat dit mogelijk maakte:** de hele afbeeldingsweg had geen enkele test. Er staat
+er nu één in `crates/app/tests/file_deling.rs` die een `.png` door twee echte motoren over
+loopback duwt en controleert dat hij bij beiden onder dezelfde hashnaam in
+`<downloadmap>/Pictures` landt, plus unittests voor de verhuizing, voor `zet_op_zijn_plek`
+en voor waar het `.part` van een afbeelding hoort te staan.
+
 ---
 
 ## Bugs die de tests eruit haalden
@@ -1974,7 +2035,7 @@ elke start weer uit.
 ```
 crates/store/src/timeline.rs   Message en FileEntry kregen een lamport-veld (sorteersleutel
                                 van hun eigen op) en Delete werkt nu ook op FileEntry.
-crates/app/src/config.rs       resolve_pictures_dir — <datamap>/Pictures, naast download_dir.
+crates/app/src/config.rs       resolve_pictures_dir / pictures_in — <downloadmap>/Pictures.
 crates/app/src/files.rs        is_afbeelding, hash_bestandsnaam (puur), verwijder_aanbod.
 crates/app/src/engine.rs       FileView kreeg lamport en hash. hash_en_bied_aan kopieert een
                                 aangeboden afbeelding naar pictures_dir; download_bytes landt

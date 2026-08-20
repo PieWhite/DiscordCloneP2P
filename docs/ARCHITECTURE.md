@@ -555,8 +555,9 @@ head-of-line blocking tussen berichttypes.
 ### Content-adresseerbare afbeeldingen (fase 8)
 
 Een `FileMeta` waarvan `name` er als afbeelding uitziet (`files::is_afbeelding`, een
-extensie-check) landt niet in `download_dir` maar in een aparte, content-adresseerbare
-map (`pictures_dir`, standaard `<datamap>/Pictures`): `<hex(hash)>.<extensie>`.
+extensie-check) landt niet los in `download_dir` maar in een aparte, content-adresseerbare
+map ernaast: `<downloadmap>/Pictures/<hex(hash)>.<extensie>`
+(`config::resolve_pictures_dir`).
 
 Dit lost een asymmetrie op die met een leesbare naam niet op te lossen was. Een gewoon
 bestand krijgt zijn definitieve naam pas bij de aanvrager, ná verificatie, met `" (2)"`
@@ -571,16 +572,31 @@ inhoud afgeleide naam werkt hier.
 - **Aanbieden:** `hash_en_bied_aan` (`engine.rs`) kopieert het bestand, ná het hashen,
   zelf naar `pictures_dir` — het origineel (ergens anders op schijf, van de gebruiker)
   blijft ongemoeid.
-- **Downloaden:** `download_bytes` (`engine.rs`) hernoemt na een geslaagde
-  hash-verificatie naar `pictures_dir` in plaats van naar `unieke_bestandsnaam` in
-  `download_dir`.
+- **Downloaden:** het halve bestand (`.part`) staat tijdens de overdracht al *in*
+  `pictures_dir` (`deelpad_van`), en `download_bytes` hernoemt het daar na een geslaagde
+  hash-verificatie naar zijn definitieve naam in plaats van naar `unieke_bestandsnaam` in
+  `download_dir`. Dat het halve bestand daar staat en niet in de downloadmap is geen
+  detail: het maakt de laatste stap een hernoeming binnen één map, en `rename` kan niet
+  over een schijfgrens heen. Zie `docs/OVERDRACHT.md` beslissing 32.
+- **Op zijn plek zetten:** `zet_op_zijn_plek` doet die laatste stap. Staat het doel er al
+  mét de juiste grootte, dan is het klaar — de naam is de hash, dus dat zijn dezelfde
+  bytes, en op Windows mislukt het vervangen van een bestand dat een ander proces net
+  leest. Anders hernoemen, met een paar korte pogingen voor een virusscanner die het net
+  weggeschreven bestand een fractie van een seconde vasthoudt.
+- **Verhuizen:** kiest de gebruiker een andere downloadmap, dan gaan de afbeeldingen mee
+  (`verhuis_afbeeldingen`, plus `verhuisd_pad` voor de onthouden paden in
+  `bestandspaden.json`). Dat *moet*, anders dan bij een gewone download die blijft liggen:
+  het pad van een afbeelding wordt afgeleid en niet onthouden, dus blijven staan betekent
+  uit de tijdlijn verdwijnen.
 - **Weergave:** de UI berekent hetzelfde pad zelf uit `FileView.hash`/`FileView.name` en
-  probeert het te laden; bestaat het nog niet (niet gedownload, of de aanbieder is nog
+  de map uit `Snapshot::pictures_dir` (daar en niet in `ui::Constants`, want hij verhuist
+  mee), en probeert het te laden; bestaat het nog niet (niet gedownload, of de aanbieder is nog
   aan het hashen), dan faalt dat geruisloos en toont de kaart de generieke weergave met
   een downloadknop.
 
 **"Verwijder alle afbeeldingen"** (instellingenscherm) is puur lokale schijfruimte
-opschonen: het leegt `pictures_dir`, maar raakt geen enkele op aan. De kaarten blijven in
+opschonen: het leegt `pictures_dir` op `.part`-bestanden na (dat is een download die nu
+bezig is), maar raakt geen enkele op aan. De kaarten blijven in
 de tijdlijn staan; een download- of uploadpoging erna krijgt dezelfde nette afhandeling
 als een bronbestand dat toevallig van schijf verdwijnt (zie hieronder). Dit is dus geen
 alternatief voor `OpKind::Delete` — die twee doen iets anders en kunnen allebei apart.

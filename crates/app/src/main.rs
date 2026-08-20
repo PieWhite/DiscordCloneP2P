@@ -101,7 +101,10 @@ fn main() -> Result<()> {
 
     // De motor draait op de tokio-runtime, niet op de UI-thread: chat en synchronisatie
     // moeten doorlopen terwijl het venster geminimaliseerd is of naar de tray staat.
-    let pictures_dir = config::resolve_pictures_dir(&data_dir);
+    // Alleen om het `asset:`-protocol deze map te laten lezen; wat de UI tekent komt uit
+    // `Snapshot::pictures_dir`, want de map verhuist mee als de gebruiker zijn
+    // downloadmap verzet (zie `config::resolve_pictures_dir`).
+    let pictures_dir = config::resolve_pictures_dir(&cfg, &data_dir);
     let youtube_dir = config::resolve_youtube_dir(&data_dir);
 
     if let Err(e) = tray::zet_autostart(cfg.autostart) {
