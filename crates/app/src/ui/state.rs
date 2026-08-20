@@ -15,6 +15,7 @@ use crate::engine::{PeerView, Snapshot};
 use crate::files::{self, DownloadStatus};
 use crate::tags;
 use crate::updates::UpdateStatus;
+use crate::wordle;
 use fitcom_net::PeerStatus;
 use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use serde::{Deserialize, Serialize};
@@ -174,6 +175,23 @@ pub enum TransferState {
     Mine,
 }
 
+/// One peer's score on one Wordle day, as the card in the log draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct WordleScore {
+    pub peer: String,
+    pub name: String,
+    pub avatar: u8,
+    pub mine: bool,
+    /// Guesses used, 1 to 6, whether or not the word was found.
+    pub guesses: u8,
+    pub solved: bool,
+    /// The squares, five characters per row: `0` miss, `1` near, `2` hit. Empty if the
+    /// peer runs a build that did not send one.
+    pub pattern: String,
+    /// Took the point for this day. More than one means a draw, and then they all did.
+    pub won: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TimelineItem {
@@ -216,6 +234,32 @@ pub enum TimelineItem {
         /// doing something else; the decision itself is made again in `open_file`, from
         /// the same `files::opent_als_code`.
         opens_folder: bool,
+    },
+    /// The puzzle of the day, which shows up in #general at 07:00 (2026-08-20).
+    ///
+    /// Not an op and never on the wire: every peer can work out on its own that today is
+    /// today, so a card carries no information anybody has to be told. Three peers each
+    /// posting a "here is today's puzzle" message would be three cards, and the oplog has
+    /// no way to make them one — `seq` is per author. What *does* travel is the results.
+    Wordle {
+        /// The puzzle's date as `YYYYMMDD`. The key everything else is grouped by.
+        day: u32,
+        /// 07:00 local on that day: where the card sits between the messages, and the
+        /// time the log prints next to it.
+        at: i64,
+        /// The number the real Wordle prints above it. Only known for a day this machine
+        /// fetched itself.
+        number: Option<u32>,
+        /// What the button does: `play`, `continue`, `done`, `waiting` (the word has not
+        /// arrived), or `past` (an older day, which cannot be played any more).
+        action: String,
+        /// Guesses used on an unfinished game of today.
+        progress: u8,
+        /// Everyone who played, best score first.
+        results: Vec<WordleScore>,
+        /// Did this day count for points? False while only one peer has played — you get
+        /// no point for playing alone. See `crate::wordle::winnaars`.
+        scored: bool,
     },
 }
 
@@ -305,6 +349,54 @@ pub struct SoundEventInfo {
     pub name: String,
 }
 
+/// One row of the board: the word and its five colours.
+#[derive(Debug, Clone, Serialize)]
+pub struct WordleRow {
+    pub word: String,
+    /// `0` miss, `1` near, `2` hit — one per letter.
+    pub marks: Vec<u8>,
+}
+
+/// Today's board, as the dialog draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct WordleBoard {
+    pub number: u32,
+    pub rows: Vec<WordleRow>,
+    pub done: bool,
+    pub won: bool,
+    /// Only once the game is over. While it runs, the answer stays in the engine — see
+    /// `crate::wordle`.
+    pub solution: Option<String>,
+}
+
+/// One line of the leaderboard.
+#[derive(Debug, Clone, Serialize)]
+pub struct WordleStanding {
+    pub peer: String,
+    pub name: String,
+    pub avatar: u8,
+    pub mine: bool,
+    /// Days won, or drawn on the lowest number of guesses.
+    pub points: u32,
+    pub played: u32,
+    pub solved: u32,
+}
+
+/// The game of the day and the leaderboard over all days.
+#[derive(Debug, Clone, Serialize)]
+pub struct WordleState {
+    /// Today's puzzle date as `YYYYMMDD`. Rolls over at 07:00, not at midnight.
+    pub day: u32,
+    /// `None` while today's word has not been fetched — then there is no card either.
+    pub board: Option<WordleBoard>,
+    /// Why the last guess was not accepted.
+    pub error: Option<String>,
+    /// Highest points first. Only peers who ever played show up.
+    pub standings: Vec<WordleStanding>,
+    /// How many guesses a game allows, so the frontend does not carry its own copy.
+    pub tries: u8,
+}
+
 /// Everything the window needs to draw itself, minus the timeline.
 ///
 /// The timeline is fetched per conversation with `get_timeline` instead of riding along
@@ -329,6 +421,7 @@ pub struct UiState {
     pub output_device: Option<String>,
     pub do_not_disturb: bool,
     pub update: Option<UpdateState>,
+    pub wordle: WordleState,
     pub error: Option<String>,
     pub app_version: String,
     pub protocol_version: u32,
@@ -522,6 +615,7 @@ impl UiState {
             input_device: snap.input_device.clone(),
             output_device: snap.output_device.clone(),
             do_not_disturb: snap.niet_storen,
+            wordle: wordle_state(snap, c.me, &hues),
             update: snap.update.as_ref().map(|u| match u {
                 UpdateStatus::Zoeken => UpdateState::Checking,
                 UpdateStatus::Actueel => UpdateState::UpToDate,
@@ -567,7 +661,9 @@ pub fn timeline_of(
     let hues = avatar_hues(me, &snap.peers);
     let hue = |peer: PeerId| hues.get(&peer).copied().unwrap_or(3);
 
-    let mut items: Vec<(u64, PeerId, TimelineItem)> = Vec::new();
+    // The wall clock rides along so the Wordle cards can be slotted in by time — see the
+    // merge at the bottom. Ordering between messages and files stays `(lamport, author)`.
+    let mut items: Vec<(u64, PeerId, i64, TimelineItem)> = Vec::new();
 
     for m in &snap.timeline.messages {
         if !belongs_to_channel(channel, me, m.channel, m.author) {
@@ -576,6 +672,7 @@ pub fn timeline_of(
         items.push((
             m.lamport,
             m.author,
+            m.created_at,
             TimelineItem::Message {
                 id: OpRef::of(m.id),
                 author: m.author.to_string(),
@@ -611,6 +708,7 @@ pub fn timeline_of(
         items.push((
             f.lamport,
             f.author,
+            0,
             TimelineItem::File {
                 id: OpRef::of(f.id),
                 author: f.author.to_string(),
@@ -643,8 +741,150 @@ pub fn timeline_of(
         ));
     }
 
-    items.sort_by_key(|(lamport, author, _)| (*lamport, *author));
-    items.into_iter().map(|(_, _, item)| item).collect()
+    items.sort_by_key(|(lamport, author, _, _)| (*lamport, *author));
+
+    // The daily Wordle card is not an op, so it has no lamport to sort on — it is placed
+    // by the clock instead, right before the first thing said after 07:00 that day. A file
+    // carries no clock of its own (`at == 0`) and inherits the last one seen, the same way
+    // the frontend draws it.
+    let mut kaarten = if channel == Channel::GENERAL {
+        wordle_cards(snap, me, &hues).into_iter().peekable()
+    } else {
+        Vec::new().into_iter().peekable()
+    };
+    let mut uit: Vec<TimelineItem> = Vec::with_capacity(items.len());
+    let mut laatste = 0i64;
+    for (_, _, at, item) in items {
+        let at = if at > 0 { at } else { laatste };
+        while kaarten.peek().is_some_and(|(op, _)| *op <= at) {
+            if let Some((_, kaart)) = kaarten.next() {
+                uit.push(kaart);
+            }
+        }
+        laatste = at;
+        uit.push(item);
+    }
+    uit.extend(kaarten.map(|(_, kaart)| kaart));
+    uit
+}
+
+/// The board and the leaderboard. Kept out of `UiState::build` only because that function
+/// is long enough; nothing here decides anything the engine has not already decided.
+fn wordle_state(snap: &Snapshot, me: PeerId, hues: &HashMap<PeerId, u8>) -> WordleState {
+    let standings = wordle::standen(&snap.timeline.wordle)
+        .into_iter()
+        .map(|st| WordleStanding {
+            peer: st.peer.to_string(),
+            name: display_name(snap, st.peer, &st.peer.to_string()[..8]),
+            avatar: hues.get(&st.peer).copied().unwrap_or(3),
+            mine: st.peer == me,
+            points: st.punten,
+            played: st.gespeeld,
+            solved: st.opgelost,
+        })
+        .collect();
+
+    WordleState {
+        day: snap.wordle.dag,
+        board: snap.wordle.bord.as_ref().map(|b| WordleBoard {
+            number: b.nummer,
+            rows: b
+                .rijen
+                .iter()
+                .map(|r| WordleRow {
+                    word: r.woord.clone(),
+                    marks: r.tekens.iter().map(|t| *t as u8).collect(),
+                })
+                .collect(),
+            done: b.klaar,
+            won: b.gewonnen,
+            solution: b.oplossing.clone(),
+        }),
+        error: snap.wordle.fout.clone(),
+        standings,
+        tries: wordle::POGINGEN,
+    }
+}
+
+/// One card per Wordle day, with the time it belongs at. Sorted oldest first.
+///
+/// A day shows up here as soon as *either* this machine fetched its word *or* somebody's
+/// result for it arrived — the second case is the day you were away and the others played.
+/// Never a day beyond the current one: a peer with a fast clock must not be able to put
+/// tomorrow's card in today's log.
+fn wordle_cards(
+    snap: &Snapshot,
+    me: PeerId,
+    hues: &HashMap<PeerId, u8>,
+) -> Vec<(i64, TimelineItem)> {
+    let per_dag: HashMap<u32, &[fitcom_store::WordleEntry]> =
+        wordle::per_dag(&snap.timeline.wordle)
+            .into_iter()
+            .filter_map(|groep| groep.first().map(|e| (e.day, groep)))
+            .collect();
+
+    let mut dagen: Vec<u32> = snap
+        .wordle
+        .nummers
+        .keys()
+        .copied()
+        .chain(per_dag.keys().copied())
+        .filter(|d| *d <= snap.wordle.dag)
+        .collect();
+    dagen.sort_unstable();
+    dagen.dedup();
+
+    dagen
+        .into_iter()
+        .map(|day| {
+            let groep = per_dag.get(&day).copied().unwrap_or(&[]);
+            let winners = wordle::winnaars(groep);
+            let mut results: Vec<WordleScore> = groep
+                .iter()
+                .map(|e| WordleScore {
+                    peer: e.author.to_string(),
+                    name: display_name(snap, e.author, &e.author.to_string()[..8]),
+                    avatar: hues.get(&e.author).copied().unwrap_or(3),
+                    mine: e.author == me,
+                    guesses: e.guesses,
+                    solved: e.solved,
+                    pattern: e.pattern.clone(),
+                    won: winners.contains(&e.author),
+                })
+                .collect();
+            // Best first: whoever solved it, in the fewest guesses. A peer id breaks the
+            // tie so every machine draws the same order.
+            results.sort_by(|a, b| {
+                (!a.solved, a.guesses, &a.peer).cmp(&(!b.solved, b.guesses, &b.peer))
+            });
+
+            let vandaag = day == snap.wordle.dag;
+            let action = match (vandaag, snap.wordle.bord.as_ref()) {
+                (false, _) => "past",
+                (true, None) => "waiting",
+                (true, Some(b)) if b.klaar => "done",
+                (true, Some(b)) if b.rijen.is_empty() => "play",
+                (true, Some(_)) => "continue",
+            };
+
+            (
+                wordle::openbaar_op(day),
+                TimelineItem::Wordle {
+                    day,
+                    at: wordle::openbaar_op(day),
+                    number: snap.wordle.nummers.get(&day).copied(),
+                    action: action.to_string(),
+                    progress: if vandaag {
+                        snap.wordle.bord.as_ref().map_or(0, |b| b.rijen.len() as u8)
+                    } else {
+                        0
+                    },
+                    results,
+                    scored: wordle::telt_mee(groep),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Whether a message or file belongs to the conversation on screen.
@@ -742,6 +982,109 @@ mod tests {
         ] {
             assert_eq!(parse_channel(&channel_key(c)), c);
         }
+    }
+
+    /// The card is not an op, so it has no lamport — it is slotted in by the clock. This
+    /// is the test for that seam: 07:00 comes after anything said at 06:00 and before
+    /// anything said at 08:00, on the day it belongs to.
+    #[test]
+    fn the_wordle_card_lands_at_seven_in_the_morning() {
+        let dag = 20_260_820;
+        let zeven = crate::wordle::openbaar_op(dag);
+        let uur = 3_600_000;
+
+        let bericht = |lamport: u64, at: i64| fitcom_store::Message {
+            id: OpId::new(peer(1), Channel::GENERAL, lamport),
+            author: peer(1),
+            channel: Channel::GENERAL,
+            body: format!("at {at}"),
+            created_at: at,
+            edited: false,
+            lamport,
+        };
+        let timeline = fitcom_store::Timeline {
+            messages: vec![
+                bericht(1, zeven - uur),
+                bericht(2, zeven + uur),
+                bericht(3, zeven + 2 * uur),
+            ],
+            wordle: vec![fitcom_store::WordleEntry {
+                day: dag,
+                author: peer(2),
+                guesses: 3,
+                solved: true,
+                pattern: "2".repeat(15),
+            }],
+            ..Default::default()
+        };
+        let snap = Snapshot {
+            timeline: std::sync::Arc::new(timeline),
+            wordle: crate::engine::WordleView {
+                dag,
+                nummers: [(dag, 1888)].into_iter().collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let soorten: Vec<&str> = timeline_of(&snap, Channel::GENERAL, peer(1), "me", Path::new(""))
+            .iter()
+            .map(|i| match i {
+                TimelineItem::Wordle { .. } => "card",
+                _ => "message",
+            })
+            .collect();
+        assert_eq!(soorten, ["message", "card", "message", "message"]);
+
+        // And nowhere else: a DM is not where the daily puzzle shows up.
+        assert!(
+            !timeline_of(&snap, Channel::dm(peer(2)), peer(1), "me", Path::new(""))
+                .iter()
+                .any(|i| matches!(i, TimelineItem::Wordle { .. }))
+        );
+    }
+
+    /// A day this machine never fetched still gets a card as soon as somebody's result
+    /// arrives — that is the day you were away — but a day beyond the current one never
+    /// does, however far ahead the other peer's clock runs.
+    #[test]
+    fn a_card_appears_for_a_missed_day_and_never_for_a_future_one() {
+        let vandaag = 20_260_820;
+        let timeline = fitcom_store::Timeline {
+            wordle: vec![
+                fitcom_store::WordleEntry {
+                    day: 20_260_819,
+                    author: peer(2),
+                    guesses: 4,
+                    solved: true,
+                    pattern: String::new(),
+                },
+                fitcom_store::WordleEntry {
+                    day: 20_260_821,
+                    author: peer(2),
+                    guesses: 2,
+                    solved: true,
+                    pattern: String::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let snap = Snapshot {
+            timeline: std::sync::Arc::new(timeline),
+            wordle: crate::engine::WordleView {
+                dag: vandaag,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dagen: Vec<u32> = timeline_of(&snap, Channel::GENERAL, peer(1), "me", Path::new(""))
+            .iter()
+            .filter_map(|i| match i {
+                TimelineItem::Wordle { day, .. } => Some(*day),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dagen, [20_260_819], "morgen hoort er niet bij te staan");
     }
 
     #[test]

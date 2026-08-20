@@ -592,6 +592,17 @@ pub async fn youtube_preview(ui: State<'_, Ui>, id: String) -> Result<Option<You
     })
 }
 
+/// One guess at today's Wordle. Only the word travels; the answer stays in the engine and
+/// the marked board comes back in the next `state` event — see `crate::wordle`.
+///
+/// Nothing is returned here on purpose: whether a guess was accepted, and why not, is part
+/// of the state the window draws, exactly like a download's progress. That keeps the
+/// `Snapshot`/`UiCommand` boundary the way decision 19 left it.
+#[tauri::command]
+pub fn wordle_guess(ui: State<'_, Ui>, word: String) {
+    send(&ui, UiCommand::WordleGok(word));
+}
+
 /// The close button. With `minimize_to_tray` on — the default — it hides the window and
 /// leaves the engine running, because the state this app has to be good at is "away in
 /// the tray while a game is running".

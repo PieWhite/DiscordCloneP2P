@@ -170,6 +170,35 @@ impl Chat {
         self.eigen_op(Channel::GENERAL, OpKind::DeleteTopic { id })
     }
 
+    /// Legt de uitslag van een Wordle-dag vast in de oplog. Altijd op het algemene
+    /// kanaal: het scorebord is er één, net als een bijnaam, en het gaat iedereen aan.
+    ///
+    /// Doet niets als er al een uitslag van ons over deze dag in de log staat. De op zelf
+    /// is al onveranderlijk (per (auteur, dag) wint de eerste, zie
+    /// `fitcom_store::timeline`), dus een tweede zou toch niets doen — behalve de log laten
+    /// groeien bij elke herstart, precies zoals `zet_naam` dat voorkomt.
+    pub fn meld_wordle(
+        &mut self,
+        dag: u32,
+        pogingen: u8,
+        gewonnen: bool,
+        patroon: String,
+    ) -> Result<Vec<MeshCommand>> {
+        let me = self.me();
+        if self
+            .timeline
+            .wordle
+            .iter()
+            .any(|e| e.author == me && e.day == dag)
+        {
+            return Ok(Vec::new());
+        }
+        self.eigen_op(
+            Channel::GENERAL,
+            fitcom_store::wordle_result(dag, pogingen, gewonnen, patroon),
+        )
+    }
+
     /// Legt een bestandsaanbod vast in de oplog, precies zoals een bericht — dat is het
     /// hele punt van de generieke oplog. Levert de `OpId` op die de overdracht zelf
     /// identificeert, zodat de motor kan onthouden waar het originele bestand staat.

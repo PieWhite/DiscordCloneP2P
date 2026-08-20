@@ -21,6 +21,7 @@ use crate::release::{self, Release};
 use crate::streams::{Actie, Streams};
 use crate::tags;
 use crate::updates::{UpdateStatus, Updates};
+use crate::wordle::{self, Wordle};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
@@ -151,6 +152,22 @@ pub struct FileView {
     pub local_path: Option<PathBuf>,
 }
 
+/// Wordle, zoals de UI het toont. Zie `crate::wordle` voor de regels.
+#[derive(Debug, Clone, Default)]
+pub struct WordleView {
+    /// De dag waar het huidige raadsel bij hoort, `YYYYMMDD`. Wisselt om 07:00.
+    pub dag: u32,
+    /// Het bord van vandaag. `None` zolang het woord niet binnen is — dan is er geen
+    /// kaart en staat er niets in de weg.
+    pub bord: Option<wordle::Bord>,
+    /// Raadselnummer per dag die deze pc kent, voor de kop van een kaart. Alleen wat we
+    /// zelf ooit ophaalden; van een dag die we misten weten we het nummer niet.
+    pub nummers: HashMap<u32, u32>,
+    /// Waarom de laatste gok niet aangenomen werd. Engels: dit gaat rechtstreeks het
+    /// venster in.
+    pub fout: Option<String>,
+}
+
 /// Alles wat de UI nodig heeft om zichzelf te tekenen.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -185,6 +202,8 @@ pub struct Snapshot {
     /// `None` betekent: niets aan de hand, iedereen die we spreken zit op onze versie
     /// (of ouder).
     pub update: Option<UpdateStatus>,
+    /// Het spelletje van de dag en het scorebord (2026-08-20).
+    pub wordle: WordleView,
     pub fout: Option<String>,
 }
 
@@ -264,6 +283,9 @@ pub enum UiCommand {
     NegeerUpdate(String),
     /// Een mislukte update-melding wegklikken.
     WisUpdateMelding,
+    /// Eén gok op het Wordle-raadsel van vandaag. Het woord komt uit het venster; de
+    /// motor beoordeelt het, want de oplossing blijft aan deze kant.
+    WordleGok(String),
 }
 
 pub struct EngineHandle {
@@ -349,6 +371,7 @@ pub fn spawn(
         downloads_dir,
         pictures_dir,
         paden_index,
+        wordle: Wordle::nieuw(&data_dir),
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -413,6 +436,9 @@ struct Engine {
     pictures_dir: PathBuf,
     /// Waar de padkaarten van `files` op schijf staan. Zie [`PadenIndex`].
     paden_index: PathBuf,
+    /// Het raadsel van de dag, de eigen gokken en waar dat op schijf staat.
+    /// Zie `crate::wordle`.
+    wordle: Wordle,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -483,6 +509,9 @@ enum FileEvent {
     UpdateMislukt {
         bericht: String,
     },
+    /// Het raadsel van vandaag is bij NYT opgehaald (2026-08-20). Zie `crate::wordle` voor
+    /// waarom dat in de motor gebeurt en niet in de webview.
+    WordleGeladen(wordle::Raadsel),
 }
 
 impl Engine {
@@ -492,6 +521,7 @@ impl Engine {
         let naam = self.cfg.display_name.clone();
         let r = self.chat.zet_naam(&naam);
         self.verwerk(r);
+        self.wordle_inhaalslag();
         self.publiceer();
 
         let mut ticker = tokio::time::interval(TIK);
@@ -523,6 +553,7 @@ impl Engine {
                     let r = self.chat.tick(&verbonden);
                     self.verwerk(r);
                     self.ruim_gestopte_camera_op();
+                    self.wordle_tick();
                 }
                 _ = update_ticker.tick() => self.zoek_update(false),
             }
@@ -1667,6 +1698,45 @@ impl Engine {
             UiCommand::PasUpdateToe => self.pas_update_toe(),
             UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
             UiCommand::WisUpdateMelding => self.updates.wis_melding(),
+            UiCommand::WordleGok(woord) => self.wordle_gok(&woord),
+        }
+    }
+
+    // -- wordle (2026-08-20) -----------------------------------------------
+
+    /// Eén gok. De uitslag van een afgerond spel gaat meteen de oplog in, zodat de anderen
+    /// hem zien zonder dat er iets extra's over de draad hoeft.
+    fn wordle_gok(&mut self, woord: &str) {
+        if let wordle::Gok::Klaar {
+            pogingen,
+            gewonnen,
+            patroon,
+        } = self.wordle.gok(woord)
+        {
+            let dag = self.wordle.huidige_dag();
+            tracing::info!(dag, pogingen, gewonnen, "wordle afgerond");
+            let r = self.chat.meld_wordle(dag, pogingen, gewonnen, patroon);
+            self.verwerk(r);
+        }
+    }
+
+    /// Op elke tik: staat het raadsel van vandaag er nog niet, dan halen we het op.
+    /// `moet_ophalen` houdt zelf bij dat dat hoogstens één keer per kwartier gebeurt, dus
+    /// dit is in rust een maplookup en niets meer.
+    fn wordle_tick(&mut self) {
+        if let Some(datum) = self.wordle.moet_ophalen() {
+            let tx = self.file_tx.clone();
+            tokio::spawn(wordle_taak(datum, tx));
+        }
+    }
+
+    /// Bij het starten: staat er een afgerond spel van vandaag op schijf waarvan de uitslag
+    /// niet in de log zit, dan komt hij er alsnog in. Zelfde gedachte als `zet_naam`, dat
+    /// ook elke start controleert of de log klopt met wat hier waar is.
+    fn wordle_inhaalslag(&mut self) {
+        if let Some((dag, pogingen, gewonnen, patroon)) = self.wordle.te_melden() {
+            let r = self.chat.meld_wordle(dag, pogingen, gewonnen, patroon);
+            self.verwerk(r);
         }
     }
 
@@ -1849,6 +1919,14 @@ impl Engine {
             FileEvent::UpdateMislukt { bericht } => {
                 tracing::warn!(%bericht, "update ophalen mislukt");
                 self.updates.mislukt(bericht);
+            }
+            FileEvent::WordleGeladen(raadsel) => {
+                tracing::info!(
+                    dag = raadsel.dag,
+                    nummer = raadsel.nummer,
+                    "wordle van vandaag binnen"
+                );
+                self.wordle.neem_op(raadsel);
             }
         }
     }
@@ -2046,6 +2124,16 @@ impl Engine {
             ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
             update: self.updates.status().cloned(),
+            wordle: WordleView {
+                dag: self.wordle.huidige_dag(),
+                bord: self.wordle.bord(),
+                nummers: self
+                    .wordle
+                    .bekende_dagen()
+                    .filter_map(|d| self.wordle.nummer(d).map(|n| (d, n)))
+                    .collect(),
+                fout: self.wordle.fout.clone(),
+            },
             fout: self.fout.clone(),
         }));
     }
@@ -2462,6 +2550,23 @@ async fn download_taak(
 /// Alles wat blokkeert (TLS, schijf, hashen) draait in `spawn_blocking`; `release.rs`
 /// gebruikt bewust een blokkerende HTTP-client, want dit is geen heet pad en een tweede
 /// async-stack ernaast zou alleen maar dependencies kosten.
+/// Het raadsel van één dag ophalen. Losse taak op een blocking-thread, want `ureq` is
+/// synchroon en de motor mag hier niet op wachten.
+///
+/// Mislukken is geen fout: `debug` en niet `warn`, precies zoals bij een YouTube-preview.
+/// Offline is een normale toestand (invariant 7) en dit is een spelletje — er komt dan
+/// gewoon geen kaart, en over een kwartier probeert de tik het opnieuw.
+async fn wordle_taak(datum: String, events: mpsc::Sender<FileEvent>) {
+    let uitkomst = tokio::task::spawn_blocking(move || wordle::haal_op(&datum)).await;
+    match uitkomst {
+        Ok(Ok(raadsel)) => {
+            let _ = events.send(FileEvent::WordleGeladen(raadsel)).await;
+        }
+        Ok(Err(e)) => tracing::debug!(error = %format!("{e:#}"), "geen wordle van vandaag"),
+        Err(e) => tracing::warn!(error = %e, "de wordle-taak liep vast"),
+    }
+}
+
 async fn update_check_taak(
     updates_dir: PathBuf,
     genegeerd: HashSet<String>,

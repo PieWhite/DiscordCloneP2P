@@ -304,6 +304,17 @@ impl Wordle {
     /// Een gok op het raadsel van vandaag. Alleen op vandaag: een oudere dag naspelen zou
     /// betekenen dat je een punt kunt halen op een dag waarop de anderen al klaar waren.
     pub fn gok(&mut self, ruw: &str) -> Gok {
+        let uitkomst = self.probeer(ruw);
+        // Eén plek waar `fout` gezet en gewist wordt: een geweigerde gok laat een regel in
+        // het venster achter, een aangenomen gok haalt hem weg.
+        self.fout = match &uitkomst {
+            Gok::Geweigerd(reden) => Some((*reden).to_string()),
+            _ => None,
+        };
+        uitkomst
+    }
+
+    fn probeer(&mut self, ruw: &str) -> Gok {
         let dag = self.huidige_dag();
         let woord = ruw.trim().to_ascii_lowercase();
 
@@ -334,7 +345,6 @@ impl Wordle {
         } else {
             Gok::Verder
         };
-        self.fout = None;
         self.bewaar();
         uitkomst
     }
@@ -498,6 +508,12 @@ pub fn winnaars(dag: &[WordleEntry]) -> Vec<PeerId> {
         .filter(|e| e.solved && e.guesses == beste)
         .map(|e| e.author)
         .collect()
+}
+
+/// Telt deze dag mee voor het scorebord? Zie [`MIN_SPELERS`]: met één speler is er geen
+/// wedstrijd, dus valt er ook niets te winnen.
+pub fn telt_mee(dag: &[WordleEntry]) -> bool {
+    dag.len() >= MIN_SPELERS
 }
 
 /// Het scorebord over alle dagen, hoogste punten eerst.

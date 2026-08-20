@@ -132,6 +132,14 @@ impl Ui {
                 Some(DownloadStatus::Mislukt(e)) => (3u8, e).hash(&mut hasher),
             }
         }
+        // Same reason for the Wordle card: it rides in the timeline payload but its state
+        // lives outside the `Arc` — the day, and how far this machine got today. Without
+        // this, your own guess would not update the card until the game ended and the
+        // result op moved the log.
+        snap.wordle.dag.hash(&mut hasher);
+        if let Some(bord) = &snap.wordle.bord {
+            (bord.rijen.len(), bord.klaar).hash(&mut hasher);
+        }
         let vingerafdruk = hasher.finish();
 
         let mut last = self
@@ -285,6 +293,7 @@ pub fn run(
             commands::dismiss_update,
             commands::open_link,
             commands::youtube_preview,
+            commands::wordle_guess,
             commands::close_window,
             ready,
         ])
