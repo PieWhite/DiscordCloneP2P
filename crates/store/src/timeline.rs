@@ -43,6 +43,26 @@ pub struct FileEntry {
     pub lamport: u64,
 }
 
+/// De uitslag van één peer op één Wordle-dag (2026-08-20).
+///
+/// Onveranderlijk: per (auteur, dag) wint de **eerste** op, niet de laatste. Dat is de
+/// enige plek in dit bestand waar niet last-writer-wins geldt, en met opzet — een uitslag
+/// is een gebeurtenis en geen instelling. Zou de laatste winnen, dan kon je je score
+/// bijstellen nadat je die van de anderen gezien had, en dat is precies wat een
+/// scorebord niet mag toestaan. Een eerlijke client stuurt er per dag precies één.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordleEntry {
+    /// De `print_date` van het raadsel als `YYYYMMDD` — zie `OpKind::WordleResult`.
+    pub day: u32,
+    pub author: PeerId,
+    /// Gedane pogingen, 1 t/m 6. Ook gevuld als het niet gelukt is.
+    pub guesses: u8,
+    pub solved: bool,
+    /// Vijf tekens per rij, `0`/`1`/`2`, rijen achter elkaar. Wat het echte Wordle als
+    /// vierkantjes deelt; het gerade woord staat er nooit in.
+    pub pattern: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Timeline {
     /// Op weergavevolgorde: `(lamport, author)`.
@@ -51,6 +71,10 @@ pub struct Timeline {
     /// Alle bekende aanbiedingen, op weergavevolgorde. Geen bewerken of intrekken in v1
     /// — zie `TODO.md`.
     pub files: Vec<FileEntry>,
+    /// Alle bekende Wordle-uitslagen, op `(dag, auteur)` gesorteerd zodat elke peer de
+    /// kaart in dezelfde volgorde tekent. Niet per kanaal: het scorebord is er één, net
+    /// als een bijnaam.
+    pub wordle: Vec<WordleEntry>,
     /// Subkanalen onder het algemene kanaal en hun huidige titel (fase 9). Bestaan en
     /// titel komen allebei uit `OpKind::SetTopicTitle` — geen apart "aangemaakt"-bericht,
     /// precies zoals een bijnaam geen apart "peer bestaat"-bericht nodig heeft.
@@ -106,6 +130,10 @@ pub fn build(ops: &[Op]) -> Timeline {
         Deleted,
     }
     let mut topics: HashMap<TopicId, ((u64, PeerId), TopicChange)> = HashMap::new();
+    // Eerste-schrijver-wint per (auteur, dag). De sleutel is `(lamport, seq)` en niet de
+    // sorteersleutel hierboven: binnen één auteur beslist `seq` de gelijkstand, en zonder
+    // dat zou een stabiele sortering de uitkomst van de aankomstvolgorde laten afhangen.
+    let mut wordle: HashMap<(PeerId, u32), ((u64, u64), WordleEntry)> = HashMap::new();
 
     for op in sorted {
         // Onbekende soort: van een nieuwere peer. We bewaren en verspreiden hem wel,
@@ -188,6 +216,27 @@ pub fn build(ops: &[Op]) -> Timeline {
                     }
                 }
             }
+            OpKind::WordleResult {
+                day,
+                guesses,
+                solved,
+                pattern,
+            } => {
+                let k = (op.lamport, op.seq);
+                let entry = WordleEntry {
+                    day,
+                    author: op.author,
+                    guesses,
+                    solved,
+                    pattern,
+                };
+                match wordle.get(&(op.author, day)) {
+                    Some((prev, _)) if *prev <= k => {}
+                    _ => {
+                        wordle.insert((op.author, day), (k, entry));
+                    }
+                }
+            }
             OpKind::DeleteTopic { id } => {
                 let k = key(op);
                 match topics.get(&id) {
@@ -241,10 +290,16 @@ pub fn build(ops: &[Op]) -> Timeline {
         files.push(entry);
     }
 
+    // Een `Delete` op een uitslag doet niets, net zomin als op een bijnaam: er is geen
+    // eigenaarschap over een gebeurtenis die al gebeurd is.
+    let mut wordle: Vec<WordleEntry> = wordle.into_values().map(|(_, e)| e).collect();
+    wordle.sort_by_key(|e| (e.day, e.author));
+
     Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
         files,
+        wordle,
         topics: topics
             .into_iter()
             .filter_map(|(id, (_, t))| match t {
@@ -680,6 +735,70 @@ mod tests {
         );
         let t = build(&[aanmaken, verwijderen, opnieuw]);
         assert_eq!(t.topics[&t_id], "project x (terug)");
+    }
+
+    fn uitslag(day: u32, guesses: u8, solved: bool) -> OpKind {
+        OpKind::WordleResult {
+            day,
+            guesses,
+            solved,
+            pattern: "2".repeat(5 * guesses as usize),
+        }
+    }
+
+    #[test]
+    fn de_eerste_wordle_uitslag_van_een_auteur_ligt_vast() {
+        // Andersom dan bij een bijnaam: een uitslag is een gebeurtenis, dus een tweede op
+        // over dezelfde dag mag hem niet meer bijstellen — anders verbeter je je score
+        // nadat je die van de anderen gezien hebt.
+        let eerst = op(peer(1), 1, 1, uitslag(20_260_820, 4, true));
+        let later = op(peer(1), 2, 9, uitslag(20_260_820, 2, true));
+
+        // Beide aankomstvolgordes moeten hetzelfde geven.
+        for ops in [
+            vec![eerst.clone(), later.clone()],
+            vec![later.clone(), eerst.clone()],
+        ] {
+            let t = build(&ops);
+            assert_eq!(t.wordle.len(), 1);
+            assert_eq!(t.wordle[0].guesses, 4);
+        }
+    }
+
+    #[test]
+    fn een_gelijke_lamport_wordt_op_seq_beslist_en_niet_op_aankomst() {
+        // Twee ops van dezelfde auteur met dezelfde lamport: de sorteersleutel
+        // `(lamport, author)` kan die twee niet scheiden, dus zonder `seq` in de
+        // vergelijking zou de uitkomst van de aankomstvolgorde afhangen.
+        let a = op(peer(1), 1, 5, uitslag(20_260_820, 3, true));
+        let b = op(peer(1), 2, 5, uitslag(20_260_820, 6, false));
+        assert_eq!(build(&[a.clone(), b.clone()]).wordle[0].guesses, 3);
+        assert_eq!(build(&[b, a]).wordle[0].guesses, 3);
+    }
+
+    #[test]
+    fn wordle_uitslagen_van_verschillende_dagen_en_peers_blijven_naast_elkaar() {
+        let t = build(&[
+            op(peer(2), 1, 1, uitslag(20_260_820, 5, true)),
+            op(peer(1), 1, 2, uitslag(20_260_820, 3, true)),
+            op(peer(1), 2, 3, uitslag(20_260_819, 6, false)),
+        ]);
+        let sleutels: Vec<(u32, u8)> = t.wordle.iter().map(|e| (e.day, e.guesses)).collect();
+        // Op (dag, auteur): peer(1) sorteert voor peer(2) omdat zijn eerste byte lager is.
+        assert_eq!(
+            sleutels,
+            [(20_260_819, 6), (20_260_820, 3), (20_260_820, 5)]
+        );
+    }
+
+    #[test]
+    fn een_delete_haalt_een_wordle_uitslag_niet_weg() {
+        // Zoals bij een bijnaam: er is geen eigenaarschap over iets dat al gebeurd is,
+        // dus `Delete` doet hier niets. Zou hij wél werken, dan kon je een verloren dag
+        // uit het scorebord poetsen.
+        let uit = op(peer(1), 1, 1, uitslag(20_260_820, 6, false));
+        let weg = op(peer(1), 2, 2, OpKind::Delete { target: uit.id() });
+        assert_eq!(build(&[uit, weg]).wordle.len(), 1);
     }
 
     #[test]

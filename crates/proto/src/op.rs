@@ -28,6 +28,9 @@ pub const MAX_BERICHT_LEN: usize = 4 * 1024;
 pub const MAX_BESTANDSNAAM_LEN: usize = 255;
 /// Voor een bijnaam en voor de titel van een subkanaal — beide korte labels in de UI.
 pub const MAX_NAAM_LEN: usize = 64;
+/// Het uitslagpatroon van een Wordle-dag: zes rijen van vijf tekens, geen scheidingsteken.
+/// Zie `OpKind::WordleResult`.
+pub const MAX_WORDLE_PATROON_LEN: usize = 30;
 
 fn grens(veld: &'static str, waarde: &str, limiet: usize) -> crate::Result<()> {
     if waarde.len() > limiet {
@@ -239,6 +242,25 @@ op_kinds! {
     // hernoeming laat het subkanaal dus gewoon weer terugkomen. Geen aparte
     // auteurscheck: elke peer mag een subkanaal aanmaken/hernoemen, dus ook verwijderen.
     21 => DeleteTopic { id: TopicId },
+    // De uitslag van één Wordle-dag (2026-08-20). Additief toegevoegd, geen protocolbump:
+    // een oudere peer slaat hem op en stuurt hem door zonder hem te begrijpen.
+    //
+    // `day` is de *print_date* van het raadsel als `YYYYMMDD`, niet de dag waarop je hem
+    // speelde en niet het raadselnummer van NYT. Die datum is de enige sleutel die alle
+    // drie de peers zeker gelijk hebben: hij komt uit het antwoord van NYT en niet uit een
+    // lokale klok, dus wie om 00:30 nog het raadsel van gisteren afmaakt scoort op de dag
+    // waar het raadsel bij hoort. Een getal en geen string, want dan is er geen
+    // lengtegrens nodig en blijft hij leesbaar in een dump.
+    //
+    // `guesses` is het aantal gedane pogingen (1 t/m 6), ook als het niet gelukt is;
+    // `solved` zegt of de laatste poging het woord was. De uitslag is onveranderlijk: per
+    // (auteur, dag) wint de *eerste* op, niet de laatste — zie `fitcom_store::timeline`.
+    //
+    // `pattern` is het gedeelde vierkantjesraster: vijf tekens per rij, `0` mis, `1` bijna,
+    // `2` goed, rijen achter elkaar zonder scheidingsteken. Het gerade woord zelf gaat
+    // nooit mee — dat zou het raadsel verklappen aan wie nog moet spelen, precies zoals
+    // het echte Wordle alleen vierkantjes deelt.
+    30 => WordleResult { day: u32, guesses: u8, solved: bool, pattern: String },
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 
@@ -258,6 +280,9 @@ impl OpKind {
             Self::FileMeta { name, .. } => grens("bestandsnaam", name, MAX_BESTANDSNAAM_LEN),
             Self::SetTopicTitle { title, .. } => grens("kanaaltitel", title, MAX_NAAM_LEN),
             Self::DeleteTopic { .. } => Ok(()),
+            Self::WordleResult { pattern, .. } => {
+                grens("wordle-patroon", pattern, MAX_WORDLE_PATROON_LEN)
+            }
         }
     }
 }
@@ -396,6 +421,12 @@ mod tests {
             OpKind::SetTopicTitle {
                 id: crate::TopicId::from_bytes([0x77; 16]),
                 title: "project x".into(),
+            },
+            OpKind::WordleResult {
+                day: 20_260_820,
+                guesses: 4,
+                solved: true,
+                pattern: "000100120102201222222".into(),
             },
         ];
         for kind in kinds {
@@ -548,6 +579,15 @@ mod tests {
                     title: "t".repeat(MAX_NAAM_LEN + 1),
                 },
                 "kanaaltitel",
+            ),
+            (
+                OpKind::WordleResult {
+                    day: 20_260_820,
+                    guesses: 6,
+                    solved: false,
+                    pattern: "2".repeat(MAX_WORDLE_PATROON_LEN + 1),
+                },
+                "wordle-patroon",
             ),
         ] {
             let op = rauwe_op(1, 1, kind.tag(), kind.encode_payload().unwrap());

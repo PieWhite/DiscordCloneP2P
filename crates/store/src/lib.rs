@@ -38,7 +38,7 @@ use fitcom_proto::{Channel, Op, OpKind, PeerId, VersionVector};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-pub use timeline::{FileEntry, Message, Timeline};
+pub use timeline::{FileEntry, Message, Timeline, WordleEntry};
 
 // Doorgeven zodat de app niet ook nog een directe afhankelijkheid op `proto` nodig heeft
 // voor de types die overal in de chat-code voorkomen.
@@ -916,6 +916,18 @@ pub fn now_millis() -> i64 {
 /// Kortere schrijfwijze voor de meest voorkomende op.
 pub fn post(body: impl Into<String>) -> OpKind {
     OpKind::Post { body: body.into() }
+}
+
+/// De uitslag van één Wordle-dag vastleggen. `day` is de `print_date` van het raadsel als
+/// `YYYYMMDD`; zie `OpKind::WordleResult` voor waarom dat de sleutel is en niet de dag
+/// waarop je speelde.
+pub fn wordle_result(day: u32, guesses: u8, solved: bool, pattern: impl Into<String>) -> OpKind {
+    OpKind::WordleResult {
+        day,
+        guesses,
+        solved,
+        pattern: pattern.into(),
+    }
 }
 
 /// Een bestand aanbieden. De op zelf is de identificatie van de overdracht — zie
