@@ -38,7 +38,7 @@ use fitcom_proto::{Channel, Op, OpKind, PeerId, VersionVector};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-pub use timeline::{FileEntry, Message, Timeline, WordleEntry};
+pub use timeline::{FileEntry, Message, Timeline, WordleCardEntry, WordleEntry};
 
 // Doorgeven zodat de app niet ook nog een directe afhankelijkheid op `proto` nodig heeft
 // voor de types die overal in de chat-code voorkomen.
@@ -928,6 +928,13 @@ pub fn wordle_result(day: u32, guesses: u8, solved: bool, pattern: impl Into<Str
         solved,
         pattern: pattern.into(),
     }
+}
+
+/// De kaart van één Wordle-dag met de hand in het algemene kanaal zetten (2026-08-20).
+/// `number` mag `0` zijn als deze pc het raadselnummer niet kent; zie
+/// `fitcom_store::WordleCardEntry`.
+pub fn wordle_card(day: u32, number: u32) -> OpKind {
+    OpKind::WordleCard { day, number }
 }
 
 /// Een bestand aanbieden. De op zelf is de identificatie van de overdracht — zie

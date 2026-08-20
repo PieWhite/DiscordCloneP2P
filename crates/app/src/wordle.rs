@@ -316,6 +316,11 @@ impl Wordle {
         })
     }
 
+    /// Het raadselnummer van een dag, of `None` als deze pc die dag nooit ophaalde.
+    pub fn nummer_van(&self, dag: u32) -> Option<u32> {
+        self.dagen.get(&dag).map(|d| d.nummer)
+    }
+
     /// De dagen waar we een raadsel van hebben met hun raadselnummer, oud naar nieuw.
     /// Eén doorloop: dit wordt bij elke momentopname opnieuw gelezen.
     pub fn bekende_dagen(&self) -> impl Iterator<Item = (u32, u32)> + '_ {

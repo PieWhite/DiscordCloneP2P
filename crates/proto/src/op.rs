@@ -261,6 +261,22 @@ op_kinds! {
     // nooit mee — dat zou het raadsel verklappen aan wie nog moet spelen, precies zoals
     // het echte Wordle alleen vierkantjes deelt.
     30 => WordleResult { day: u32, guesses: u8, solved: bool, pattern: String },
+    // "Zet de kaart van deze dag in het algemene kanaal" (2026-08-20). De handmatige
+    // reddingsklep achter het +-menu, voor als het automatisch ophalen bij iemand niet
+    // lukte: die peer heeft dan zelf geen raadsel en tekent dus ook geen kaart.
+    //
+    // Draagt bewust geen oplossing en zelfs geen woord — alleen wélke dag het is en het
+    // raadselnummer dat erboven hoort. Wie de kaart hierdoor ziet maar het raadsel zelf
+    // niet heeft, kan hem niet spelen tot zijn eigen ophaal alsnog lukt; dat is precies
+    // goed, want het antwoord hoort nooit op de draad (zie de moduledoc van
+    // `crate::wordle` in de app).
+    //
+    // Meerdere peers mogen dit voor dezelfde dag sturen — een op is idempotent
+    // (invariant 6). De log vouwt ze niet samen (er is geen inhoudsgebaseerde
+    // op-identiteit), dat doet de tekenlaag: `fitcom_store::timeline` houdt per dag de
+    // eerste op `(lamport, author)` en gooit de rest weg, dus er staat nooit meer dan één
+    // kaart per dag. Zie `docs/ARCHITECTURE.md`, "Wordle van de dag".
+    31 => WordleCard { day: u32, number: u32 },
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 
@@ -283,6 +299,8 @@ impl OpKind {
             Self::WordleResult { pattern, .. } => {
                 grens("wordle-patroon", pattern, MAX_WORDLE_PATROON_LEN)
             }
+            // Twee getallen, geen string: niets om een grens op te zetten.
+            Self::WordleCard { .. } => Ok(()),
         }
     }
 }

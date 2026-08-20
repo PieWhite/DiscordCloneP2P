@@ -63,6 +63,32 @@ pub struct WordleEntry {
     pub pattern: String,
 }
 
+/// Een handmatig in de chat gezette Wordle-kaart (2026-08-20). Zie `OpKind::WordleCard`.
+///
+/// **Eerste-schrijver-wint per dag, over alle auteurs heen.** Dat is een strengere regel
+/// dan bij [`WordleEntry`], waar het per (auteur, dag) gaat, en om een andere reden: daar
+/// mag iedereen zijn eigen uitslag hebben, hier is de kaart er één en zouden drie peers die
+/// alledrie op de knop drukken anders drie kaarten voor dezelfde dag opleveren. Precies het
+/// bezwaar dat `docs/ARCHITECTURE.md` noemt tegen een kaart-als-op — het wordt hier
+/// opgevangen in plaats van vermeden.
+///
+/// De sleutel is `(lamport, author)` en niet `(lamport, seq)`: dit gaat over auteurs heen
+/// en dan is `seq` (dat per auteur telt) geen totale ordening. `(lamport, author)` is
+/// dezelfde sleutel waarop de tijdlijn sorteert, dus elke peer houdt dezelfde kaart over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordleCardEntry {
+    /// De `print_date` van het raadsel als `YYYYMMDD`, net als bij [`WordleEntry`].
+    pub day: u32,
+    /// Het raadselnummer zoals de aankondiger het kende. `0` betekent onbekend — de
+    /// tekenlaag geeft dan de voorkeur aan wat deze pc zelf van die dag weet.
+    pub number: u32,
+    /// De `wall_clock` van de aankondiger, millis sinds epoch. Hiermee komt de kaart in de
+    /// tijdlijn te staan op het moment waarop iemand hem erin zette, in plaats van op
+    /// 07:00. Alleen voor weergave, en de tekenlaag begrenst hem — een scheve klok mag de
+    /// kaart niet in 1970 zetten.
+    pub at: i64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Timeline {
     /// Op weergavevolgorde: `(lamport, author)`.
@@ -75,6 +101,9 @@ pub struct Timeline {
     /// kaart in dezelfde volgorde tekent. Niet per kanaal: het scorebord is er één, net
     /// als een bijnaam.
     pub wordle: Vec<WordleEntry>,
+    /// Dagen die iemand met de hand in de chat gezet heeft, hoogstens één per dag. Een map
+    /// en geen `Vec`: de tekenlaag zoekt hier per dag in op.
+    pub wordle_cards: HashMap<u32, WordleCardEntry>,
     /// Subkanalen onder het algemene kanaal en hun huidige titel (fase 9). Bestaan en
     /// titel komen allebei uit `OpKind::SetTopicTitle` — geen apart "aangemaakt"-bericht,
     /// precies zoals een bijnaam geen apart "peer bestaat"-bericht nodig heeft.
@@ -134,6 +163,7 @@ pub fn build(ops: &[Op]) -> Timeline {
     // sorteersleutel hierboven: binnen één auteur beslist `seq` de gelijkstand, en zonder
     // dat zou een stabiele sortering de uitkomst van de aankomstvolgorde laten afhangen.
     let mut wordle: HashMap<(PeerId, u32), ((u64, u64), WordleEntry)> = HashMap::new();
+    let mut wordle_cards: HashMap<u32, ((u64, PeerId), WordleCardEntry)> = HashMap::new();
 
     for op in sorted {
         // Onbekende soort: van een nieuwere peer. We bewaren en verspreiden hem wel,
@@ -237,6 +267,34 @@ pub fn build(ops: &[Op]) -> Timeline {
                     }
                 }
             }
+            OpKind::WordleCard { day, number } => {
+                // Alleen uit het algemene kanaal, en dat wordt hier afgedwongen en niet
+                // alleen in `chat.rs`. Deze fold kiest één winnaar over *alle* auteurs, dus
+                // een kaart-op in een DM zou maar bij twee van de drie peers aankomen
+                // (`VersionVector::visible_to`) en die twee zouden dan blijvend een andere
+                // kaart houden dan de derde. Dat is stille divergentie, en de reden dat dit
+                // een guard is en geen aanname over de aanroeper.
+                if op.channel != Channel::GENERAL {
+                    continue;
+                }
+                // Over auteurs heen, dus `(lamport, author)` en niet `(lamport, seq)` —
+                // zie `WordleCardEntry`. De eerste wint, de rest is een no-op.
+                let k = (op.lamport, op.author);
+                let entry = WordleCardEntry {
+                    day,
+                    number,
+                    // B-42, net als bij een bericht: deze tijd komt volledig van de
+                    // afzender en wordt getoond. De tekenlaag knijpt hem daarna nog
+                    // verder dicht, maar dat mag geen reden zijn om hem hier rauw te laten.
+                    at: klem_wall_clock(op.wall_clock),
+                };
+                match wordle_cards.get(&day) {
+                    Some((prev, _)) if *prev <= k => {}
+                    _ => {
+                        wordle_cards.insert(day, (k, entry));
+                    }
+                }
+            }
             OpKind::DeleteTopic { id } => {
                 let k = key(op);
                 match topics.get(&id) {
@@ -300,6 +358,10 @@ pub fn build(ops: &[Op]) -> Timeline {
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
         files,
         wordle,
+        wordle_cards: wordle_cards
+            .into_iter()
+            .map(|(day, (_, e))| (day, e))
+            .collect(),
         topics: topics
             .into_iter()
             .filter_map(|(id, (_, t))| match t {
@@ -735,6 +797,120 @@ mod tests {
         );
         let t = build(&[aanmaken, verwijderen, opnieuw]);
         assert_eq!(t.topics[&t_id], "project x (terug)");
+    }
+
+    /// De hele reden dat de kaart een op mág zijn: drie peers die alledrie op de knop
+    /// drukken leveren één kaart op, niet drie. `docs/ARCHITECTURE.md` noemde dat het
+    /// bezwaar tegen een kaart-als-op; dit is waar het opgevangen wordt.
+    /// Echte tijden, want `klem_wall_clock` (B-42) trekt alles buiten ±7 dagen naar de rand
+    /// en dan zijn drie tijden uit 1970 niet meer uit elkaar te houden.
+    fn kaart(auteur: PeerId, lamport: u64, nummer: u32, wall_clock: i64) -> Op {
+        let mut o = op(
+            auteur,
+            1,
+            lamport,
+            OpKind::WordleCard {
+                day: 20260820,
+                number: nummer,
+            },
+        );
+        o.wall_clock = wall_clock;
+        o
+    }
+
+    #[test]
+    fn drie_peers_die_dezelfde_dag_aankondigen_geven_een_kaart() {
+        let nu = crate::now_millis();
+        let a = kaart(peer(1), 5, 1888, nu - 5_000);
+        let b = kaart(peer(2), 3, 1888, nu - 30_000);
+        let c = kaart(peer(3), 9, 0, nu - 1_000);
+
+        let t = build(&[a.clone(), b.clone(), c.clone()]);
+        assert_eq!(t.wordle_cards.len(), 1);
+        let k = &t.wordle_cards[&20260820];
+        // De eerste op `(lamport, author)` wint: dat is B met lamport 3.
+        assert_eq!(
+            k.at,
+            nu - 30_000,
+            "de kaart hangt aan de vroegste aankondiging"
+        );
+        assert_eq!(k.number, 1888);
+
+        // En de aankomstvolgorde mag daar niets aan veranderen — dat is convergentie.
+        let anders = build(&[c, a, b]);
+        assert_eq!(anders.wordle_cards, t.wordle_cards);
+    }
+
+    /// Gelijke `lamport` tussen twee auteurs: dan beslist de auteur, want `seq` telt per
+    /// auteur en is over auteurs heen geen ordening.
+    #[test]
+    fn bij_gelijke_lamport_beslist_de_auteur_en_niet_wie_er_eerst_was() {
+        let nu = crate::now_millis();
+        let een = kaart(peer(1), 4, 1888, nu - 10_000);
+        let twee = kaart(peer(2), 4, 1888, nu - 20_000);
+
+        assert!(peer(1) < peer(2), "deze test leunt op die volgorde");
+        // Peer 1 wint op auteur, ook al is de kaart van peer 2 ouder — de tijd doet niet
+        // mee aan de ordening, precies zoals bij een bericht.
+        for volgorde in [
+            vec![een.clone(), twee.clone()],
+            vec![twee.clone(), een.clone()],
+        ] {
+            assert_eq!(build(&volgorde).wordle_cards[&20260820].at, nu - 10_000);
+        }
+    }
+
+    /// Een kaart-op buiten `#general` telt niet mee, en dat wordt hier afgedwongen in
+    /// plaats van in de aanroeper. Een DM gaat alleen naar twee van de drie peers, dus zou
+    /// hij wél meetellen dan hielden die twee blijvend een andere kaart over dan de derde —
+    /// stille divergentie, en de fold kiest juist één winnaar over alle auteurs.
+    #[test]
+    fn een_kaart_in_een_dm_telt_niet_mee() {
+        let nu = crate::now_millis();
+        let in_dm = op_in(
+            Channel::dm(peer(2)),
+            peer(1),
+            1,
+            1,
+            OpKind::WordleCard {
+                day: 20260820,
+                number: 1888,
+            },
+        );
+        assert!(build(std::slice::from_ref(&in_dm)).wordle_cards.is_empty());
+
+        // En hij mag de echte kaart uit #general ook niet verdringen, ook al is hij eerder.
+        let algemeen = kaart(peer(3), 9, 1888, nu - 1_000);
+        let t = build(&[in_dm, algemeen]);
+        assert_eq!(t.wordle_cards.len(), 1);
+        assert_eq!(t.wordle_cards[&20260820].at, nu - 1_000);
+    }
+
+    /// Twee verschillende dagen zijn twee kaarten; het samenvouwen gaat per dag.
+    #[test]
+    fn elke_dag_houdt_zijn_eigen_kaart() {
+        let gisteren = op(
+            peer(1),
+            1,
+            1,
+            OpKind::WordleCard {
+                day: 20260819,
+                number: 1887,
+            },
+        );
+        let vandaag = op(
+            peer(1),
+            2,
+            2,
+            OpKind::WordleCard {
+                day: 20260820,
+                number: 1888,
+            },
+        );
+        let t = build(&[gisteren, vandaag]);
+        assert_eq!(t.wordle_cards.len(), 2);
+        assert_eq!(t.wordle_cards[&20260819].number, 1887);
+        assert_eq!(t.wordle_cards[&20260820].number, 1888);
     }
 
     fn uitslag(day: u32, guesses: u8, solved: bool) -> OpKind {

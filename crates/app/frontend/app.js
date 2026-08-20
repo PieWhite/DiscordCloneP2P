@@ -44,7 +44,7 @@ const V = {
   dm: null,                  // last opened DM peer id
   members: true,
   settingsTab: "account",
-  overlay: "none",           // none | ac | drop
+  overlay: "none",           // none | ac | drop | plus
   editing: null,             // OpRef of the message being edited
   acIndex: 0,
   acMatches: [],
@@ -895,14 +895,29 @@ function renderOverlays() {
   const drop = $("drop-slot");
   const input = $("composer-input");
   const open = V.overlay === "ac" && V.acMatches.length > 0;
+  const plus = V.overlay === "plus";
 
-  ac.innerHTML = open ? `<div class="ac">
+  // Both overlays sit in the same slot above the composer and neither can be open with the
+  // other, so they share it — and the + menu borrows the .ac popover styling wholesale.
+  if (plus) {
+    ac.innerHTML = `<div class="ac">
+      <div class="ac-head" id="plus-head">Put in #general</div>
+      <div role="menu" id="plus-menu" aria-labelledby="plus-head">
+        <button class="ac-item" role="menuitem" data-plus="wordle">${ic("i-tiles")}Today's Wordle
+          <small>everyone sees it</small></button>
+      </div>
+    </div>`;
+  } else {
+    ac.innerHTML = open ? `<div class="ac">
     <div class="ac-head" id="ac-head">Members matching @${esc(V.acQuery || "")}</div>
     <div role="listbox" id="ac-list" aria-labelledby="ac-head">
       ${V.acMatches.map((p, i) => `<button class="ac-item" role="option" id="ac-opt-${i}"
         aria-selected="${i === V.acIndex}" data-ac="${esc(p.name)}">${avatar(p, 20)}${esc(p.name)}${i === V.acIndex ? "<small>Tab</small>" : ""}</button>`).join("")}
     </div>
   </div>` : "";
+  }
+  const plusBtn = $("plus");
+  if (plusBtn) plusBtn.setAttribute("aria-expanded", String(plus));
   input.setAttribute("aria-expanded", String(open));
   if (open) input.setAttribute("aria-activedescendant", `ac-opt-${V.acIndex}`);
   else input.removeAttribute("aria-activedescendant");
@@ -1474,12 +1489,12 @@ function wordleBoardHtml(w) {
 function wordleStatus(w) {
   const board = w.board;
   if (!board) {
-    // A manual attempt puts its reason here. Without this the + button looks identical
+    // A manual attempt puts its reason here. Without this the + menu looks identical
     // whether it failed or is still going, which is the one thing the presser needs to know.
     return (w.error ? `<p class="wdl-line" data-error>${esc(w.error)}</p>` : "") +
       `<p class="wdl-line">Today's word could not be fetched yet. It is tried again every
-      quarter of an hour; without it there is nothing to guess. The <b>+</b> button beside
-      the message box asks again right away.</p>`;
+      quarter of an hour; without it there is nothing to guess. <b>+</b> beside the message
+      box tries now and puts the card in the chat for everyone.</p>`;
   }
   if (board.done && board.won) {
     return `<p class="wdl-line">Solved in ${board.rows.length} of ${w.tries}.</p>`;
@@ -1620,6 +1635,14 @@ async function loadTimeline() {
 document.addEventListener("click", async e => {
   const t = e.target;
 
+  /* An open + menu closes on any click that is not the button or one of its items, the way
+     a menu is supposed to behave. First, before any of the handlers below can return early
+     and leave it hanging open over the composer. The click itself still goes through. */
+  if (V.overlay === "plus" && !t.closest("#plus") && !t.closest("[data-plus]")) {
+    V.overlay = "none";
+    renderOverlays();
+  }
+
   /* A link goes to the system browser, never to this webview — it is the whole app, and
      there is no way back from a page it navigated to. */
   const link = t.closest("a[href]");
@@ -1677,11 +1700,18 @@ document.addEventListener("click", async e => {
   if (t.closest("#btn-deaf")) return invoke("set_deafened", { deafened: !S.voice.deafened });
   if (t.closest("#btn-dnd")) return invoke("set_do_not_disturb", { on: !S.do_not_disturb });
   if (t.closest("#attach")) return invoke("pick_and_offer_file", { channel: activeChannel() });
-  if (t.closest("#get-wordle")) {
-    // Ask, then show the board: the window is where the outcome lands either way, and it
-    // repaints on the state event when the puzzle arrives.
-    invoke("fetch_wordle");
-    return openWordle();
+  if (t.closest("#plus")) {
+    V.overlay = V.overlay === "plus" ? "none" : "plus";
+    return renderOverlays();
+  }
+  const plusItem = t.closest("[data-plus]");
+  if (plusItem) {
+    V.overlay = "none";
+    renderOverlays();
+    // No board opens: this is "put it in the chat", not "play it". The card lands in the
+    // log for everyone, and you start it from there like any other day.
+    if (plusItem.dataset.plus === "wordle") invoke("post_wordle_card");
+    return;
   }
   if (t.closest("#error-dismiss")) return invoke("dismiss_error");
 

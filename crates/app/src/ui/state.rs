@@ -808,10 +808,20 @@ fn wordle_state(snap: &Snapshot, me: PeerId, hues: &HashMap<PeerId, u8>) -> Word
 
 /// One card per Wordle day, with the time it belongs at. Sorted oldest first.
 ///
-/// A day shows up here as soon as *either* this machine fetched its word *or* somebody's
-/// result for it arrived — the second case is the day you were away and the others played.
+/// A day shows up here as soon as *either* this machine fetched its word, *or* somebody's
+/// result for it arrived, *or* somebody put the card in the chat by hand (the + menu, an
+/// `OpKind::WordleCard`). The second case is the day you were away and the others played;
+/// the third is the day your own fetch failed, so you have no word and would otherwise draw
+/// nothing at all.
+///
 /// Never a day beyond the current one: a peer with a fast clock must not be able to put
 /// tomorrow's card in today's log.
+///
+/// **Where the card sits.** Normally at 07:00, the hour it belongs to. A day somebody
+/// announced by hand sits at the moment they pressed the button instead — that is the whole
+/// point of the button, since a card at 07:00 is buried above a day's worth of messages.
+/// That time comes off another machine's clock, so it is clamped to `[07:00, now]`: a peer
+/// whose clock is wrong may not fling the card to 1970 or into next week.
 fn wordle_cards(
     snap: &Snapshot,
     me: PeerId,
@@ -823,12 +833,15 @@ fn wordle_cards(
             .filter_map(|groep| groep.first().map(|e| (e.day, groep)))
             .collect();
 
+    let kaarten = &snap.timeline.wordle_cards;
+
     let mut dagen: Vec<u32> = snap
         .wordle
         .nummers
         .keys()
         .copied()
         .chain(per_dag.keys().copied())
+        .chain(kaarten.keys().copied())
         .filter(|d| *d <= snap.wordle.dag)
         .collect();
     dagen.sort_unstable();
@@ -867,12 +880,29 @@ fn wordle_cards(
                 (true, Some(_)) => "continue",
             };
 
+            // 07:00, tenzij iemand de kaart met de hand in de chat zette — dan daar, maar
+            // nooit vóór 07:00 en nooit in de toekomst. Zie de doc hierboven.
+            // Niet `clamp`: die paniekt als de ondergrens boven de bovengrens uitkomt, en
+            // dat mag nooit van een klok afhangen in de tekenlaag.
+            let op_moment = kaarten.get(&day).map_or(wordle::openbaar_op(day), |k| {
+                k.at.max(wordle::openbaar_op(day))
+                    .min(fitcom_store::now_millis().max(wordle::openbaar_op(day)))
+            });
+
             (
-                wordle::openbaar_op(day),
+                op_moment,
                 TimelineItem::Wordle {
                     day,
-                    at: wordle::openbaar_op(day),
-                    number: snap.wordle.nummers.get(&day).copied(),
+                    at: op_moment,
+                    // Wat deze pc zelf weet gaat voor; het nummer uit de aankondiging is
+                    // de terugval voor de dag die we nooit opgehaald kregen. `0` betekent
+                    // daar "onbekend", en dan tekent de kaart gewoon geen nummer.
+                    number: snap
+                        .wordle
+                        .nummers
+                        .get(&day)
+                        .copied()
+                        .or_else(|| kaarten.get(&day).map(|k| k.number).filter(|n| *n != 0)),
                     action: action.to_string(),
                     progress: if vandaag {
                         snap.wordle.bord.as_ref().map_or(0, |b| b.rijen.len() as u8)

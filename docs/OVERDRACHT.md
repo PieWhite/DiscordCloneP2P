@@ -1259,6 +1259,48 @@ bericht dat op je wacht), een aparte plek in het menu (de kaart van vandaag staa
 `#general`), en een eigen subkanaal (dan zou de app ongevraagd een `SetTopicTitle` moeten
 plaatsen).
 
+### 32. Het `+`-menu: de kaart is tóch een op, maar alleen met de hand (2026-08-20)
+
+Rick zag geen Wordle-kaart in zijn chat en vroeg om een `+` naast de paperclip: een menu
+(voor nu één regel) waarmee je de kaart van vandaag alsnog de chat in stuurt, "voor beide
+partijen", als noodgreep wanneer het automatische pad iets laat liggen.
+
+**Wat er die dag werkelijk aan de hand was, en waarom de knop er tóch komt.** Zijn kaart
+ontbrak niet: `wordle.json` had dag 20260820 gewoon staan. De kaart wordt geplaatst op
+`openbaar_op(dag)` = 07:00, en dat is bij een dag met gesprek erin ver boven de onderkant
+van de tijdlijn — hij zat in de scrollback. Dat is dus geen mislukte ophaal maar een
+plaatsingsprobleem. Maar het gat waar Rick op mikte bestaat wél, en is erger: mislukt de
+ophaal bij één peer, dan heeft die peer geen raadsel, tekent hij helemaal geen kaart, en
+was er geen enkele manier om dat vanuit de app te herstellen. Beide klachten hebben dezelfde
+oplossing, en dat is waarom de knop dit doet en niet iets anders.
+
+**Beslissing 31 zei "de kaart is geen op", en dat klopt nog steeds — voor de automatische
+kaart.** De aanname eronder was "elke peer kan de kaart zelf uitrekenen", en die houdt
+precies zolang ieders ophaal lukt. Voor de peer bij wie dat niet lukte is de aanname onwaar,
+en dan is een op het enige dat helpt. `WordleCard` (tag 31, additief, geen bump) draagt
+alleen `day` en `number` — **nooit een woord**, dus wie de kaart zo krijgt kan hem pas
+spelen als zijn eigen ophaal alsnog lukt. Dat is precies goed: de oplossing hoort niet op de
+draad.
+
+**Het bezwaar uit 31 — drie peers, drie onsamenvoegbare kaarten — wordt opgevangen en niet
+omzeild.** `fitcom_store::timeline` houdt per dag de **eerste** aankondiging op
+`(lamport, author)`; de rest is een no-op (invariant 6). `(lamport, author)` en niet
+`(lamport, seq)`, want dit gaat over auteurs heen en `seq` telt per auteur — daar is dat
+geen ordening. Drie tests in `timeline.rs` bewaken het, inclusief convergentie bij een
+andere aankomstvolgorde.
+
+**Een handmatige kaart staat op het moment van drukken, niet op 07:00.** Anders lost hij
+het probleem niet op waarvoor hij bestaat. Die tijd komt van de klok van een andere machine
+en bepaalt hier de *plek* en niet alleen een label, dus hij wordt tweemaal begrensd:
+`klem_wall_clock` (B-42) in de store, en in `ui/state.rs` nog eens naar
+`[07:00 van die dag, nu]`. Geen `clamp` daar — die paniekt als de grenzen elkaar passeren,
+en dat mag in de tekenlaag nooit van een klok afhangen.
+
+**Wat de knop niet doet:** het spel openen. Rick was daar expliciet over — vanaf de `+`
+stuur je hem de chat in, spelen doe je vanaf de kaart, net als op elke andere dag. En hij
+haalt het raadsel van morgen niet vóór 07:00 op: `datum_van` bepaalt óók wanneer de kaart
+bij de anderen verschijnt, dus dat vooruithalen zou het spel scheeftrekken.
+
 ---
 
 ## Bugs die de tests eruit haalden

@@ -172,12 +172,13 @@ review, the verdict, and DESIGN.md.
               <svg class="icon-18 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><use href="#i-clip"/></svg>
               <span class="sr">Share a file</span>
             </button>
-            <!-- The engine tries for today's puzzle every quarter of an hour by itself; this
-                 asks now. It also opens the board, because that is where the answer to "did
-                 anything happen" is: the puzzle, or the reason it did not arrive. -->
-            <button class="composer-btn" id="get-wordle" title="Fetch today's Wordle">
+            <!-- Opens the menu of things you can put in the chat by hand. One entry for now
+                 (Wordle); it exists because the automatic path can fail silently and there
+                 was no way to repair that from the window. -->
+            <button class="composer-btn" id="plus" title="Put something in the chat"
+                    aria-haspopup="menu" aria-expanded="false" aria-controls="plus-menu">
               <svg class="icon-18 icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><use href="#i-plus"/></svg>
-              <span class="sr">Fetch today's Wordle</span>
+              <span class="sr">Put something in the chat</span>
             </button>
             <!-- maxlength matches fitcom_proto::MAX_BERICHT_LEN (B-43). The engine rejects a
                  longer body outright, so without this the composer would let you type a

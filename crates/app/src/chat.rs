@@ -199,6 +199,20 @@ impl Chat {
         )
     }
 
+    /// De kaart van een Wordle-dag met de hand in het algemene kanaal zetten (2026-08-20).
+    ///
+    /// Doet niets als die dag er al een heeft — van onszelf of van een ander. De op is toch
+    /// idempotent (per dag wint de eerste, zie `fitcom_store::WordleCardEntry`), dus een
+    /// tweede zou niets veranderen behalve de log laten groeien; zelfde reden als bij
+    /// `meld_wordle` en `zet_naam`. Wie nog een keer drukt krijgt dus geen tweede kaart en
+    /// verplaatst de eerste ook niet.
+    pub fn zet_wordle_kaart(&mut self, dag: u32, nummer: u32) -> Result<Vec<MeshCommand>> {
+        if self.timeline.wordle_cards.contains_key(&dag) {
+            return Ok(Vec::new());
+        }
+        self.eigen_op(Channel::GENERAL, fitcom_store::wordle_card(dag, nummer))
+    }
+
     /// Legt een bestandsaanbod vast in de oplog, precies zoals een bericht — dat is het
     /// hele punt van de generieke oplog. Levert de `OpId` op die de overdracht zelf
     /// identificeert, zodat de motor kan onthouden waar het originele bestand staat.

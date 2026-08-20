@@ -286,10 +286,10 @@ pub enum UiCommand {
     /// Eén gok op het Wordle-raadsel van vandaag. Het woord komt uit het venster; de
     /// motor beoordeelt het, want de oplossing blijft aan deze kant.
     WordleGok(String),
-    /// Het raadsel van nu alsnog opvragen, buiten de kwartierklok om. Zelfde gedachte als
-    /// [`UiCommand::ZoekUpdate`]: er loopt al een automatiek, dit is de knop ernaast voor
-    /// als die nog niet aan de beurt was of eerder niets kreeg.
-    WordleOphalen,
+    /// De kaart van vandaag met de hand in het algemene kanaal zetten, zodat *iedereen* hem
+    /// ziet — de reddingsklep uit het `+`-menu. Haalt het raadsel eerst op als deze pc het
+    /// nog niet heeft, want zonder dat valt er niets aan te kondigen.
+    WordleInChat,
 }
 
 pub struct EngineHandle {
@@ -376,6 +376,7 @@ pub fn spawn(
         pictures_dir,
         paden_index,
         wordle: Wordle::nieuw(&data_dir),
+        wordle_aankondigen: false,
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -443,6 +444,9 @@ struct Engine {
     /// Het raadsel van de dag, de eigen gokken en waar dat op schijf staat.
     /// Zie `crate::wordle`.
     wordle: Wordle,
+    /// Er is op "zet hem in de chat" gedrukt terwijl het raadsel er nog niet was; zodra
+    /// het binnenkomt gaat de kaart alsnog de log in. Zie `wordle_in_chat`.
+    wordle_aankondigen: bool,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -1741,7 +1745,7 @@ impl Engine {
             UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
             UiCommand::WisUpdateMelding => self.updates.wis_melding(),
             UiCommand::WordleGok(woord) => self.wordle_gok(&woord),
-            UiCommand::WordleOphalen => self.wordle_ophalen(),
+            UiCommand::WordleInChat => self.wordle_in_chat(),
         }
     }
 
@@ -1773,19 +1777,42 @@ impl Engine {
         }
     }
 
-    /// De `+`-knop naast de composer: nú proberen, zonder op het kwartier te wachten.
+    /// Het `+`-menu: zet de kaart van vandaag in het algemene kanaal, voor iedereen.
     ///
-    /// `nu_ophalen` geeft `None` als het raadsel er al is — dan valt er niets te halen en
-    /// laat het venster dat de knop opent gewoon het bord zien. Mislukt het wél, dan moet
-    /// dat te zien zijn: iemand die hierop drukt weet dat het er niet is, dus "nog steeds
-    /// niets" zonder reden is precies het antwoord waar hij niets aan heeft. Vandaar dat
-    /// een handmatige poging zijn fout terugmeldt en de automatische niet.
-    fn wordle_ophalen(&mut self) {
-        if let Some(datum) = self.wordle.nu_ophalen() {
-            tracing::info!(datum, "wordle handmatig opgevraagd");
-            let tx = self.file_tx.clone();
-            tokio::spawn(wordle_taak(datum, true, tx));
+    /// Twee gevallen, en het tweede is waar dit voor bestaat:
+    ///
+    /// - **Het raadsel staat er al.** Dan meteen de op, en klaar.
+    /// - **Het raadsel ontbreekt** (jouw ophaal is mislukt). Dan eerst halen — buiten de
+    ///   kwartierklok om, want daarom druk je erop — en pas aankondigen als hij binnen is.
+    ///   Aankondigen wat we zelf niet hebben zou een kaart zonder nummer opleveren die
+    ///   niemand kan spelen. Lukt het halen niet, dan komt de reden in het venster; de
+    ///   automatische poging blijft stil, deze niet, want hier staat iemand te kijken.
+    ///
+    /// Tweemaal drukken is geen probleem: de log houdt per dag de eerste kaart (invariant
+    /// 6, en `fitcom_store::WordleCardEntry` legt uit hoe).
+    fn wordle_in_chat(&mut self) {
+        match self.wordle.nu_ophalen() {
+            // Niets te halen betekent op deze plek: we hebben hem al.
+            None => self.kondig_wordle_aan(),
+            Some(datum) => {
+                tracing::info!(datum, "wordle handmatig opgevraagd om in de chat te zetten");
+                self.wordle_aankondigen = true;
+                let tx = self.file_tx.clone();
+                tokio::spawn(wordle_taak(datum, true, tx));
+            }
         }
+    }
+
+    /// De op die de kaart bij iedereen in de tijdlijn zet. Doet niets zonder raadsel — dan
+    /// is er geen dagnummer om mee te sturen.
+    fn kondig_wordle_aan(&mut self) {
+        let dag = self.wordle.huidige_dag();
+        let Some(nummer) = self.wordle.nummer_van(dag) else {
+            return;
+        };
+        tracing::info!(dag, nummer, "wordle-kaart in de chat gezet");
+        let r = self.chat.zet_wordle_kaart(dag, nummer);
+        self.verwerk(r);
     }
 
     /// Bij het starten: staat er een afgerond spel van vandaag op schijf waarvan de uitslag
@@ -1985,8 +2012,15 @@ impl Engine {
                     "wordle van vandaag binnen"
                 );
                 self.wordle.neem_op(raadsel);
+                // Stond de knop uit het +-menu hierop te wachten, dan kan de kaart nu.
+                if std::mem::take(&mut self.wordle_aankondigen) {
+                    self.kondig_wordle_aan();
+                }
             }
-            FileEvent::WordleMislukt(reden) => self.wordle.fout = Some(reden),
+            FileEvent::WordleMislukt(reden) => {
+                self.wordle_aankondigen = false;
+                self.wordle.fout = Some(reden);
+            }
         }
     }
 

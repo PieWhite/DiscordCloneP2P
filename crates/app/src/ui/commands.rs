@@ -603,11 +603,12 @@ pub fn wordle_guess(ui: State<'_, Ui>, word: String) {
     send(&ui, UiCommand::WordleGok(word));
 }
 
-/// Ask for today's puzzle now, instead of waiting for the quarter-hourly attempt. Same
-/// shape as `check_update`: the automatic path stays, this is the button beside it.
+/// Put today's Wordle card in #general for everyone — the rescue hatch in the + menu, for
+/// when someone's automatic fetch failed and they are drawing no card at all. Fetches the
+/// puzzle first if this machine is the one missing it.
 #[tauri::command]
-pub fn fetch_wordle(ui: State<'_, Ui>) {
-    send(&ui, UiCommand::WordleOphalen);
+pub fn post_wordle_card(ui: State<'_, Ui>) {
+    send(&ui, UiCommand::WordleInChat);
 }
 
 /// The close button. With `minimize_to_tray` on — the default — it hides the window and
