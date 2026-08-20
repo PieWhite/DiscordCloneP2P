@@ -260,6 +260,7 @@ enum OpKind {
     // later: React, Reply — nieuwe varianten, geen migratie
     SetTopicTitle{ id: TopicId, title: String },  // fase 9, zie "Kanalen"
     DeleteTopic{ id: TopicId },                    // fase 9, zie "Kanalen"
+    WordleResult{ day: u32, guesses: u8, solved: bool, pattern: String },  // zie "Wordle"
 }
 ```
 
@@ -620,6 +621,44 @@ niemand gevraagd heeft, en die verandert wie welke bytes kan opvragen.
 - **Geen downloadlocatie-dialoog.** Bestanden landen in een vaste map (config
   `download_dir`, standaard `<datamap>/downloads`); zie `crates/app/src/config.rs`.
   Afbeeldingen zijn de uitzondering — zie hierboven.
+
+## Wordle van de dag (2026-08-20)
+
+Een spelletje bovenop dezelfde oplog. Volledige onderbouwing in `docs/OVERDRACHT.md`
+beslissing 31; hier staat alleen hoe het zich tot de rest van dit document verhoudt.
+
+**Wat er reist en wat niet.** Alleen de *uitslag* is een op (`WordleResult`, tag 30,
+additief toegevoegd zonder protocolbump). Het raadsel zelf haalt elke peer op bij NYT — de
+derde bewuste uitzondering op "nul servers", zie invariant 1 in `CLAUDE.md` — en de kaart in
+de chat is helemaal geen op.
+
+**Waarom de kaart geen op is.** `seq` is per (auteur, kanaal) en er is geen
+inhoudsgebaseerde op-identiteit, dus drie peers die om 07:00 allemaal een "hier is het
+raadsel van vandaag"-op plaatsen leveren drie kaarten op die de log niet tot één kan
+samenvouwen. Dat is geen tekort van de log maar het antwoord op de verkeerde vraag: de
+kaart draagt geen enkel feit dat een peer niet zelf kan uitrekenen. Hij wordt daarom in
+`crates/app/src/ui/state.rs` in de tijdlijn *geplaatst* in plaats van gesynchroniseerd —
+op de klok, vlak voor het eerste wat er die dag na 07:00 gezegd is, omdat hij geen
+`lamport` heeft om op te sorteren. Alleen op `Channel::GENERAL`.
+
+**De sleutel is `day`, de `print_date` van het raadsel als `YYYYMMDD`.** Niet het
+raadselnummer van NYT (dan zou een dag die deze pc nooit ophaalde geen datum hebben) en
+niet de lokale datum van het moment van spelen (dan boeken twee peers dezelfde avond op
+verschillende dagen). Een Wordle-dag loopt van 07:00 tot 07:00 lokale tijd.
+
+**Ordening: eerste-schrijver-wint per (auteur, dag).** Dit is de enige uitzondering op de
+last-writer-wins-regel onder "Weergaveregels". Een uitslag is een gebeurtenis en geen
+instelling; zou de laatste op winnen, dan kon je je score bijstellen nadat je die van de
+anderen gezien had. De gelijkstand gaat op `(lamport, seq)` en niet op de sorteersleutel
+`(lamport, author)`: binnen één auteur kan die laatste twee ops niet scheiden, en dan zou
+de uitkomst van de aankomstvolgorde afhangen. Een `Edit` of `Delete` op een uitslag doet
+niets, net als bij `SetNick`.
+
+**Het scorebord is een pure functie over `Timeline::wordle`** (`crates/app/src/wordle.rs`,
+`standen`). Omdat die vector al op `(dag, auteur)` gesorteerd is, liggen de dagen als
+aaneengesloten stukken naast elkaar en is het één doorloop — dat is nodig, want het wordt bij
+elke momentopname opnieuw gerekend. Een dag is één punt waard voor iedereen die hem in het
+laagste aantal pogingen oploste, en telt alleen als er minstens twee peers speelden.
 
 ## Automatische updates
 

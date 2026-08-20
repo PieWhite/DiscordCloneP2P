@@ -12,6 +12,12 @@ Bewust niet in v1. De architectuur moet deze items kunnen opnemen zonder herontw
   `define_class!` net als de SCK-uitvoer), `NSCameraUsageDescription` in
   `scripts/bundle-mac.sh` en de camera-TCC-prompt. `BronSoort::Camera` bestaat op mac al,
   dus de gedeelde code hoeft er niet voor open.
+- **Een gemiste Wordle-dag naspelen.** Bewust dicht: alleen het huidige raadsel neemt gokken
+  aan. Kon je een oude dag alsnog spelen, dan haal je een punt op een dag waarop de anderen
+  al klaar waren (en met het woord er dan al bij). Zie `docs/OVERDRACHT.md` beslissing 31.
+- **Een geluidje of melding bij de Wordle-kaart of bij de uitslag van een ander.** Bewust
+  niet: de kaart is geen bericht dat op je wacht, en `geluid.rs` erop aansluiten zou een
+  zevende toon betekenen voor iets dat elke ochtend afgaat.
 - Remote input control (muis/toetsenbord overnemen, Moonlight-stijl).
 - Chat: reacties, replies. Worden nieuwe `OpKind`-varianten. (Afbeeldingen plakken staat
   nu in `ROADMAP.md` fase 8, niet meer hier.)

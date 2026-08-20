@@ -899,6 +899,68 @@ de link. Met `FITCOM_LOG=debug` staat er één regel `no youtube preview` in het
 `https://www.youtube.com/playlist?list=...` en een gewone link naar een andere site horen
 géén kaart te krijgen.
 
+## Wordle van de dag (2026-08-20)
+
+De regels zelf zitten in tests: het kleuren van dubbele letters, de dagovergang om 07:00,
+de puntenregel, de plek van de kaart in de tijdlijn, en één `#[ignore]`-test die echt met
+NYT praat (`cargo test -p fitcom --lib wordle -- --ignored --nocapture`). Wat overblijft is
+wat twee echte machines en een echte ochtend moeten uitwijzen.
+
+**W.1 De kaart staat er, met het echte woord**
+Start de app na 07:00. Onderaan `#general` hoort een kaart **WORDLE `<nummer>`** te staan met
+**Play today's puzzle**. Controleer het nummer en het woord tegen het echte Wordle van die
+dag (`<data>\wordle.json` bevat de oplossing — pas op, dat verklapt hem). In het log staat
+één regel `wordle van vandaag binnen`.
+
+**W.2 Spelen**
+Typ een woord van vijf letters en druk Enter. De rij hoort meteen te kleuren: groen op de
+plek, amber erin-maar-niet-daar, grijs niet erin. Het toetsenbord onder het bord hoort
+dezelfde kleuren te krijgen. Probeer ook: vier letters (Enter doet niets), en een niet-woord
+zoals `qwrtz` — dan komt er **Not in the word list.** en blijft wat je typte staan, zodat je
+het kunt herstellen.
+
+**W.3 Halverwege afsluiten**
+Sluit de app helemaal af (ook uit de tray) terwijl je op poging 3 zit. Na het opnieuw starten
+horen die drie rijen er nog te staan en zegt de kaart **Continue · 3/6**.
+
+**W.4 De uitslag komt bij de ander aan**
+Speel de dag uit terwijl de ander online is. Bij hem hoort binnen enkele seconden je uitslag
+op de kaart van vandaag te verschijnen (naam + `4/6`), en jouw regel in het scorebord één
+punt te veranderen zodra jullie er beiden op staan. Doe dit ook een keer met de ander
+**offline**: zet hem daarna aan, en de uitslag hoort via de gewone inhaalslag alsnog binnen
+te komen zonder dat iemand iets doet.
+
+**W.5 Alleen spelen levert niets op**
+Speel een dag uit die de anderen niet spelen. De kaart hoort te zeggen dat je alleen speelde
+en dat de dag pas meetelt als iemand anders meedoet; je punten mogen niet omhoog.
+
+**W.6 De vierkantjes van de anderen blijven verborgen**
+Laat de ander eerst spelen en kijk dan naar de kaart van vandaag vóórdat je zelf klaar bent:
+je hoort zijn *aantal* pogingen te zien, maar geen vierkantjes. Zodra je eigen spel klaar is
+horen ze te verschijnen — bij hem en bij jou.
+
+**W.7 Zonder internet**
+Gooi `<data>\wordle.json` weg, zet Wi-Fi/ethernet uit en start de app. Er hoort **geen**
+kaart en **geen** foutmelding te komen; met `FITCOM_LOG=debug` staat er één regel
+`geen wordle van vandaag`. Zet het internet weer aan: binnen een kwartier hoort de kaart er
+vanzelf te staan zonder herstart.
+
+**W.8 Een dag die je gemist hebt**
+Laat de app een dag uit staan terwijl de anderen spelen. Bij het opstarten hoort er een
+kaart voor die dag in de tijdlijn te komen met hun uitslagen erop, zonder knop — je kunt hem
+niet meer naspelen.
+
+**W.9 De dag wisselt om 07:00 en niet om middernacht**
+Speel een keer laat op de avond en kijk om 00:30 nog eens: de kaart van "vandaag" hoort nog
+steeds die van gisteravond te zijn, en een dag die je om 00:30 afmaakt hoort op de dag van
+gisteren geboekt te worden (kijk in `wordle.json`, en bij de ander in het scorebord).
+
+**W.10 Een oudere build in de mesh**
+Alleen te doen als er nog een instantie van vóór deze versie is: die hoort de
+`WordleResult`-ops op te slaan en door te sturen zonder ze te begrijpen (er verschijnt daar
+niets), en de derde peer hoort ze via hem alsnog te krijgen. Dit is de invariant "protocol
+alleen additief" en er is geen protocolbump geweest.
+
 ## Wat je terugkoppelt
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of

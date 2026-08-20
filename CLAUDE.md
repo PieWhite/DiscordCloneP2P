@@ -24,8 +24,8 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
 1. **Nul servers.** Geen signaling, geen TURN, geen database, geen cloud-API, geen
    accounts, geen CDN (ook niet voor fonts). Tailscale is de enige externe
    afhankelijkheid en wordt als draaiend verondersteld.
-   **Twee bewuste uitzonderingen, allebei apart afgesproken. Dit is geen precedent voor
-   een derde:**
+   **Drie bewuste uitzonderingen, allemaal apart afgesproken. Dit is geen precedent voor
+   een vierde:**
    - *Fase 13:* `crates/app/src/release.rs` haalt de update-feed op bij een vaste
      HTTPS-URL. Alleen tijdens een check, en de app werkt zonder internet volledig door.
      Onderbouwing: `docs/OVERDRACHT.md` beslissing 23.
@@ -34,6 +34,12 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
      (`<data>/youtube/`). **Het ophalen zit in de motor en nooit in de webview**: de CSP
      blijft dicht, dus een bericht van een peer kan geen verbinding uit het venster laten
      vertrekken. Mislukt het, dan blijft het een gewone link. Onderbouwing: beslissing 30.
+   - *2026-08-20:* `crates/app/src/wordle.rs` haalt het woord van de dag op bij
+     `nytimes.com/svc/wordle/v2/<datum>.json`. **Eén GET per dag per peer**, daarna van
+     schijf (`<data>/wordle.json`). Elke peer haalt het zelf op: geen peer die het voor de
+     anderen doet (invariant 2) en het antwoord staat nooit op de draad. Ook hier zit het
+     ophalen in de motor en niet in de webview. Mislukt het, dan is er die dag geen kaart
+     en werkt de rest door. Onderbouwing: beslissing 31.
 2. **Geen host-peer.** Alle peers zijn gelijkwaardig. Elke instantie initieert én
    accepteert. Geen enkele functie mag afhangen van "peer X is er".
 3. **N-agnostisch.** Nergens hardcoded 3. Het aantal peers komt uit config.
@@ -127,6 +133,31 @@ Beslissing 29 en 30 in `docs/OVERDRACHT.md`. Wat je niet mag omdraaien:
   bij het inlezen af.
 - **Een video-id is elf tekens uit `[A-Za-z0-9_-]` en wordt in Rust opnieuw gecontroleerd.**
   Het gaat een URL *en* een bestandsnaam in — dat is de B-03-klasse.
+
+## Wordle van de dag (2026-08-20)
+Beslissing 31 in `docs/OVERDRACHT.md`. `crates/app/src/wordle.rs` is de hele motorkant.
+Wat je niet mag omdraaien:
+
+- **De kaart van de dag is geen op en gaat nooit over de draad.** `seq` is per (auteur,
+  kanaal), dus drie peers die allemaal een "hier is het raadsel"-op plaatsen zijn drie
+  kaarten die de log niet tot één kan maken. De kaart draagt ook geen enkel feit dat een
+  peer niet zelf kan uitrekenen; hij wordt lokaal in de tijdlijn gezet, op de klok. Wat wél
+  reist zijn de uitslagen (`OpKind::WordleResult`, tag 30).
+- **De oplossing blijft in de motor tot het spel klaar is.** De webview stuurt een gok en
+  krijgt vijf kleuren terug. Zet het woord nooit in `UiState` zolang `klaar == false`.
+- **Een Wordle-dag loopt van 07:00 tot 07:00 en de sleutel is de `print_date` van het
+  raadsel**, niet de lokale datum van het moment van spelen. Anders boeken twee peers
+  dezelfde avond op verschillende dagen.
+- **Per (auteur, dag) wint de *eerste* op, niet de laatste.** Enige plek in
+  `timeline::build` waar niet last-writer-wins geldt: een uitslag is een gebeurtenis, geen
+  instelling. `Delete` doet er niets, en een oudere dag naspelen kan niet.
+- **De puntenregel is N-agnostisch:** minstens twee deelnemers (`MIN_SPELERS`), een punt
+  voor iedereen met het laagste aantal pogingen onder de oplossers, en niemand opgelost is
+  niemand een punt. Nooit `peers.len()`, nooit een 3.
+- **`wordle_woorden.txt` heeft een strikt formaat** dat de code gebruikt: vijf ASCII-kleine
+  letters plus newline per rij, gesorteerd, zes bytes per rij, zodat er binair op gezocht
+  kan worden zonder allocatie. Een test bewaakt het. De oplossing van NYT is altijd
+  toegestaan, ook als hij niet in de lijst staat.
 
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`

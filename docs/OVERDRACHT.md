@@ -3,10 +3,15 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-08-05. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
+Laatst bijgewerkt: 2026-08-20. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
 de UI-stack van egui naar Tauri v2).
 
-**Wat er net gebeurd is:** de **camera** erbij (Windows; op macOS bewust overgeslagen,
+**Wat er op 2026-08-20 bijkwam:** bestanden openen vanuit de chat en YouTube-previews
+(beslissing 29 en 30), en daarna een **Wordle van de dag** met een scorebord —
+beslissing 31, en de derde bewuste uitzondering op invariant 1. Lees die vóór je aan
+`crates/app/src/wordle.rs`, de kaart in de tijdlijn of de puntenregel iets verandert.
+
+**Wat er daarvoor gebeurd was:** de **camera** erbij (Windows; op macOS bewust overgeslagen,
 zie beslissing 22 en `TODO.md`) — een derde `BronSoort` door de bestaande deelketen, dus
 tegelijk met een gedeeld scherm. Daarvoor is de app **geport naar macOS** (14+, Apple
 Silicon) — zelfde codebase, zelfde protocol 5, volledige featurepariteit behalve
@@ -1170,6 +1175,89 @@ kant controleert het opnieuw, want de frontend is niet de plek waar dat vaststaa
 verschijnt nooit" zonder dat iemand ziet waarom. Daarom staat er één `#[ignore]`-test die
 echt met YouTube praat — zelfde patroon als de rooktest op de echte geluidskaart:
 `cargo test -p fitcom --lib youtube -- --ignored --nocapture`.
+
+### 31. Wordle: elke peer haalt het echte woord zelf op, de kaart is geen op (2026-08-20)
+
+Rick: een Wordle-spelletje in de app, met het **echte** woord van de dag, een scorebord van
+wie er die dag won met de minste pogingen, en elke ochtend om 07:00 vanzelf een kaart in de
+chat.
+
+**Dit is de derde bewuste uitzondering op invariant 1 (nul servers)**, na de release-feed
+(fase 13) en de YouTube-previews (beslissing 30). Apart voorgelegd, want `CLAUDE.md` zegt
+erbij dat twee uitzonderingen geen precedent voor een derde zijn. Het echte woord kán
+alleen bij NYT vandaan komen: de klassieke offline-berekening (index op de datum in een
+meegebakken lijst) klopt sinds de overname niet meer, want NYT redigeert de lijst met de
+hand. Rick heeft gekozen met drie opties op tafel — zelf ophalen, één peer die het rondstuurt,
+of een eigen woordenlijst zonder netwerk.
+
+**`https://www.nytimes.com/svc/wordle/v2/<datum>.json`**: publiek, gratis, geen sleutel en
+geen account. Eén GET per dag per peer, daarna van schijf (`<data>/wordle.json`). Levert
+`solution`, `print_date` en `days_since_launch` — precies wat er nodig is en niets meer.
+
+**Iedere peer haalt het zelf op, en dat is een ontwerpkeuze en geen luiheid.** Eén peer die
+het voor de anderen ophaalt en via een op rondstuurt zou:
+- de dag laten afhangen van wie er om 07:00 online was — dat wringt met invariant 2 (geen
+  host-peer);
+- het antwoord op de draad zetten, terwijl er nu alleen *uitslagen* over de mesh gaan;
+- de uitzondering niet kleiner maken, want er gaat nog steeds een verzoek naar NYT.
+Dat alle drie hetzelfde woord krijgen is gratis: het staat op de datum en niet op wie vraagt.
+
+**Het ophalen zit in de motor, niet in de webview** — zelfde reden als bij de
+YouTube-previews: de CSP blijft dicht, er komt geen host bij in `connect-src`, en een
+bericht van een peer kan nooit een verbinding uit het venster laten vertrekken.
+
+**De oplossing gaat pas naar het venster als het spel klaar is.** De webview stuurt een gok
+en krijgt vijf kleuren terug; `UiState` bevat het woord alleen als er niets meer te
+verklappen valt. Niet tegen een aanvaller — het is je eigen spel — maar omdat de hele grap
+eruit loopt als het antwoord in de eerste `get_state` staat.
+
+**De kaart van de dag is géén op.** Dat was de eerste ingeving en het is fout: `seq` is per
+(auteur, kanaal), dus drie peers die allemaal "hier is het raadsel van vandaag" plaatsen
+zijn drie ops die de log niet tot één kan maken — er is geen inhoudsgebaseerde
+op-identiteit om op te dedupliceren. En het hoeft ook niet: de kaart draagt geen enkel feit
+dat een peer niet zelf kan uitrekenen. Hij wordt daarom lokaal in de tijdlijn gezet, op de
+klok, vlak voor het eerste wat er die dag na 07:00 gezegd is. Wat wél reist zijn de
+uitslagen (`OpKind::WordleResult`, tag 30, additief, geen protocolbump).
+
+**De dag loopt van 07:00 tot 07:00 en de sleutel is de `print_date` van het raadsel.** Wie
+om 00:30 nog aan "gisteren" zit te puzzelen scoort op de dag waar het raadsel bij hoort, en
+niet op de stand van zijn eigen klok. Dat maakt het ook onmogelijk dat twee peers dezelfde
+avond op verschillende dagen boeken.
+
+**De uitslag is onveranderlijk: per (auteur, dag) wint de *eerste* op, niet de laatste.** Dit
+is de enige plek in `timeline::build` waar niet last-writer-wins geldt. Zou de laatste
+winnen, dan kon je je score bijstellen nadat je die van de anderen gezien had. Een `Delete`
+doet er om dezelfde reden niets: er is geen eigenaarschap over iets dat al gebeurd is.
+Een dag naspelen kan niet — alleen het huidige raadsel neemt gokken aan.
+
+**Puntenregel, zoals Rick hem vroeg en N-agnostisch gemaakt.** Hij zei "een punt als je
+wint of gelijkspeelt, en alleen als beide spelers gespeeld hebben". Met drie peers is
+"beide" onbepaald; de regel is nu **minstens twee deelnemers** (`MIN_SPELERS`). Zo krijg je
+geen punt voor alleen spelen, maar legt één peer op vakantie de competitie niet stil.
+Verder: een punt voor iedereen met het laagste aantal pogingen onder de oplossers (dus
+gelijkspel = allebei een punt), en heeft niemand het woord gevonden dan scoort niemand.
+
+**De 14.855 toegestane gokwoorden staan in de repo** (`crates/app/src/wordle_woorden.txt`,
+89 kB, via `include_str!` in de exe). Rick koos expliciet voor "alleen echte woorden" boven
+"elke vijf letters". Het formaat is strikt en de code leunt erop: vijf ASCII-kleine letters
+plus een newline per rij, gesorteerd, dus zes bytes per rij en binair zoeken zonder
+allocatie. Eén test bewaakt dat formaat, anders is die aanname een tijdbom. **De oplossing
+van NYT is altijd toegestaan, ook als hij niet in de lijst staat** — die lijst is een
+afdruk, en zonder die uitzondering zou zo'n dag onoplosbaar zijn.
+
+**De vierkantjes van de anderen blijven verborgen tot je eigen spel klaar is.** Een patroon
+is een echte hint; het echte Wordle wordt ook pas ná het spelen gedeeld, en deze kaart staat
+midden in het gesprek waar je niet omheen kunt kijken. Het *aantal* pogingen is wel meteen
+te zien: dat is het getal waar de competitie om gaat.
+
+**De prijs, expliciet.** Zonder internet is er die dag geen kaart. Dat is `debug` en geen
+`warn` in het log en het levert nooit een foutmelding op — invariant 7 (offline is normaal)
+geldt ook voor een spelletje. Elke vijftien minuten wordt het opnieuw geprobeerd.
+
+**Wat er bewust niet is:** een geluidje of een melding bij een nieuwe kaart (het is geen
+bericht dat op je wacht), een aparte plek in het menu (de kaart van vandaag staat onderaan
+`#general`), en een eigen subkanaal (dan zou de app ongevraagd een `SetTopicTitle` moeten
+plaatsen).
 
 ---
 
