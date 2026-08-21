@@ -1074,21 +1074,6 @@ input, textarea { font: inherit; color: inherit; }
 }
 .composer-btn:hover { background: var(--c-paper); color: var(--on-invert); }
 
-.composer-hint {
-  display: flex; gap: 14px;
-  padding: 6px 4px 0;
-  font-size: 11px;
-  color: var(--c-silver);
-}
-.composer-hint kbd {
-  font-family: inherit;
-  font-size: 10.5px;
-  padding: 1px 4px;
-  background: var(--c-space);
-  border: 1px solid var(--border);
-  color: var(--c-silver);
-}
-
 /* autocomplete */
 
 .ac {
