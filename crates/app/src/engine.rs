@@ -25,7 +25,7 @@ use crate::wordle::{self, Wordle};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
-use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
+use fitcom_proto::control::{StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin, VoiceLeave};
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
@@ -83,6 +83,10 @@ pub struct PeerView {
     /// 0..1, voor de spreekindicatie.
     pub niveau: f32,
     pub volume: f32,
+    /// De door de gebruiker gekozen status van deze peer, zoals hij hem zelf stuurde.
+    /// `None` zolang hij nog niets stuurde (of offline was): dan is hij impliciet
+    /// "online", en de UI hoeft niets extra's te tonen.
+    pub user_status: Option<UserStatusValue>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -198,6 +202,11 @@ pub struct Snapshot {
     /// Onderdrukt alle Windows-meldingen, ook een directe tag naar jezelf. Geldt alleen
     /// voor deze sessie, net als mute/deafen — geen configvermelding.
     pub niet_storen: bool,
+    /// Wie nu aan het typen is: (kanaal, peer). Vluchtig — alleen levende indicaties
+    /// van verbonden peers, zie `TYPING_TTL`.
+    pub typing: Vec<(Channel, PeerId)>,
+    /// Onze eigen gekozen status (`UserStatusValue`). Vluchtig, begint op online.
+    pub eigen_status: UserStatusValue,
     /// Fase 11: staat een peer met een nieuwere versie aangeboden/onderweg/klaar?
     /// `None` betekent: niets aan de hand, iedereen die we spreken zit op onze versie
     /// (of ouder).
@@ -209,10 +218,17 @@ pub struct Snapshot {
 
 #[derive(Debug)]
 pub enum UiCommand {
-    /// Kanaal erbij: het algemene kanaal, of een DM met de gekozen peer.
-    Plaats(String, Channel),
+    /// Kanaal erbij: het algemene kanaal, of een DM met de gekozen peer. Met een
+    /// `reply_to` wordt het bericht een antwoord op dat bericht.
+    Plaats(String, Channel, Option<OpId>),
     Bewerk(OpId, String),
     Verwijder(OpId),
+    /// Reactie op een bericht zetten of (als hij er al staat) intrekken.
+    Reageer(OpId, String),
+    /// "Ik ben aan het typen" in dit kanaal. Vluchtig; de motor throttle zelf.
+    Typing(Channel),
+    /// Eigen aanwezigheidsstatus: 0 online, 1 away, 2 busy (`UserStatusValue`).
+    ZetStatus(u8),
     Gelezen,
     /// Een DM-gesprek is bekeken; telt niet mee voor `Snapshot::ongelezen_dm`.
     GelezenDm(PeerId),
@@ -352,6 +368,7 @@ pub fn spawn(
             in_voice: false,
             niveau: 0.0,
             volume: 1.0,
+            user_status: None,
         })
         .collect();
 
@@ -385,6 +402,10 @@ pub fn spawn(
         kijker_rx,
         fout: None,
         niet_storen: false,
+        typing_tot: HashMap::new(),
+        typing_verzonden: HashMap::new(),
+        peer_status: HashMap::new(),
+        eigen_status: UserStatusValue::ONLINE,
         snap_tx,
         voorgrond: voorgrond.clone(),
         afsluiten_voor_update: afsluiten_voor_update.clone(),
@@ -464,10 +485,28 @@ struct Engine {
     fout: Option<String>,
     /// Zie `Snapshot::niet_storen`.
     niet_storen: bool,
+    /// Vluchtige typindicaties: tot wanneer deze peer in dit kanaal aan het typen is.
+    /// Geen oplog, geen doorgifte — na een paar seconden stilte of een verbreking is de
+    /// betekenis weg en mag de administratie dat ook zijn.
+    typing_tot: HashMap<(PeerId, Channel), Instant>,
+    /// Wanneer wij voor het laatst een `Typing` in een kanaal stuurden; throttle zodat
+    /// elke toetsaanslag geen bericht wordt.
+    typing_verzonden: HashMap<Channel, Instant>,
+    /// De gekozen status van elke peer deze sessie. Een peer die nog niets stuurde is
+    /// impliciet online.
+    peer_status: HashMap<PeerId, UserStatusValue>,
+    /// Onze eigen gekozen status. Vluchtig: na een herstart beginnen we weer op online.
+    eigen_status: UserStatusValue,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
     afsluiten_voor_update: Arc<AtomicBool>,
 }
+
+/// Hoe lang een `Typing`-indicatie geldig blijft bij de ontvanger.
+const TYPING_TTL: Duration = Duration::from_secs(5);
+/// Hoe vaak we hooguit een `Typing` versturen tijdens doorlopend typen. Ruim onder de
+/// TTL, zodat één verloren bericht de indicatie niet laat flikkeren.
+const TYPING_THROTTLE: Duration = Duration::from_millis(2500);
 
 /// Wat een bestandstaak (hashen, uploaden, downloaden) terugmeldt aan de motor. Losse
 /// tokio-taken raken schijf en netwerk aan; de motor zelf blijft daar los van, net als
@@ -565,6 +604,12 @@ impl Engine {
                     self.verwerk(r);
                     self.ruim_gestopte_camera_op();
                     self.wordle_tick();
+                    // Verlopen typindicaties opruimen; de volgende publiceer() merkt
+                    // het alleen als er ook echt iets verdween.
+                    if !self.typing_tot.is_empty() {
+                        let nu = Instant::now();
+                        self.typing_tot.retain(|_, tot| *tot > nu);
+                    }
                 }
                 _ = update_ticker.tick() => self.zoek_update(false),
             }
@@ -605,9 +650,17 @@ impl Engine {
                             self.verwerk(r);
                             // Zit ik al in het gesprek, dan moet deze peer dat weten;
                             // hij heeft mijn eerdere melding gemist. Hetzelfde geldt
-                            // voor wat ik deel.
+                            // voor wat ik deel en voor mijn gekozen status.
                             if self.voice.is_some() {
                                 self.meld_voice_status(Some(id));
+                            }
+                            if self.eigen_status != UserStatusValue::ONLINE {
+                                self.stuur_alles(vec![MeshCommand::Send {
+                                    to: id,
+                                    msg: ControlMsg::UserStatus(UserStatus {
+                                        status: self.eigen_status,
+                                    }),
+                                }]);
                             }
                             let cmds = self.streams.bij_verbinding(id);
                             self.stuur_alles(cmds);
@@ -622,6 +675,10 @@ impl Engine {
                             if self.peers_in_voice.remove(&id) {
                                 self.geluid(geluid::Geluid::PeerLeave);
                             }
+                            // Zijn vluchtige statussen zijn ze ook waard: een typindicatie
+                            // van een peer die er niet meer is klopt per definitie niet.
+                            self.typing_tot.retain(|(p, _), _| *p != id);
+                            self.peer_status.remove(&id);
                             let acties = self.streams.bij_verbreking(id);
                             self.voer_uit(acties);
                         }
@@ -681,6 +738,29 @@ impl Engine {
                 ControlMsg::FileResponse(resp) => {
                     self.files.antwoord_ontvangen(&resp);
                 }
+                ControlMsg::Typing(t) => {
+                    // Een DM-typindicatie hoort alleen van de gesprekspartner zelf te
+                    // komen. Het bericht bewijst wíéér hem stuurde, niet dat hij erin
+                    // zit — dus een kanaal waar wij niet de geadresseerde van zijn
+                    // negeren we hier, net als de op zelf bij ontvangst.
+                    if t.channel.dm_peer().is_some_and(|p| p != self.chat.me()) {
+                        tracing::debug!(peer = ?from, "typindicatie voor een vreemde DM genegeerd");
+                    } else {
+                        // Vluchtig en single-hop: alleen bijhouden, nooit doorsturen.
+                        // De tik ruimt de verlopen entries op, zodat de indicatie ook
+                        // verdwijnt als er daarna geen bericht meer komt.
+                        self.typing_tot
+                            .insert((from, t.channel), Instant::now() + TYPING_TTL);
+                    }
+                }
+                ControlMsg::UserStatus(s) => {
+                    if s.status.is_known() {
+                        let was = self.peer_status.insert(from, s.status);
+                        if was != Some(s.status) {
+                            tracing::debug!(peer = ?from, status = %s.status, "status gewijzigd");
+                        }
+                    }
+                }
                 // Fase 11 duwde exe's tussen peers door; sinds fase 13 komt een update
                 // uit de getekende release-feed en gaat de eigen binary nergens meer
                 // heen (`docs/BEVEILIGING.md` B-01, B-21). De varianten blijven in het
@@ -717,7 +797,7 @@ impl Engine {
                     // in het berichttype, dus zonder aparte "sync klaar"-status.
                     let live_post = match &andere {
                         ControlMsg::OpBroadcast(b) => match b.op.kind() {
-                            Ok(Some(OpKind::Post { body })) => Some((b.op.channel, body)),
+                            Ok(Some(OpKind::Post { body, .. })) => Some((b.op.channel, body)),
                             _ => None,
                         },
                         _ => None,
@@ -1581,10 +1661,18 @@ impl Engine {
 
     fn op_ui_command(&mut self, cmd: UiCommand) {
         match cmd {
-            UiCommand::Plaats(tekst, channel) => {
-                let r = self.chat.plaats_bericht(&tekst, channel);
+            UiCommand::Plaats(tekst, channel, reply_to) => {
+                let r = self.chat.plaats_bericht(&tekst, channel, reply_to);
+                self.verwerk(r);
+                // Het antwoord is verstuurd: de "typt"-indicatie mag weg.
+                self.typing_verzonden.remove(&channel);
+            }
+            UiCommand::Reageer(doel, emoji) => {
+                let r = self.chat.reageer(doel, &emoji);
                 self.verwerk(r);
             }
+            UiCommand::Typing(channel) => self.stuur_typing(channel),
+            UiCommand::ZetStatus(status) => self.zet_status(status),
             UiCommand::Bewerk(doel, tekst) => {
                 let r = self.chat.bewerk_bericht(doel, &tekst);
                 self.verwerk(r);
@@ -2117,8 +2205,48 @@ impl Engine {
         notify::nieuw_bericht(&naam, tekst);
     }
 
-    fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {
-        match r {
+    /// "Ik ben aan het typen" naar de anderen sturen, hooguit één keer per
+    /// `TYPING_THROTTLE` per kanaal. Een DM gaat — net als een DM-bericht zelf —
+    /// uitsluitend naar de geadresseerde.
+    fn stuur_typing(&mut self, channel: Channel) {
+        let nu = Instant::now();
+        match self.typing_verzonden.get(&channel) {
+            Some(t) if nu.duration_since(*t) < TYPING_THROTTLE => return,
+            _ => {}
+        }
+        self.typing_verzonden.insert(channel, nu);
+        let cmd = match channel.dm_peer() {
+            Some(naar) => MeshCommand::Send {
+                to: naar,
+                msg: ControlMsg::Typing(Typing { channel }),
+            },
+            None => MeshCommand::Broadcast(ControlMsg::Typing(Typing { channel })),
+        };
+        self.stuur_alles(vec![cmd]);
+    }
+
+    /// Eigen status wisselen en iedereen op de hoogte brengen. Vluchtig: er zit geen op
+    /// achter, dus wie offline was ziet de wisseling pas na zijn verbinding — daarom de
+    /// extra melding bij het opkomen van een verbinding hierboven.
+    fn zet_status(&mut self, status: u8) {
+        let status = UserStatusValue(status);
+        if !status.is_known() || status == self.eigen_status {
+            return;
+        }
+        self.eigen_status = status;
+        let cmds = self
+            .verbonden
+            .keys()
+            .copied()
+            .map(|to| MeshCommand::Send {
+                to,
+                msg: ControlMsg::UserStatus(UserStatus { status }),
+            })
+            .collect();
+        self.stuur_alles(cmds);
+    }
+
+    fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {        match r {
             Ok(cmds) => self.stuur_alles(cmds),
             Err(e) => {
                 tracing::error!(error = %format!("{e:#}"), "chat-actie mislukt");
@@ -2135,6 +2263,11 @@ impl Engine {
             if let Some(id) = p.peer_id {
                 p.in_voice = self.peers_in_voice.contains(&id);
                 p.niveau = niveaus.per_peer.get(&id).copied().unwrap_or(0.0);
+                // Alleen tonen zolang hij er ook is; een status van een offline peer
+                // is tegen de tijd dat hij terugkomt toch verlopen.
+                if self.verbonden.contains_key(&id) {
+                    p.user_status = self.peer_status.get(&id).copied();
+                }
             }
         }
 
@@ -2216,6 +2349,13 @@ impl Engine {
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
             ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
+            typing: self
+                .typing_tot
+                .iter()
+                .filter(|((p, _), _)| self.verbonden.contains_key(p))
+                .map(|((p, c), _)| (*c, *p))
+                .collect(),
+            eigen_status: self.eigen_status,
             update: self.updates.status().cloned(),
             wordle: WordleView {
                 dag: self.wordle.huidige_dag(),

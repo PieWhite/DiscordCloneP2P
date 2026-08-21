@@ -31,6 +31,10 @@ pub const MAX_NAAM_LEN: usize = 64;
 /// Het uitslagpatroon van een Wordle-dag: zes rijen van vijf tekens, geen scheidingsteken.
 /// Zie `OpKind::WordleResult`.
 pub const MAX_WORDLE_PATROON_LEN: usize = 30;
+/// Eén reactie-emoji. Een emoji is hooguit een paar UTF-16-eenheden, maar een
+/// ZWJ-reeks met huidtinten komt ruim uit onder 32 bytes; alles daarboven is geen
+/// emoji meer maar een aanval op de frameruimte (B-43).
+pub const MAX_EMOJI_LEN: usize = 32;
 
 fn grens(veld: &'static str, waarde: &str, limiet: usize) -> crate::Result<()> {
     if waarde.len() > limiet {
@@ -222,7 +226,17 @@ macro_rules! op_kinds {
 }
 
 op_kinds! {
-    1 => Post   { body: String },
+    // `reply_to` is additief (2026-08-22): een bericht mag antwoorden op een ander. Op de
+    // draad als optioneel veld in de map-encoded payload — serde laat een ontbrekend
+    // `Option`-veld toe (een payload van een oudere peer decodeert naar `None`) en een
+    // oudere peer negeert de onbekende sleutel stilzwijgend, precies zoals bij
+    // `StreamKind::CAMERA`. Geen protocolbump dus. De tekenlaag zet een antwoord dat over
+    // kanalen heen wijst bewust op `None`: een DM-bericht mag niet via een reply-op op het
+    // algemene kanaal zijn bestaan verraden.
+    1 => Post {
+        body: String,
+        reply_to: Option<OpId>,
+    },
     2 => Edit   { target: OpId, body: String },
     3 => Delete { target: OpId },
     4 => SetNick { name: String },
@@ -230,7 +244,17 @@ op_kinds! {
     // hun eigenaarschap ook al via `op.author` regelen in plaats van een los veld dat uit de
     // pas zou kunnen lopen. Zie docs/ARCHITECTURE.md voor de rest van het ontwerp.
     10 => FileMeta { name: String, size: u64, hash: [u8; 32] },
-    // 11-19 GERESERVEERD: React, Reply. Zie TODO.md.
+    // Reactie op een bericht (2026-08-22). Iedereen mag reageren — anders dan bij Edit/
+    // Delete is er géén auteurscheck op `target`: een reactie van iemand anders is juist
+    // het punt. `remove` maakt het intrekken expliciet en houdt het vouwen last-writer-wins
+    // per (auteur, doel, emoji) op `(lamport, author)`, dezelfde vergelijking als bij een
+    // bewerking. Een reactie hoort in het kanaal van het doel — een DM-reactie via het
+    // algemene kanaal zou het bestaan van de DM lekken; zie `fitcom_store::timeline`.
+    //
+    // Additief zonder protocolbump: een oudere peer bewaart en stuurt hem door als onbekende
+    // soort en toont niets, precies zoals bij WordleResult.
+    11 => React { target: OpId, emoji: String, remove: bool },
+    // 12-19 GERESERVEERD. Zie TODO.md.
     // Legt zowel het aanmaken (eerste keer gezien) als het hernoemen (latere keer) van een
     // subkanaal onder het algemene kanaal vast — laatste `(lamport, author)` wint, precies
     // zoals bij SetNick. Altijd op Channel::GENERAL geplaatst: dit is metadata over
@@ -289,13 +313,14 @@ impl OpKind {
     /// inhoudelijke keuze, geen mechanische.
     pub fn valideer_lengtes(&self) -> crate::Result<()> {
         match self {
-            Self::Post { body } => grens("berichttekst", body, MAX_BERICHT_LEN),
+            Self::Post { body, .. } => grens("berichttekst", body, MAX_BERICHT_LEN),
             Self::Edit { body, .. } => grens("berichttekst", body, MAX_BERICHT_LEN),
             Self::Delete { .. } => Ok(()),
             Self::SetNick { name } => grens("bijnaam", name, MAX_NAAM_LEN),
             Self::FileMeta { name, .. } => grens("bestandsnaam", name, MAX_BESTANDSNAAM_LEN),
             Self::SetTopicTitle { title, .. } => grens("kanaaltitel", title, MAX_NAAM_LEN),
             Self::DeleteTopic { .. } => Ok(()),
+            Self::React { emoji, .. } => grens("emoji", emoji, MAX_EMOJI_LEN),
             Self::WordleResult { pattern, .. } => {
                 grens("wordle-patroon", pattern, MAX_WORDLE_PATROON_LEN)
             }
@@ -420,7 +445,14 @@ mod tests {
     #[test]
     fn op_roundtrip_per_soort() {
         let kinds = [
-            OpKind::Post { body: "hoi".into() },
+            OpKind::Post {
+                body: "hoi".into(),
+                reply_to: None,
+            },
+            OpKind::Post {
+                body: "antwoord".into(),
+                reply_to: Some(OpId::new(peer(2), Channel::GENERAL, 3)),
+            },
             OpKind::Edit {
                 target: OpId::new(peer(1), Channel::GENERAL, 7),
                 body: "aangepast".into(),
@@ -440,6 +472,11 @@ mod tests {
                 id: crate::TopicId::from_bytes([0x77; 16]),
                 title: "project x".into(),
             },
+            OpKind::React {
+                target: OpId::new(peer(2), Channel::GENERAL, 3),
+                emoji: "👍".into(),
+                remove: false,
+            },
             OpKind::WordleResult {
                 day: 20_260_820,
                 guesses: 4,
@@ -451,6 +488,52 @@ mod tests {
             let op = Op::new(peer(1), Channel::GENERAL, 1, 1, 0, &kind).unwrap();
             assert_eq!(op.kind().unwrap(), Some(kind));
         }
+    }
+
+    /// Een payload zonder `reply_to` komt van een oudere peer; die moet als een gewoon
+    /// bericht met `reply_to: None` doorkomen. Dit is de additieve-veldregel uit de
+    /// moduledoc, nu concreet voor het enige veld dat er gebruik van maakt.
+    #[test]
+    fn post_zonder_reply_to_komt_van_een_oudere_peer_door() {
+        #[derive(Serialize)]
+        struct OudePost {
+            body: String,
+        }
+        let mut out = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut out).with_struct_map();
+        serde::Serialize::serialize(
+            &OudePost {
+                body: "van een oude build".into(),
+            },
+            &mut ser,
+        )
+        .unwrap();
+        let op = rauwe_op(1, 1, OpKind::Post { body: String::new(), reply_to: None }.tag(), out);
+        match op.kind().unwrap() {
+            Some(OpKind::Post { body, reply_to }) => {
+                assert_eq!(body, "van een oude build");
+                assert_eq!(reply_to, None);
+            }
+            other => panic!("verkeerde soort: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reactie_met_te_lange_emoji_wordt_geweigerd() {
+        let kind = OpKind::React {
+            target: OpId::new(peer(2), Channel::GENERAL, 1),
+            emoji: "x".repeat(MAX_EMOJI_LEN + 1),
+            remove: false,
+        };
+        // Bij het maken ...
+        assert!(matches!(
+            Op::new(peer(1), Channel::GENERAL, 1, 1, 0, &kind),
+            Err(crate::ProtoError::VeldTeLang { veld: "emoji", .. })
+        ));
+        // ... en bij het decoderen.
+        let op = rauwe_op(1, 1, kind.tag(), kind.encode_payload().unwrap());
+        let fout = draad_fout(&op);
+        assert!(fout.contains("emoji"), "{fout}");
     }
 
     #[test]
@@ -521,7 +604,9 @@ mod tests {
         // `u64::MAX` wordt in SQLite een `-1`, dus `MAX(lamport)` ziet hem nooit en de
         // eerlijke klok kan nooit meer inlopen — terwijl `timeline::build` in `u64`
         // vergelijkt en deze op dus élke last-writer-wins-vergelijking wint, voorgoed.
-        let payload = OpKind::Post { body: "x".into() }.encode_payload().unwrap();
+        let payload = OpKind::Post { body: "x".into(), reply_to: None }
+            .encode_payload()
+            .unwrap();
         let op = rauwe_op(1, u64::MAX, 1, payload);
         assert!(draad_fout(&op).contains("lamport"), "{}", draad_fout(&op));
 
@@ -539,7 +624,9 @@ mod tests {
             u64::MAX,
             1,
             1,
-            OpKind::Post { body: "x".into() }.encode_payload().unwrap(),
+            OpKind::Post { body: "x".into(), reply_to: None }
+                .encode_payload()
+                .unwrap(),
         );
         assert!(draad_fout(&op).contains("seq"), "{}", draad_fout(&op));
     }
@@ -558,7 +645,8 @@ mod tests {
                 1,
                 0,
                 &OpKind::Post {
-                    body: te_lang.clone()
+                    body: te_lang.clone(),
+                    reply_to: None
                 }
             ),
             Err(crate::ProtoError::VeldTeLang {
@@ -568,7 +656,9 @@ mod tests {
         ));
 
         // En bij het decoderen, want de afzender hoeft onze encoder niet te gebruiken.
-        let payload = OpKind::Post { body: te_lang }.encode_payload().unwrap();
+        let payload = OpKind::Post { body: te_lang, reply_to: None }
+            .encode_payload()
+            .unwrap();
         let op = rauwe_op(1, 1, 1, payload);
         assert!(
             draad_fout(&op).contains("berichttekst"),
@@ -624,6 +714,12 @@ mod tests {
         for kind in [
             OpKind::Post {
                 body: "a".repeat(MAX_BERICHT_LEN),
+                reply_to: None,
+            },
+            OpKind::React {
+                target: OpId::new(peer(2), Channel::GENERAL, 1),
+                emoji: "👍🏾".into(),
+                remove: true,
             },
             OpKind::SetNick {
                 name: "Rick".into(),

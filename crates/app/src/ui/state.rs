@@ -22,6 +22,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// How much of the parent's body rides along in a reply quote, in characters. Roughly
+/// one line; the full text is one click away.
+const REPLY_SNIPPET_LEN: usize = 90;
+
 /// How a `Channel` travels to the frontend and back: `general`, `topic:<uuid>` or
 /// `dm:<uuid>`. A string rather than a nested object because it is used as an object key
 /// and a `data-` attribute on nearly every row in the window.
@@ -92,6 +96,10 @@ pub struct PeerState {
     pub address: String,
     pub avatar: u8,
     pub presence: Presence,
+    /// The status this peer chose for itself ("away", "busy"), while it is online. `None`
+    /// means it never sent one (or is offline): plain online, nothing extra to draw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_status: Option<String>,
     /// Set when `presence` is `broken`: what is wrong, in one sentence.
     pub problem: Option<String>,
     pub app_version: Option<String>,
@@ -113,6 +121,8 @@ pub struct SelfState {
     pub id: String,
     pub name: String,
     pub avatar: u8,
+    /// Our own chosen status: "online", "away" or "busy".
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,6 +215,17 @@ pub enum TimelineItem {
         edited: bool,
         mine: bool,
         mentions_you: bool,
+        /// The message this one answers, when it was sent as a reply. The frontend draws
+        /// a clickable quote above the body.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply_to: Option<OpRef>,
+        /// Author and opening text of that parent, resolved on this side. `None` also
+        /// covers a parent that is deleted or not (yet) in our log — the frontend then
+        /// shows "original unavailable" instead of guessing.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply_snippet: Option<ReplySnippet>,
+        /// Reactions grouped per emoji, in the same order every peer folds them to.
+        reactions: Vec<ReactionState>,
     },
     File {
         id: OpRef,
@@ -269,6 +290,26 @@ pub struct OpRef {
     pub author: String,
     pub channel: String,
     pub seq: u64,
+}
+
+/// The quote above a reply: who wrote the parent and how it opens. Built here so the
+/// frontend never has to look an `OpRef` up in the log itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplySnippet {
+    pub author_name: String,
+    /// The parent's body, cut off at roughly one line.
+    pub body: String,
+}
+
+/// One reaction pill under a message.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReactionState {
+    pub emoji: String,
+    pub count: usize,
+    /// Peer UUIDs, in the store's own order; the frontend resolves names for a tooltip.
+    pub peers: Vec<String>,
+    /// Did I react too? Decides whether clicking removes or adds.
+    pub mine: bool,
 }
 
 impl OpRef {
@@ -420,6 +461,11 @@ pub struct UiState {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub do_not_disturb: bool,
+    /// Who is typing where, keyed by conversation key ("general", "topic:<uuid>",
+    /// "dm:<peer-uuid>") with the peer UUIDs. Vluchtig — rides along in `state`, which is
+    /// fine: a typing event changes at most a few times a minute, and only while someone
+    /// actually types.
+    pub typing: HashMap<String, Vec<String>>,
     pub update: Option<UpdateState>,
     pub wordle: WordleState,
     pub error: Option<String>,
@@ -521,6 +567,10 @@ impl UiState {
                     address: p.address.clone(),
                     avatar: id.and_then(|i| hues.get(&i).copied()).unwrap_or(3),
                     presence,
+                    user_status: p
+                        .user_status
+                        .filter(|_| presence == Presence::Online)
+                        .map(|s| s.to_string()),
                     problem,
                     app_version,
                     in_call: p.in_voice,
@@ -562,12 +612,22 @@ impl UiState {
                 id: c.me.to_string(),
                 name: my_name,
                 avatar: hues.get(&c.me).copied().unwrap_or(1),
+                status: snap.eigen_status.to_string(),
             },
             peers,
             voice: VoiceState {
                 joined: snap.voice.actief,
                 muted: snap.voice.muted,
                 deafened: snap.voice.deafened,
+            },
+            typing: {
+                let mut map: HashMap<String, Vec<String>> = HashMap::new();
+                for (channel, peer) in &snap.typing {
+                    map.entry(channel_key(*channel))
+                        .or_default()
+                        .push(peer.to_string());
+                }
+                map
             },
             channels,
             own_streams: snap
@@ -665,10 +725,48 @@ pub fn timeline_of(
     // merge at the bottom. Ordering between messages and files stays `(lamport, author)`.
     let mut items: Vec<(u64, PeerId, i64, TimelineItem)> = Vec::new();
 
+    // Parent lookup for reply quotes: only messages of this conversation can be parents
+    // (the fold nulls cross-channel references), so one pass over them is enough.
+    let parents: HashMap<OpId, (&fitcom_store::Message, String)> = snap
+        .timeline
+        .messages
+        .iter()
+        .filter(|m| belongs_to_channel(channel, me, m.channel, m.author))
+        .map(|m| {
+            let mut body = m.body.clone();
+            body.truncate(REPLY_SNIPPET_LEN);
+            (m.id, (m, body))
+        })
+        .collect();
+
+    // Reactions per message id, in the store's own order — already sorted the same way
+    // on every peer.
+    let reactions_of = |id: OpId| -> Vec<ReactionState> {
+        snap.timeline
+            .reactions
+            .iter()
+            .filter(|r| r.target == id)
+            .map(|r| ReactionState {
+                emoji: r.emoji.clone(),
+                count: r.peers.len(),
+                peers: r.peers.iter().map(|p| p.to_string()).collect(),
+                mine: r.peers.contains(&me),
+            })
+            .collect()
+    };
+
     for m in &snap.timeline.messages {
         if !belongs_to_channel(channel, me, m.channel, m.author) {
             continue;
         }
+        // A parent that is deleted or not yet known still travels as a reference; the
+        // frontend shows "original unavailable" when there is no snippet.
+        let snippet = m.reply_to.and_then(|p| {
+            parents.get(&p).map(|(parent, body)| ReplySnippet {
+                author_name: name_of(parent.author),
+                body: body.clone(),
+            })
+        });
         items.push((
             m.lamport,
             m.author,
@@ -683,6 +781,9 @@ pub fn timeline_of(
                 edited: m.edited,
                 mine: m.author == me,
                 mentions_you: m.author != me && tags::bevat_tag(&m.body, my_name),
+                reply_to: m.reply_to.map(OpRef::of),
+                reply_snippet: snippet,
+                reactions: reactions_of(m.id),
             },
         ));
     }
@@ -1031,6 +1132,7 @@ mod tests {
             created_at: at,
             edited: false,
             lamport,
+            reply_to: None,
         };
         let timeline = fitcom_store::Timeline {
             messages: vec![
@@ -1129,6 +1231,7 @@ mod tests {
                 in_voice: false,
                 niveau: 0.0,
                 volume: 1.0,
+                user_status: None,
             })
             .collect();
         // Three peers plus me is four identities, so one hue repeats — but never within

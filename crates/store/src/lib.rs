@@ -913,9 +913,21 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Kortere schrijfwijze voor de meest voorkomende op.
+/// Kortere schrijfwijze voor de meest voorkomende op: een bericht zonder antwoordreferentie.
 pub fn post(body: impl Into<String>) -> OpKind {
-    OpKind::Post { body: body.into() }
+    OpKind::Post {
+        body: body.into(),
+        reply_to: None,
+    }
+}
+
+/// Een bericht dat antwoordt op een ander bericht in hetzelfde kanaal. De tekenlaag zet
+/// de verwijzing op `None` als hij over kanalen heen wijst — zie `timeline::build`.
+pub fn post_als_antwoord(body: impl Into<String>, reply_to: OpId) -> OpKind {
+    OpKind::Post {
+        body: body.into(),
+        reply_to: Some(reply_to),
+    }
 }
 
 /// De uitslag van één Wordle-dag vastleggen. `day` is de `print_date` van het raadsel als

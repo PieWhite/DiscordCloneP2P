@@ -23,6 +23,22 @@ pub struct Message {
     /// Nodig om berichten en bestanden (`FileEntry::lamport`) in de UI in één
     /// chronologische tijdlijn te kunnen samenvoegen — zie fase 8 in `ROADMAP.md`.
     pub lamport: u64,
+    /// Het bericht waarop dit antwoordt, als dat er is. Altijd binnen hetzelfde kanaal:
+    /// een antwoord dat over kanalen heen wijst (en zo het bestaan van een DM zou kunnen
+    /// verraden) komt hier als `None` door, zie de vouw hieronder.
+    pub reply_to: Option<OpId>,
+}
+
+/// Eén reactiegroep: een emoji op één bericht, met wie hem gaf. Alleen groepen met
+/// minstens één peer komen in de lijst — een ingetrokken reactie laat geen spoor na.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    /// Het bericht waarop gereageerd is. Alleen berichten: op bestanden en Wordle-kaarten
+    /// reageren kan niet.
+    pub target: OpId,
+    pub emoji: String,
+    /// Gesorteerd op `PeerId`, zodat alle peers exact dezelfde lijst tonen.
+    pub peers: Vec<PeerId>,
 }
 
 /// Een aangeboden bestand. `id` is de `OpId` van de `FileMeta`-op zelf — die is al
@@ -108,6 +124,9 @@ pub struct Timeline {
     /// titel komen allebei uit `OpKind::SetTopicTitle` — geen apart "aangemaakt"-bericht,
     /// precies zoals een bijnaam geen apart "peer bestaat"-bericht nodig heeft.
     pub topics: HashMap<TopicId, String>,
+    /// Reacties, per bericht gegroepeerd op emoji. Gesorteerd op `(doel, emoji)` zodat
+    /// alle peers ze in dezelfde volgorde tonen; de peers binnen een groep op `PeerId`.
+    pub reactions: Vec<Reaction>,
 }
 
 /// Sorteersleutel die op alle peers dezelfde uitkomst geeft. `wall_clock` mag hier
@@ -116,6 +135,9 @@ pub struct Timeline {
 fn key(op: &Op) -> (u64, PeerId) {
     (op.lamport, op.author)
 }
+
+/// De vouwtoestand van één reactie: wie hem laatst zette en of hij er nog staat.
+type ReactieStem = ((u64, PeerId), bool);
 
 /// B-42: `wall_clock` is volledig door de afzender bepaald en wordt getoond.
 ///
@@ -164,6 +186,9 @@ pub fn build(ops: &[Op]) -> Timeline {
     // dat zou een stabiele sortering de uitkomst van de aankomstvolgorde laten afhangen.
     let mut wordle: HashMap<(PeerId, u32), ((u64, u64), WordleEntry)> = HashMap::new();
     let mut wordle_cards: HashMap<u32, ((u64, PeerId), WordleCardEntry)> = HashMap::new();
+    // Reacties: laatste-schrijver-wins per (doel, emoji, auteur) op `(lamport, author)`,
+    // precies zoals Edit/Delete. De bool zegt of de reactie er op het eind nog staat.
+    let mut reacties: HashMap<(OpId, String, PeerId), ReactieStem> = HashMap::new();
 
     for op in sorted {
         // Onbekende soort: van een nieuwere peer. We bewaren en verspreiden hem wel,
@@ -171,7 +196,7 @@ pub fn build(ops: &[Op]) -> Timeline {
         let Ok(Some(kind)) = op.kind() else { continue };
 
         match kind {
-            OpKind::Post { body } => {
+            OpKind::Post { body, reply_to } => {
                 posts.push((
                     op.id(),
                     Message {
@@ -182,6 +207,16 @@ pub fn build(ops: &[Op]) -> Timeline {
                         created_at: klem_wall_clock(op.wall_clock),
                         edited: false,
                         lamport: op.lamport,
+                        // Een antwoord dat over kanalen heen wijst wordt hier op `None`
+                        // gezet en niet afgewezen: de op zelf blijft gewoon geldige
+                        // geschiedenis die alle peers op dezelfde manier vouwen. Een DM-
+                        // bericht zou anders via een reply-op op het algemene kanaal zijn
+                        // bestaan kunnen verraden — het veld mag nooit meer zeggen dan de
+                        // zichtbaarheidsregel van `VersionVector::visible_to` toestaat.
+                        reply_to: match reply_to {
+                            Some(doel) if doel.channel == op.channel => Some(doel),
+                            _ => None,
+                        },
                     },
                 ));
             }
@@ -304,6 +339,27 @@ pub fn build(ops: &[Op]) -> Timeline {
                     }
                 }
             }
+            OpKind::React {
+                target,
+                emoji,
+                remove,
+            } => {
+                // In het kanaal van het doel, om dezelfde reden als bij Edit: een reactie
+                // op een DM-bericht die zelf op het algemene kanaal staat zou anders door
+                // iedereen gezien worden terwijl de DM zelf niet te zien is — en de
+                // ontvanger van de DM zou hem dan ook nog eens niet terugkrijgen.
+                if target.channel != op.channel {
+                    continue;
+                }
+                let k = key(op);
+                let sleutel = (target, emoji, op.author);
+                match reacties.get(&sleutel) {
+                    Some((prev, _)) if *prev >= k => {}
+                    _ => {
+                        reacties.insert(sleutel, (k, !remove));
+                    }
+                }
+            }
         }
     }
 
@@ -353,6 +409,30 @@ pub fn build(ops: &[Op]) -> Timeline {
     let mut wordle: Vec<WordleEntry> = wordle.into_values().map(|(_, e)| e).collect();
     wordle.sort_by_key(|e| (e.day, e.author));
 
+    // Reacties horen bij het bericht dat overblijft. Is dat verwijderd (of was de reactie
+    // ingetrokken, of wees hij naar iets dat geen bericht is), dan verdwijnt de groep mee.
+    // Gegroepeerd per (doel, emoji), gesorteerd op dezelfde sleutel zodat alle peers de
+    // pillen in dezelfde volgorde tonen; de peers binnen een groep op `PeerId`.
+    let mut groepen: HashMap<(OpId, String), Vec<PeerId>> = HashMap::new();
+    for ((target, emoji, peer), (_, actief)) in reacties {
+        if actief && messages.iter().any(|m| m.id == target) {
+            groepen.entry((target, emoji)).or_default().push(peer);
+        }
+    }
+    let mut reactions: Vec<Reaction> = groepen
+        .into_iter()
+        .map(|((target, emoji), mut peers)| {
+            peers.sort_unstable();
+            peers.dedup();
+            Reaction {
+                target,
+                emoji,
+                peers,
+            }
+        })
+        .collect();
+    reactions.sort_unstable_by(|a, b| (&a.target, &a.emoji).cmp(&(&b.target, &b.emoji)));
+
     Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
@@ -369,6 +449,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                 TopicChange::Deleted => None,
             })
             .collect(),
+        reactions,
     }
 }
 
@@ -393,7 +474,7 @@ mod tests {
     #[test]
     fn volgorde_komt_van_lamport_niet_van_de_klok() {
         // B's PC loopt een uur achter. Dat mag de volgorde niet bepalen.
-        let mut eerst = op(peer(1), 1, 1, OpKind::Post { body: "een".into() });
+        let mut eerst = op(peer(1), 1, 1, OpKind::Post { body: "een".into(), reply_to: None });
         eerst.wall_clock = 9_999_999;
         let mut daarna = op(
             peer(2),
@@ -401,6 +482,7 @@ mod tests {
             2,
             OpKind::Post {
                 body: "twee".into(),
+                reply_to: None,
             },
         );
         daarna.wall_clock = 0;
@@ -412,8 +494,8 @@ mod tests {
 
     #[test]
     fn gelijke_lamport_wordt_op_auteur_beslist() {
-        let a = op(peer(1), 1, 5, OpKind::Post { body: "a".into() });
-        let b = op(peer(2), 1, 5, OpKind::Post { body: "b".into() });
+        let a = op(peer(1), 1, 5, OpKind::Post { body: "a".into(), reply_to: None });
+        let b = op(peer(2), 1, 5, OpKind::Post { body: "b".into(), reply_to: None });
         // Beide aankomstvolgordes moeten hetzelfde resultaat geven.
         let t1 = build(&[a.clone(), b.clone()]);
         let t2 = build(&[b, a]);
@@ -428,6 +510,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "typfuot".into(),
+                reply_to: None,
             },
         );
         let edit = op(
@@ -453,6 +536,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "oeps".into(),
+                reply_to: None,
             },
         );
         let del = op(peer(1), 2, 2, OpKind::Delete { target: post.id() });
@@ -461,7 +545,7 @@ mod tests {
 
     #[test]
     fn laatste_wijziging_wint_ongeacht_aankomstvolgorde() {
-        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into() });
+        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into(), reply_to: None });
         let e1 = op(
             peer(1),
             2,
@@ -492,7 +576,7 @@ mod tests {
 
     #[test]
     fn verwijderen_wint_van_een_eerdere_bewerking() {
-        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into() });
+        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into(), reply_to: None });
         let edit = op(
             peer(1),
             2,
@@ -514,6 +598,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "van peer 1".into(),
+                reply_to: None,
             },
         );
         let kaping = op(
@@ -556,6 +641,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "gewoon".into(),
+                reply_to: None,
             },
         );
         let toekomstig = Op {
@@ -602,6 +688,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "onder ons".into(),
+                reply_to: None,
             },
         );
         let t = build(&[dm]);
@@ -683,6 +770,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "origineel".into(),
+                reply_to: None,
             },
         );
         let edit = op(
@@ -709,6 +797,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "in project x".into(),
+                reply_to: None,
             },
         );
         let t = build(&[bericht]);
@@ -997,5 +1086,130 @@ mod tests {
         );
         let t = build(&[b, a]);
         assert_eq!(t.nicknames[&peer(1)], "Rick2");
+    }
+
+    fn reactie(
+        auteur: PeerId,
+        seq: u64,
+        lamport: u64,
+        doel: OpId,
+        emoji: &str,
+        remove: bool,
+    ) -> Op {
+        op(
+            auteur,
+            seq,
+            lamport,
+            OpKind::React {
+                target: doel,
+                emoji: emoji.into(),
+                remove,
+            },
+        )
+    }
+
+    fn post(body: &str) -> OpKind {
+        OpKind::Post {
+            body: body.into(),
+            reply_to: None,
+        }
+    }
+
+    fn antwoord(body: &str, op_doel: OpId) -> OpKind {
+        OpKind::Post {
+            body: body.into(),
+            reply_to: Some(op_doel),
+        }
+    }
+
+    #[test]
+    fn reacties_groeperen_per_emoji_en_zijn_gesorteerd() {
+        let bericht = op(peer(1), 1, 1, post("hoi"));
+        let t = build(&[
+            bericht.clone(),
+            reactie(peer(2), 1, 2, bericht.id(), "👍", false),
+            reactie(peer(3), 1, 3, bericht.id(), "👍", false),
+            reactie(peer(2), 2, 4, bericht.id(), "🎉", false),
+        ]);
+        assert_eq!(t.reactions.len(), 2);
+        // Gesorteerd op emoji: 🎉 komt voor 👍 in de Unicode-volgorde van de bytes.
+        assert_eq!(t.reactions[0].emoji, "🎉");
+        assert_eq!(t.reactions[0].peers, vec![peer(2)]);
+        assert_eq!(t.reactions[1].emoji, "👍");
+        assert_eq!(t.reactions[1].peers, vec![peer(2), peer(3)]);
+    }
+
+    #[test]
+    fn intrekken_wint_van_het_plaatsen_en_andersom() {
+        let bericht = op(peer(1), 1, 1, post("hoi"));
+        let aan = reactie(peer(2), 1, 2, bericht.id(), "👍", false);
+        let uit = reactie(peer(2), 2, 3, bericht.id(), "👍", true);
+
+        let weg = build(&[bericht.clone(), aan.clone(), uit.clone()]);
+        assert!(weg.reactions.is_empty());
+
+        // En weer terugplaatsen met een latere op.
+        let terug = reactie(peer(2), 3, 9, bericht.id(), "👍", false);
+        let weer_aan = build(&[bericht.clone(), aan, uit, terug]);
+        assert_eq!(weer_aan.reactions.len(), 1);
+        assert_eq!(weer_aan.reactions[0].peers, vec![peer(2)]);
+    }
+
+    #[test]
+    fn reactie_op_verwijderd_bericht_verdwijnt_mee() {
+        let bericht = op(peer(1), 1, 1, post("hoi"));
+        let del = op(peer(1), 2, 2, OpKind::Delete { target: bericht.id() });
+        let aan = reactie(peer(2), 3, 3, bericht.id(), "👍", false);
+        let t = build(&[aan, del, bericht]);
+        assert!(t.messages.is_empty());
+        assert!(t.reactions.is_empty());
+    }
+
+    #[test]
+    fn iedereen_mag_reageren_maar_niet_in_het_verkeerde_kanaal() {
+        // De reactie zelf staat in de DM (goed), maar wijst via een algemene-op naar een
+        // DM-bericht: die moet geweigerd worden, want het algemene kanaal wordt breed
+        // gedeeld en zou zo het bestaan van de DM verraden.
+        let dm_bericht = op_in(Channel::dm(peer(2)), peer(1), 1, 1, post("onder ons"));
+        let kanaalvreemd = op(
+            peer(2),
+            1,
+            2,
+            OpKind::React {
+                target: dm_bericht.id(),
+                emoji: "👍".into(),
+                remove: false,
+            },
+        );
+        let t = build(&[dm_bericht, kanaalvreemd]);
+        assert_eq!(t.messages.len(), 1);
+        assert!(t.reactions.is_empty());
+    }
+
+    #[test]
+    fn antwoord_komt_op_het_bericht_terug() {
+        let origineel = op(peer(1), 1, 1, post("de vraag"));
+        let doel = origineel.id();
+        let antwoord_op = op(peer(2), 1, 2, antwoord("het antwoord", doel));
+        let t = build(&[antwoord_op, origineel]);
+        assert_eq!(t.messages[1].reply_to, Some(doel));
+        assert_eq!(t.messages[0].reply_to, None);
+    }
+
+    #[test]
+    fn antwoord_over_kanalen_heen_wordt_geen() {
+        // Een reply-op op het algemene kanaal die naar een DM-bericht wijst: de verwijzing
+        // mag nooit breder zichtbaar worden dan het bericht zelf.
+        let dm_bericht = op_in(Channel::dm(peer(2)), peer(1), 1, 1, post("onder ons"));
+        let antwoord = op_in(
+            Channel::GENERAL,
+            peer(1),
+            2,
+            2,
+            antwoord("openbaar", dm_bericht.id()),
+        );
+        let t = build(&[dm_bericht, antwoord]);
+        assert_eq!(t.messages[1].body, "openbaar");
+        assert_eq!(t.messages[1].reply_to, None);
     }
 }

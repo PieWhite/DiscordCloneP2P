@@ -46,6 +46,12 @@ const V = {
   settingsTab: "account",
   overlay: "none",           // none | ac | drop | plus
   editing: null,             // OpRef of the message being edited
+  /** Reply being composed: { op, name, body } shown as a chip above the composer. */
+  replyTo: null,
+  /** OpRef whose emoji quick-bar is open, or null. */
+  emojiFor: null,
+  /** Last moment we told the engine we were typing; one notification per window. */
+  lastTypingSent: 0,
   acIndex: 0,
   acMatches: [],
   /** Half-typed messages, per conversation. Switching away must not lose them, and must
@@ -155,10 +161,15 @@ function fmtDay(ms) {
 
 function avatar(peer, size = 32, dot = false, ring = false) {
   const initial = (peer.name || "?").trim().charAt(0).toUpperCase() || "?";
-  const state = peer.self ? selfPresence() : peer.presence;
+  /* A chosen status ("away", "busy") wins over the connection state while it exists —
+     the engine only sends one for a peer that is online. */
+  const state = peer.user_status || (peer.self ? selfPresence() : peer.presence);
   const d = dot ? `<i class="dot" data-state="${state}"></i>` : "";
   return `<span class="av-wrap${ring ? " speak-ring" : ""}"><span class="avatar avatar--${size} av-${peer.avatar}">${esc(initial)}</span>${d}</span>`;
 }
+
+/** The label a chosen status gets in rosters and tooltips. */
+const statusLabel = s => ({ away: "Away", busy: "Busy" }[s] || "");
 
 /** The engine's own peer, shaped like the others so one avatar function covers both. */
 const selfPeer = () => ({ ...S.self, presence: selfPresence(), self: true });
@@ -657,10 +668,38 @@ function wordleCard(item) {
 
 const sameOp = (a, b) => a && b && a.author === b.author && a.channel === b.channel && a.seq === b.seq;
 
+/** The quick-pick emoji for reactions. Small on purpose: eight covers what this chat
+    actually uses, and the pill row itself takes any emoji already there. */
+const QUICK_EMOJI = ["👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "👀"];
+
+const reactionPill = (r, msgOp) => `<button class="pill${r.mine ? " pill--mine" : ""}" data-pill-op='${opAttr(msgOp)}' data-emoji="${esc(r.emoji)}"
+    title="${esc(r.peers.join(", "))}">
+  <span class="pill-emoji">${esc(r.emoji)}</span><span class="num">${r.count}</span>
+</button>`;
+
 function renderMessage(item, grouped, at) {
   const author = item.mine ? selfPeer() : (peerById(item.author) || { name: item.author_name, avatar: item.avatar, presence: "offline" });
   const time = at ? fmtTime(at) : "";
-  return `<article class="msg${grouped ? " msg--grouped" : " msg--start"}${item.mentions_you ? " msg--mentions" : ""}">
+  /* A reply carries its context quote, so grouping it under another message would hide
+     exactly the thing that makes it a reply. */
+  const isReply = item.kind === "message" && item.reply_to;
+  const quote = isReply ? (() => {
+    const s = item.reply_snippet;
+    return `<button class="msg-quote" data-jump-reply='${opAttr(item.reply_to)}'>
+      ${s
+        ? `<span class="msg-quote-name">${esc(s.author_name)}</span><span class="msg-quote-body">${esc(s.body)}</span>`
+        : '<span class="msg-quote-body msg-quote-gone">Original message unavailable</span>'}
+    </button>`;
+  })() : "";
+  const reactions = item.kind === "message" && item.reactions?.length
+    ? `<div class="msg-reactions">${item.reactions.map(r => reactionPill(r, item.id)).join("")}
+       <button class="pill pill--add" data-react-open='${opAttr(item.id)}' title="Add reaction">+</button></div>`
+    : "";
+  const quickBar = V.emojiFor && sameOp(V.emojiFor, item.id)
+    ? `<div class="emoji-bar" role="menu">${QUICK_EMOJI.map(e =>
+        `<button data-emoji="${e}" title="React with ${e}">${e}</button>`).join("")}</div>`
+    : "";
+  return `<article class="msg${grouped ? " msg--grouped" : " msg--start"}${item.mentions_you ? " msg--mentions" : ""}${isReply ? " msg--reply" : ""}">
     <div class="msg-gutter">
       ${grouped ? `<span class="stamp-hover">${time}</span>` : avatar(author, 40)}
     </div>
@@ -670,9 +709,14 @@ function renderMessage(item, grouped, at) {
         <span class="msg-stamp">${time}</span>
         ${item.edited ? '<span class="msg-edited">(edited)</span>' : ""}
       </div>`}
+      ${quote}
       ${itemContent(item)}
+      ${reactions}
+      ${quickBar}
     </div>
     <div class="msg-actions">
+      ${item.kind === "message" ? `<button data-reply-to='${opAttr(item.id)}' data-reply-name="${esc(item.author_name)}" data-reply-text="${esc(item.body.slice(0, 90))}" title="Reply">${ic("i-msg", "icon", 'style="width:15px;height:15px"')}<span class="sr">Reply to this message</span></button>` : ""}
+      ${item.kind === "message" ? `<button data-react-open='${opAttr(item.id)}' title="Add reaction"><span class="act-smiley">🙂</span><span class="sr">Add reaction</span></button>` : ""}
       ${item.mine && item.kind === "message" ? `<button data-edit='${opAttr(item.id)}' title="Edit">${ic("i-edit", "icon", 'style="width:15px;height:15px"')}<span class="sr">Edit this message</span></button>` : ""}
       ${item.mine ? `<button data-danger data-delete='${opAttr(item.id)}' title="Delete">${ic("i-trash", "icon", 'style="width:15px;height:15px"')}<span class="sr">Delete this</span></button>` : ""}
       ${!item.mine && item.kind === "message" ? `<button data-copy='${esc(item.body)}' title="Copy text">${ic("i-file", "icon", 'style="width:15px;height:15px"')}<span class="sr">Copy this message</span></button>` : ""}
@@ -747,7 +791,8 @@ function renderTimeline() {
     }
     const grouped = item.author === lastAuthor
       && at && lastAt && at - lastAt < GROUP_WINDOW
-      && !item.mentions_you;
+      && !item.mentions_you
+      && !(item.kind === "message" && item.reply_to);
     html += renderMessage(item, grouped, at);
     lastAuthor = item.author;
     lastAt = at || lastAt;
@@ -781,6 +826,7 @@ function memberRow(p, opts = {}) {
         <span class="mem-name">${esc(p.name)}</span>
         ${me ? '<span class="mem-you">YOU</span>' : ""}
       </div>
+      ${p.user_status ? `<div class="mem-sub mem-status">${esc(statusLabel(p.user_status))}</div>` : ""}
       ${opts.sub ? `<div class="mem-sub">${esc(opts.sub)}</div>` : ""}
       ${opts.tools ? `<div class="mem-tools">
         <button class="mem-mute" aria-pressed="${muted}" data-pmute="${esc(p.id)}" title="${muted ? `Unmute ${esc(p.name)}` : `Mute ${esc(p.name)}`}">
@@ -1066,6 +1112,18 @@ const SET_BODY = {
       </div>
     </div>
     <div class="field">
+      <label class="field-label" for="set-status">Status</label>
+      <span class="field-help">What the others see next to your name. Volatile: after a
+        restart you are plain online again.</span>
+      <div class="control-row">
+        <select id="set-status" class="text-input" style="min-width:240px">
+          <option value="online"${S.self.status === "online" ? " selected" : ""}>Online</option>
+          <option value="away"${S.self.status === "away" ? " selected" : ""}>Away</option>
+          <option value="busy"${S.self.status === "busy" ? " selected" : ""}>Busy</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
       <span class="field-label">Identity</span>
       <span class="field-help">Never copy this between machines. Two peers sharing one
         identity break chat synchronisation.</span>
@@ -1328,6 +1386,8 @@ function render() {
   renderOverlays();
   renderError();
   renderStatus();
+  renderReplyChip();
+  renderTyping();
   /* Niet hertekenen zolang de gebruiker in een veld staat. Een `change` op een schuif laat
      de motor opslaan, dat geeft een state-event, en dat bouwde het hele paneel opnieuw op —
      met het element waar de focus op stond erbij. Gevolg: pijltjestoetsen op een schuif
@@ -1605,6 +1665,8 @@ function openChannel(key) {
   V.view = "channels";
   V.channel = key;
   V.editing = null;
+  V.replyTo = null;
+  V.emojiFor = null;
   V.overlay = "none";
   afterConversationChange();
 }
@@ -1614,6 +1676,8 @@ function openDm(id) {
   V.view = "dms";
   V.dm = id;
   V.editing = null;
+  V.replyTo = null;
+  V.emojiFor = null;
   V.overlay = "none";
   afterConversationChange();
 }
@@ -1775,6 +1839,44 @@ document.addEventListener("click", async e => {
   const copy = t.closest("[data-copy]");
   if (copy) return navigator.clipboard.writeText(copy.dataset.copy);
 
+  /* Replies, reactions and their two small popovers. The reply chip survives a re-render
+     because it is its own slot; the emoji bar lives inside the message it belongs to. */
+  const reply = t.closest("[data-reply-to]");
+  if (reply) {
+    V.replyTo = {
+      op: JSON.parse(reply.dataset.replyTo),
+      name: reply.dataset.replyName,
+      body: reply.dataset.replyText,
+    };
+    renderReplyChip();
+    return input.focus();
+  }
+  if (t.closest("#reply-cancel")) { V.replyTo = null; renderReplyChip(); return input.focus(); }
+
+  const reactOpen = t.closest("[data-react-open]");
+  if (reactOpen) {
+    V.emojiFor = V.emojiFor && sameOp(V.emojiFor, JSON.parse(reactOpen.dataset.reactOpen))
+      ? null
+      : JSON.parse(reactOpen.dataset.reactOpen);
+    return render();
+  }
+  const emoji = t.closest("[data-emoji]");
+  if (emoji) {
+    const op = V.emojiFor;
+    V.emojiFor = null;
+    invoke("react_message", { op, emoji: emoji.dataset.emoji });
+    return render();
+  }
+  const pill = t.closest(".pill[data-pill-op]");
+  if (pill) {
+    // Toggling is decided on the engine side, which knows whether we already reacted.
+    return invoke("react_message", { op: JSON.parse(pill.dataset.pillOp), emoji: pill.dataset.emoji });
+  }
+  if (!t.closest(".emoji-bar") && V.emojiFor) {
+    V.emojiFor = null;
+    render();
+  }
+
   const acItem = t.closest("[data-ac]");
   if (acItem) return acceptSuggestion(acItem.dataset.ac);
 
@@ -1897,6 +1999,9 @@ document.addEventListener("change", e => {
       set: S.sound.set, volume: Number(e.target.value) / 100,
     });
   }
+  if (e.target.id === "set-status") {
+    return invoke("set_user_status", { status: e.target.value });
+  }
   if (e.target.id === "set-in" || e.target.id === "set-out") {
     return invoke("set_audio_devices", {
       input: $("set-in").value || null,
@@ -1913,6 +2018,35 @@ async function loadDevices() {
 /* ---------------------------------------------------------------- composer */
 
 const input = $("composer-input");
+
+/** The "replying to X" chip above the composer. Lives in its own slot so sending a
+    state event does not have to redraw the composer. */
+function renderReplyChip() {
+  const el = $("reply-slot");
+  if (!V.replyTo) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="reply-chip">
+    <span class="reply-chip-label">Replying to</span>
+    <span class="reply-chip-name">${esc(V.replyTo.name)}</span>
+    <span class="reply-chip-body">${esc(V.replyTo.body)}</span>
+    <button id="reply-cancel" title="Cancel reply">${ic("i-x", "icon", 'style="width:14px;height:14px"')}<span class="sr">Cancel reply</span></button>
+  </div>`;
+}
+
+/** Who is typing in the open conversation. Reads the live state; called from `render`
+    and from every state event, since typing arrives without a timeline change. */
+function renderTyping() {
+  const el = $("typing-slot");
+  const ids = (S.typing || {})[activeChannel()] || [];
+  const names = ids.map(id => peerById(id)?.name).filter(Boolean);
+  if (!names.length) {
+    if (el.innerHTML) el.innerHTML = "";
+    return;
+  }
+  const who = names.length === 1 ? esc(names[0])
+    : names.length === 2 ? `${esc(names[0])} and ${esc(names[1])}`
+    : `${esc(names[0])} and ${names.length - 1} others`;
+  el.innerHTML = `<div class="typing"><i></i><i></i><i></i><span>${who} ${names.length === 1 ? "is" : "are"} typing…</span></div>`;
+}
 
 function growComposer() {
   const tl = $("timeline");
@@ -1948,6 +2082,12 @@ function updateAutocomplete() {
 input.addEventListener("input", () => {
   growComposer();
   updateAutocomplete();
+  /* One "typing" per window while typing continuously; the engine throttles too, but
+     this keeps the wire quiet for the common single-keystroke case as well. */
+  if (input.value.trim() && Date.now() - V.lastTypingSent > 2500) {
+    V.lastTypingSent = Date.now();
+    invoke("notify_typing", { channel: activeChannel() });
+  }
 });
 
 input.addEventListener("keydown", e => {
@@ -1967,9 +2107,12 @@ input.addEventListener("keydown", e => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
-    invoke("send_message", { channel: activeChannel(), text });
+    const replyTo = V.replyTo?.op || null;
+    invoke("send_message", { channel: activeChannel(), text, replyTo });
     input.value = "";
     delete V.drafts[activeChannel()];
+    V.lastTypingSent = 0;
+    if (V.replyTo) { V.replyTo = null; renderReplyChip(); }
     growComposer();
     const tl = $("timeline");
     tl.scrollTop = tl.scrollHeight;
@@ -2003,6 +2146,8 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (dlg.open || promptDlg.open || picker.open || lightbox.open || wordleDlg.open) return;   // <dialog> closes itself
   if (V.editing) { V.editing = null; return render(); }
+  if (V.emojiFor) { V.emojiFor = null; return render(); }
+  if (V.replyTo) { V.replyTo = null; return renderReplyChip(); }
   if (V.overlay !== "none") { V.overlay = "none"; return renderOverlays(); }
 });
 

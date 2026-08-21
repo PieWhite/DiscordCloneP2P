@@ -453,3 +453,46 @@ fase 12.
 
 Volledige onderbouwing, de afgewezen alternatieven (Dioxus, Slint) en de expliciet benoemde
 kosten staan in `docs/OVERDRACHT.md`, beslissing 19, en `PRODUCT.md`, sectie `## Stack`.
+
+### Fase 14 — Reacties, antwoorden, typindicatie, status ✅ (2026-08-22)
+Vier gespreksverfijningen in één ronde. Twee gaan over de oplog (en zijn dus
+protocolwijzigingen), twee zijn bewust vluchtig en nooit een op geweest.
+
+- **Reacties (`OpKind::React`, tag 11)** — uit de reservering 11–19 die er vanaf het
+  begin voor opzij lag. Iedereen mag reageren: anders dan bij Edit/Delete is er géén
+  auteurscheck op het doel — dat was juist het punt. Intrekken gaat met een tweede op
+  (`remove: true`), en het vouwen is last-writer-wins per (doel, emoji, auteur) op
+  `(lamport, author)`, exact dezelfde vergelijking als bij een bewerking. Een reactie
+  staat altijd in het kanaal van zijn doel; de tekenlaag weigert kanaalvreemde reacties,
+  omdat een algemene reactie op een DM-bericht het bestaan van die DM zou verraden.
+  Verdwijnt het bericht, dan verdwijnen zijn reacties mee.
+- **Antwoorden (`Post.reply_to`)** — additief optioneel veld in de map-encoded payload,
+  geen nieuwe soort: een antwoord ís een bericht en moet kunnen bewerken, verwijderen,
+  reageren en meetellen bij ongelezen, precies zoals elk ander. Serde laat een
+  ontbrekend `Option`-veld toe (oude payload decodeert naar `None`) en een oudere peer
+  negeert de onbekende sleutel stilzwijgend — daarom géén protocolbump, zelfde reden als
+  WordleResult. Kanaalvreemde verwijzingen zet de tekenlaag op `None`, zelfde
+  privacy-reden als hierboven. In de UI een klikbaar citaat boven het bericht; een
+  verwijderde of nog niet bekende ouder toont "original message unavailable" zonder te
+  gokken wat er stond.
+- **Typindicatie (`ControlMsg::Typing`, tag 44)** — vluchtig, single-hop, geen doorgifte
+  en geen opslag: na vijf seconden stilte vervalt hij vanzelf, en wie verbreekt neemt
+  hem mee weg. Eigen verzending throttled (2,5 s), zodat elke toetsaanslag geen bericht
+  wordt. Een indicatie voor een DM waar wij niet de geadresseerde van zijn wordt
+  genegeerd — het bericht bewijst wíéér hem stuurde, niet dát hij erin zit.
+- **Status (`ControlMsg::UserStatus`, tag 45)** — online/away/busy als transparante u8
+  (onbekende waarden komen als onbekend door, net als `StreamKind`). Verstuurd bij elke
+  wisseling én direct nadat een verbinding opkomt, want de status onthoudt niets: na een
+  herstart ben je weer gewoon online. Vluchtig met opzet — een status is een belofte
+  over nú, geen geschiedenis.
+
+**Protocolreview:** de `protocol-reviewer`-ronde vond geen breukpunten. De compatibiliteits-
+matrix oud↔nieuw per nieuw bericht/veld is gecheckt, de vouwregels zijn deterministisch
+over aankomstvolgordes heen, en `visible_to` filtert de nieuwe soorten automatisch mee
+omdat het op (auteur, kanaal) en niet op soort filtert. Geen protocolbump nodig.
+
+**Klaar als:** reacties bij alle peers dezelfde groepering en volgorde tonen, een antwoord
+zijn citaat toont ook als de ouder pas later binnenkomt, een typindicatie binnen enkele
+seconden verschijnt én weer verdwijnt zonder verkeer, en een statuswisseling bij de
+anderen zichtbaar wordt zonder herstart. Het handmatige deel (klikgedrag in de UI, echte
+tweede machine) staat Rick te wachten, zoals in eerdere fases.

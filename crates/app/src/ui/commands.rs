@@ -42,13 +42,56 @@ pub fn get_timeline(ui: State<'_, Ui>, channel: String) -> Vec<TimelineItem> {
     )
 }
 
+/// Send a chat message. `reply_to` is `Some` when the composer had a reply open; the
+/// engine validates that it points into this same conversation.
 #[tauri::command]
-pub fn send_message(ui: State<'_, Ui>, channel: String, text: String) {
+pub fn send_message(
+    ui: State<'_, Ui>,
+    channel: String,
+    text: String,
+    reply_to: Option<OpRef>,
+) {
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
     }
-    send(&ui, UiCommand::Plaats(text, state::parse_channel(&channel)));
+    let reply_to = reply_to.and_then(|r| r.to_op_id());
+    send(
+        &ui,
+        UiCommand::Plaats(text, state::parse_channel(&channel), reply_to),
+    );
+}
+
+/// Add a reaction, or take it back if we already reacted with this emoji — the toggle
+/// lives in the chat layer, which knows what is currently on the message.
+#[tauri::command]
+pub fn react_message(ui: State<'_, Ui>, op: OpRef, emoji: String) {
+    let Some(id) = op.to_op_id() else { return };
+    let emoji = emoji.trim().to_string();
+    if emoji.is_empty() {
+        return;
+    }
+    send(&ui, UiCommand::Reageer(id, emoji));
+}
+
+/// "I am typing in this conversation." Fire-and-forget and throttled on the engine side;
+/// the frontend may call it on every keystroke.
+#[tauri::command]
+pub fn notify_typing(ui: State<'_, Ui>, channel: String) {
+    send(&ui, UiCommand::Typing(state::parse_channel(&channel)));
+}
+
+/// Our own presence status: "online", "away" or "busy". Unknown values are dropped here
+/// rather than corrected there.
+#[tauri::command]
+pub fn set_user_status(ui: State<'_, Ui>, status: String) {
+    let status = match status.as_str() {
+        "online" => 0,
+        "away" => 1,
+        "busy" => 2,
+        _ => return,
+    };
+    send(&ui, UiCommand::ZetStatus(status));
 }
 
 #[tauri::command]

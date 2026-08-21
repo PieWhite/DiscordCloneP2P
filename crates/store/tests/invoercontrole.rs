@@ -42,7 +42,7 @@ fn post(author: PeerId, channel: Channel, seq: u64, lamport: u64, tekst: &str) -
         channel,
         seq,
         lamport,
-        &OpKind::Post { body: tekst.into() },
+        &OpKind::Post { body: tekst.into(), reply_to: None },
     )
 }
 
@@ -289,6 +289,7 @@ fn b15_een_op_die_niet_meer_doorstuurbaar_is_wordt_geweigerd() {
     let mut b = store(2);
     let kind = OpKind::Post {
         body: "a".repeat(400 * 1024),
+        reply_to: None,
     };
     let te_groot = rauw(peer(1), Channel::GENERAL, 1, 1, &kind);
     assert!(!b.apply_remote_from(peer(1), &te_groot).unwrap());
