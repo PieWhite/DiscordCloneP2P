@@ -1916,3 +1916,15 @@ button:hover .act-smiley { filter: none; }
 #reply-cancel { flex: none; color: var(--c-silver); background: none; cursor: pointer;
   display: inline-flex; padding: 2px; }
 #reply-cancel:hover { color: var(--c-paper); }
+
+/* Clip-shortcut capture box: leest als een invoerveld, is een knop die wacht op
+   toetsen zolang hij aan het luisteren is. */
+.hotkey-capture {
+  min-width: 200px;
+  text-align: left;
+  font-family: inherit;
+}
+.hotkey-capture[data-wait="true"] {
+  border-color: var(--accent);
+  color: var(--c-cyan);
+}

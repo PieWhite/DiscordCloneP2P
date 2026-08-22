@@ -669,7 +669,12 @@ impl Engine {
                     }
                     // Hotkey-seintjes (F9 of wat de gebruiker koos): zelfde pad als
                     // ClipseNu.
+                    let mut hotkey_aanvragen = 0usize;
                     while self.clip_hotkey_ontvanger.try_recv().is_ok() {
+                        hotkey_aanvragen += 1;
+                    }
+                    if hotkey_aanvragen > 0 {
+                        tracing::info!(aanvragen = hotkey_aanvragen, "clip-save aangevraagd via de hotkey");
                         if self.cfg.clips.enabled && self.clips.aan() {
                             self.clips.bewaar_nu();
                         } else {
@@ -1783,6 +1788,11 @@ impl Engine {
                 }
             }
             UiCommand::ClipseNu => {
+                tracing::info!(
+                    enabled = self.cfg.clips.enabled,
+                    opname_loopt = self.clips.aan(),
+                    "clip-save aangevraagd via de knop"
+                );
                 if self.cfg.clips.enabled && self.clips.aan() {
                     self.clips.bewaar_nu();
                 } else {

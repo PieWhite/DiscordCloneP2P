@@ -1315,13 +1315,15 @@ const SET_BODY = {
       </div>
     </div>
     <div class="field">
-      <label class="field-label" for="clips-hotkey-input">Shortcut</label>
-      <span class="field-help">Examples: F9, ctrl+alt+c, shift+f5. Applies immediately,
-        no restart.</span>
+      <span class="field-label">Shortcut</span>
+      <span class="field-help">Click the box and press the key or combination you want.
+        Esc cancels. Applies immediately, no restart.</span>
       <div class="control-row">
-        <input class="text-input" id="clips-hotkey-input" value="${esc(c.hotkey)}"
-               style="min-width:160px;max-width:200px" spellcheck="false">
-        <button class="btn btn--ghost" id="save-clips-hotkey">Save shortcut</button>
+        <button class="text-input hotkey-capture" id="clips-hotkey-capture"
+                data-wait="${V.hotkeyWait ? "true" : "false"}"
+                aria-label="Clip shortcut, click to record a key combination">
+          ${V.hotkeyWait ? "Press keys… Esc cancels" : hk}
+        </button>
       </div>
     </div>
     <div class="field">
@@ -1965,6 +1967,10 @@ document.addEventListener("click", async e => {
 
   if (t.closest("#save-name")) return invoke("set_display_name", { name: $("set-name").value });
   if (t.closest("#clips-toggle")) return invoke("set_clips", { enabled: !S.clips.enabled });
+  if (t.closest("#clips-hotkey-capture")) {
+    V.hotkeyWait = true;
+    return renderSettings();
+  }
   if (t.closest("#clip-now")) return invoke("clip_now");
   if (t.closest("#open-clips-folder")) return invoke("open_clips_folder");
   if (t.closest("#btn-download-dir")) return invoke("pick_download_dir");
@@ -2213,11 +2219,43 @@ document.addEventListener("keydown", e => {
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (dlg.open || promptDlg.open || picker.open || lightbox.open || wordleDlg.open) return;   // <dialog> closes itself
+  if (V.hotkeyWait) { V.hotkeyWait = false; return renderSettings(); }
   if (V.editing) { V.editing = null; return render(); }
   if (V.emojiFor) { V.emojiFor = null; return render(); }
   if (V.replyTo) { V.replyTo = null; return renderReplyChip(); }
   if (V.overlay !== "none") { V.overlay = "none"; return renderOverlays(); }
 });
+
+/* The clip-shortcut capture box: while waiting, every keydown becomes the new
+   combination. Modifiers alone only update what the box shows; a real key completes
+   it and sends it straight to the engine, which validates and re-registers. Keys the
+   wire format does not know (arrows, punctuation) are ignored silently — the box
+   keeps waiting instead of saving something unusable. */
+document.addEventListener("keydown", e => {
+  if (!V.hotkeyWait) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const mods = [];
+  if (e.ctrlKey) mods.push("ctrl");
+  if (e.altKey) mods.push("alt");
+  if (e.shiftKey) mods.push("shift");
+  if (e.metaKey) mods.push("win");
+  const k = e.key;
+  if (["Control", "Alt", "Shift", "Meta"].includes(k)) {
+    if (mods.length) {
+      const box = $("clips-hotkey-capture");
+      if (box) box.textContent = mods.join("+") + "+…";
+    }
+    return;
+  }
+  if (k === "Escape") { V.hotkeyWait = false; renderSettings(); return; }
+  let name = null;
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(k)) name = k.toLowerCase();
+  else if (/^[a-z0-9]$/i.test(k)) name = k.toLowerCase();
+  if (!name) return;
+  V.hotkeyWait = false;
+  invoke("set_clip_hotkey", { hotkey: [...mods, name].join("+") });
+}, true);
 
 document.addEventListener("keydown", e => {
   if (e.target.id !== "edit-input") return;

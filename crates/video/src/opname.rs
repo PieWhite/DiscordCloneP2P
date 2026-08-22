@@ -1109,9 +1109,13 @@ fn opname_lus(
 
         // Bewaarverzoek: het lopende segment mag dicht zodra het keyframe er is.
         if staat.bewaar.swap(false, Ordering::Relaxed) {
+            tracing::info!("bewaarverzoek ontvangen; segment sluit op het volgende keyframe");
             sluiten_gevraagd = true;
         }
-        if sluiten_gevraagd && !keyframe_gevraagd && segment.is_some() {
+        // Het verzoek herhalen elke tik: sommige encoder-MFT's slikken een eenmalige
+        // ForceKeyFrame stilzwijgend in als hij midden in een GOP komt. Herhalen is
+        // goedkoop en ongevaarlijk — een IDR vaker dan gevraagd is geen kwaad.
+        if sluiten_gevraagd && segment.is_some() {
             encoder.vraag_keyframe();
             keyframe_gevraagd = true;
         }
@@ -1243,6 +1247,10 @@ fn bewaar_thread(
     let _ = std::thread::Builder::new()
         .name("fitcom-clip".into())
         .spawn(move || {
+            tracing::info!(
+                segmenten = metas.len(),
+                "clip samenstellen gestart"
+            );
             let resultaat = (|| -> Result<PathBuf> {
                 let Some((video, audio)) = sporen else {
                     bail!("er is nog geen beeld opgenomen");
