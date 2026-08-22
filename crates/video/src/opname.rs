@@ -802,18 +802,20 @@ impl Menger {
         if data.is_empty() {
             return;
         }
-        let frames = i64::try_from(data.len()).unwrap_or(0) / 2;
         let offset_frames =
             ((start_abs_hns - self.basis_hns).max(0)) * 48_000 / HNS_PER_SEC;
-        let nodig = (offset_frames as usize + frames as usize) * 2;
+        // base_i en lengte in één berekening, zodat resize en schrijfbereik per
+        // definitie dezelfde grens delen — hier zat een index-paniek die ik niet uit
+        // de formule kon verklaren, dus nu is de grens onmogelijk te missen.
+        let base_i = offset_frames as usize * 2;
+        let nodig = base_i + data.len();
         if self.buffer.len() < nodig {
             self.buffer.resize(nodig, 0.0);
         }
-        let base_i = offset_frames as usize * 2;
         for (i, s) in data.iter().enumerate() {
             self.buffer[base_i + i] += *s;
         }
-        let einde = offset_frames + frames;
+        let einde = offset_frames + i64::try_from(data.len()).unwrap_or(0) / 2;
         self.bron_einde_frame[bron] = Some(match self.bron_einde_frame[bron] {
             Some(e) => e.max(einde),
             None => einde,
@@ -1017,6 +1019,13 @@ fn opname_lus(
     let mut vorige_tijd: i64 = -1;
     let mut tempo = Tempo::nieuw(instellingen.fps);
     let begin = crate::deler::klok_nulpunt();
+    // Diagnostiek voor "waarom staat er niets in de ring": elke vijf seconden eerlijk
+    // vertellen wat de lus tot nu toe zag, zodat een lege map zegt waar hij hapert.
+    let mut diag_beelden: u64 = 0;
+    let mut diag_pakketten: u64 = 0;
+    let mut diag_keyframes: u64 = 0;
+    let mut diag_laatste_log = Instant::now();
+    let diag_seq_len = encoder.sequentie_header().len();
     // Basis van de geluidstijdlijn: het begin van deze sessie. Beelden vóór het eerste
     // keyframe komen toch niet in een segment, dus die marge is gratis.
     let mut menger = aac.as_ref().map(|_| Menger {
@@ -1030,6 +1039,20 @@ fn opname_lus(
     loop {
         if staat.stop.load(Ordering::Relaxed) {
             break;
+        }
+
+        // Diagnose bovenin de lus, zodat hij ook logt wanneer er (nog) geen beelden
+        // binnenkomen — precies de situatie waarin je hem nodig hebt.
+        if diag_laatste_log.elapsed() >= Duration::from_secs(5) {
+            tracing::debug!(
+                beelden = diag_beelden,
+                pakketten = diag_pakketten,
+                keyframes = diag_keyframes,
+                segment_open = segment.is_some(),
+                seq_header_bytes = diag_seq_len,
+                "clip-opname-diagnose"
+            );
+            diag_laatste_log = Instant::now();
         }
 
         // Geluid binnenhalen uit beide bronnen en op één tijdlijn mengen. Elke bron
@@ -1135,6 +1158,7 @@ fn opname_lus(
         let tijd = (wnul + (opname.opgenomen_hns - onul)).max(vorige_tijd + 1);
         vorige_tijd = tijd;
 
+        diag_beelden += 1;
         let pakketten = match encoder.encode(&opname.textuur, tijd) {
             Ok(p) => p,
             Err(e) => {
@@ -1143,6 +1167,13 @@ fn opname_lus(
                 continue;
             }
         };
+
+        for p in &pakketten {
+            diag_pakketten += 1;
+            if p.keyframe {
+                diag_keyframes += 1;
+            }
+        }
 
         for p in pakketten {
             // Dichttrekken op een keyframe: op verzoek (bewaar), of omdat het segment
