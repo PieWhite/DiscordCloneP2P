@@ -311,8 +311,13 @@ pub enum UiCommand {
     /// Clipopname aan of uit, en dat meteen vastleggen in de config.
     ZetClips(bool),
     /// Nú de laatste `venster_sec` seconden als clip wegschrijven. Ook via de globale
-    /// hotkey Ctrl+Alt+C, die hier op hetzelfde kanaal uitkomt.
+    /// hotkey, die hier op hetzelfde kanaal uitkomt.
     ClipseNu,
+    /// Welk scherm er voor clips opgenomen wordt (naam uit de bronlijst). Leeg =
+    /// automatisch het eerste.
+    ZetClipMonitor(String),
+    /// De globale clip-sneltoets wisselen, zonder herstart.
+    ZetClipsHotkey(String),
 }
 
 pub struct EngineHandle {
@@ -380,11 +385,27 @@ pub fn spawn(
         })
         .collect();
 
+    // Globale clip-hotkey (standaard F9, instelbaar). Eigen Win32-draad; hij duwt
+    // rechtstreeks op het motorcommandokanaal en werkt dus ook vanuit de tray. Vóór
+    // de Engine-aanmaak: `cfg` verhuist daarin, en de draad hoort bij het object.
+    let clip_hotkey_spec = cfg.clips.hotkey.clone();
+    let (clip_hotkey_verzender, clip_hotkey_ontvanger) = std::sync::mpsc::channel();
+    let hotkey_tx = clip_hotkey_verzender.clone();
+    let hotkey_draad = crate::clips::start_hotkey(&clip_hotkey_spec, move || {
+        let _ = hotkey_tx.send(());
+    })
+    .context("clip-hotkey registreren")
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %format!("{e:#}"), "hotkey uit; clips blijven via de UI werken");
+        crate::clips::HotkeyDraad::dode()
+    });
+
     let engine = Engine {
         mesh,
         chat,
         cfg,
         config_path,
+        hotkey_draad,
         peers,
         verbonden: HashMap::new(),
         voice: None,
@@ -411,6 +432,8 @@ pub fn spawn(
         fout: None,
         niet_storen: false,
         clips: clips_beheer,
+        clip_hotkey_verzender,
+        clip_hotkey_ontvanger,
         typing_tot: HashMap::new(),
         typing_verzonden: HashMap::new(),
         peer_status: HashMap::new(),
@@ -421,15 +444,6 @@ pub fn spawn(
     };
 
     tokio::spawn(engine.run(cmd_rx));
-
-    // Globale clip-hotkey: Ctrl+Alt+C = "bewaar nu". Eigen Win32-draad; hij duwt
-    // rechtstreeks op het motorcommandokanaal en werkt dus ook vanuit de tray.
-    let _ = crate::clips::start_hotkey({
-        let tx = cmd_tx.clone();
-        move || {
-            let _ = tx.try_send(UiCommand::ClipseNu);
-        }
-    });
 
     Ok(EngineHandle {
         snapshot: snap_rx,
@@ -506,6 +520,13 @@ struct Engine {
     /// Clipopname-beheer (fase 15). Bestaat altijd; op platforms zonder ondersteuning
     /// is het een no-op die zichzelf afwezig meldt.
     clips: crate::clips::ClipsBeheer,
+    /// De geregistreerde clip-hotkey. Vervangen (Drop → WM_QUIT → nieuwe draad) zodra
+    /// de gebruiker een andere toets kiest.
+    hotkey_draad: crate::clips::HotkeyDraad,
+    /// De hotkey-draad praat via dit kanaal naar de motor: één seintje = "bewaar nu",
+    /// dezelfde weg als het ClipseNu-commando.
+    clip_hotkey_verzender: std::sync::mpsc::Sender<()>,
+    clip_hotkey_ontvanger: std::sync::mpsc::Receiver<()>,
     /// Vluchtige typindicaties: tot wanneer deze peer in dit kanaal aan het typen is.
     /// Geen oplog, geen doorgifte — na een paar seconden stilte of een verbreking is de
     /// betekenis weg en mag de administratie dat ook zijn.
@@ -635,11 +656,24 @@ impl Engine {
                         self.typing_tot.retain(|_, tot| *tot > nu);
                     }
                     // Clip-events (klaar/mislukt) binnenhalen en een doodlopende
-                    // keten signaleren.
-                    self.clips.tik();
+                    // keten signaleren. Een klaargekomen clip krijgt hetzelfde
+                    // geluidje als een stream die start — het is ook een "er wordt
+                    // nu iets voor je opgenomen/geleverd"-moment.
+                    if let Some(_pad) = self.clips.tik() {
+                        self.geluid(crate::geluid::Geluid::StreamAan);
+                    }
                     if let Some(f) = self.clips.fout() {
                         if self.fout.is_none() {
                             self.fout = Some(format!("clips: {f}"));
+                        }
+                    }
+                    // Hotkey-seintjes (F9 of wat de gebruiker koos): zelfde pad als
+                    // ClipseNu.
+                    while self.clip_hotkey_ontvanger.try_recv().is_ok() {
+                        if self.cfg.clips.enabled && self.clips.aan() {
+                            self.clips.bewaar_nu();
+                        } else {
+                            self.fout = Some("Clips staan uit (instellingen → clips).".into());
                         }
                     }
                 }
@@ -1242,6 +1276,7 @@ impl Engine {
             self.cfg.clips.venster_sec,
             self.cfg.video.fps,
             self.cfg.video.bitrate,
+            self.cfg.clips.monitor.as_deref(),
             d3d.as_ref(),
         ) {
             tracing::error!(error = %format!("{e:#}"), "clipopname wisselen mislukt");
@@ -1753,6 +1788,55 @@ impl Engine {
                 } else {
                     self.fout = Some("Clips staan uit (instellingen → clips).".into());
                 }
+            }
+            UiCommand::ZetClipMonitor(naam) => {
+                let gekozen = if naam.trim().is_empty() {
+                    None
+                } else {
+                    Some(naam)
+                };
+                if self.cfg.clips.monitor != gekozen {
+                    self.cfg.clips.monitor = gekozen.map(|s| s.to_string());
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                        return;
+                    }
+                    // Draait de opname al? Dan meteen herstarten op het nieuwe
+                    // scherm — een wisseling halverwege kan de keten niet aan,
+                    // maar een paar seconden opnieuw opstarten is genoeg troost.
+                    let stond_aan = self.clips.aan();
+                    if stond_aan {
+                        self.zet_clips_motor(false);
+                        self.zet_clips_motor(true);
+                    }
+                }
+            }
+            UiCommand::ZetClipsHotkey(spec) => {
+                let spec = spec.trim().to_string();
+                // Eerst valideren: een typefout mag de werkende toets niet slopen.
+                if let Err(e) = crate::clips::ontled_hotkey(&spec) {
+                    self.fout = Some(format!("sneltoets: {e:#}"));
+                    return;
+                }
+                self.cfg.clips.hotkey = spec.clone();
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    self.fout = Some(format!("config opslaan: {e:#}"));
+                    return;
+                }
+                // Oude draad weg (Drop → WM_QUIT → unregister), nieuwe eraan. De
+                // verzender naar onszelf blijft dezelfde: de tik leest het kanaal uit.
+                self.hotkey_draad =
+                    crate::clips::start_hotkey(&spec, {
+                        let tx = self.clip_hotkey_verzender.clone();
+                        move || {
+                            let _ = tx.send(());
+                        }
+                    })
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %format!("{e:#}"), "nieuwe clip-hotkey mislukt");
+                        self.fout = Some(format!("sneltoets: {e:#}"));
+                        crate::clips::HotkeyDraad::dode()
+                    });
             }
             UiCommand::Bewerk(doel, tekst) => {
                 let r = self.chat.bewerk_bericht(doel, &tekst);
@@ -2433,7 +2517,7 @@ impl Engine {
             clips: self
                 .clips
                 .aanwezig()
-                .then(|| self.clips.weergave(self.cfg.clips.venster_sec)),
+                .then(|| self.clips.weergave(&self.cfg.clips)),
             typing: self
                 .typing_tot
                 .iter()

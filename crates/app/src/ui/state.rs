@@ -138,6 +138,10 @@ pub struct ClipsState {
     pub enabled: bool,
     /// How far back a clip reaches, in seconds.
     pub window_sec: u32,
+    /// Which screen is being recorded (name from the source list).
+    pub monitor: Option<String>,
+    /// The configured global shortcut, as written in the config.
+    pub hotkey: String,
     /// Where finished clips land; for the open-folder button.
     pub folder: String,
     /// The most recent clip, if any was saved this session.
@@ -695,6 +699,8 @@ impl UiState {
             clips: snap.clips.as_ref().map(|c| ClipsState {
                 enabled: c.aan,
                 window_sec: c.venster_sec,
+                monitor: c.monitor.clone(),
+                hotkey: c.hotkey.clone(),
                 folder: c.map.clone(),
                 last_clip: c.laatste.clone(),
                 error: c.fout.clone(),

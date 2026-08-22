@@ -145,7 +145,20 @@ fn herstart_pikt_de_ring_weer_op() {
             tx1,
         )
         .unwrap();
-        std::thread::sleep(Duration::from_secs(5));
+        // Een stilstaand scherm levert pas een segment op zodra er wéér iets verandert
+        // (sluiten gebeurt op keyframes van échte beelden). Wachten tot er minstens
+        // één afgesloten segment ligt, in plaats van blind vijf seconden te slapen.
+        let begin_wachten = Instant::now();
+        loop {
+            if !laad_segmenten(&ring).is_empty() {
+                break;
+            }
+            assert!(
+                begin_wachten.elapsed() <= Duration::from_secs(20),
+                "geen afgesloten segment binnen 20 s"
+            );
+            std::thread::sleep(Duration::from_millis(500));
+        }
         drop(h); // stopt; de ring blijft liggen
     }
 
@@ -157,10 +170,10 @@ fn herstart_pikt_de_ring_weer_op() {
         .map(|m| m.len())
         .sum();
 
-    // Tweede run: dezelfde map. De harde eis is dat de OUDE segmenten nog bestaan,
-    // leesbaar zijn en door de nieuwe administratie gekend worden. Groei hoort er ook
-    // bij, maar hangt af van schermactiviteit: een stilstaand beeld levert geen
-    // beelden, dus daar wachten we hooguit vijftien seconden op en eisen hem dan niet.
+    // Tweede run: dezelfde map. De harde eisen: er komt bij (een bewegende wereld
+    // levert gewoon nieuwe segmenten), niets wordt herschreven, en elk óúd segment
+    // dat nog bestaat is nog steeds een leesbaar MP4. Retentie mag de allereerste
+    // wél al geretireerd hebben — het venster (5 s) is korter dan de twee runs samen.
     let (tx2, _rx2) = std::sync::mpsc::channel();
     let h2 = fitcom_video::opname::start_opname(
         &d3d,
@@ -172,27 +185,30 @@ fn herstart_pikt_de_ring_weer_op() {
         tx2,
     )
     .unwrap();
-    std::thread::sleep(Duration::from_secs(3));
-    let metas_na_start2 = laad_segmenten(&ring);
-    let bytes_nu: u64 = metas_na_start2
-        .iter()
-        .filter_map(|m| std::fs::metadata(&m.pad).ok())
-        .map(|m| m.len())
-        .sum();
 
-    assert_eq!(
-        bytes_nu, totaal_bytes,
-        "oude segmenten zijn tijdens de herstart verdwenen of herschreven"
-    );
-    assert!(
-        metas_na_start2.len() >= metas_na_stop.len(),
-        "herstart verloor segmenten: {} → {}",
-        metas_na_stop.len(),
-        metas_na_start2.len()
-    );
-    // En elk oud segment is nog steeds een leesbaar MP4.
-    for m in &metas_na_start2 {
-        let _ = mp4::Mp4Reader::read_header(
+    // Wachten tot de ring gegroeid is; een stilstaand scherm kan even duren.
+    let start_wachten = Instant::now();
+    loop {
+        let n: u64 = laad_segmenten(&ring)
+            .iter()
+            .filter_map(|m| std::fs::metadata(&m.pad).ok())
+            .map(|m| m.len())
+            .sum();
+        if n > totaal_bytes {
+            break;
+        }
+        assert!(
+            start_wachten.elapsed() <= Duration::from_secs(20),
+            "de herstart groeide niet binnen 20 s ({totaal_bytes} → {n} bytes)"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    for m in &metas_na_stop {
+        if !m.pad.exists() {
+            continue; // geretireerd door retentie; zie de opmerking hierboven
+        }
+        mp4::Mp4Reader::read_header(
             std::fs::File::open(&m.pad).expect("oud segment weg"),
             std::fs::metadata(&m.pad).unwrap().len(),
         )

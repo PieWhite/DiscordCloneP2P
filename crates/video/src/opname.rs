@@ -766,13 +766,65 @@ impl ClipInstellingen {
     }
 }
 
-/// Systeemgeluid voor in de clip: de ontvangsthelft van een loopback-tap. Interleaved
-/// f32 op de genoemde samplerate; de AAC-encoder wil s16 en die omzetting gebeurt in
-/// de lus hieronder.
-pub struct AudioBron {
-    pub ontvangen: std::sync::mpsc::Receiver<Vec<f32>>,
-    pub sample_rate: u32,
-    pub kanalen: usize,
+/// Geluid voor in de clip, al genormaliseerd naar 48 kHz stereo door de taps zelf.
+/// Beide bronnen zijn optioneel — een clip zonder geluid is beter dan helemaal geen
+/// clip, en welke bron er ook faalt: de videoketen draait gewoon door.
+#[derive(Default)]
+pub struct AudioBronnen {
+    /// Systeem- en spelgeluid via de proces-exclusieve loopback-tap.
+    pub systeem: Option<std::sync::mpsc::Receiver<Vec<f32>>>,
+    /// De eigen microfoon via de microfoon-tap.
+    pub microfoon: Option<std::sync::mpsc::Receiver<Vec<f32>>>,
+}
+
+impl AudioBronnen {
+    /// Zit er überhaupt een bron bij?
+    pub fn heeft_bron(&self) -> bool {
+        self.systeem.is_some() || self.microfoon.is_some()
+    }
+}
+
+/// Mengt beide geluidsbronnen op één tijdlijn. Bronnen leveren hun chunks met een
+/// absolute begintijd (hun eigen klok, gestart op het begin van de sessie); de buffer
+/// is interleaved stereo vanaf `basis_hns`. Alles wat álle bronnen tot en met hebben
+/// geleverd mag veilig naar de AAC-encoder — daárvoor kan een bron nog terugkomen met
+/// een monster dat eerder begint, en dat moet dan juist tussengevoegd kunnen worden.
+struct Menger {
+    basis_hns: i64,
+    buffer: Vec<f32>,
+    gecodeerd_tot_frame: i64,
+    klok: [Option<i64>; 2],
+    bron_einde_frame: [Option<i64>; 2],
+}
+
+impl Menger {
+    fn voeg_toe(&mut self, bron: usize, start_abs_hns: i64, data: &[f32]) {
+        if data.is_empty() {
+            return;
+        }
+        let frames = i64::try_from(data.len()).unwrap_or(0) / 2;
+        let offset_frames =
+            ((start_abs_hns - self.basis_hns).max(0)) * 48_000 / HNS_PER_SEC;
+        let nodig = (offset_frames as usize + frames as usize) * 2;
+        if self.buffer.len() < nodig {
+            self.buffer.resize(nodig, 0.0);
+        }
+        let base_i = offset_frames as usize * 2;
+        for (i, s) in data.iter().enumerate() {
+            self.buffer[base_i + i] += *s;
+        }
+        let einde = offset_frames + frames;
+        self.bron_einde_frame[bron] = Some(match self.bron_einde_frame[bron] {
+            Some(e) => e.max(einde),
+            None => einde,
+        });
+    }
+
+    /// Tot welk frame hebben álle aanwezige bronnen geleverd? Daarvóór kan niet
+    /// gecodeerd worden: een latere chunk van een andere bron mag er nog in mengen.
+    fn veilig_tot_frame(&self) -> i64 {
+        self.bron_einde_frame.iter().flatten().copied().min().unwrap_or(0)
+    }
 }
 
 /// Wat een clip-poging opleverde, via een kanaal naar de motor.
@@ -833,7 +885,7 @@ pub fn start_opname(
     instellingen: ClipInstellingen,
     ring_dir: PathBuf,
     clips_dir: PathBuf,
-    audio: Option<AudioBron>,
+    audio: Option<AudioBronnen>,
     gebeurtenissen: std::sync::mpsc::Sender<ClipGebeurtenis>,
 ) -> Result<OpnameHandle> {
     if !matches!(bron.soort, BronSoort::Monitor | BronSoort::Venster) {
@@ -918,7 +970,7 @@ fn opname_lus(
     instellingen: &ClipInstellingen,
     ring_dir: &Path,
     clips_dir: &Path,
-    audio: Option<&AudioBron>,
+    audio: Option<&AudioBronnen>,
     gebeurtenissen: std::sync::mpsc::Sender<ClipGebeurtenis>,
     staat: &ClipStatus,
 ) -> Result<()> {
@@ -937,10 +989,10 @@ fn opname_lus(
     )
     .context("clip-encoder opzetten")?;
 
-    // Geluid mislukt? Dan gaan de clips zonder audiospooor door — beter dan helemaal
-    // geen clip, en de reden staat in de log.
-    let mut aac = match audio {
-        Some(a) => match AacEncoder::new(a.sample_rate, a.kanalen as u32) {
+    // Geluid: AAC op vaste 48 kHz stereo. Zonder bronnen geen encoder — en zonder
+    // encoder geen geluid, maar wel gewoon clips.
+    let mut aac = match audio.filter(|a| a.heeft_bron()) {
+        Some(_) => match AacEncoder::new(48_000, 2) {
             Ok(e) => Some(e),
             Err(e) => {
                 tracing::warn!(
@@ -952,7 +1004,6 @@ fn opname_lus(
         },
         None => None,
     };
-    let mut audio_tijd: Option<i64> = None;
     let mut wachtrij: VecDeque<(i64, i64, Vec<u8>)> = VecDeque::new();
 
     let mut sporen: Option<(VideoSpoor, Option<AudioSpoor>)> = None;
@@ -966,34 +1017,93 @@ fn opname_lus(
     let mut vorige_tijd: i64 = -1;
     let mut tempo = Tempo::nieuw(instellingen.fps);
     let begin = crate::deler::klok_nulpunt();
+    // Basis van de geluidstijdlijn: het begin van deze sessie. Beelden vóór het eerste
+    // keyframe komen toch niet in een segment, dus die marge is gratis.
+    let mut menger = aac.as_ref().map(|_| Menger {
+        basis_hns: 0,
+        buffer: Vec::new(),
+        gecodeerd_tot_frame: 0,
+        klok: [None; 2],
+        bron_einde_frame: [None; 2],
+    });
 
     loop {
         if staat.stop.load(Ordering::Relaxed) {
             break;
         }
 
-        // Geluid binnenhalen en coderen. De audiotijden lopen vanaf het begin van de
-        // sessie op dézelfde klok als het beeld, dus ze zijn onderling vergelijkbaar.
-        if let (Some(a), Some(enc)) = (&audio, &mut aac) {
-            while let Ok(chunk) = a.ontvangen.try_recv() {
-                let frames = chunk.len() / a.kanalen.max(1);
-                if frames == 0 {
-                    continue;
-                }
-                let duur = frames as i64 * HNS_PER_SEC / i64::from(a.sample_rate);
-                let pcm: Vec<i16> = chunk
-                    .iter()
-                    .map(|s| (s.clamp(-1.0, 1.0) * 32_767.0) as i16)
-                    .collect();
-                let tijd = *audio_tijd.get_or_insert_with(|| nu_hns(begin));
-                match enc.voer(&pcm, tijd, duur) {
-                    Ok(uit) => wachtrij.extend(uit),
-                    Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "AAC-codering mislukt");
-                        break;
+        // Geluid binnenhalen uit beide bronnen en op één tijdlijn mengen. Elke bron
+        // houdt zijn eigen klok bij (absoluut, vanaf sessiestart); de menger somt de
+        // monsters op dezelfde plek op, en wat álle bronnen gevuld hebben mag naar de
+        // encoder.
+        if aac.is_some() {
+            if menger.is_none() {
+                menger = Some(Menger {
+                    basis_hns: nu_hns(begin),
+                    buffer: Vec::new(),
+                    gecodeerd_tot_frame: 0,
+                    klok: [None; 2],
+                    bron_einde_frame: [None; 2],
+                });
+            }
+            let m = menger.as_mut().expect("net aangemaakt");
+            for (bron_idx, rx_opt) in [
+                (0usize, audio.and_then(|a| a.systeem.as_ref())),
+                (1usize, audio.and_then(|a| a.microfoon.as_ref())),
+            ] {
+                let Some(rx) = rx_opt else { continue };
+                while let Ok(chunk) = rx.try_recv() {
+                    if chunk.is_empty() {
+                        continue;
                     }
+                    let start = *m.klok[bron_idx].get_or_insert_with(|| nu_hns(begin));
+                    let duur =
+                        i64::try_from(chunk.len()).unwrap_or(0) / 2 * HNS_PER_SEC / 48_000;
+                    if duur == 0 {
+                        continue;
+                    }
+                    m.voeg_toe(bron_idx, start, &chunk);
+                    m.klok[bron_idx] = Some(start + duur);
                 }
-                audio_tijd = Some(tijd + duur);
+            }
+
+            // Alles wat álle bronnen tot en met leverden mag de encoder in — in
+            // blokjes van ~50 ms, zodat één lange stilte niet één reuzenchunk wordt.
+            if let Some(enc) = &mut aac {
+                let veilig = m.veilig_tot_frame();
+                const STAP_FRAMES: i64 = 2400;
+                while m.gecodeerd_tot_frame < veilig {
+                    let n = (veilig - m.gecodeerd_tot_frame).min(STAP_FRAMES);
+                    let off = m.gecodeerd_tot_frame as usize * 2;
+                    let pcm: Vec<i16> = m.buffer[off..off + (n as usize) * 2]
+                        .iter()
+                        .map(|s| (s.clamp(-1.0, 1.0) * 32_767.0) as i16)
+                        .collect();
+                    let abs =
+                        m.basis_hns + m.gecodeerd_tot_frame * HNS_PER_SEC / 48_000;
+                    match enc.voer(&pcm, abs, n * HNS_PER_SEC / 48_000) {
+                        Ok(uit) => wachtrij.extend(uit),
+                        Err(e) => {
+                            tracing::warn!(error = %format!("{e:#}"), "AAC-codering mislukt");
+                            break;
+                        }
+                    }
+                    m.gecodeerd_tot_frame += n;
+                }
+
+                // De kop van de buffer is gecodeerd en kan weg; basis en administratie
+                // schuiven mee zodat alle relatieve tijden kloppen blijven.
+                if m.gecodeerd_tot_frame > 0 {
+                    let d = (m.gecodeerd_tot_frame as usize)
+                        .saturating_mul(2)
+                        .min(m.buffer.len());
+                    m.buffer.drain(..d);
+                    m.basis_hns += m.gecodeerd_tot_frame * HNS_PER_SEC / 48_000;
+                    for be in &mut m.bron_einde_frame {
+                        *be = be.map(|v| (v - m.gecodeerd_tot_frame).max(0));
+                    }
+                    m.gecodeerd_tot_frame = 0;
+                }
             }
         }
 
@@ -1072,11 +1182,16 @@ fn opname_lus(
                         hoogte,
                         fps: instellingen.fps,
                     };
-                    let asp = audio.as_ref().map(|a| AudioSpoor {
-                        sample_rate: a.sample_rate,
-                        kanalen: a.kanalen as u32,
-                        bitrate: AAC_BYTES_PER_SEC * 8,
-                    });
+                    // AAC is vast 48 kHz stereo — de taps normaliseren daar zelf naar.
+                    let asp = if aac.is_some() {
+                        Some(AudioSpoor {
+                            sample_rate: 48_000,
+                            kanalen: 2,
+                            bitrate: AAC_BYTES_PER_SEC * 8,
+                        })
+                    } else {
+                        None
+                    };
                     sporen = Some((vs.clone(), asp.clone()));
                     let pad = ring_dir.join(format!("seg-{:020}.mp4", p.tijd_hns));
                     segment =

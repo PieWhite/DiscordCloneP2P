@@ -530,6 +530,24 @@ pub fn open_clips_folder(ui: State<'_, Ui>) {
     }
 }
 
+/// De schermen waaruit gekozen kan worden voor de clipopname.
+#[tauri::command]
+pub fn clip_monitors() -> Vec<String> {
+    crate::clips::monitoren().unwrap_or_default()
+}
+
+/// Welk scherm er voor clips opgenomen wordt. Leeg = automatisch (eerste).
+#[tauri::command]
+pub fn set_clip_monitor(ui: State<'_, Ui>, name: String) {
+    send(&ui, UiCommand::ZetClipMonitor(name));
+}
+
+/// De globale sneltoets wisselen, zonder herstart.
+#[tauri::command]
+pub fn set_clip_hotkey(ui: State<'_, Ui>, hotkey: String) {
+    send(&ui, UiCommand::ZetClipsHotkey(hotkey));
+}
+
 #[tauri::command]
 pub fn create_channel(ui: State<'_, Ui>, title: String) {
     let title = title.trim().to_string();

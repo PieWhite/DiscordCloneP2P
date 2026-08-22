@@ -1072,6 +1072,8 @@ const SET_TABS = [
 /** Fetched the first time the Audio tab is shown; Refresh drops it so a headset that was
     just plugged in appears. */
 let devices = null;
+/** Monitors for the clips tab, fetched once when it opens; monitors rarely change. */
+let clipMonitors = null;
 
 /** What the Account tab says next to "Check for updates". The full error is spelled out
     rather than summarised: every way this feed can break is a sentence the user needs. */
@@ -1280,12 +1282,19 @@ const SET_BODY = {
         <p>Clip recording is not available on this platform.</p>`;
     }
     const c = S.clips;
+    const hk = esc(c.hotkey.toUpperCase());
+    const monitors = clipMonitors;
+    const monitorOptions = !monitors
+      ? `<option value="">${c.monitor ? esc(c.monitor) : "automatic"}</option>`
+      : [`<option value=""${c.monitor ? "" : " selected"}>Automatic (first screen)</option>`]
+          .concat(monitors.map(m => `<option value="${esc(m)}"${c.monitor === m ? " selected" : ""}>${esc(m)}</option>`))
+          .join("");
     return `
     <h2>Clips</h2>
-    <p>While enabled, this screen is recorded into a rolling buffer that stays in
-       memory-range and never leaves your machine. Press <kbd class="mono">Ctrl</kbd> +
-       <kbd class="mono">Alt</kbd> + <kbd class="mono">C</kbd> — anywhere, also while the
-       app sits in the tray — to save the last ${c.window_sec} seconds as a playable clip.</p>
+    <p>While enabled, a screen is recorded into a rolling buffer that never leaves your
+       machine. Press ${hk} — anywhere, also while the app sits in the tray — to save
+       the last ${c.window_sec} seconds as a playable clip, with game sound and your
+       microphone mixed in.</p>
     <div class="field">
       <div class="switch-row">
         <div>
@@ -1296,6 +1305,23 @@ const SET_BODY = {
         </div>
         <button class="switch" aria-pressed="${c.enabled}" id="clips-toggle"
                 aria-label="Record for clips"></button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="clips-monitor">Screen</label>
+      <span class="field-help">Which screen gets recorded while the switch is on.</span>
+      <div class="control-row">
+        <select id="clips-monitor" class="text-input" style="min-width:280px">${monitorOptions}</select>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="clips-hotkey-input">Shortcut</label>
+      <span class="field-help">Examples: F9, ctrl+alt+c, shift+f5. Applies immediately,
+        no restart.</span>
+      <div class="control-row">
+        <input class="text-input" id="clips-hotkey-input" value="${esc(c.hotkey)}"
+               style="min-width:160px;max-width:200px" spellcheck="false">
+        <button class="btn btn--ghost" id="save-clips-hotkey">Save shortcut</button>
       </div>
     </div>
     <div class="field">
@@ -1949,6 +1975,9 @@ document.addEventListener("click", async e => {
     V.settingsTab = tab.dataset.tab;
     renderSettings();
     if (V.settingsTab === "audio" && !devices) loadDevices();
+    if (V.settingsTab === "clips" && !clipMonitors && S.clips) {
+      invoke("clip_monitors").then(m => { clipMonitors = m; renderSettings(); });
+    }
     return;
   }
 

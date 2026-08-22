@@ -213,6 +213,17 @@ pub struct ClipsConfig {
     /// [`ClipsConfig::herstel`].
     #[serde(default = "default_clips_venster")]
     pub venster_sec: u32,
+
+    /// Welk scherm er opgenomen wordt, op naam uit de bronlijst. Leeg/leeg gelaten =
+    /// het eerste gevonden scherm; een naam die nergens meer bij hoort valt daar ook
+    /// op terug (monitors veranderen nu eenmaal), met een waarschuwing in de log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
+
+    /// De globale sneltoets voor "bewaar nu", zoals `F9`, `ctrl+alt+c`, `shift+f2`.
+    /// Ongeldig formaat valt bij het opstarten terug op F9 — zie `herstel`.
+    #[serde(default = "default_clip_hotkey")]
+    pub hotkey: String,
 }
 
 impl Default for ClipsConfig {
@@ -220,12 +231,20 @@ impl Default for ClipsConfig {
         Self {
             enabled: false,
             venster_sec: default_clips_venster(),
+            monitor: None,
+            hotkey: default_clip_hotkey(),
         }
     }
 }
 
 fn default_clips_venster() -> u32 {
     60
+}
+
+/// Standaard F9: één toets, ver van de meeste gamebinds, en zonder modifier zodat hij
+/// ook tijdens het spelen met één hand te halen is.
+fn default_clip_hotkey() -> String {
+    "F9".into()
 }
 
 impl ClipsConfig {
@@ -236,6 +255,14 @@ impl ClipsConfig {
                 "clipvenster uit de band; standaard van 60 s gebruikt"
             );
             self.venster_sec = default_clips_venster();
+        }
+        if let Err(e) = crate::clips::ontled_hotkey(&self.hotkey) {
+            tracing::warn!(
+                hotkey = %self.hotkey,
+                error = %format!("{e:#}"),
+                "clip-sneltoets onleesbaar; terug op F9"
+            );
+            self.hotkey = default_clip_hotkey();
         }
     }
 }

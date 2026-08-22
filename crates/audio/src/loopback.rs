@@ -1,17 +1,12 @@
 //! Losse bureaubladgeluid-tap voor de cliprecorder (fase 15).
 //!
 //! Zelfde proces-exclusieve WASAPI-loopback als het bureaubladgeluid van screenshare
-//! (zie `session::wasapi_capture`), maar als zelfstandige tap met een eigen stopvlag:
-//! clips draaien óók als er niet gedeeld wordt en niemand in gesprek is, dus ze kunnen
-//! niet op de voice-sessie meeliften.
-//!
-//! De eigen stem van deze app zit er bewust niet bij — dezelfde exclude-modus als bij
-//! het delen, om dezelfde reden: wie zijn eigen voice vertraagd terughoort in zijn clip
-//! hoort een echo die er niet was.
+//! (zie `session::wasapi_capture`): alles wat naar de speakers gaat — dus ook het spel
+//! — behalve de eigen stem-weergave van deze app.
 //!
 //! De chunks zijn interleaved f32 op [`crate::mix::SAMPLE_RATE`]; frames tellen is de
-//! klok. Dat is sample-exact en loopt nooit uit de pas met wat de AAC-encoder er later
-//! van maakt.
+// klok. Dat is sample-exact en loopt nooit uit de pas met wat de AAC-encoder er later
+// van maakt.
 
 #[cfg(windows)]
 use anyhow::{bail, Context, Result};
@@ -39,9 +34,10 @@ pub struct LoopbackTap {
 
 #[cfg(windows)]
 impl LoopbackTap {
-    /// Start de tap op zijn eigen draad en wacht tot bekend is of het gelukt is — een
-    /// Windows-versie zonder application-loopback (vóór build 20348) faalt hier dus
-    /// direct en leesbaar, in plaats van stilletjes clips zonder geluid op te leveren.
+    /// Start de tap op zijn eigen draad en wacht tot bekend is óf het gelukt is. Het
+    /// signaal komt ná het opzetten maar vóór de oneindige leeslus — anders wacht de
+    /// aanroeper twee seconden voor niets en lijkt het geluid er nooit te zijn
+    /// (precies de bug die dit module een revisie bezorgde).
     pub fn start() -> Result<(Self, u32, std::sync::mpsc::Receiver<Vec<f32>>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -51,8 +47,18 @@ impl LoopbackTap {
         std::thread::Builder::new()
             .name("fitcom-clip-geluid".into())
             .spawn(move || {
-                let res = capture_lus(&stop_draad, &tx);
-                let _ = klaar_tx.send(res);
+                // Opzetten eerst; het resultaat gaat direct terug. Pas als dat Ok is
+                // begint de leeslus.
+                match opzetten() {
+                    Err(e) => {
+                        let _ = klaar_tx.send(Err(e));
+                    }
+                    Ok((client, capture_client, event)) => {
+                        let _ = klaar_tx.send(Ok(()));
+                        lus(&client, &capture_client, &event, &stop_draad, &tx);
+                        let _ = client.stop_stream();
+                    }
+                }
             })
             .context("geluidsdraad voor clips starten")?;
 
@@ -73,8 +79,14 @@ impl Drop for LoopbackTap {
     }
 }
 
+/// Opent de proces-exclusieve loopback. Gescheiden van de lus zodat het startsignaal
+/// kan komen vóórdat er iets gelezen wordt.
 #[cfg(windows)]
-fn capture_lus(stop: &AtomicBool, tx: &std::sync::mpsc::Sender<Vec<f32>>) -> Result<()> {
+fn opzetten() -> Result<(
+    wasapi::AudioClient,
+    wasapi::AudioCaptureClient,
+    wasapi::Handle,
+)> {
     wasapi::initialize_mta().ok()?;
     let formaat = wasapi::WaveFormat::new(
         32,
@@ -100,18 +112,27 @@ fn capture_lus(stop: &AtomicBool, tx: &std::sync::mpsc::Sender<Vec<f32>>) -> Res
         .get_audiocaptureclient()
         .context("wasapi-captureclient")?;
     client.start_stream().context("wasapi-stream starten")?;
+    Ok((client, capture_client, event))
+}
 
+/// Leest tot de stopvlag staat of de ontvanger wegvalt.
+#[cfg(windows)]
+fn lus(
+    _client: &wasapi::AudioClient,
+    capture_client: &wasapi::AudioCaptureClient,
+    event: &wasapi::Handle,
+    stop: &AtomicBool,
+    tx: &std::sync::mpsc::Sender<Vec<f32>>,
+) {
     let mut bytes: VecDeque<u8> = VecDeque::new();
     while !stop.load(Ordering::Relaxed) {
-        if tx.send(chunks_lezen(&capture_client, &mut bytes)).is_err() {
+        if tx.send(chunks_lezen(capture_client, &mut bytes)).is_err() {
             break; // ontvanger weg: recorder gestopt
         }
         if event.wait_for_event(500).is_err() {
             break;
         }
     }
-    let _ = client.stop_stream();
-    Ok(())
 }
 
 /// Leest alle pakketten die er nu klaarstaan en geeft ze als één chunk terug.
