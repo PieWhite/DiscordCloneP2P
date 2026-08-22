@@ -505,6 +505,31 @@ pub fn delete_all_images(ui: State<'_, Ui>) {
     send(&ui, UiCommand::VerwijderAlleAfbeeldingen);
 }
 
+/// Clips aan of uit (fase 15). De motor legt dit meteen vast in de config, dus de
+/// schakelaar onthoudt zichzelf over herstarts.
+#[tauri::command]
+pub fn set_clips(ui: State<'_, Ui>, enabled: bool) {
+    send(&ui, UiCommand::ZetClips(enabled));
+}
+
+/// Nú een clip schrijven. Zelfde weg als de globale hotkey Ctrl+Alt+C.
+#[tauri::command]
+pub fn clip_now(ui: State<'_, Ui>) {
+    send(&ui, UiCommand::ClipseNu);
+}
+
+/// Opent de clipmap in de verkenner. Het pad komt uit de snapshot, nooit uit het
+/// webview — zelfde regel als `open_file`.
+#[tauri::command]
+pub fn open_clips_folder(ui: State<'_, Ui>) {
+    let snap = ui.engine.snapshot.borrow().clone();
+    let Some(clips) = &snap.clips else { return };
+    let path = std::path::PathBuf::from(&clips.map);
+    if path.exists() {
+        open_with_shell(&path);
+    }
+}
+
 #[tauri::command]
 pub fn create_channel(ui: State<'_, Ui>, title: String) {
     let title = title.trim().to_string();

@@ -202,6 +202,9 @@ pub struct Snapshot {
     /// Onderdrukt alle Windows-meldingen, ook een directe tag naar jezelf. Geldt alleen
     /// voor deze sessie, net als mute/deafen — geen configvermelding.
     pub niet_storen: bool,
+    /// Clips (fase 15): ringbuffer-opname met hotkey. `None` op platforms zonder
+    /// clipondersteuning — de UI verbergt er alles omheen.
+    pub clips: Option<crate::clips::ClipsWeergave>,
     /// Wie nu aan het typen is: (kanaal, peer). Vluchtig — alleen levende indicaties
     /// van verbonden peers, zie `TYPING_TTL`.
     pub typing: Vec<(Channel, PeerId)>,
@@ -301,11 +304,15 @@ pub enum UiCommand {
     WisUpdateMelding,
     /// Eén gok op het Wordle-raadsel van vandaag. Het woord komt uit het venster; de
     /// motor beoordeelt het, want de oplossing blijft aan deze kant.
-    WordleGok(String),
-    /// De kaart van vandaag met de hand in het algemene kanaal zetten, zodat *iedereen* hem
+    WordleGok(String),    /// De kaart van vandaag met de hand in het algemene kanaal zetten, zodat *iedereen* hem
     /// ziet — de reddingsklep uit het `+`-menu. Haalt het raadsel eerst op als deze pc het
     /// nog niet heeft, want zonder dat valt er niets aan te kondigen.
     WordleInChat,
+    /// Clipopname aan of uit, en dat meteen vastleggen in de config.
+    ZetClips(bool),
+    /// Nú de laatste `venster_sec` seconden als clip wegschrijven. Ook via de globale
+    /// hotkey Ctrl+Alt+C, die hier op hetzelfde kanaal uitkomt.
+    ClipseNu,
 }
 
 pub struct EngineHandle {
@@ -350,6 +357,7 @@ pub fn spawn(
     let (aangeboden, gedownload) = lees_paden_index(&paden_index);
     files.herstel_paden(aangeboden, gedownload);
     let afsluiten_voor_update = Arc::new(AtomicBool::new(false));
+    let clips_beheer = crate::clips::ClipsBeheer::nieuw(config::resolve_clips_dir(&data_dir));
 
     let peers = cfg
         .peers
@@ -402,6 +410,7 @@ pub fn spawn(
         kijker_rx,
         fout: None,
         niet_storen: false,
+        clips: clips_beheer,
         typing_tot: HashMap::new(),
         typing_verzonden: HashMap::new(),
         peer_status: HashMap::new(),
@@ -412,6 +421,15 @@ pub fn spawn(
     };
 
     tokio::spawn(engine.run(cmd_rx));
+
+    // Globale clip-hotkey: Ctrl+Alt+C = "bewaar nu". Eigen Win32-draad; hij duwt
+    // rechtstreeks op het motorcommandokanaal en werkt dus ook vanuit de tray.
+    let _ = crate::clips::start_hotkey({
+        let tx = cmd_tx.clone();
+        move || {
+            let _ = tx.try_send(UiCommand::ClipseNu);
+        }
+    });
 
     Ok(EngineHandle {
         snapshot: snap_rx,
@@ -485,6 +503,9 @@ struct Engine {
     fout: Option<String>,
     /// Zie `Snapshot::niet_storen`.
     niet_storen: bool,
+    /// Clipopname-beheer (fase 15). Bestaat altijd; op platforms zonder ondersteuning
+    /// is het een no-op die zichzelf afwezig meldt.
+    clips: crate::clips::ClipsBeheer,
     /// Vluchtige typindicaties: tot wanneer deze peer in dit kanaal aan het typen is.
     /// Geen oplog, geen doorgifte — na een paar seconden stilte of een verbreking is de
     /// betekenis weg en mag de administratie dat ook zijn.
@@ -572,6 +593,9 @@ impl Engine {
         let r = self.chat.zet_naam(&naam);
         self.verwerk(r);
         self.wordle_inhaalslag();
+        if self.cfg.clips.enabled {
+            self.zet_clips_motor(true);
+        }
         self.publiceer();
 
         let mut ticker = tokio::time::interval(TIK);
@@ -609,6 +633,14 @@ impl Engine {
                     if !self.typing_tot.is_empty() {
                         let nu = Instant::now();
                         self.typing_tot.retain(|_, tot| *tot > nu);
+                    }
+                    // Clip-events (klaar/mislukt) binnenhalen en een doodlopende
+                    // keten signaleren.
+                    self.clips.tik();
+                    if let Some(f) = self.clips.fout() {
+                        if self.fout.is_none() {
+                            self.fout = Some(format!("clips: {f}"));
+                        }
                     }
                 }
                 _ = update_ticker.tick() => self.zoek_update(false),
@@ -1190,6 +1222,33 @@ impl Engine {
     /// Alleen voor een camera. Een gedeeld scherm heeft geen voorbeeldvenster en hoort niet
     /// vanzelf te verdwijnen omdat een deler eruit klapte; daar blijft de aankondiging
     /// staan en probeert de volgende kijker het opnieuw, zoals altijd.
+    /// Zet de clipopname aan of uit, zonder de config aan te raken — de commando-arm
+    /// beslist of dat meegaat naar `config.toml`. Bij het aanzetten wordt hier pas een
+    /// D3D-context geopend: een machine die nooit clips gebruikt hoeft hem niet.
+    fn zet_clips_motor(&mut self, aan: bool) {
+        let d3d = if aan {
+            match self.d3d() {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    self.fout = Some(format!("clips: {e:#}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Err(e) = self.clips.zet(
+            aan,
+            self.cfg.clips.venster_sec,
+            self.cfg.video.fps,
+            self.cfg.video.bitrate,
+            d3d.as_ref(),
+        ) {
+            tracing::error!(error = %format!("{e:#}"), "clipopname wisselen mislukt");
+            self.fout = Some(format!("clips: {e:#}"));
+        }
+    }
+
     fn ruim_gestopte_camera_op(&mut self) {
         let dood: Vec<(u32, Option<String>)> = self
             .streams
@@ -1673,6 +1732,28 @@ impl Engine {
             }
             UiCommand::Typing(channel) => self.stuur_typing(channel),
             UiCommand::ZetStatus(status) => self.zet_status(status),
+            UiCommand::ZetClips(aan) => {
+                if self.cfg.clips.enabled != aan {
+                    self.cfg.clips.enabled = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+                self.zet_clips_motor(aan);
+                // Bij een mislukte start staat de motor ook echt uit; de schakelaar
+                // mag niet liegen over wat er draait.
+                if aan && !self.clips.aan() {
+                    self.cfg.clips.enabled = false;
+                    let _ = self.cfg.save(&self.config_path);
+                }
+            }
+            UiCommand::ClipseNu => {
+                if self.cfg.clips.enabled && self.clips.aan() {
+                    self.clips.bewaar_nu();
+                } else {
+                    self.fout = Some("Clips staan uit (instellingen → clips).".into());
+                }
+            }
             UiCommand::Bewerk(doel, tekst) => {
                 let r = self.chat.bewerk_bericht(doel, &tekst);
                 self.verwerk(r);
@@ -2349,6 +2430,10 @@ impl Engine {
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
             ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
+            clips: self
+                .clips
+                .aanwezig()
+                .then(|| self.clips.weergave(self.cfg.clips.venster_sec)),
             typing: self
                 .typing_tot
                 .iter()

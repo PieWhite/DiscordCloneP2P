@@ -162,6 +162,56 @@ pub fn zoek_transform_met(
     Ok(uit)
 }
 
+/// Zoekt de software-AAC-encoder (inbox, sync-MFT). Los van [`zoek_transform`] omdat
+/// die het hoofdtype op Video vastzet; hier is alles Audio. Geen HARDWARE-vlag: de
+/// inbox-encoder is bewust software en dat is prima — AAC kost bij deze samplerate
+/// verwaarloosbaar weinig naast een hardware-videoencoder.
+pub fn zoek_audio_encoder(invoer: GUID, uitvoer: GUID) -> Result<Vec<IMFActivate>> {
+    use windows::Win32::Media::MediaFoundation::{
+        MFMediaType_Audio, MFT_CATEGORY_AUDIO_ENCODER, MFT_ENUM_FLAG_SYNCMFT,
+    };
+    zorg_dat_mf_draait();
+
+    let in_info = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Audio,
+        guidSubtype: invoer,
+    };
+    let uit_info = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Audio,
+        guidSubtype: uitvoer,
+    };
+
+    let vlaggen = MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
+    let categorie = MFT_CATEGORY_AUDIO_ENCODER;
+    let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+    let mut aantal = 0u32;
+
+    // SAFETY: zelfde patroon als in [`zoek_transform`].
+    unsafe {
+        MFTEnumEx(
+            categorie,
+            vlaggen,
+            Some(&in_info),
+            Some(&uit_info),
+            &mut activates,
+            &mut aantal,
+        )
+        .context("audio-encoders opzoeken")?;
+    }
+
+    let mut uit = Vec::new();
+    // SAFETY: MFTEnumEx vulde `aantal` items op `activates`.
+    unsafe {
+        for i in 0..aantal as usize {
+            if let Some(a) = (*activates.add(i)).take() {
+                uit.push(a);
+            }
+        }
+        windows::Win32::System::Com::CoTaskMemFree(Some(activates as *const _));
+    }
+    Ok(uit)
+}
+
 /// Naam van een MFT, voor in de logs. Handig om te zien of je de hardware-encoder te
 /// pakken hebt of per ongeluk de software-variant.
 pub fn naam_van(activate: &IMFActivate) -> String {

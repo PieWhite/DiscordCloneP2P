@@ -1064,6 +1064,7 @@ const SET_TABS = [
   { id: "account", name: "Account", icon: "i-users" },
   { id: "audio", name: "Audio", icon: "i-mic" },
   { id: "video", name: "Video", icon: "i-monitor" },
+  { id: "clips", name: "Clips", icon: "i-play" },
   { id: "files", name: "Files", icon: "i-image" },
   { id: "network", name: "Network", icon: "i-signal" },
 ];
@@ -1272,6 +1273,44 @@ const SET_BODY = {
           excluded, so nobody hears themselves back.</span>
       </div>
     </div>`,
+
+  clips: () => {
+    if (!S.clips) {
+      return `<h2>Clips</h2>
+        <p>Clip recording is not available on this platform.</p>`;
+    }
+    const c = S.clips;
+    return `
+    <h2>Clips</h2>
+    <p>While enabled, this screen is recorded into a rolling buffer that stays in
+       memory-range and never leaves your machine. Press <kbd class="mono">Ctrl</kbd> +
+       <kbd class="mono">Alt</kbd> + <kbd class="mono">C</kbd> — anywhere, also while the
+       app sits in the tray — to save the last ${c.window_sec} seconds as a playable clip.</p>
+    <div class="field">
+      <div class="switch-row">
+        <div>
+          <span class="field-label">Record for clips</span>
+          <span class="field-help">Uses the same frame rate and bitrate as screen sharing.
+            Roughly 90 MB of disk per minute; older buffer parts are deleted
+            automatically.</span>
+        </div>
+        <button class="switch" aria-pressed="${c.enabled}" id="clips-toggle"
+                aria-label="Record for clips"></button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Save a clip now</span>
+      <span class="field-help">${c.error ? esc(c.error) : "Writes the last window to the clips folder."}</span>
+      <div class="control-row">
+        <button class="btn btn--accent" id="clip-now" ${c.enabled ? "" : "disabled"}>${ic("i-play")}Save last ${c.window_sec}s</button>
+        <button class="btn btn--ghost" id="open-clips-folder">${ic("i-open")}Open folder</button>
+      </div>
+    </div>
+    ${c.last_clip ? `<div class="field">
+      <span class="field-label">Last saved</span>
+      <div class="control-row"><code class="mono code-inline">${esc(c.last_clip)}</code></div>
+    </div>` : ""}`;
+  },
 
   files: () => `
     <h2>Files</h2>
@@ -1899,6 +1938,9 @@ document.addEventListener("click", async e => {
   }
 
   if (t.closest("#save-name")) return invoke("set_display_name", { name: $("set-name").value });
+  if (t.closest("#clips-toggle")) return invoke("set_clips", { enabled: !S.clips.enabled });
+  if (t.closest("#clip-now")) return invoke("clip_now");
+  if (t.closest("#open-clips-folder")) return invoke("open_clips_folder");
   if (t.closest("#btn-download-dir")) return invoke("pick_download_dir");
   if (t.closest("#refresh-devices")) { devices = null; return loadDevices(); }
 

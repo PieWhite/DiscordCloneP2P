@@ -965,3 +965,23 @@ alleen additief" en er is geen protocolbump geweest.
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of
 beeldproblemen is de log van beide kanten waardevol; die staat in `data\logs\`.
+
+## Clips (2026-08-22, fase 15)
+
+Geautomatiseerd gedekt (`cargo test -p fitcom-video -- --ignored`, GPU + scherm nodig):
+de hele keten tot afspeelbaar MP4, herstart die de ring weer oppikt, AAC-frames met
+stijgende tijden, en de zuivere regels (avcc-conversie, vensterkeuze, ring-retentie).
+
+Met de hand, want UI en tweede machine:
+
+1. Instellingen → Clips: aanzetten. Statusbalk blijft rustig; taakbeheer toont een
+   extra GPU-process. Ring groeit in `<data>/clips/ring/` tot ~venster+marge en stopt
+   met groeien.
+2. Tijdens gamen Ctrl+Alt+C drukken (venster mag in de tray): binnen enkele seconden
+   verschijnt `clip-<tijdstempel>.mp4` in `<data>/clips/` en speelt hij buiten de app
+   af — beeld én systeemgeluid, lip-sync over de hele minuut.
+3. Clip maken vlak nadat de recorder aanging: nette foutmelding, geen crash, geen leeg
+   bestand.
+4. Uitzetten: geluidsdraad stopt, ring blijft staan, herstart met aan = ring wordt
+   verder gebruikt, niet gewist.
+5. Frametime-vergelijking spel met recorder aan/uit — de meetpunt-notitie in SPEC.md.

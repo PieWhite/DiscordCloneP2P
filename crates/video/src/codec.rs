@@ -133,6 +133,12 @@ pub struct Encoder {
     frame_duur: i64,
     /// De encoder heeft om een beeld gevraagd en wacht erop.
     wacht_op_invoer: bool,
+    /// De parameter sets (SPS/PPS bij H.264, VPS/SPS/PPS bij HEVC) zoals de encoder ze
+    /// zelf neerzette op zijn uitvoertype, inclusief startcodes. De ringbuffer-recorder
+    /// (`crate::opname`) heeft die nodig voor de `avcC`/`hvcC`-box in elk MP4-segment;
+    /// leeg als de driver hem niet schrijft — daarom leest `opname` ze ook uit het
+    /// eerste keyframe.
+    sequentie_header: Vec<u8>,
 }
 
 // SAFETY: de transform wordt uitsluitend vanaf de capture-thread gebruikt; MF-objecten
@@ -231,6 +237,27 @@ impl Encoder {
             .cast()
             .context("encoder levert geen gebeurtenissen; asynchrone MFT verwacht")?;
 
+        // De parameter sets staan op het *huidige* uitvoertype, dat de encoder zelf
+        // aanvulde bij SetOutputType. Niet elke driver schrijft de blob; een leeg
+        // resultaat is geen fout — `opname` valt dan terug op het eerste keyframe.
+        let sequentie_header = unsafe {
+            transform
+                .GetOutputCurrentType(0)
+                .ok()
+                .and_then(|t| {
+                    let grootte = t.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER).ok()? as usize;
+                    if grootte == 0 {
+                        return None;
+                    }
+                    let mut buf = vec![0u8; grootte];
+                    // `GetBlob` vult de vooraf geschaafde buffer precies; de lengte
+                    // komt van `GetBlobSize`. Zelfde stijl als `GetString` in `mf.rs`.
+                    t.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None).ok()?;
+                    Some(buf)
+                })
+                .unwrap_or_default()
+        };
+
         // SAFETY: types zijn gezet, dus de encoder mag beginnen.
         unsafe {
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
@@ -243,7 +270,14 @@ impl Encoder {
             codec_api,
             frame_duur,
             wacht_op_invoer: false,
+            sequentie_header,
         })
+    }
+
+    /// De parameter sets zoals de encoder ze zelf neerzette. Leeg als de driver ze
+    /// niet op het uitvoertype zette; zie het veld.
+    pub fn sequentie_header(&self) -> &[u8] {
+        &self.sequentie_header
     }
 
     /// Vraagt het volgende beeld als keyframe. Nodig als een ontvanger meldt dat hij

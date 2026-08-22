@@ -133,6 +133,20 @@ pub struct VoiceState {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ClipsState {
+    /// Recording is on.
+    pub enabled: bool,
+    /// How far back a clip reaches, in seconds.
+    pub window_sec: u32,
+    /// Where finished clips land; for the open-folder button.
+    pub folder: String,
+    /// The most recent clip, if any was saved this session.
+    pub last_clip: Option<String>,
+    /// Last clip error that has not been replaced yet.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ChannelState {
     pub key: String,
     pub name: String,
@@ -461,6 +475,9 @@ pub struct UiState {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub do_not_disturb: bool,
+    /// Clip recording (fase 15). `None` where the platform has none — the UI hides
+    /// everything clips-related then.
+    pub clips: Option<ClipsState>,
     /// Who is typing where, keyed by conversation key ("general", "topic:<uuid>",
     /// "dm:<peer-uuid>") with the peer UUIDs. Vluchtig — rides along in `state`, which is
     /// fine: a typing event changes at most a few times a minute, and only while someone
@@ -675,6 +692,13 @@ impl UiState {
             input_device: snap.input_device.clone(),
             output_device: snap.output_device.clone(),
             do_not_disturb: snap.niet_storen,
+            clips: snap.clips.as_ref().map(|c| ClipsState {
+                enabled: c.aan,
+                window_sec: c.venster_sec,
+                folder: c.map.clone(),
+                last_clip: c.laatste.clone(),
+                error: c.fout.clone(),
+            }),
             wordle: wordle_state(snap, c.me, &hues),
             update: snap.update.as_ref().map(|u| match u {
                 UpdateStatus::Zoeken => UpdateState::Checking,

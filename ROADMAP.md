@@ -497,12 +497,32 @@ seconden verschijnt én weer verdwijnt zonder verkeer, en een statuswisseling bi
 anderen zichtbaar wordt zonder herstart. Het handmatige deel (klikgedrag in de UI, echte
 tweede machine) staat Rick te wachten, zoals in eerdere fases.
 
-### Fase 15 — Clips: de laatste minuut op een knop (Medal-stijl) — gepland
+### Fase 15 — Clips: de laatste minuut op een knop (Medal-stijl) ✅ (2026-08-22)
 Lokaal, altijd-aan ringbuffer van het beeld dat deze pc opneemt; een hotkey schrijft
 de laatste ~60 seconden weg als afgespeelbaar bestand. Puur lokaal: niets gaat over de
 draad, er is geen kijker nodig, en het past bij "nul servers". De hele capture-en-code
 -keten bestaat al (WGC → async hardware-MFT in `crates/video/src/codec.rs`); dit fase
-voegt alleen de schijf-eromheen toe.
+voegt alleen de schijf-eromheen toe. **Gebouwd zoals hieronder gepland, met drie
+afwijkingen die tijdens het bouwen bewezen werden, niet aangenomen** — zie de
+onderbouwing en `docs/SPEC.md`, sectie "Clips":
+
+- **Audio zit erin**, inclusief de AAC-encoder (inbox-MFT), de loopback-tap als eigen
+  module in `fitcom-audio` en de tweede track per segment. De twee onderzoeksvalkuilen
+  (elke PCM-chunk tijd+duur mee; één masterklok voor beide tracks) zijn precies waar ze
+  zaten tegengekomen.
+- **Hotkey is Ctrl+Alt+C**, thread-gebonden `RegisterHotKey` in `clips.rs` — dezelfde
+  module die het beheer draait, zodat de infrastructuur later herbruikbaar is voor
+  push-to-talk.
+- **De meetpunt-eis ("eerst meten, dan bouwen") bleek niet te blokkeren**: de keten
+  hergebruikt de encoder-keuze van de deler (hardware-MFT via MFTEnumEx), en de E2E-test
+  draait de volledige keten echt. Wat níet automatisch kan: frametimes van een écht spel
+  met recorder aan/uit. Dat blijft Rick's handmatige meting, zie TESTPLAN fase 15.
+
+**Klaar als (gehaald):** E2E over echte hardware levert binnen enkele seconden na de
+hotkey een buiten-de-app afspeelbare MP4, ook over een segmentgrens heen; de ring blijft
+op venster+marge; een herstart pikt de bestaande ring op zonder te herschrijven; AAC-
+frames dragen stijgende tijdstempels van de encoder zelf. Handmatig bij Rick: gamen met
+recorder aan, lip-sync in een echte clip, en de frametime-meting uit SPEC.md.
 
 **Onderbouwing vooraf uitgezet (media-research, 2026-08-22):**
 
@@ -523,10 +543,12 @@ voegt alleen de schijf-eromheen toe.
   `default-base-is-moof`) en spelen los dus niet af. Elk segment krijgt zijn eigen
   `moov`+`avcC`; de clip zelf is een remux van de laatste N segmenten naar één nieuwe
   `Mp4Writer` met gerebaste timestamps — sub-seconde, off the hot path.
-- **Mux-details:** `avcC` uit `MF_MT_MPEG_SEQUENCE_HEADER` (blob na `SetOutputType`),
-  Annex-B → AVCC (startcode vervangen door 4-byte length-prefix), timescale 90000,
-  sampleduur 1500 @60 fps, `is_sync` uit de bestaande `CleanPoint`-vlag,
-  `rendering_offset:0` — geldig zolang de low-latency-config B-frames blijft negeren.
+- **Mux-details:** `avcC` uit `MF_MT_MPEG_SEQUENCE_HEADER` (blob na `SetOutputType`,
+  met het eerste keyframe als terugval), Annex-B → AVCC (startcode vervangen door
+  4-byte length-prefix), videotimescale = de hns-klok zelf (10⁷) zodat duren en starts
+  rechtstreeks hns zijn en de remux tot op het beeld klopt, `is_sync` uit de bestaande
+  `CleanPoint`-vlag, `rendering_offset:0` — geldig zolang de low-latency-config
+  B-frames blijft negeren.
 
 **Op te leveren, in volgorde:**
 

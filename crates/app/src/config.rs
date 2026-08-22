@@ -75,6 +75,12 @@ pub struct Config {
     #[serde(default)]
     pub sound: SoundConfig,
 
+    /// Clips (fase 15): ringbuffer-opname van dit scherm met een hotkey om de laatste
+    /// minuut weg te schrijven. Standaard uit — het is een continue opname en dat is
+    /// een keuze die de gebruiker expliciet maakt, geen default die je overkomt.
+    #[serde(default)]
+    pub clips: ClipsConfig,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
@@ -194,6 +200,46 @@ fn default_bitrate() -> u32 {
     12_000_000
 }
 
+/// Instellingen voor de cliprecorder (fase 15). De bitrate en fps van het beeld delen
+/// we met de video-instellingen — het is hetzelfde scherm, en één knop minder in de
+/// UI is meer waard dan een apart profiel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClipsConfig {
+    /// Ringbuffer-opname aan of uit. Standaard uit: dit is een continue opname.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Hoeveel seconden een clip teruggaat. 10–300; buiten die band afgekapt door
+    /// [`ClipsConfig::herstel`].
+    #[serde(default = "default_clips_venster")]
+    pub venster_sec: u32,
+}
+
+impl Default for ClipsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            venster_sec: default_clips_venster(),
+        }
+    }
+}
+
+fn default_clips_venster() -> u32 {
+    60
+}
+
+impl ClipsConfig {
+    pub fn herstel(&mut self) {
+        if self.venster_sec == 0 || self.venster_sec > 300 {
+            tracing::warn!(
+                venster = self.venster_sec,
+                "clipvenster uit de band; standaard van 60 s gebruikt"
+            );
+            self.venster_sec = default_clips_venster();
+        }
+    }
+}
+
 fn waar() -> bool {
     true
 }
@@ -285,6 +331,7 @@ impl Config {
             ],
             video: VideoConfig::default(),
             sound: SoundConfig::default(),
+            clips: ClipsConfig::default(),
             download_dir: None,
         }
     }
@@ -296,6 +343,7 @@ impl Config {
             let mut cfg: Self = toml::from_str(&text)
                 .with_context(|| format!("config parsen uit {}", path.display()))?;
             cfg.sound.herstel();
+            cfg.clips.herstel();
             Ok(cfg)
         } else {
             let cfg = Self::template();
@@ -397,6 +445,12 @@ pub fn resolve_youtube_dir(data_dir: &Path) -> PathBuf {
 /// gebruikersbestand, dus geen `config.toml`-veld.
 pub fn resolve_updates_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("updates")
+}
+
+/// Waar clips (fase 15) landen: `<data-map>/clips`. Net als de ring zelf plumbing —
+/// de gebruiker kiest wél of er opgenomen wordt, niet waar het tussendoor staat.
+pub fn resolve_clips_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("clips")
 }
 
 fn whoami_or(fallback: &str) -> String {

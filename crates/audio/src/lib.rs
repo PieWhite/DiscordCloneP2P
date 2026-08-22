@@ -2,6 +2,8 @@
 
 pub mod codec;
 pub mod jitter;
+#[cfg(windows)]
+pub mod loopback;
 pub mod mix;
 pub mod session;
 
