@@ -25,7 +25,9 @@ use crate::wordle::{self, Wordle};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
-use fitcom_proto::control::{StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin, VoiceLeave};
+use fitcom_proto::control::{
+    StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin, VoiceLeave,
+};
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
@@ -304,7 +306,8 @@ pub enum UiCommand {
     WisUpdateMelding,
     /// Eén gok op het Wordle-raadsel van vandaag. Het woord komt uit het venster; de
     /// motor beoordeelt het, want de oplossing blijft aan deze kant.
-    WordleGok(String),    /// De kaart van vandaag met de hand in het algemene kanaal zetten, zodat *iedereen* hem
+    WordleGok(String),
+    /// De kaart van vandaag met de hand in het algemene kanaal zetten, zodat *iedereen* hem
     /// ziet — de reddingsklep uit het `+`-menu. Haalt het raadsel eerst op als deze pc het
     /// nog niet heeft, want zonder dat valt er niets aan te kondigen.
     WordleInChat,
@@ -1833,20 +1836,24 @@ impl Engine {
                     self.fout = Some(format!("config opslaan: {e:#}"));
                     return;
                 }
-                // Oude draad weg (Drop → WM_QUIT → unregister), nieuwe eraan. De
-                // verzender naar onszelf blijft dezelfde: de tik leest het kanaal uit.
-                self.hotkey_draad =
-                    crate::clips::start_hotkey(&spec, {
-                        let tx = self.clip_hotkey_verzender.clone();
-                        move || {
-                            let _ = tx.send(());
-                        }
-                    })
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %format!("{e:#}"), "nieuwe clip-hotkey mislukt");
-                        self.fout = Some(format!("sneltoets: {e:#}"));
-                        crate::clips::HotkeyDraad::dode()
-                    });
+                // Eerst de oude draad écht weg (Drop → WM_QUIT → unregister → join),
+                // pas daarna de nieuwe. In één toewijzing gaat dat mis: Rust maakt de
+                // rechterkant vóór hij de oude laat vallen, en `RegisterHotKey` weigert
+                // een toets die nog geregistreerd staat — dezelfde sneltoets opnieuw
+                // instellen liet je dan zonder sneltoets achter.
+                self.hotkey_draad = crate::clips::HotkeyDraad::dode();
+                // De verzender naar onszelf blijft dezelfde: de tik leest het kanaal uit.
+                self.hotkey_draad = crate::clips::start_hotkey(&spec, {
+                    let tx = self.clip_hotkey_verzender.clone();
+                    move || {
+                        let _ = tx.send(());
+                    }
+                })
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %format!("{e:#}"), "nieuwe clip-hotkey mislukt");
+                    self.fout = Some(format!("sneltoets: {e:#}"));
+                    crate::clips::HotkeyDraad::dode()
+                });
             }
             UiCommand::Bewerk(doel, tekst) => {
                 let r = self.chat.bewerk_bericht(doel, &tekst);
@@ -2421,7 +2428,8 @@ impl Engine {
         self.stuur_alles(cmds);
     }
 
-    fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {        match r {
+    fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {
+        match r {
             Ok(cmds) => self.stuur_alles(cmds),
             Err(e) => {
                 tracing::error!(error = %format!("{e:#}"), "chat-actie mislukt");

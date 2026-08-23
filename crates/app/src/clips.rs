@@ -62,11 +62,7 @@ pub fn ontled_hotkey(spec: &str) -> Result<(u32, u32)> {
 }
 
 fn is_f_toets(d: &str) -> bool {
-    d.len() >= 2
-        && d.starts_with('f')
-        && d[1..]
-            .parse::<u32>()
-            .is_ok_and(|n| (1..=24).contains(&n))
+    d.len() >= 2 && d.starts_with('f') && d[1..].parse::<u32>().is_ok_and(|n| (1..=24).contains(&n))
 }
 
 // ---------------------------------------------------------------- windows
@@ -79,9 +75,7 @@ mod backend {
     use fitcom_audio::loopback::LoopbackTap;
     use fitcom_audio::microfoon::MicrofoonTap;
     use fitcom_video::capture::{beschikbare_bronnen, Bron, BronSoort};
-    use fitcom_video::opname::{
-        AudioBronnen, ClipGebeurtenis, ClipInstellingen, OpnameHandle,
-    };
+    use fitcom_video::opname::{AudioBronnen, ClipGebeurtenis, ClipInstellingen, OpnameHandle};
     use fitcom_video::D3dContext;
     use std::path::PathBuf;
     use std::sync::mpsc;
@@ -121,8 +115,10 @@ mod backend {
             self.handle.is_some()
         }
 
-        /// Aan of uit, idempotent. Uitzetten gaat via de Drop van de handle; de ring
-        /// blijft op schijf en wordt bij een herstart gewoon weer opgepakt.
+        /// Aan of uit, idempotent. Uitzetten gaat via de Drop van de handle; wat er in
+        /// de ringmap blijft liggen wordt bij de volgende start weggegooid — de tijden
+        /// in die bestanden komen van een klok die dan opnieuw op nul begint. Zie de
+        /// moduledoc van `fitcom_video::opname`.
         ///
         /// `monitor_naam` kiest welk scherm; `None` of een onbekende naam valt terug
         /// op het eerste gevonden scherm.
@@ -269,8 +265,10 @@ mod backend {
     /// bij hoort — monitors veranderen) het eerste gevonden.
     fn kies_monitor(naam: Option<&str>) -> Result<Bron> {
         let bronnen = beschikbare_bronnen().context("bronnen opvragen")?;
-        let monitoren: Vec<Bron> =
-            bronnen.into_iter().filter(|b| b.soort == BronSoort::Monitor).collect();
+        let monitoren: Vec<Bron> = bronnen
+            .into_iter()
+            .filter(|b| b.soort == BronSoort::Monitor)
+            .collect();
         monitoren
             .iter()
             .find(|b| Some(b.naam.as_str()) == naam)
@@ -281,8 +279,13 @@ mod backend {
 
     /// Een lopende hotkey-registratie. Vallen laten heft de toets op — de berichtenlus
     /// krijgt WM_QUIT en doet zelf zijn UnregisterHotKey op de juiste thread.
+    ///
+    /// De Drop *wacht* op die draad. Zonder dat wachten mislukt het opnieuw instellen
+    /// van dezelfde toets: `RegisterHotKey` weigert zolang de oude registratie nog
+    /// leeft, en dan heeft niemand meer een sneltoets.
     pub struct HotkeyDraad {
         thread_id: u32,
+        draad: Option<std::thread::JoinHandle<()>>,
     }
 
     impl HotkeyDraad {
@@ -301,36 +304,49 @@ mod backend {
             op_te_doen: impl Fn() + Send + 'static,
         ) -> Result<Self> {
             use windows::Win32::System::Threading::GetCurrentThreadId;
-            let (id_tx, id_rx) = mpsc::sync_channel::<u32>(1);
+            // De draad meldt terug of de registratie lukte: een toets die al door een
+            // ander programma bezet is moet je zien, niet alleen in de log vinden.
+            let (id_tx, id_rx) = mpsc::sync_channel::<(u32, Option<String>)>(1);
 
-            std::thread::Builder::new()
+            let draad = std::thread::Builder::new()
                 .name("fitcom-hotkey".into())
                 .spawn(move || {
                     // SAFETY: thread-gebonden aanroep vóór de lus; geen parameters.
                     let thread_id = unsafe { GetCurrentThreadId() };
-                    let _ = id_tx.send(thread_id);
-                    hotkey_lus(mods_raw, vk, ID_HOTKEY, op_te_doen);
+                    hotkey_lus(mods_raw, vk, ID_HOTKEY, op_te_doen, &|fout| {
+                        let _ = id_tx.send((thread_id, fout));
+                    });
                 })
                 .context("hotkey-draad starten")?;
 
-            let thread_id = id_rx
+            let (thread_id, fout) = id_rx
                 .recv_timeout(std::time::Duration::from_secs(2))
                 .context("geen antwoord van de hotkey-draad")?;
-            Ok(Self { thread_id })
+            if let Some(f) = fout {
+                let _ = draad.join();
+                bail!("{f}");
+            }
+            Ok(Self {
+                thread_id,
+                draad: Some(draad),
+            })
         }
 
         /// Een handle zonder draad: de hotkey staat niet aan, maar alles om hem heen
         /// (config, UI) blijft gewoon werken.
         pub fn dode() -> Self {
-            Self { thread_id: 0 }
+            Self {
+                thread_id: 0,
+                draad: None,
+            }
         }
     }
 
     impl Drop for HotkeyDraad {
         fn drop(&mut self) {
-            if self.thread_id == 0 {
+            let Some(draad) = self.draad.take() else {
                 return;
-            }
+            };
             use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
             use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
             // SAFETY: WM_QUIT naar de hotkey-draad; haar GetMessageW valt daarop terug
@@ -343,6 +359,9 @@ mod backend {
                     windows::Win32::Foundation::LPARAM(0),
                 );
             }
+            // Wachten tot de UnregisterHotKey er echt doorheen is: de volgende
+            // registratie kan dezelfde toets willen.
+            let _ = draad.join();
         }
     }
 
@@ -353,6 +372,7 @@ mod backend {
         vk: u32,
         id: i32,
         op_te_doen: impl Fn() + Send + 'static,
+        meld: &dyn Fn(Option<String>),
     ) {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
@@ -361,15 +381,15 @@ mod backend {
             DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_HOTKEY,
         };
         // SAFETY: thread-gebonden hotkey met uniek id binnen dit proces.
-        unsafe {
-            if RegisterHotKey(None, id, HOT_KEY_MODIFIERS(mods_raw), vk).is_err() {
-                tracing::warn!(
-                    spec = %super::hotkey_naam(mods_raw, vk),
-                    "de clip-sneltoets is al ergens anders in gebruik"
-                );
-                return;
-            }
+        let geregistreerd =
+            unsafe { RegisterHotKey(None, id, HOT_KEY_MODIFIERS(mods_raw), vk).is_ok() };
+        if !geregistreerd {
+            let naam = super::hotkey_naam(mods_raw, vk);
+            tracing::warn!(spec = %naam, "de clip-sneltoets is al ergens anders in gebruik");
+            meld(Some(format!("{naam} is al ergens anders in gebruik")));
+            return;
         }
+        meld(None);
         let mut msg = MSG::default();
         // SAFETY: standaard berichtenlus; WM_QUIT (van de Drop van HotkeyDraad) maakt
         // hem netjes af, mét unregister op deze thread.
@@ -385,10 +405,7 @@ mod backend {
         }
     }
 
-    pub fn start_hotkey(
-        spec: &str,
-        op_te_doen: impl Fn() + Send + 'static,
-    ) -> Result<HotkeyDraad> {
+    pub fn start_hotkey(spec: &str, op_te_doen: impl Fn() + Send + 'static) -> Result<HotkeyDraad> {
         HotkeyDraad::wissel_naar(spec, op_te_doen)
     }
 

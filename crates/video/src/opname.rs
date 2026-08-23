@@ -21,14 +21,23 @@
 //! Alles loopt op dezelfde klok als de deler ([`crate::deler::klok_nulpunt`]), zodat
 //! video- en audiotijdstempels onderling vergelijkbaar zijn. Segmentbestanden dragen hun
 //! absolute begintijd in de naam (`seg-{eerste_hns:020}.mp4`) — lexicaal sorteren ís
-//! chronologisch sorteren, en na een herstart is de ring zo weer opgebouwd.
+//! chronologisch sorteren.
+//!
+//! **Die klok begint op nul bij elke start van het proces, en dus is de ring van één
+//! sessie.** Een opname die begint veegt de ringmap daarom leeg ([`leeg_ring`]).
+//! Segmenten van een vorige sessie dragen tijden uit die vorige sessie: ze zouden vóór
+//! of tussen de nieuwe gaan liggen, waardoor "de laatste minuut" oude beelden oplevert
+//! en de retentie juist de verse segmenten opruimt. Ze bewaren zou ook betekenen dat een
+//! clip monsters van een andere encodersessie (andere SPS/PPS, mogelijk een ander scherm)
+//! in één spoor plakt — dat is per definitie een kapotte clip. Prijs: na een herstart
+//! is er even geen geschiedenis. Dat is de goede kant om fout te zitten.
 //!
 //! # Crashveiligheid
 //!
 //! Elk segment wordt als `.part.mp4` geschreven en pas bij `sluit` hernoemd; een half
-//! geschreven segment kan dus nooit tussen de levende metas zitten. Een bestand dat bij
-//! het opstarten niet te lezen blijkt, wordt weggegooid in plaats van genegeerd — kapot
-//! glas ruim je op, anders blijft het voor altijd liggen.
+//! geschreven segment kan dus nooit tussen de levende metas zitten. Wat er van een
+//! vorige sessie blijft liggen — half geschreven of niet — gaat bij de volgende start
+//! hoe dan ook weg.
 //!
 //! # Segmentgrenzen
 //!
@@ -44,7 +53,7 @@ use crate::d3d::D3dContext;
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use mp4::{
-    AudioObjectType, AacConfig, AvcConfig, ChannelConfig, MediaConfig, Mp4Reader, Mp4Sample,
+    AacConfig, AudioObjectType, AvcConfig, ChannelConfig, MediaConfig, Mp4Reader, Mp4Sample,
     Mp4Writer, SampleFreqIndex, TrackConfig, TrackType,
 };
 use std::collections::VecDeque;
@@ -143,6 +152,13 @@ pub fn parameter_sets(data: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     parameter_sets_uit_nals(&splits_annexb(data))
 }
 
+/// Een duur in hns naar een aantal samples, afgerond. Afkappen zou per AAC-frame één
+/// sample missen (1023 in plaats van 1024) en dat loopt over een minuut zichtbaar uit.
+fn hns_naar_samples(hns: i64, sample_rate: u32) -> u32 {
+    let r = i64::from(sample_rate);
+    u32::try_from((hns.max(0) * r + HNS_PER_SEC / 2) / HNS_PER_SEC).unwrap_or(0)
+}
+
 /// AAC-sampling-frequentie-index zoals ADTS en de esds hem allebei gebruiken.
 fn freq_index_van(sample_rate: u32) -> Option<u8> {
     Some(match sample_rate {
@@ -220,8 +236,35 @@ pub fn te_gooien(metas: &[SegmentMeta], houdt_hns: i64) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Gooit alles weg wat er in de ringmap ligt: elk `seg-*.mp4` én elk `seg-*.part.mp4`.
+/// Dit hoort bij het begin van een opnamesessie — zie de moduledoc over de klok.
+/// Alleen bestanden die deze module zelf schrijft; wat er verder in de map staat blijft
+/// met rust.
+pub fn leeg_ring(ring_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(ring_dir) else {
+        return;
+    };
+    let mut aantal = 0usize;
+    for entry in entries.flatten() {
+        let pad = entry.path();
+        let hoort_bij_ons = pad
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("seg-") && n.ends_with(".mp4"));
+        if hoort_bij_ons && std::fs::remove_file(&pad).is_ok() {
+            aantal += 1;
+        }
+    }
+    if aantal > 0 {
+        tracing::info!(aantal, "ring van een vorige sessie opgeruimd");
+    }
+}
+
 /// Bouwt de ring opnieuw op uit de map: naam geeft de begintijd, de inhoud zegt hoe
 /// laat het laatste beeld was. Onleesbare bestanden worden weggegooid — zie de moduledoc.
+///
+/// De opnamelus gebruikt dit niet (die begint met een lege ring, zie [`leeg_ring`]);
+/// het is het leesvenster op een ringmap voor tests en foutopsporing.
 pub fn laad_segmenten(ring_dir: &Path) -> Vec<SegmentMeta> {
     let Ok(entries) = std::fs::read_dir(ring_dir) else {
         return Vec::new();
@@ -232,7 +275,10 @@ pub fn laad_segmenten(ring_dir: &Path) -> Vec<SegmentMeta> {
         let Some(naam) = pad.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some(rest) = naam.strip_prefix("seg-").and_then(|r| r.strip_suffix(".mp4")) else {
+        let Some(rest) = naam
+            .strip_prefix("seg-")
+            .and_then(|r| r.strip_suffix(".mp4"))
+        else {
             continue;
         };
         let Ok(eerste) = rest.parse::<i64>() else {
@@ -345,8 +391,8 @@ impl SegmentSchrijver {
         // Temp-naam tijdens het schrijven; pas `sluit` geeft het bestand zijn echte
         // naam. Zo is een halfgeschreven segment herkenbaar en wegwerpbaar.
         let temp = pad.with_extension("part.mp4");
-        let file = File::create(&temp)
-            .with_context(|| format!("segment maken: {}", temp.display()))?;
+        let file =
+            File::create(&temp).with_context(|| format!("segment maken: {}", temp.display()))?;
         let mut writer = Mp4Writer::write_start(file, &config)
             .with_context(|| format!("MP4-writer starten: {}", temp.display()))?;
 
@@ -518,7 +564,9 @@ pub fn plak_clip(
             // Video (track 1). Tijden zijn al hns — zelfde timescale als de clip.
             let n = r.sample_count(1)?;
             for id in 1..=n {
-                let Some(s) = r.read_sample(1, id)? else { continue };
+                let Some(s) = r.read_sample(1, id)? else {
+                    continue;
+                };
                 let abs = meta.eerste_hns + i64::try_from(s.start_time)?;
                 if abs < basis {
                     continue;
@@ -533,7 +581,9 @@ pub fn plak_clip(
             }
             let n = r.sample_count(2)?;
             for id in 1..=n {
-                let Some(s) = r.read_sample(2, id)? else { continue };
+                let Some(s) = r.read_sample(2, id)? else {
+                    continue;
+                };
                 let abs = meta.eerste_hns
                     + (i128::from(s.start_time) * i128::from(HNS_PER_SEC)
                         / i128::from(a.timescale())) as i64;
@@ -572,7 +622,9 @@ fn basis_tijd(metas: &[SegmentMeta], w: i64) -> Result<i64> {
         let mut r = Mp4Reader::read_header(f, len)?;
         let n = r.sample_count(1)?;
         for id in 1..=n {
-            let Some(s) = r.read_sample(1, id)? else { continue };
+            let Some(s) = r.read_sample(1, id)? else {
+                continue;
+            };
             if !s.is_sync {
                 continue;
             }
@@ -613,7 +665,9 @@ impl AacEncoder {
             windows::Win32::Media::MediaFoundation::MFAudioFormat_AAC,
         )
         .context("AAC-encoders opzoeken")?;
-        let activate = activates.first().context("geen inbox-AAC-encoder gevonden")?;
+        let activate = activates
+            .first()
+            .context("geen inbox-AAC-encoder gevonden")?;
         tracing::info!(encoder = %crate::mf::naam_van(activate), "AAC-encoder gekozen");
 
         // SAFETY: activate komt uit MFTEnumEx en is geldig.
@@ -645,10 +699,7 @@ impl AacEncoder {
             invoer.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate)?;
             invoer.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, kanalen)?;
             invoer.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, kanalen * 2)?;
-            invoer.SetUINT32(
-                &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
-                sample_rate * kanalen * 2,
-            )?;
+            invoer.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, sample_rate * kanalen * 2)?;
             transform
                 .SetInputType(0, &invoer, 0)
                 .context("PCM-invoertype instellen")?;
@@ -682,7 +733,9 @@ impl AacEncoder {
             let buffer: IMFMediaBuffer =
                 MFCreateMemoryBuffer((pcm.len() * 2) as u32).context("PCM-buffer maken")?;
             let mut ptr: *mut u8 = std::ptr::null_mut();
-            buffer.Lock(&mut ptr, None, None).context("PCM-buffer lock")?;
+            buffer
+                .Lock(&mut ptr, None, None)
+                .context("PCM-buffer lock")?;
             std::ptr::copy_nonoverlapping(pcm.as_ptr() as *const u8, ptr, pcm.len() * 2);
             buffer.Unlock()?;
             buffer.SetCurrentLength((pcm.len() * 2) as u32)?;
@@ -802,8 +855,7 @@ impl Menger {
         if data.is_empty() {
             return;
         }
-        let offset_frames =
-            ((start_abs_hns - self.basis_hns).max(0)) * 48_000 / HNS_PER_SEC;
+        let offset_frames = ((start_abs_hns - self.basis_hns).max(0)) * 48_000 / HNS_PER_SEC;
         // base_i en lengte in één berekening, zodat resize en schrijfbereik per
         // definitie dezelfde grens delen — hier zat een index-paniek die ik niet uit
         // de formule kon verklaren, dus nu is de grens onmogelijk te missen.
@@ -825,7 +877,12 @@ impl Menger {
     /// Tot welk frame hebben álle aanwezige bronnen geleverd? Daarvóór kan niet
     /// gecodeerd worden: een latere chunk van een andere bron mag er nog in mengen.
     fn veilig_tot_frame(&self) -> i64 {
-        self.bron_einde_frame.iter().flatten().copied().min().unwrap_or(0)
+        self.bron_einde_frame
+            .iter()
+            .flatten()
+            .copied()
+            .min()
+            .unwrap_or(0)
     }
 }
 
@@ -1010,8 +1067,10 @@ fn opname_lus(
 
     let mut sporen: Option<(VideoSpoor, Option<AudioSpoor>)> = None;
     let mut segment: Option<SegmentSchrijver> = None;
-    let mut metas = laad_segmenten(ring_dir);
-    ruim_ring_op(&mut metas, instellingen.houdt_hns());
+    // Schone lei: de tijden in de bestandsnamen komen van een procesklok die net op nul
+    // begon, dus alles wat er nog ligt hoort bij een andere tijdrekening. Zie moduledoc.
+    leeg_ring(ring_dir);
+    let mut metas: Vec<SegmentMeta> = Vec::new();
 
     let mut sluiten_gevraagd = false;
     let mut keyframe_gevraagd = false;
@@ -1026,15 +1085,14 @@ fn opname_lus(
     let mut diag_keyframes: u64 = 0;
     let mut diag_laatste_log = Instant::now();
     let diag_seq_len = encoder.sequentie_header().len();
-    // Basis van de geluidstijdlijn: het begin van deze sessie. Beelden vóór het eerste
-    // keyframe komen toch niet in een segment, dus die marge is gratis.
-    let mut menger = aac.as_ref().map(|_| Menger {
-        basis_hns: 0,
-        buffer: Vec::new(),
-        gecodeerd_tot_frame: 0,
-        klok: [None; 2],
-        bron_einde_frame: [None; 2],
-    });
+    // Basis van de geluidstijdlijn: pas zetten in de lus, op de klok van dát moment.
+    // Hier al een menger met `basis_hns: 0` maken is fout zodra clips níet meteen bij
+    // het opstarten aangaan: de chunks komen binnen met `nu_hns(begin)` (tijd sinds
+    // procesbegin), en de buffer zou dan van seconde nul af gevuld worden — honderden
+    // megabytes stilte, en de AAC-encoder die ze allemaal moet doorwerken vóór het
+    // eerste echte monster. Zet clips tien minuten na de start aan en de opnamedraad
+    // stond minutenlang stil.
+    let mut menger: Option<Menger> = None;
 
     loop {
         if staat.stop.load(Ordering::Relaxed) {
@@ -1080,8 +1138,7 @@ fn opname_lus(
                         continue;
                     }
                     let start = *m.klok[bron_idx].get_or_insert_with(|| nu_hns(begin));
-                    let duur =
-                        i64::try_from(chunk.len()).unwrap_or(0) / 2 * HNS_PER_SEC / 48_000;
+                    let duur = i64::try_from(chunk.len()).unwrap_or(0) / 2 * HNS_PER_SEC / 48_000;
                     if duur == 0 {
                         continue;
                     }
@@ -1102,8 +1159,7 @@ fn opname_lus(
                         .iter()
                         .map(|s| (s.clamp(-1.0, 1.0) * 32_767.0) as i16)
                         .collect();
-                    let abs =
-                        m.basis_hns + m.gecodeerd_tot_frame * HNS_PER_SEC / 48_000;
+                    let abs = m.basis_hns + m.gecodeerd_tot_frame * HNS_PER_SEC / 48_000;
                     match enc.voer(&pcm, abs, n * HNS_PER_SEC / 48_000) {
                         Ok(uit) => wachtrij.extend(uit),
                         Err(e) => {
@@ -1153,8 +1209,7 @@ fn opname_lus(
             continue;
         }
 
-        let (onul, wnul) =
-            *nulpunten.get_or_insert_with(|| (opname.opgenomen_hns, nu_hns(begin)));
+        let (onul, wnul) = *nulpunten.get_or_insert_with(|| (opname.opgenomen_hns, nu_hns(begin)));
         let tijd = (wnul + (opname.opgenomen_hns - onul)).max(vorige_tijd + 1);
         vorige_tijd = tijd;
 
@@ -1229,14 +1284,11 @@ fn opname_lus(
                     };
                     sporen = Some((vs.clone(), asp.clone()));
                     let pad = ring_dir.join(format!("seg-{:020}.mp4", p.tijd_hns));
-                    segment =
-                        Some(SegmentSchrijver::open(pad, &vs, asp.as_ref(), p.tijd_hns)?);
+                    segment = Some(SegmentSchrijver::open(pad, &vs, asp.as_ref(), p.tijd_hns)?);
                     keyframe_gevraagd = false;
                 }
                 Some(s) => {
-                    if !keyframe_gevraagd
-                        && p.tijd_hns - s.eerste_hns >= SEGMENT_DOEL_HNS
-                    {
+                    if !keyframe_gevraagd && p.tijd_hns - s.eerste_hns >= SEGMENT_DOEL_HNS {
                         encoder.vraag_keyframe();
                         keyframe_gevraagd = true;
                     }
@@ -1248,7 +1300,12 @@ fn opname_lus(
             while let Some((t, _d, _data)) = wachtrij.front() {
                 if *t <= p.tijd_hns {
                     let (t, d, data) = wachtrij.pop_front().unwrap();
-                    s.schrijf_audio(t, d as u32, data);
+                    // De MFT geeft zijn duur in hns; de audiotrack telt in samples.
+                    // Die twee door elkaar halen rekt het spoor met een factor 208
+                    // (213 333 hns per AAC-frame tegen 1024 samples): een clip van vier
+                    // seconden beeld met een geluidsspoor dat beweert dertien minuten te
+                    // duren — geen speler die daar nog geluid uit haalt.
+                    s.schrijf_audio(t, hns_naar_samples(d, 48_000), data);
                 } else {
                     break;
                 }
@@ -1278,10 +1335,7 @@ fn bewaar_thread(
     let _ = std::thread::Builder::new()
         .name("fitcom-clip".into())
         .spawn(move || {
-            tracing::info!(
-                segmenten = metas.len(),
-                "clip samenstellen gestart"
-            );
+            tracing::info!(segmenten = metas.len(), "clip samenstellen gestart");
             let resultaat = (|| -> Result<PathBuf> {
                 let Some((video, audio)) = sporen else {
                     bail!("er is nog geen beeld opgenomen");
@@ -1358,10 +1412,7 @@ mod tests {
         let data = [0, 0, 0, 1, 10, 20, 30, 0, 0, 0, 1, 40];
         let avcc = naar_avcc(&data);
         // NAL 1: len=3 + [10 20 30]; NAL 2: len=1 + [40].
-        assert_eq!(
-            avcc,
-            vec![0, 0, 0, 3, 10, 20, 30, 0, 0, 0, 1, 40]
-        );
+        assert_eq!(avcc, vec![0, 0, 0, 3, 10, 20, 30, 0, 0, 0, 1, 40]);
     }
 
     /// SPS/PPS herkennen moet ook werken als er een IDR (type 5) tussenzit — precies
@@ -1410,10 +1461,9 @@ mod tests {
             let h = adts_header(0x1234 + 7, 3, 2);
             assert_eq!(h[0], 0xFF);
             assert_eq!(h[1], 0xF1); // MPEG-4, geen CRC
-                                     // Lengte zit verspreid over drie velden; teruglezend:
-            let terug = ((u16::from(h[3]) & 0x03) << 11)
-                | (u16::from(h[4]) << 3)
-                | (u16::from(h[5]) >> 5);
+                                    // Lengte zit verspreid over drie velden; teruglezend:
+            let terug =
+                ((u16::from(h[3]) & 0x03) << 11) | (u16::from(h[4]) << 3) | (u16::from(h[5]) >> 5);
             assert_eq!(terug as usize, 0x1234 + 7);
         }
     }
@@ -1428,17 +1478,13 @@ mod tests {
 
     #[test]
     fn kies_venster_neemt_van_achternaam_tot_de_span_klopt() {
-        let metas = [
-            meta("a", 0, 200),
-            meta("b", 200, 400),
-            meta("c", 400, 600),
-        ];
+        let metas = [meta("a", 0, 200), meta("b", 200, 400), meta("c", 400, 600)];
         // Venster van 250 hns: segment c alleen is te kort, b+c samen volstaat.
         let gekozen = kies_venster(&metas, 250);
-        assert_eq!(gekozen.iter().map(|m| m.pad.clone()).collect::<Vec<_>>(), [
-            PathBuf::from("b"),
-            PathBuf::from("c")
-        ]);
+        assert_eq!(
+            gekozen.iter().map(|m| m.pad.clone()).collect::<Vec<_>>(),
+            [PathBuf::from("b"), PathBuf::from("c")]
+        );
         // Venster groter dan alles: alle drie.
         assert_eq!(kies_venster(&metas, 10_000).len(), 3);
         // Lege ring blijft leeg.
@@ -1460,6 +1506,42 @@ mod tests {
         assert!(te_gooien(&metas, 500 * sec).is_empty());
         // Lege ring: niets om weg te gooien.
         assert!(te_gooien(&[], sec).is_empty());
+    }
+
+    /// De opruiming aan het begin van een sessie: alles wat deze module schrijft gaat
+    /// weg (ook halve `.part.mp4`), en de rest van de map blijft met rust. Dit is de
+    /// hele reden dat een clip niet meer uit een vorige sessie kan komen.
+    #[test]
+    fn leeg_ring_gooit_alleen_de_eigen_segmenten_weg() {
+        let dir = std::env::temp_dir().join(format!(
+            "fitcom-leegring-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("testmap");
+        for naam in [
+            "seg-00000000000000000001.mp4",
+            "seg-00000000000000000002.mp4",
+            "seg-00000000000000000003.part.mp4",
+            "clip-1.mp4",
+            "aantekening.txt",
+        ] {
+            std::fs::write(dir.join(naam), b"x").expect("testbestand");
+        }
+
+        leeg_ring(&dir);
+
+        let over: Vec<String> = std::fs::read_dir(&dir)
+            .expect("lezen")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(over.len(), 2, "over: {over:?}");
+        assert!(over.iter().any(|n| n == "clip-1.mp4"));
+        assert!(over.iter().any(|n| n == "aantekening.txt"));
+        assert!(laad_segmenten(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -1496,7 +1578,12 @@ mod aac_toets {
         // Frames komen met hun eigen tijdstempels uit de encoder; die moeten stijgen,
         // want de weergave plant zich hierop.
         for w in alles.windows(2) {
-            assert!(w[1].0 > w[0].0, "tijden stijgen niet: {} → {}", w[0].0, w[1].0);
+            assert!(
+                w[1].0 > w[0].0,
+                "tijden stijgen niet: {} → {}",
+                w[0].0,
+                w[1].0
+            );
         }
         assert!(alles.iter().all(|(_, d, data)| *d > 0 && !data.is_empty()));
     }
