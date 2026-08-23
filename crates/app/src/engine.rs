@@ -1285,6 +1285,7 @@ impl Engine {
             self.cfg.video.fps,
             self.cfg.video.bitrate,
             self.cfg.clips.monitor.as_deref(),
+            self.cfg.input_device.as_deref(),
             d3d.as_ref(),
         ) {
             tracing::error!(error = %format!("{e:#}"), "clipopname wisselen mislukt");
@@ -1963,6 +1964,13 @@ impl Engine {
                 if self.voice.is_some() {
                     self.verlaten();
                     self.deelnemen();
+                }
+                // De clip-opname kiest zijn microfoon op hetzelfde moment: bij het
+                // starten. Draait hij, dan moet hij dus ook opnieuw, anders neemt hij
+                // stilzwijgend het oude apparaat op tot de volgende herstart.
+                if self.clips.aan() {
+                    self.zet_clips_motor(false);
+                    self.zet_clips_motor(true);
                 }
             }
             UiCommand::ZetDownloadMap(pad) => {

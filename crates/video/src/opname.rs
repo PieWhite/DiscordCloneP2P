@@ -1083,6 +1083,9 @@ fn opname_lus(
     let mut diag_beelden: u64 = 0;
     let mut diag_pakketten: u64 = 0;
     let mut diag_keyframes: u64 = 0;
+    // Per geluidsbron tellen, niet samen: "mijn stem staat niet in de clip" is anders
+    // niet van "er komt helemaal geen geluid binnen" te onderscheiden.
+    let mut diag_geluid: [u64; 2] = [0; 2];
     let mut diag_laatste_log = Instant::now();
     let diag_seq_len = encoder.sequentie_header().len();
     // Basis van de geluidstijdlijn: pas zetten in de lus, op de klok van dát moment.
@@ -1106,6 +1109,8 @@ fn opname_lus(
                 beelden = diag_beelden,
                 pakketten = diag_pakketten,
                 keyframes = diag_keyframes,
+                systeem_chunks = diag_geluid[0],
+                microfoon_chunks = diag_geluid[1],
                 segment_open = segment.is_some(),
                 seq_header_bytes = diag_seq_len,
                 "clip-opname-diagnose"
@@ -1144,6 +1149,7 @@ fn opname_lus(
                     }
                     m.voeg_toe(bron_idx, start, &chunk);
                     m.klok[bron_idx] = Some(start + duur);
+                    diag_geluid[bron_idx] += 1;
                 }
             }
 

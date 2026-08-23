@@ -121,7 +121,9 @@ mod backend {
         /// moduledoc van `fitcom_video::opname`.
         ///
         /// `monitor_naam` kiest welk scherm; `None` of een onbekende naam valt terug
-        /// op het eerste gevonden scherm.
+        /// op het eerste gevonden scherm. `mic_naam` is de microfoon uit de
+        /// instellingen — dezelfde die het gesprek gebruikt, want je verwacht in je clip
+        /// terug te horen wat de anderen ook horen.
         #[allow(clippy::too_many_arguments)]
         pub fn zet(
             &mut self,
@@ -130,6 +132,7 @@ mod backend {
             fps: u32,
             bitrate: u32,
             monitor_naam: Option<&str>,
+            mic_naam: Option<&str>,
             d3d: Option<&D3dContext>,
         ) -> Result<()> {
             match (aan, self.handle.is_some()) {
@@ -170,7 +173,7 @@ mod backend {
                     "systeemgeluid voor clips niet beschikbaar"
                 ),
             }
-            match MicrofoonTap::start() {
+            match MicrofoonTap::start(mic_naam) {
                 Ok((tap, ontvangen)) => {
                     audio.microfoon = Some(ontvangen);
                     self.tap_microfoon = Some(tap);
@@ -457,6 +460,7 @@ mod backend {
             _fps: u32,
             _bitrate: u32,
             _monitor_naam: Option<&str>,
+            _mic_naam: Option<&str>,
             _d3d: Option<&D3dContext>,
         ) -> Result<()> {
             Ok(())

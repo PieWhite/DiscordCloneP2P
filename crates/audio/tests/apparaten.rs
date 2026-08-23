@@ -109,6 +109,51 @@ fn apparaten_zijn_op_te_vragen() {
     assert!(!uitvoer.is_empty(), "geen enkel weergaveapparaat gevonden");
 }
 
+/// De microfoon-tap voor clips levert écht chunks, en op de snelheid van de klok.
+///
+/// Dit is geen theoretische test. De tap bouwde zijn `cpal::Stream` in een hulpfunctie en
+/// gaf hem niet terug, dus de stream viel weg op de regel ná `play()`. `start()` meldde
+/// netjes Ok, er kwam geen enkele fout in de log, en er kwam nooit één sample: clips met
+/// spelgeluid maar zonder je eigen stem. Alleen een test die de chunks daadwerkelijk
+/// opvangt ziet dat verschil.
+///
+/// Bewust geen eis aan het volume — een stille kamer of een gedempte microfoon is geen
+/// kapotte tap. Wat hier telt is dat er samples komen, op ongeveer 48 kHz stereo.
+#[test]
+#[ignore = "vereist een echte microfoon"]
+fn microfoon_tap_levert_chunks() {
+    let (tap, rx) = fitcom_audio::microfoon::MicrofoonTap::start(None).expect("microfoon-tap");
+
+    let duur = Duration::from_millis(1500);
+    let begin = std::time::Instant::now();
+    let mut chunks = 0usize;
+    let mut samples = 0usize;
+    let mut piek = 0f32;
+    while begin.elapsed() < duur {
+        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(200)) {
+            chunks += 1;
+            samples += chunk.len();
+            for s in chunk {
+                piek = piek.max(s.abs());
+            }
+        }
+    }
+    drop(tap);
+
+    let seconden = samples as f64 / 2.0 / 48_000.0;
+    println!("{chunks} chunks, {samples} samples = {seconden:.2} s geluid, piek {piek:.3}");
+    assert!(chunks > 0, "de microfoon-tap leverde geen enkele chunk");
+    // Ruime band: de driver bepaalt de blokgrootte en de eerste chunk kan laat zijn.
+    assert!(
+        seconden > 0.5,
+        "maar {seconden:.2} s geluid in 1,5 s — de tap loopt niet op kloksnelheid"
+    );
+    assert!(
+        samples.is_multiple_of(2),
+        "geen stereo: oneven aantal samples"
+    );
+}
+
 /// Voorkomt dat de compiler het type wegoptimaliseert als de tests overgeslagen worden.
 #[allow(dead_code)]
 fn typecheck(_: &VoiceHandle) {}

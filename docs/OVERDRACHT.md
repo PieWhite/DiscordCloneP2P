@@ -1540,6 +1540,13 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
 - **De vensterlijst bevat rommel.** `EnumWindows` levert ook onzichtbare hulpvensters op;
   er wordt al gefilterd op zichtbaarheid, titel en `WS_EX_TOOLWINDOW`, maar er blijven
   dubbelingen in staan (twee keer "Mail", twee keer "Instellingen"). Cosmetisch.
+- **Een `cpal::Stream` die niemand vasthoudt stopt met leveren, zonder fout.** Bouw je hem
+  in een hulpfunctie en geef je hem niet terug, dan valt hij op de regel ná `play()` en
+  komt er nooit één sample binnen — `start()` meldt gewoon Ok. Dat was precies de reden dat
+  clips wel spelgeluid hadden en niet je eigen stem (`microfoon.rs`, 2026-08-23). De
+  voice-sessie heeft het goed (`open_apparaten` geeft beide streams terug); een tap die dat
+  niet doet ziet er van buiten identiek uit. Test hierop door de chunks écht op te vangen,
+  niet door te kijken of het starten lukte.
 - **Een paniek in een spawned thread staat níét in het logbestand.** Hij gaat naar stderr,
   en de app schrijft zijn log ergens anders heen — dus een draad die meteen omvalt ziet er
   van buiten uit als een draad die niets te doen heeft. Dat kostte een avond bij de clips
@@ -2287,7 +2294,9 @@ samples, en er staat één omrekening tussen (`hns_naar_samples`).
 
 **Geluid komt uit twee taps en wordt op één tijdlijn gemengd.** `LoopbackTap` (WASAPI,
 systeem- en spelgeluid) en `MicrofoonTap` (cpal, je eigen stem), allebei genormaliseerd naar
-48 kHz stereo door de tap zelf. Elke bron houdt zijn eigen klok bij; `Menger` telt ze op
+48 kHz stereo door de tap zelf. De microfoon volgt de keuze uit de instellingen (dezelfde
+`kies_apparaat` als het gesprek gebruikt) en wisselt mee zodra je hem daar aanpast — anders
+neem je stilzwijgend iets anders op dan de anderen van je horen. Elke bron houdt zijn eigen klok bij; `Menger` telt ze op
 dezelfde plek in de buffer op en geeft alleen vrij wat **álle** aanwezige bronnen geleverd
 hebben — daarvóór kan een bron nog terugkomen met een monster dat eerder begint. Elke bron
 mag apart falen: een clip zonder microfoon is nog steeds een clip met spelgeluid, en zonder

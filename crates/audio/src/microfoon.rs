@@ -32,27 +32,36 @@ pub struct MicrofoonTap {
 impl MicrofoonTap {
     /// Start de capture op een eigen draad; signaal ná het bouwen én spelen van de
     /// stream, vóór de wachtlus — zelfde les als bij de loopback-tap.
-    pub fn start() -> Result<(Self, std::sync::mpsc::Receiver<Vec<f32>>)> {
+    ///
+    /// `naam` is de gekozen microfoon uit `config.toml` (leeg = standaardapparaat).
+    /// Dezelfde keuze als het gesprek gebruikt: wie in de instellingen een microfoon
+    /// aanwijst verwacht die ook in zijn clips terug te horen.
+    pub fn start(naam: Option<&str>) -> Result<(Self, std::sync::mpsc::Receiver<Vec<f32>>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
         let stop_draad = stop.clone();
+        let naam = naam.map(str::to_owned);
         let (klaar_tx, klaar_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
 
         std::thread::Builder::new()
             .name("fitcom-clip-microfoon".into())
             .spawn(move || {
                 // De cpal-stream leeft in deze scope en valt pas weg als de wachtlus
-                // hieronder eindigt — een stream zonder eigenaar stopt met leveren,
-                // dus hij móét hier blijven staan en niet in een helper verdwijnen.
-                match bouw_en_speel(&tx) {
+                // hieronder eindigt — een stream zonder eigenaar stopt met leveren.
+                // `bouw_en_speel` moet hem dus teruggeven en niet zelf vasthouden: deed
+                // hij dat wel, dan viel de stream weg op de regel ná `play()` en leverde
+                // de tap nooit één chunk. Geen fout, geen logregel, alleen een clip
+                // zonder jouw stem erin.
+                match bouw_en_speel(&tx, naam.as_deref()) {
                     Err(e) => {
                         let _ = klaar_tx.send(Err(e));
                     }
-                    Ok(()) => {
+                    Ok(stroom) => {
                         let _ = klaar_tx.send(Ok(()));
                         while !stop_draad.load(Ordering::Relaxed) {
                             std::thread::sleep(Duration::from_millis(100));
                         }
+                        drop(stroom);
                     }
                 }
             })
@@ -75,14 +84,27 @@ impl Drop for MicrofoonTap {
     }
 }
 
-/// Bouwt de invoerstroom op het standaardapparaat en zet hem aan.
-fn bouw_en_speel(tx: &std::sync::mpsc::Sender<Vec<f32>>) -> Result<()> {
+/// Bouwt de invoerstroom op het standaardapparaat, zet hem aan en **geeft hem terug**.
+/// De beller houdt hem vast zolang er opgenomen wordt; een `cpal::Stream` die valt is een
+/// stream die stopt met leveren, en dat gebeurt zonder foutmelding.
+fn bouw_en_speel(
+    tx: &std::sync::mpsc::Sender<Vec<f32>>,
+    naam: Option<&str>,
+) -> Result<cpal::Stream> {
     use anyhow::Context as _;
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
+    let device = crate::session::kies_apparaat(host.input_devices()?, naam)
+        .or_else(|| host.default_input_device())
         .context("geen microfoon gevonden")?;
     let cfg = device.default_input_config().context("microfoon-config")?;
+    // Welke microfoon dit is hoort in de log: "mijn stem staat niet in de clip" is
+    // meestal een apparaatkwestie, en dan wil je die naam zien zonder te hoeven raden.
+    tracing::info!(
+        apparaat = %device,
+        rate = cfg.sample_rate(),
+        kanalen = cfg.channels(),
+        "microfoon voor clips"
+    );
     let rate = cfg.sample_rate();
     let kanalen = usize::from(cfg.channels());
     let scfg = cfg.config();
@@ -126,8 +148,7 @@ fn bouw_en_speel(tx: &std::sync::mpsc::Sender<Vec<f32>>) -> Result<()> {
             device.build_input_stream::<i16, _, _>(
                 scfg,
                 move |data: &[i16], _| {
-                    let drijvend: Vec<f32> =
-                        data.iter().map(|&s| f32::from(s) / 32768.0).collect();
+                    let drijvend: Vec<f32> = data.iter().map(|&s| f32::from(s) / 32768.0).collect();
                     let mut mono = Vec::new();
                     naar_mono(&drijvend, kanalen, &mut mono);
                     if mono.is_empty() {
@@ -153,5 +174,5 @@ fn bouw_en_speel(tx: &std::sync::mpsc::Sender<Vec<f32>>) -> Result<()> {
         andere => bail!("microfoon levert {andere:?}; alleen f32 en i16 worden ondersteund"),
     };
     stroom.play().context("microfoon-stream starten")?;
-    Ok(())
+    Ok(stroom)
 }

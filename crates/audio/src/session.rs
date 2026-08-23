@@ -358,12 +358,16 @@ fn bind_met_geduld(port: u16) -> Result<MediaSocket> {
 // Apparaten
 // ---------------------------------------------------------------------------
 
-fn kies_apparaat<I: Iterator<Item = cpal::Device>>(
+/// Het apparaat met deze naam, of `None` als er geen naam gekozen is of hij niet meer
+/// bestaat (apparaten komen en gaan). De beller valt dan terug op het standaardapparaat.
+/// Ook gebruikt door de microfoon-tap voor clips: die moet dezelfde microfoon pakken als
+/// het gesprek, anders neem je iets anders op dan je hoort.
+pub(crate) fn kies_apparaat<I: Iterator<Item = cpal::Device>>(
     apparaten: I,
-    naam: Option<&String>,
+    naam: Option<&str>,
 ) -> Option<cpal::Device> {
     let naam = naam?;
-    apparaten.into_iter().find(|d| d.to_string() == *naam)
+    apparaten.into_iter().find(|d| d.to_string() == naam)
 }
 
 fn open_apparaten(
@@ -373,10 +377,10 @@ fn open_apparaten(
 ) -> Result<(Apparaten, cpal::Stream, cpal::Stream)> {
     let host = cpal::default_host();
 
-    let invoer = kies_apparaat(host.input_devices()?, cfg.input_device.as_ref())
+    let invoer = kies_apparaat(host.input_devices()?, cfg.input_device.as_deref())
         .or_else(|| host.default_input_device())
         .context("geen microfoon gevonden")?;
-    let uitvoer = kies_apparaat(host.output_devices()?, cfg.output_device.as_ref())
+    let uitvoer = kies_apparaat(host.output_devices()?, cfg.output_device.as_deref())
         .or_else(|| host.default_output_device())
         .context("geen weergaveapparaat gevonden")?;
 
@@ -786,7 +790,7 @@ fn open_bureaublad_bron(
                 "proces-exclusieve loopback niet beschikbaar, terugval op gewone loopback (eigen stem kan meekomen)"
             );
             let host = cpal::default_host();
-            let dev = kies_apparaat(host.output_devices()?, apparaat)
+            let dev = kies_apparaat(host.output_devices()?, apparaat.map(String::as_str))
                 .or_else(|| host.default_output_device())
                 .context("geen weergaveapparaat om geluid van af te tappen")?;
             let cfg = dev
