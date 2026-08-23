@@ -969,8 +969,9 @@ beeldproblemen is de log van beide kanten waardevol; die staat in `data\logs\`.
 ## Clips (2026-08-22, fase 15)
 
 Geautomatiseerd gedekt (`cargo test -p fitcom-video -- --ignored`, GPU + scherm nodig):
-de hele keten tot afspeelbaar MP4, herstart die de ring weer oppikt, AAC-frames met
-stijgende tijden, en de zuivere regels (avcc-conversie, vensterkeuze, ring-retentie).
+de hele keten tot afspeelbaar MP4, een herstart die met een schone ring begint, geluid dat
+het beeld dekt ook als de opname pas ná het opstarten aangaat, AAC-frames met stijgende
+tijden, en de zuivere regels (avcc-conversie, vensterkeuze, ring-retentie, ring legen).
 
 Met de hand, want UI en tweede machine:
 
@@ -982,6 +983,8 @@ Met de hand, want UI en tweede machine:
    af — beeld én systeemgeluid, lip-sync over de hele minuut.
 3. Clip maken vlak nadat de recorder aanging: nette foutmelding, geen crash, geen leeg
    bestand.
-4. Uitzetten: geluidsdraad stopt, ring blijft staan, herstart met aan = ring wordt
-   verder gebruikt, niet gewist.
+4. Uitzetten: geluidsdraad stopt. Weer aanzetten (of de app herstarten) = de ring wordt
+   leeggeveegd en opnieuw opgebouwd; een clip vlak daarna is korter dan het venster en
+   bevat nooit beelden van vóór het aanzetten. Zie OVERDRACHT beslissing 33 — dit punt
+   stond hier eerst andersom en dát was de bug.
 5. Frametime-vergelijking spel met recorder aan/uit — de meetpunt-notitie in SPEC.md.

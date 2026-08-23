@@ -520,7 +520,7 @@ onderbouwing en `docs/SPEC.md`, sectie "Clips":
 
 **Klaar als (gehaald):** E2E over echte hardware levert binnen enkele seconden na de
 hotkey een buiten-de-app afspeelbare MP4, ook over een segmentgrens heen; de ring blijft
-op venster+marge; een herstart pikt de bestaande ring op zonder te herschrijven; AAC-
+op venster+marge; een herstart begint met een schone ring (zie OVERDRACHT 33); AAC-
 frames dragen stijgende tijdstempels van de encoder zelf. Handmatig bij Rick: gamen met
 recorder aan, lip-sync in een echte clip, en de frametime-meting uit SPEC.md.
 
