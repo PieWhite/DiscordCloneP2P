@@ -224,6 +224,17 @@ pub struct ClipsConfig {
     /// Ongeldig formaat valt bij het opstarten terug op F9 — zie `herstel`.
     #[serde(default = "default_clip_hotkey")]
     pub hotkey: String,
+
+    /// Waar clips landen. Leeg = `<data-map>/clips`. Zelfde patroon als
+    /// `download_dir`: een gebruikersbestand mag ergens staan waar de gebruiker het
+    /// terugvindt — op een andere schijf bijvoorbeeld, want een minuut 1080p is
+    /// ~90 MB en dat telt op.
+    ///
+    /// De ringbuffer hangt eronder (`<map>/ring`) en verhuist dus mee. Dat is geen
+    /// gebruikersdata: bij het verhuizen wordt de oude ring opgeruimd en begint de
+    /// nieuwe leeg, precies zoals bij elke start (zie OVERDRACHT beslissing 33).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<PathBuf>,
 }
 
 impl Default for ClipsConfig {
@@ -233,6 +244,7 @@ impl Default for ClipsConfig {
             venster_sec: default_clips_venster(),
             monitor: None,
             hotkey: default_clip_hotkey(),
+            map: None,
         }
     }
 }
@@ -474,10 +486,14 @@ pub fn resolve_updates_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("updates")
 }
 
-/// Waar clips (fase 15) landen: `<data-map>/clips`. Net als de ring zelf plumbing —
-/// de gebruiker kiest wél of er opgenomen wordt, niet waar het tussendoor staat.
-pub fn resolve_clips_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("clips")
+/// Waar clips (fase 15) landen: `clips.map` als de gebruiker die gezet heeft, anders
+/// `<data-map>/clips`. Zelfde vorm als [`resolve_download_dir`] — een clip is een
+/// gebruikersbestand dat je terugvindt en deelt, geen interne cache.
+pub fn resolve_clips_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
+    cfg.clips
+        .map
+        .clone()
+        .unwrap_or_else(|| data_dir.join("clips"))
 }
 
 fn whoami_or(fallback: &str) -> String {
@@ -578,6 +594,41 @@ mod tests {
         };
         s.herstel();
         assert_eq!(s.set, "belletjes-uit-een-latere-build");
+    }
+
+    /// De clipmap: leeg = naast de rest van de data, gezet = precies wat er staat. En
+    /// een config van vóór 1.6.6 heeft de sleutel niet, dus die moet gewoon starten —
+    /// zelfde reden als bij de `[sound]`-tabel hierboven.
+    #[test]
+    fn clipmap_volgt_de_instelling_en_valt_anders_terug() {
+        let data = Path::new("C:/data");
+
+        let oud: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [clips]
+            enabled = true
+            venster_sec = 60
+            hotkey = "F9"
+            "#,
+        )
+        .expect("een config zonder clipmap hoort te laden");
+        assert_eq!(oud.clips.map, None);
+        assert_eq!(resolve_clips_dir(&oud, data), data.join("clips"));
+
+        let gezet: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [clips]
+            map = "D:/Clips"
+            "#,
+        )
+        .expect("een config met clipmap hoort te laden");
+        assert_eq!(resolve_clips_dir(&gezet, data), PathBuf::from("D:/Clips"));
+
+        // En hij overleeft opslaan-en-teruglezen; anders is hij één herstart later weg.
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&gezet).unwrap()).unwrap();
+        assert_eq!(terug.clips.map, gezet.clips.map);
     }
 
     #[test]

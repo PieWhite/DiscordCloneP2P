@@ -1327,6 +1327,15 @@ const SET_BODY = {
       </div>
     </div>
     <div class="field">
+      <span class="field-label">Clips folder</span>
+      <span class="field-help">Where saved clips land. Clips already saved stay where
+        they are; the rolling buffer moves along and starts empty.</span>
+      <div class="control-row">
+        <code class="mono code-inline">${esc(c.folder)}</code>
+        <button class="btn btn--ghost" id="btn-clips-dir">Change…</button>
+      </div>
+    </div>
+    <div class="field">
       <span class="field-label">Save a clip now</span>
       <span class="field-help">${c.error ? esc(c.error) : "Writes the last window to the clips folder."}</span>
       <div class="control-row">
@@ -1973,6 +1982,7 @@ document.addEventListener("click", async e => {
   }
   if (t.closest("#clip-now")) return invoke("clip_now");
   if (t.closest("#open-clips-folder")) return invoke("open_clips_folder");
+  if (t.closest("#btn-clips-dir")) return invoke("pick_clips_dir");
   if (t.closest("#btn-download-dir")) return invoke("pick_download_dir");
   if (t.closest("#refresh-devices")) { devices = null; return loadDevices(); }
 

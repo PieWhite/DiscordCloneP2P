@@ -321,6 +321,8 @@ pub enum UiCommand {
     ZetClipMonitor(String),
     /// De globale clip-sneltoets wisselen, zonder herstart.
     ZetClipsHotkey(String),
+    /// Waar clips (en de ring eronder) heen gaan. Een lopende opname verhuist mee.
+    ZetClipMap(PathBuf),
 }
 
 pub struct EngineHandle {
@@ -365,7 +367,7 @@ pub fn spawn(
     let (aangeboden, gedownload) = lees_paden_index(&paden_index);
     files.herstel_paden(aangeboden, gedownload);
     let afsluiten_voor_update = Arc::new(AtomicBool::new(false));
-    let clips_beheer = crate::clips::ClipsBeheer::nieuw(config::resolve_clips_dir(&data_dir));
+    let clips_beheer = crate::clips::ClipsBeheer::nieuw(config::resolve_clips_dir(&cfg, &data_dir));
 
     let peers = cfg
         .peers
@@ -1855,6 +1857,31 @@ impl Engine {
                     self.fout = Some(format!("sneltoets: {e:#}"));
                     crate::clips::HotkeyDraad::dode()
                 });
+            }
+            UiCommand::ZetClipMap(pad) => {
+                if let Err(e) = std::fs::create_dir_all(&pad) {
+                    tracing::warn!(error = %e, pad = %pad.display(), "clipmap aanmaken mislukt");
+                    self.fout = Some(format!("clipmap aanmaken: {e}"));
+                    return;
+                }
+                if self.clips.map() == pad {
+                    return;
+                }
+                self.cfg.clips.map = Some(pad.clone());
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    self.fout = Some(format!("config opslaan: {e:#}"));
+                    return;
+                }
+                let stond_aan = self.clips.aan();
+                if stond_aan {
+                    self.zet_clips_motor(false);
+                }
+                // `zet_map` ruimt de ring van de oude map op — die draagt tijden van
+                // deze sessie en wordt nooit meer gelezen. De clips zelf blijven staan.
+                self.clips.zet_map(pad);
+                if stond_aan {
+                    self.zet_clips_motor(true);
+                }
             }
             UiCommand::Bewerk(doel, tekst) => {
                 let r = self.chat.bewerk_bericht(doel, &tekst);

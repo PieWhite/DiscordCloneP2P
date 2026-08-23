@@ -111,6 +111,25 @@ mod backend {
             true
         }
 
+        /// Waar clips en de ring vanaf nu heen gaan. De beller (de motor) herstart een
+        /// lopende opname zelf — deze klasse verhuist alleen het doel, want de
+        /// opnamedraad heeft zijn paden al bij het starten gekregen.
+        ///
+        /// De ring van de oude map wordt hier opgeruimd: die segmenten dragen tijden van
+        /// deze sessie en worden nooit meer gelezen, dus ze zouden voorgoed blijven
+        /// liggen. Alleen `seg-*` gaat weg; clips die er al staan blijven staan.
+        pub fn zet_map(&mut self, map: PathBuf) {
+            if self.map != map {
+                fitcom_video::opname::leeg_ring(&self.map.join("ring"));
+            }
+            self.map = map;
+        }
+
+        /// De huidige map, zodat de motor de oude ring kan opruimen vóór een verhuizing.
+        pub fn map(&self) -> &std::path::Path {
+            &self.map
+        }
+
         pub fn aan(&self) -> bool {
             self.handle.is_some()
         }
@@ -446,6 +465,13 @@ mod backend {
         }
         pub fn aanwezig(&self) -> bool {
             false
+        }
+        pub fn zet_map(&mut self, map: PathBuf) {
+            self.map = map;
+        }
+        #[allow(clippy::unused_self)]
+        pub fn map(&self) -> &std::path::Path {
+            &self.map
         }
         #[allow(clippy::unused_self)]
         pub fn aan(&self) -> bool {

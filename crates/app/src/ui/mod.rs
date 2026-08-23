@@ -290,6 +290,7 @@ pub fn run(
             commands::set_clips,
             commands::clip_now,
             commands::open_clips_folder,
+            commands::pick_clips_dir,
             commands::clip_monitors,
             commands::set_clip_monitor,
             commands::set_clip_hotkey,

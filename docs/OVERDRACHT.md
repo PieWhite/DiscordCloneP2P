@@ -2314,7 +2314,12 @@ van de meeste gamebinds, met één hand te halen). Zie beslissing 33 voor de vol
 de oude draad eruit moet.
 
 **Instellingen staan in `config.toml` onder `[clips]`** (`enabled`, `venster_sec`, `monitor`,
-`hotkey`), alles met `#[serde(default)]`. Van scherm wisselen terwijl de opname loopt kan de
+`hotkey`, `map`), alles met `#[serde(default)]`. `map` is waar de clips landen; leeg is
+`<data-map>/clips`. Zelfde vorm als `download_dir` — een clip is een gebruikersbestand dat
+je terugvindt en deelt, en een minuut 1080p is ~90 MB, dus "op die andere schijf" is een
+redelijke wens. De ring hangt eronder (`<map>/ring`) en verhuist mee: bij het wisselen
+wordt de ring van de oude map opgeruimd en begint de nieuwe leeg, precies zoals bij elke
+start. Clips die er al staan blijven staan waar ze staan. Van scherm wisselen terwijl de opname loopt kan de
 keten niet, dus dat herstart hem gewoon — een paar seconden opnieuw opbouwen is genoeg
 troost. Monitornamen worden uniek gemaakt (`#2`, `#3`), anders is de keuze op naam ambigu
 bij twee identieke schermen.

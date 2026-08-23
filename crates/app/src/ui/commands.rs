@@ -45,12 +45,7 @@ pub fn get_timeline(ui: State<'_, Ui>, channel: String) -> Vec<TimelineItem> {
 /// Send a chat message. `reply_to` is `Some` when the composer had a reply open; the
 /// engine validates that it points into this same conversation.
 #[tauri::command]
-pub fn send_message(
-    ui: State<'_, Ui>,
-    channel: String,
-    text: String,
-    reply_to: Option<OpRef>,
-) {
+pub fn send_message(ui: State<'_, Ui>, channel: String, text: String, reply_to: Option<OpRef>) {
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
@@ -298,6 +293,17 @@ pub async fn pick_download_dir(ui: State<'_, Ui>) -> Result<(), ()> {
     let picked = rfd::AsyncFileDialog::new().pick_folder().await;
     if let Some(dir) = picked {
         send(&ui, UiCommand::ZetDownloadMap(dir.path().to_path_buf()));
+    }
+    Ok(())
+}
+
+/// Opens the Windows folder picker for the clips folder. Same blocking-thread reason
+/// as `pick_download_dir` — the dialog is modal.
+#[tauri::command]
+pub async fn pick_clips_dir(ui: State<'_, Ui>) -> Result<(), ()> {
+    let picked = rfd::AsyncFileDialog::new().pick_folder().await;
+    if let Some(dir) = picked {
+        send(&ui, UiCommand::ZetClipMap(dir.path().to_path_buf()));
     }
     Ok(())
 }

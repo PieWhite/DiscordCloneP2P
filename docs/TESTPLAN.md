@@ -987,4 +987,8 @@ Met de hand, want UI en tweede machine:
    leeggeveegd en opnieuw opgebouwd; een clip vlak daarna is korter dan het venster en
    bevat nooit beelden van vóór het aanzetten. Zie OVERDRACHT beslissing 33 — dit punt
    stond hier eerst andersom en dát was de bug.
-5. Frametime-vergelijking spel met recorder aan/uit — de meetpunt-notitie in SPEC.md.
+5. Clipmap wijzigen (Instellingen → Clips → Change…): nieuwe clips landen in de gekozen
+   map, de al bewaarde clips blijven staan waar ze stonden, en de ring van de oude map is
+   weg in plaats van voor altijd blijven liggen. Werkt met de opname aan (hij herstart) en
+   uit.
+6. Frametime-vergelijking spel met recorder aan/uit — de meetpunt-notitie in SPEC.md.
