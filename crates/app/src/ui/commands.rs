@@ -36,13 +36,51 @@ pub fn get_timeline(ui: State<'_, Ui>, channel: String) -> Vec<TimelineItem> {
     state::timeline_of(&snap, channel, ui.me, &ui.display_name(&snap))
 }
 
+/// Send a chat message. `reply_to` is `Some` when the composer had a reply open; the
+/// engine validates that it points into this same conversation.
 #[tauri::command]
-pub fn send_message(ui: State<'_, Ui>, channel: String, text: String) {
+pub fn send_message(ui: State<'_, Ui>, channel: String, text: String, reply_to: Option<OpRef>) {
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
     }
-    send(&ui, UiCommand::Plaats(text, state::parse_channel(&channel)));
+    let reply_to = reply_to.and_then(|r| r.to_op_id());
+    send(
+        &ui,
+        UiCommand::Plaats(text, state::parse_channel(&channel), reply_to),
+    );
+}
+
+/// Add a reaction, or take it back if we already reacted with this emoji — the toggle
+/// lives in the chat layer, which knows what is currently on the message.
+#[tauri::command]
+pub fn react_message(ui: State<'_, Ui>, op: OpRef, emoji: String) {
+    let Some(id) = op.to_op_id() else { return };
+    let emoji = emoji.trim().to_string();
+    if emoji.is_empty() {
+        return;
+    }
+    send(&ui, UiCommand::Reageer(id, emoji));
+}
+
+/// "I am typing in this conversation." Fire-and-forget and throttled on the engine side;
+/// the frontend may call it on every keystroke.
+#[tauri::command]
+pub fn notify_typing(ui: State<'_, Ui>, channel: String) {
+    send(&ui, UiCommand::Typing(state::parse_channel(&channel)));
+}
+
+/// Our own presence status: "online", "away" or "busy". Unknown values are dropped here
+/// rather than corrected there.
+#[tauri::command]
+pub fn set_user_status(ui: State<'_, Ui>, status: String) {
+    let status = match status.as_str() {
+        "online" => 0,
+        "away" => 1,
+        "busy" => 2,
+        _ => return,
+    };
+    send(&ui, UiCommand::ZetStatus(status));
 }
 
 #[tauri::command]
@@ -265,6 +303,17 @@ pub async fn pick_download_dir(app: tauri::AppHandle, ui: State<'_, Ui>) -> Resu
     Ok(())
 }
 
+/// Opens the Windows folder picker for the clips folder. Same blocking-thread reason
+/// as `pick_download_dir` — the dialog is modal.
+#[tauri::command]
+pub async fn pick_clips_dir(ui: State<'_, Ui>) -> Result<(), ()> {
+    let picked = rfd::AsyncFileDialog::new().pick_folder().await;
+    if let Some(dir) = picked {
+        send(&ui, UiCommand::ZetClipMap(dir.path().to_path_buf()));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_display_name(ui: State<'_, Ui>, name: String) {
     let name = name.trim().to_string();
@@ -468,6 +517,49 @@ pub fn delete_all_images(ui: State<'_, Ui>) {
     send(&ui, UiCommand::VerwijderAlleAfbeeldingen);
 }
 
+/// Clips aan of uit (fase 15). De motor legt dit meteen vast in de config, dus de
+/// schakelaar onthoudt zichzelf over herstarts.
+#[tauri::command]
+pub fn set_clips(ui: State<'_, Ui>, enabled: bool) {
+    send(&ui, UiCommand::ZetClips(enabled));
+}
+
+/// Nú een clip schrijven. Zelfde weg als de globale hotkey Ctrl+Alt+C.
+#[tauri::command]
+pub fn clip_now(ui: State<'_, Ui>) {
+    send(&ui, UiCommand::ClipseNu);
+}
+
+/// Opent de clipmap in de verkenner. Het pad komt uit de snapshot, nooit uit het
+/// webview — zelfde regel als `open_file`.
+#[tauri::command]
+pub fn open_clips_folder(ui: State<'_, Ui>) {
+    let snap = ui.engine.snapshot.borrow().clone();
+    let Some(clips) = &snap.clips else { return };
+    let path = std::path::PathBuf::from(&clips.map);
+    if path.exists() {
+        open_with_shell(&path);
+    }
+}
+
+/// De schermen waaruit gekozen kan worden voor de clipopname.
+#[tauri::command]
+pub fn clip_monitors() -> Vec<String> {
+    crate::clips::monitoren().unwrap_or_default()
+}
+
+/// Welk scherm er voor clips opgenomen wordt. Leeg = automatisch (eerste).
+#[tauri::command]
+pub fn set_clip_monitor(ui: State<'_, Ui>, name: String) {
+    send(&ui, UiCommand::ZetClipMonitor(name));
+}
+
+/// De globale sneltoets wisselen, zonder herstart.
+#[tauri::command]
+pub fn set_clip_hotkey(ui: State<'_, Ui>, hotkey: String) {
+    send(&ui, UiCommand::ZetClipsHotkey(hotkey));
+}
+
 #[tauri::command]
 pub fn create_channel(ui: State<'_, Ui>, title: String) {
     let title = title.trim().to_string();
@@ -607,6 +699,14 @@ pub async fn youtube_preview(ui: State<'_, Ui>, id: String) -> Result<Option<You
 #[tauri::command]
 pub fn wordle_guess(ui: State<'_, Ui>, word: String) {
     send(&ui, UiCommand::WordleGok(word));
+}
+
+/// Put today's Wordle card in #general for everyone — the rescue hatch in the + menu, for
+/// when someone's automatic fetch failed and they are drawing no card at all. Fetches the
+/// puzzle first if this machine is the one missing it.
+#[tauri::command]
+pub fn post_wordle_card(ui: State<'_, Ui>) {
+    send(&ui, UiCommand::WordleInChat);
 }
 
 /// The close button. With `minimize_to_tray` on — the default — it hides the window and

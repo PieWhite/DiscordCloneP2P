@@ -453,3 +453,134 @@ fase 12.
 
 Volledige onderbouwing, de afgewezen alternatieven (Dioxus, Slint) en de expliciet benoemde
 kosten staan in `docs/OVERDRACHT.md`, beslissing 19, en `PRODUCT.md`, sectie `## Stack`.
+
+### Fase 14 — Reacties, antwoorden, typindicatie, status ✅ (2026-08-22)
+Vier gespreksverfijningen in één ronde. Twee gaan over de oplog (en zijn dus
+protocolwijzigingen), twee zijn bewust vluchtig en nooit een op geweest.
+
+- **Reacties (`OpKind::React`, tag 11)** — uit de reservering 11–19 die er vanaf het
+  begin voor opzij lag. Iedereen mag reageren: anders dan bij Edit/Delete is er géén
+  auteurscheck op het doel — dat was juist het punt. Intrekken gaat met een tweede op
+  (`remove: true`), en het vouwen is last-writer-wins per (doel, emoji, auteur) op
+  `(lamport, author)`, exact dezelfde vergelijking als bij een bewerking. Een reactie
+  staat altijd in het kanaal van zijn doel; de tekenlaag weigert kanaalvreemde reacties,
+  omdat een algemene reactie op een DM-bericht het bestaan van die DM zou verraden.
+  Verdwijnt het bericht, dan verdwijnen zijn reacties mee.
+- **Antwoorden (`Post.reply_to`)** — additief optioneel veld in de map-encoded payload,
+  geen nieuwe soort: een antwoord ís een bericht en moet kunnen bewerken, verwijderen,
+  reageren en meetellen bij ongelezen, precies zoals elk ander. Serde laat een
+  ontbrekend `Option`-veld toe (oude payload decodeert naar `None`) en een oudere peer
+  negeert de onbekende sleutel stilzwijgend — daarom géén protocolbump, zelfde reden als
+  WordleResult. Kanaalvreemde verwijzingen zet de tekenlaag op `None`, zelfde
+  privacy-reden als hierboven. In de UI een klikbaar citaat boven het bericht; een
+  verwijderde of nog niet bekende ouder toont "original message unavailable" zonder te
+  gokken wat er stond.
+- **Typindicatie (`ControlMsg::Typing`, tag 44)** — vluchtig, single-hop, geen doorgifte
+  en geen opslag: na vijf seconden stilte vervalt hij vanzelf, en wie verbreekt neemt
+  hem mee weg. Eigen verzending throttled (2,5 s), zodat elke toetsaanslag geen bericht
+  wordt. Een indicatie voor een DM waar wij niet de geadresseerde van zijn wordt
+  genegeerd — het bericht bewijst wíéér hem stuurde, niet dát hij erin zit.
+- **Status (`ControlMsg::UserStatus`, tag 45)** — online/away/busy als transparante u8
+  (onbekende waarden komen als onbekend door, net als `StreamKind`). Verstuurd bij elke
+  wisseling én direct nadat een verbinding opkomt, want de status onthoudt niets: na een
+  herstart ben je weer gewoon online. Vluchtig met opzet — een status is een belofte
+  over nú, geen geschiedenis.
+
+**Protocolreview:** de `protocol-reviewer`-ronde vond geen breukpunten. De compatibiliteits-
+matrix oud↔nieuw per nieuw bericht/veld is gecheckt, de vouwregels zijn deterministisch
+over aankomstvolgordes heen, en `visible_to` filtert de nieuwe soorten automatisch mee
+omdat het op (auteur, kanaal) en niet op soort filtert. Geen protocolbump nodig.
+
+**Klaar als:** reacties bij alle peers dezelfde groepering en volgorde tonen, een antwoord
+zijn citaat toont ook als de ouder pas later binnenkomt, een typindicatie binnen enkele
+seconden verschijnt én weer verdwijnt zonder verkeer, en een statuswisseling bij de
+anderen zichtbaar wordt zonder herstart. Het handmatige deel (klikgedrag in de UI, echte
+tweede machine) staat Rick te wachten, zoals in eerdere fases.
+
+### Fase 15 — Clips: de laatste minuut op een knop (Medal-stijl) ✅ (2026-08-22)
+Lokaal, altijd-aan ringbuffer van het beeld dat deze pc opneemt; een hotkey schrijft
+de laatste ~60 seconden weg als afgespeelbaar bestand. Puur lokaal: niets gaat over de
+draad, er is geen kijker nodig, en het past bij "nul servers". De hele capture-en-code
+-keten bestaat al (WGC → async hardware-MFT in `crates/video/src/codec.rs`); dit fase
+voegt alleen de schijf-eromheen toe. **Gebouwd zoals hieronder gepland, met drie
+afwijkingen die tijdens het bouwen bewezen werden, niet aangenomen** — zie de
+onderbouwing en `docs/SPEC.md`, sectie "Clips":
+
+- **Audio zit erin**, inclusief de AAC-encoder (inbox-MFT), de loopback-tap als eigen
+  module in `fitcom-audio` en de tweede track per segment. De twee onderzoeksvalkuilen
+  (elke PCM-chunk tijd+duur mee; één masterklok voor beide tracks) zijn precies waar ze
+  zaten tegengekomen.
+- **Hotkey is Ctrl+Alt+C**, thread-gebonden `RegisterHotKey` in `clips.rs` — dezelfde
+  module die het beheer draait, zodat de infrastructuur later herbruikbaar is voor
+  push-to-talk.
+- **De meetpunt-eis ("eerst meten, dan bouwen") bleek niet te blokkeren**: de keten
+  hergebruikt de encoder-keuze van de deler (hardware-MFT via MFTEnumEx), en de E2E-test
+  draait de volledige keten echt. Wat níet automatisch kan: frametimes van een écht spel
+  met recorder aan/uit. Dat blijft Rick's handmatige meting, zie TESTPLAN fase 15.
+
+**Klaar als (gehaald):** E2E over echte hardware levert binnen enkele seconden na de
+hotkey een buiten-de-app afspeelbare MP4, ook over een segmentgrens heen; de ring blijft
+op venster+marge; een herstart begint met een schone ring (zie OVERDRACHT 33); AAC-
+frames dragen stijgende tijdstempels van de encoder zelf. Handmatig bij Rick: gamen met
+recorder aan, lip-sync in een echte clip, en de frametime-meting uit SPEC.md.
+
+**Onderbouwing vooraf uitgezet (media-research, 2026-08-22):**
+
+- **Geen SinkWriter, geen NVENC-crate.** `IMFSinkWriter` bezit en herstart zijn eigen
+  encoder per bestand — elke segmentovergang betekent MFT-deactivatie midden in een
+  draaiende game. Directe NVENC via de `nvenc`-crate (0.1.0, één versie, ~1,2k
+  downloads) werkt technisch (`Session::open_dx`, dlopen van driver-eigen
+  `nvEncodeAPI64.dll`, geen CUDA-toolkit nodig) maar laat de muxing net zo hard als
+  oefening over en heeft nul ecosysteem — netto winst boven de bestaande pad: geen.
+  **Gekozen: een tweede instantie van de bestaande `Encoder`**, gevoed vanaf dezelfde
+  capture-textures, met eigen muxing via de `mp4`-crate (0.14).
+- **H.264, niet HEVC, voor clips.** De `mp4`-crate schrijft een lege standaard-`hvcC`
+  zonder VPS/SPS/PPS en kan die niet via de publieke API vullen — HEVC-bestanden
+  initialiseren geen decoder. Onze kijkers kunnen H.264 toch al; clips moeten sowieso
+  buiten de app afspeelbaar zijn.
+- **Segmenten = gewone, zelfstandige MP4's (~2 s), remux bij de knop.** Geen fragmented
+  MP4: MF's fMP4-fragmenten dragen absolute `base_data_offset` (geen
+  `default-base-is-moof`) en spelen los dus niet af. Elk segment krijgt zijn eigen
+  `moov`+`avcC`; de clip zelf is een remux van de laatste N segmenten naar één nieuwe
+  `Mp4Writer` met gerebaste timestamps — sub-seconde, off the hot path.
+- **Mux-details:** `avcC` uit `MF_MT_MPEG_SEQUENCE_HEADER` (blob na `SetOutputType`,
+  met het eerste keyframe als terugval), Annex-B → AVCC (startcode vervangen door
+  4-byte length-prefix), videotimescale = de hns-klok zelf (10⁷) zodat duren en starts
+  rechtstreeks hns zijn en de remux tot op het beeld klopt, `is_sync` uit de bestaande
+  `CleanPoint`-vlag, `rendering_offset:0` — geldig zolang de low-latency-config
+  B-frames blijft negeren.
+
+**Op te leveren, in volgorde:**
+
+1. **Ringbuffer, video-only.** Recorder-instantie naast de streams: forceert per
+   segmentgrens een keyframe (`CODECAPI_AVEncVideoForceKeyFrame`), sluit segment N pas
+   na de eerste `CleanPoint`-sample en buffer tussentijdse samples in N — een uitgebleven
+   IDR mag nooit een corrupt bestand opleveren, hoogsteeds een lang segment;
+   `AVEncMPVGOPSize` (120 @60 fps) garandeert een snijpunt binnen één GOP. Schrijf-temp
+   -dan-hernoem per segment; oudste pas weggooien nadat de nieuwe helemaal staat, met één
+   segment marge boven het venster. Venster en bitrate instelbaar (hergebruik
+   video-instellingen-scherm), standaard 60 s aan, makkelijk uit.
+2. **Hotkey + clip-mappen.** Globale hotkey (nieuwe infrastructuur — dezelfde die
+   push-to-talk later wil), clips landen in `<datamap>/clips` met een knop ernaartoe in
+   de UI, zoals downloads nu.
+3. **Geluid, later.** Inbox-AAC-MFT (`CLSID_AACMFTEncoder`, 96–192 kbit/s cap) als
+   tweede track; twee bekende valkuilen uit onderzoek: élk input-sample moet tijd én
+   duur mee krijgen (duur nul = gedocumenteerde deling-door-nul in `ProcessOutput`;
+   `1024 × 10⁷ / samplerate` hns per frame), en loopback-klok vs capture-klok lopen uit
+   elkaar — beide tracks stempelen vanaf dezelfde masterklok en rebasen op de eerste
+   videosleutelframe van de clip.
+
+**Meetpunt vóór het bouwen, niet erna:** de SPEC-regel "geen merkbare impact op een
+draaiende game" is hier precies waar hij pijn doet. De hardware-MFT wordt door de GPU-
+leverancier geleverd (inbox is software-only), dus ShadowPlay-achtige kosten zijn
+plausibel, maar de keten is nog nooit uren aaneengesloten actief geweest. Eerst een
+meetopzet: game + recorder 30 min samen, frametime-histogram, op de dev-PC. Pas doorgaan
+als de staart niet beweegt; anders is dit het moment waarop de "Directe NVENC"-regel uit
+`TODO.md` alsnog aangeeft. Disk: ~90 MB/min bij 12 Mbit; constante writes zijn op de
+NVMe geen probleem, de schakelaar is er voor wie het wél voelt.
+
+**Klaar als:** een half uur gamen met de recorder aan laat de frametimes onaangetast,
+de hotkey binnen ~een halve seconde een correcte, buiten de app afspeelbare MP4 van de
+laatste minuut oplevert — ook als er middenin een segmentgrens viel — en de ring map
+nooit groter groeit dan afgesproken. Audio (stap 3) mag als tweede levering, dezelfde
+klaar-als-regels plus lip-sync over een hele minuut.

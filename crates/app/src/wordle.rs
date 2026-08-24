@@ -193,8 +193,12 @@ pub struct Wordle {
     /// Wanneer we het laatst geprobeerd hebben op te halen, om niet elke tik opnieuw
     /// tegen een dichte deur te lopen.
     laatste_poging: Option<Instant>,
-    /// Waarom de laatste gok niet aangenomen werd, voor het venster. Wordt gewist zodra er
-    /// een gok wél doorkomt.
+    /// De regel die het venster toont als er iets niet lukte: waarom de laatste gok niet
+    /// aangenomen werd, of waarom een handmatig opvragen niets opleverde. Twee schrijvers,
+    /// allebei via een methode hier ([`Wordle::gok`] en [`Wordle::nu_ophalen`]) plus de
+    /// motor die de uitkomst van een handmatige poging neerlegt. Wordt gewist zodra er een
+    /// gok wél doorkomt of een nieuwe poging begint, zodat er nooit een oude reden blijft
+    /// staan bij een nieuwe situatie.
     pub fout: Option<String>,
 }
 
@@ -253,6 +257,26 @@ impl Wordle {
         Some(datum.format("%Y-%m-%d").to_string())
     }
 
+    /// Hetzelfde, maar op verzoek van de gebruiker: het kwartier wachten telt niet mee.
+    ///
+    /// `None` betekent nog steeds "niets te doen", en op deze plek betekent dat maar één
+    /// ding: het raadsel is er al. Dat is geen fout, dus dan blijft [`Self::fout`] leeg en
+    /// laat het venster het bord zien.
+    ///
+    /// Let op wat dit *niet* doet: het haalt het raadsel van [`datum_van`], en dat is vóór
+    /// 07:00 nog dat van gisteren. Eerder aan het raadsel van morgen komen kan hier niet,
+    /// en dat is opzet — `OPENBAAR_UUR` bepaalt óók wanneer de kaart bij de anderen in de
+    /// tijdlijn staat, dus dat vooruit halen zou het spel scheeftrekken.
+    pub fn nu_ophalen(&mut self) -> Option<String> {
+        self.laatste_poging = None;
+        let datum = self.moet_ophalen();
+        // Een oude reden mag niet blijven staan boven een poging die nog loopt.
+        if datum.is_some() {
+            self.fout = None;
+        }
+        datum
+    }
+
     /// Een opgehaald raadsel opbergen. Overschrijft nooit een dag die we al hadden: daar
     /// zouden gedane gokken in zitten.
     pub fn neem_op(&mut self, r: Raadsel) {
@@ -290,6 +314,11 @@ impl Wordle {
             gewonnen: d.gewonnen(),
             oplossing: klaar.then(|| d.oplossing.to_uppercase()),
         })
+    }
+
+    /// Het raadselnummer van een dag, of `None` als deze pc die dag nooit ophaalde.
+    pub fn nummer_van(&self, dag: u32) -> Option<u32> {
+        self.dagen.get(&dag).map(|d| d.nummer)
     }
 
     /// De dagen waar we een raadsel van hebben met hun raadselnummer, oud naar nieuw.
@@ -910,6 +939,44 @@ mod tests {
         // En het ophaalverzoek komt precies één keer per kwartier langs.
         assert!(w.moet_ophalen().is_some());
         assert!(w.moet_ophalen().is_none());
+        let _ = std::fs::remove_dir_all(&map);
+    }
+
+    /// De `+`-knop: die moet dwars door het kwartier heen, want hij bestaat juist voor het
+    /// moment waarop je niet nóg een kwartier wilt wachten.
+    #[test]
+    fn handmatig_ophalen_wacht_het_kwartier_niet_af() {
+        let map = std::env::temp_dir().join("fitcom-wordle-test-handmatig");
+        let _ = std::fs::remove_dir_all(&map);
+        std::fs::create_dir_all(&map).unwrap();
+        let mut w = Wordle::nieuw(&map);
+
+        assert!(w.moet_ophalen().is_some());
+        assert!(w.moet_ophalen().is_none(), "de tik zit nu in zijn kwartier");
+        assert!(
+            w.nu_ophalen().is_some(),
+            "de knop trekt zich daar niets van aan"
+        );
+
+        // Een oude reden mag niet blijven staan boven een poging die net begonnen is.
+        w.fout = Some("iets van hiervoor".into());
+        assert!(w.nu_ophalen().is_some());
+        assert_eq!(w.fout, None);
+
+        // Staat het raadsel er al, dan valt er niets te halen en is dat geen fout.
+        w.neem_op(Raadsel {
+            dag: w.huidige_dag(),
+            nummer: 1,
+            oplossing: "murky".into(),
+        });
+        w.fout = Some("iets van hiervoor".into());
+        assert_eq!(w.nu_ophalen(), None);
+        assert_eq!(
+            w.fout.as_deref(),
+            Some("iets van hiervoor"),
+            "niets geprobeerd, dus ook niets om te wissen"
+        );
+
         let _ = std::fs::remove_dir_all(&map);
     }
 

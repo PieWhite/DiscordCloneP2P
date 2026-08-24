@@ -120,12 +120,27 @@ fn monitoren() -> Result<Vec<Bron>> {
             "Scherm".to_string()
         };
 
+        // Twee identieke schermen krijgen twee identieke namen — en de clipkiezer
+        // adresseert schermen op naam. Nummer ze dus bij collisions, net als
+        // bestanden in een map: "#2", "#3".
+        let naam = if info.monitorInfo.dwFlags & 1 != 0 {
+            format!("{naam} (hoofdscherm)")
+        } else {
+            naam
+        };
+        let al_geweest = lijst
+            .iter()
+            .filter(|b| b.soort == BronSoort::Monitor)
+            .filter(|b| b.naam == naam)
+            .count();
+        let naam = if al_geweest > 0 {
+            format!("{naam} #{}", al_geweest + 1)
+        } else {
+            naam
+        };
+
         lijst.push(Bron {
-            naam: if info.monitorInfo.dwFlags & 1 != 0 {
-                format!("{naam} (hoofdscherm)")
-            } else {
-                naam
-            },
+            naam,
             soort: BronSoort::Monitor,
             handle: mon.0 as isize,
         });

@@ -13,7 +13,7 @@
 //!   bij kunnen zonder de vorm van het bericht te veranderen.
 
 use crate::op::{Op, VersionVector};
-use crate::{OpId, PeerId};
+use crate::{Channel, OpId, PeerId};
 use serde::{Deserialize, Serialize};
 
 /// Soort gedeelde bron. Als `u8` op de draad zodat een onbekende soort van een nieuwere
@@ -145,6 +145,71 @@ control_messages! {
     // impliciet ("jouw huidige, draaiende exe"). Zie docs/ARCHITECTURE.md.
     42 => UpdateRequest(UpdateRequest),
     43 => UpdateResponse(UpdateResponse),
+
+    // 44-45: vluchtige chat-status (2026-08-22). Allebei bewust géén oplog-op: een
+    // typindicatie of een status is geen geschiedenis — hij is na een paar seconden of
+    // na een herstart zijn betekenis kwijt en zou de log alleen maar laten groeien.
+    // Daarmee delen ze het lot van de voice-meldingen (20-22): single-hop, geen
+    // doorgifte door een derde peer, en weg zodra de verbinding wegvalt.
+    //
+    // Een oudere peer decodeert een onbekende tag als `Ok(None)` en slaat hem stil over;
+    // niets hieronder kan een verbinding breken, dus geen protocolbump.
+    44 => Typing(Typing),
+    45 => UserStatus(UserStatus),
+}
+
+/// "Ik ben tekst aan het typen in dit kanaal." Vluchtig: de ontvanger toont hem hooguit
+/// een paar seconden en vergeet hem daarna vanzelf; er komt geen bevestiging terug.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Typing {
+    pub channel: Channel,
+}
+
+/// Een door de gebruiker gekozen aanwezigheidsstatus, als `u8` op de draad zodat een
+/// onbekende waarde van een nieuwere peer gewoon als "onbekend" doorkomt in plaats van
+/// het hele bericht te laten vallen — zelfde reden als bij `StreamKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UserStatusValue(pub u8);
+
+impl UserStatusValue {
+    /// Gewoon aanwezig. Dit is ook wat een peer die nog nooit een `UserStatus` stuurde
+    /// impliciet is.
+    pub const ONLINE: Self = Self(0);
+    /// Afwezig, maar bereikbaar.
+    pub const AWAY: Self = Self(1);
+    /// Bezet; niet storen tenzij het belangrijk is.
+    pub const BUSY: Self = Self(2);
+
+    pub fn is_known(self) -> bool {
+        matches!(self, Self::ONLINE | Self::AWAY | Self::BUSY)
+    }
+}
+
+/// Online is de nulwaarde: een peer die nog niets stuurde is er impliciet.
+impl Default for UserStatusValue {
+    fn default() -> Self {
+        Self::ONLINE
+    }
+}
+
+impl std::fmt::Display for UserStatusValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::ONLINE => write!(f, "online"),
+            Self::AWAY => write!(f, "away"),
+            Self::BUSY => write!(f, "busy"),
+            Self(n) => write!(f, "unknown({n})"),
+        }
+    }
+}
+
+/// "Mijn gekozen status is nu deze." Wordt verstuurd bij elke wisseling én direct nadat
+/// een verbinding opkomt — de ontvanger onthoudt hem per peer voor deze sessie en begint
+/// na een herstart weer op "online", net zo vluchtig als het bericht zelf.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserStatus {
+    pub status: UserStatusValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -416,6 +481,12 @@ mod tests {
                 size: 0,
                 hash: [0u8; 32],
             }),
+            ControlMsg::Typing(Typing {
+                channel: Channel::GENERAL,
+            }),
+            ControlMsg::UserStatus(UserStatus {
+                status: UserStatusValue::BUSY,
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -534,6 +605,32 @@ mod tests {
         match back {
             ControlMsg::FileResponse(r) => assert!(!r.outcome.is_known()),
             other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typing_en_status_roundtrip() {
+        let typing = ControlMsg::Typing(Typing {
+            channel: Channel::dm(PeerId::new_random()),
+        });
+        let bytes = typing.encode().unwrap();
+        assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(typing));
+
+        for status in [
+            UserStatusValue::ONLINE,
+            UserStatusValue::AWAY,
+            UserStatusValue::BUSY,
+            UserStatusValue(200), // van een nieuwere peer; komt als onbekend door
+        ] {
+            let msg = ControlMsg::UserStatus(UserStatus { status });
+            let bytes = msg.encode().unwrap();
+            match ControlMsg::decode(&bytes).unwrap().unwrap() {
+                ControlMsg::UserStatus(s) => {
+                    assert_eq!(s.status, status);
+                    assert_eq!(s.status.is_known(), status.is_known());
+                }
+                other => panic!("verkeerde variant: {other:?}"),
+            }
         }
     }
 }

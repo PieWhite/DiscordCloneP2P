@@ -6,7 +6,7 @@
 //! tussenuit. Anders dan `stream_deling.rs` is hier geen GPU of scherm voor nodig, dus
 //! dit draait gewoon mee met `cargo test`.
 
-use fitcom::config::{Config, PeerConfig, VideoConfig};
+use fitcom::config::{ClipsConfig, Config, PeerConfig, VideoConfig};
 use fitcom::engine::{self, EngineHandle, Snapshot, UiCommand};
 use fitcom_net::{MeshConfig, PeerTarget};
 use fitcom_proto::{Channel, OpId, PeerId};
@@ -49,6 +49,7 @@ fn config(naam: &str, eigen: u16, ander: u16, downloads: &Path) -> Config {
         }],
         video: VideoConfig::default(),
         sound: Default::default(),
+        clips: ClipsConfig::default(),
         download_dir: Some(downloads.to_path_buf()),
     }
 }

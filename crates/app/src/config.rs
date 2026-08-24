@@ -75,6 +75,12 @@ pub struct Config {
     #[serde(default)]
     pub sound: SoundConfig,
 
+    /// Clips (fase 15): ringbuffer-opname van dit scherm met een hotkey om de laatste
+    /// minuut weg te schrijven. Standaard uit — het is een continue opname en dat is
+    /// een keuze die de gebruiker expliciet maakt, geen default die je overkomt.
+    #[serde(default)]
+    pub clips: ClipsConfig,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
@@ -194,6 +200,85 @@ fn default_bitrate() -> u32 {
     12_000_000
 }
 
+/// Instellingen voor de cliprecorder (fase 15). De bitrate en fps van het beeld delen
+/// we met de video-instellingen — het is hetzelfde scherm, en één knop minder in de
+/// UI is meer waard dan een apart profiel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClipsConfig {
+    /// Ringbuffer-opname aan of uit. Standaard uit: dit is een continue opname.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Hoeveel seconden een clip teruggaat. 10–300; buiten die band afgekapt door
+    /// [`ClipsConfig::herstel`].
+    #[serde(default = "default_clips_venster")]
+    pub venster_sec: u32,
+
+    /// Welk scherm er opgenomen wordt, op naam uit de bronlijst. Leeg/leeg gelaten =
+    /// het eerste gevonden scherm; een naam die nergens meer bij hoort valt daar ook
+    /// op terug (monitors veranderen nu eenmaal), met een waarschuwing in de log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
+
+    /// De globale sneltoets voor "bewaar nu", zoals `F9`, `ctrl+alt+c`, `shift+f2`.
+    /// Ongeldig formaat valt bij het opstarten terug op F9 — zie `herstel`.
+    #[serde(default = "default_clip_hotkey")]
+    pub hotkey: String,
+
+    /// Waar clips landen. Leeg = `<data-map>/clips`. Zelfde patroon als
+    /// `download_dir`: een gebruikersbestand mag ergens staan waar de gebruiker het
+    /// terugvindt — op een andere schijf bijvoorbeeld, want een minuut 1080p is
+    /// ~90 MB en dat telt op.
+    ///
+    /// De ringbuffer hangt eronder (`<map>/ring`) en verhuist dus mee. Dat is geen
+    /// gebruikersdata: bij het verhuizen wordt de oude ring opgeruimd en begint de
+    /// nieuwe leeg, precies zoals bij elke start (zie OVERDRACHT beslissing 33).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<PathBuf>,
+}
+
+impl Default for ClipsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            venster_sec: default_clips_venster(),
+            monitor: None,
+            hotkey: default_clip_hotkey(),
+            map: None,
+        }
+    }
+}
+
+fn default_clips_venster() -> u32 {
+    60
+}
+
+/// Standaard F9: één toets, ver van de meeste gamebinds, en zonder modifier zodat hij
+/// ook tijdens het spelen met één hand te halen is.
+fn default_clip_hotkey() -> String {
+    "F9".into()
+}
+
+impl ClipsConfig {
+    pub fn herstel(&mut self) {
+        if self.venster_sec == 0 || self.venster_sec > 300 {
+            tracing::warn!(
+                venster = self.venster_sec,
+                "clipvenster uit de band; standaard van 60 s gebruikt"
+            );
+            self.venster_sec = default_clips_venster();
+        }
+        if let Err(e) = crate::clips::ontled_hotkey(&self.hotkey) {
+            tracing::warn!(
+                hotkey = %self.hotkey,
+                error = %format!("{e:#}"),
+                "clip-sneltoets onleesbaar; terug op F9"
+            );
+            self.hotkey = default_clip_hotkey();
+        }
+    }
+}
+
 fn waar() -> bool {
     true
 }
@@ -285,6 +370,7 @@ impl Config {
             ],
             video: VideoConfig::default(),
             sound: SoundConfig::default(),
+            clips: ClipsConfig::default(),
             download_dir: None,
         }
     }
@@ -296,6 +382,7 @@ impl Config {
             let mut cfg: Self = toml::from_str(&text)
                 .with_context(|| format!("config parsen uit {}", path.display()))?;
             cfg.sound.herstel();
+            cfg.clips.herstel();
             Ok(cfg)
         } else {
             let cfg = Self::template();
@@ -410,6 +497,16 @@ pub fn resolve_youtube_dir(data_dir: &Path) -> PathBuf {
 /// gebruikersbestand, dus geen `config.toml`-veld.
 pub fn resolve_updates_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("updates")
+}
+
+/// Waar clips (fase 15) landen: `clips.map` als de gebruiker die gezet heeft, anders
+/// `<data-map>/clips`. Zelfde vorm als [`resolve_download_dir`] — een clip is een
+/// gebruikersbestand dat je terugvindt en deelt, geen interne cache.
+pub fn resolve_clips_dir(cfg: &Config, data_dir: &Path) -> PathBuf {
+    cfg.clips
+        .map
+        .clone()
+        .unwrap_or_else(|| data_dir.join("clips"))
 }
 
 fn whoami_or(fallback: &str) -> String {
@@ -538,6 +635,41 @@ mod tests {
         };
         s.herstel();
         assert_eq!(s.set, "belletjes-uit-een-latere-build");
+    }
+
+    /// De clipmap: leeg = naast de rest van de data, gezet = precies wat er staat. En
+    /// een config van vóór 1.6.6 heeft de sleutel niet, dus die moet gewoon starten —
+    /// zelfde reden als bij de `[sound]`-tabel hierboven.
+    #[test]
+    fn clipmap_volgt_de_instelling_en_valt_anders_terug() {
+        let data = Path::new("C:/data");
+
+        let oud: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [clips]
+            enabled = true
+            venster_sec = 60
+            hotkey = "F9"
+            "#,
+        )
+        .expect("een config zonder clipmap hoort te laden");
+        assert_eq!(oud.clips.map, None);
+        assert_eq!(resolve_clips_dir(&oud, data), data.join("clips"));
+
+        let gezet: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [clips]
+            map = "D:/Clips"
+            "#,
+        )
+        .expect("een config met clipmap hoort te laden");
+        assert_eq!(resolve_clips_dir(&gezet, data), PathBuf::from("D:/Clips"));
+
+        // En hij overleeft opslaan-en-teruglezen; anders is hij één herstart later weg.
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&gezet).unwrap()).unwrap();
+        assert_eq!(terug.clips.map, gezet.clips.map);
     }
 
     #[test]

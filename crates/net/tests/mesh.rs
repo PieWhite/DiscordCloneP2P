@@ -133,6 +133,7 @@ async fn twee_peers_vinden_elkaar_en_wisselen_berichten_uit() {
         0,
         &OpKind::Post {
             body: "hallo vanaf A".into(),
+            reply_to: None,
         },
     )
     .unwrap();

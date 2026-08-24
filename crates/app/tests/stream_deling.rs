@@ -12,7 +12,7 @@
 //! cargo test -p fitcom --test stream_deling -- --ignored --nocapture
 //! ```
 
-use fitcom::config::{Config, PeerConfig, VideoConfig};
+use fitcom::config::{ClipsConfig, Config, PeerConfig, VideoConfig};
 use fitcom::engine::{self, EngineHandle, Snapshot, UiCommand};
 use fitcom_net::{MeshConfig, PeerTarget};
 use fitcom_proto::PeerId;
@@ -43,6 +43,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         }],
         video: VideoConfig::default(),
         sound: Default::default(),
+        clips: ClipsConfig::default(),
         download_dir: None,
     }
 }

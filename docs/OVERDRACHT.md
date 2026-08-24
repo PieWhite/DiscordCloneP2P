@@ -1320,7 +1320,132 @@ loopback duwt en controleert dat hij bij beiden onder dezelfde hashnaam in
 `<downloadmap>/Pictures` landt, plus unittests voor de verhuizing, voor `zet_op_zijn_plek`
 en voor waar het `.part` van een afbeelding hoort te staan.
 
+### 33. Het `+`-menu: de kaart is tóch een op, maar alleen met de hand (2026-08-20)
+
+Rick zag geen Wordle-kaart in zijn chat en vroeg om een `+` naast de paperclip: een menu
+(voor nu één regel) waarmee je de kaart van vandaag alsnog de chat in stuurt, "voor beide
+partijen", als noodgreep wanneer het automatische pad iets laat liggen.
+
+**Wat er die dag werkelijk aan de hand was, en waarom de knop er tóch komt.** Zijn kaart
+ontbrak niet: `wordle.json` had dag 20260820 gewoon staan. De kaart wordt geplaatst op
+`openbaar_op(dag)` = 07:00, en dat is bij een dag met gesprek erin ver boven de onderkant
+van de tijdlijn — hij zat in de scrollback. Dat is dus geen mislukte ophaal maar een
+plaatsingsprobleem. Maar het gat waar Rick op mikte bestaat wél, en is erger: mislukt de
+ophaal bij één peer, dan heeft die peer geen raadsel, tekent hij helemaal geen kaart, en
+was er geen enkele manier om dat vanuit de app te herstellen. Beide klachten hebben dezelfde
+oplossing, en dat is waarom de knop dit doet en niet iets anders.
+
+**Beslissing 31 zei "de kaart is geen op", en dat klopt nog steeds — voor de automatische
+kaart.** De aanname eronder was "elke peer kan de kaart zelf uitrekenen", en die houdt
+precies zolang ieders ophaal lukt. Voor de peer bij wie dat niet lukte is de aanname onwaar,
+en dan is een op het enige dat helpt. `WordleCard` (tag 31, additief, geen bump) draagt
+alleen `day` en `number` — **nooit een woord**, dus wie de kaart zo krijgt kan hem pas
+spelen als zijn eigen ophaal alsnog lukt. Dat is precies goed: de oplossing hoort niet op de
+draad.
+
+**Het bezwaar uit 31 — drie peers, drie onsamenvoegbare kaarten — wordt opgevangen en niet
+omzeild.** `fitcom_store::timeline` houdt per dag de **eerste** aankondiging op
+`(lamport, author)`; de rest is een no-op (invariant 6). `(lamport, author)` en niet
+`(lamport, seq)`, want dit gaat over auteurs heen en `seq` telt per auteur — daar is dat
+geen ordening. Drie tests in `timeline.rs` bewaken het, inclusief convergentie bij een
+andere aankomstvolgorde.
+
+**Een handmatige kaart staat op het moment van drukken, niet op 07:00.** Anders lost hij
+het probleem niet op waarvoor hij bestaat. Die tijd komt van de klok van een andere machine
+en bepaalt hier de *plek* en niet alleen een label, dus hij wordt tweemaal begrensd:
+`klem_wall_clock` (B-42) in de store, en in `ui/state.rs` nog eens naar
+`[07:00 van die dag, nu]`. Geen `clamp` daar — die paniekt als de grenzen elkaar passeren,
+en dat mag in de tekenlaag nooit van een klok afhangen.
+
+**Wat de knop niet doet:** het spel openen. Rick was daar expliciet over — vanaf de `+`
+stuur je hem de chat in, spelen doe je vanaf de kaart, net als op elke andere dag. En hij
+haalt het raadsel van morgen niet vóór 07:00 op: `datum_van` bepaalt óók wanneer de kaart
+bij de anderen verschijnt, dus dat vooruithalen zou het spel scheeftrekken.
+
 ---
+
+### 33. De clip-ring is van één sessie, niet van de vorige (2026-08-23)
+
+Rick, derde testronde op fase 15: de sneltoets werkt, er komt een bestand uit, maar het is
+elke keer de laatste minuut van een sessie van de dag ervoor. "Hij neemt niets nieuws meer
+op." Dat klopte — en het stond zo in de eisen. `ROADMAP.md` had *"een herstart pikt de
+bestaande ring op zonder te herschrijven"* als afvinkpunt en `TESTPLAN.md` punt 4 zei
+*"herstart met aan = ring wordt verder gebruikt, niet gewist"*. Allebei omgedraaid.
+
+**Waarom het niet kan.** Een segment draagt zijn begintijd in zijn naam
+(`seg-{eerste_hns:020}.mp4`) en die tijd komt van `deler::klok_nulpunt`: de procesklok, die
+bij **elke** start weer op nul begint (beslissing 7 — één klok per proces). De ring bleef
+tussen sessies op schijf staan en werd bij het opstarten ingelezen. Segmenten van gisteren
+dragen dus tijden uit een sessie die al een tijd liep, en die sorteren *na* de verse van
+vandaag. Twee gevolgen, allebei precies wat Rick zag:
+
+- `kies_venster` rekent terug vanaf het nieuwste segment. Het nieuwste wás het oudste, dus
+  een clip bestond uit beelden van de vorige sessie.
+- `te_gooien` rekent de retentiegrens vanaf het hoogste eindpunt. Had de vorige sessie
+  langer gedraaid dan het clipvenster, dan lag die grens boven álles wat er vandaag
+  bijkwam: elk vers segment werd gewist binnen een seconde na het schrijven. Vandaar
+  "hij neemt niets meer op" — er wérd opgenomen, het werd alleen meteen weer opgeruimd.
+
+**Waarom geen enkele test dit zag.** `herstart_pikt_de_ring_weer_op` deed precies dit
+scenario — maar startte beide runs in hetzelfde proces, en daar is de klok per definitie
+dezelfde. De test bewees dus iets anders dan waar hij naar heette te kijken. Hij heet nu
+`herstart_begint_met_een_schone_ring` en wacht op *beide* helften van de nieuwe toestand:
+alles van run 1 weg én minstens één vers segment. Dat wachten is niet optioneel — "de map
+is niet leeg" is aan het begin van run 2 nog steeds waar, met precies de oude bestanden.
+
+**Waarom niet gewoon de wandklok in de naam.** Dat is de andere voor de hand liggende
+oplossing en hij is ook klein, maar hij lost het verkeerde probleem op. Segmenten uit twee
+sessies naast elkaar in één spoor plakken betekent monsters uit twee **encodersessies**
+in één `avcC`: eigen SPS/PPS, mogelijk een andere resolutie, mogelijk een ander scherm.
+`plak_clip` schrijft één trackconfiguratie en kopieert de monsters ongewijzigd — dat is
+per definitie een kapotte clip, alleen dan eentje die wél afspeelt tot hij dat niet meer
+doet. En een wandklok kan achteruit springen (NTP), waarmee de sortering opnieuw stuk is.
+**Gekozen: een startende opname veegt de ringmap leeg** (`leeg_ring`, alleen `seg-*.mp4`
+en `seg-*.part.mp4`, de rest van de map blijft met rust). Dat ruimt en passant de halve
+`.part`-bestanden op die na een harde stop bleven liggen en die niemand ooit opruimde.
+
+**Twee eenheidsfouten in het geluid zaten hieronder verstopt.** Ze waren niet te zien
+zolang elke clip toch uit oud materiaal kwam:
+
+- **De duur ging in hns naar een spoor dat in samples telt.** De MFT levert
+  `GetSampleDuration` in honderd-nanoseconden (213 333 per AAC-frame), de audiotrack rekent
+  in samples (1024). Ongewisseld doorgeven is een factor 208. Gemeten aan Ricks clip van
+  22 augustus: videospoor 11,81 s met 13 beelden, geluidsspoor dat beweerde **3000,00 s**
+  te duren. Geen speler die daar geluid uit haalt — en dat is de "clips hebben geen geluid"
+  uit ronde één en twee. Nu via `hns_naar_samples`, afgerond en niet afgekapt: afkappen
+  scheelt één sample per frame en dat loopt over een minuut zichtbaar uit de pas.
+- **De menger begon zijn tijdlijn op seconde nul.** Hij werd vóór de lus aangemaakt met
+  `basis_hns: 0`, terwijl de taps hun chunks aanleveren met de tijd sinds *procesbegin*.
+  Ging clips pas een tijd na het opstarten aan — de normale gang van zaken, want de
+  schakelaar zit in de instellingen — dan bouwde hij de buffer vanaf nul op: honderden
+  megabytes stilte, een AAC-encoder die zich daar eerst doorheen moest werken terwijl de
+  opnamedraad stilstond, en monsters die daarna allemaal vóór het eerste segment lagen en
+  dus wegvielen. De lus maakt hem nu zelf aan, op de klok van dat moment.
+
+**En de sneltoets kon zichzelf opheffen.** `self.hotkey_draad = start_hotkey(..)` maakt de
+rechterkant vóór Rust de oude waarde laat vallen, en `RegisterHotKey` weigert een toets die
+nog geregistreerd staat. Dezelfde sneltoets opnieuw instellen liet je dus zonder sneltoets
+achter, met alleen een `warn` in het logbestand. De oude draad gaat er nu eerst uit *en
+wordt gejoind* (WM_QUIT → `UnregisterHotKey` op de eigen thread → einde), en een mislukte
+registratie komt als fout terug in de UI in plaats van alleen in de log.
+
+**De prijs, expliciet.** Na een herstart van de app is er even geen geschiedenis: wie
+tien seconden na het opstarten op de sneltoets drukt krijgt tien seconden. De ring vult
+zich daarna in segmenten van ~2 s. Dat is de goede kant om fout te zitten — een clip die
+korter is dan gevraagd is duidelijk, een clip met beelden van gisteren erin is dat niet.
+
+**Bewezen op echte hardware**, in Ricks eigen datamap met de vastgelopen ring erin:
+`ring van een vorige sessie opgeruimd aantal=11`, daarna F9 → bestand binnen 100 ms.
+
+| | videospoor | geluidsspoor |
+|---|---|---|
+| clip 22 aug (kapot) | 11,81 s / 13 monsters | **3000,00 s** / 675 monsters |
+| clip 23 aug (na de fix) | 8,06 s / 222 monsters | 7,89 s / 370 monsters |
+
+Plus drie tests in `crates/video/tests/opname_eind.rs` (`--ignored`, GPU + scherm), waarvan
+één nieuwe die de opname bewust drie seconden ná procesbegin start: dát is de test die de
+twee geluidsfouten vangt, want met de opname meteen bij het opstarten valt het verschil
+tussen "sinds procesbegin" en "sinds opnamebegin" weg.
 
 ## Bugs die de tests eruit haalden
 
@@ -1476,6 +1601,20 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
 - **De vensterlijst bevat rommel.** `EnumWindows` levert ook onzichtbare hulpvensters op;
   er wordt al gefilterd op zichtbaarheid, titel en `WS_EX_TOOLWINDOW`, maar er blijven
   dubbelingen in staan (twee keer "Mail", twee keer "Instellingen"). Cosmetisch.
+- **Een `cpal::Stream` die niemand vasthoudt stopt met leveren, zonder fout.** Bouw je hem
+  in een hulpfunctie en geef je hem niet terug, dan valt hij op de regel ná `play()` en
+  komt er nooit één sample binnen — `start()` meldt gewoon Ok. Dat was precies de reden dat
+  clips wel spelgeluid hadden en niet je eigen stem (`microfoon.rs`, 2026-08-23). De
+  voice-sessie heeft het goed (`open_apparaten` geeft beide streams terug); een tap die dat
+  niet doet ziet er van buiten identiek uit. Test hierop door de chunks écht op te vangen,
+  niet door te kijken of het starten lukte.
+- **Een paniek in een spawned thread staat níét in het logbestand.** Hij gaat naar stderr,
+  en de app schrijft zijn log ergens anders heen — dus een draad die meteen omvalt ziet er
+  van buiten uit als een draad die niets te doen heeft. Dat kostte een avond bij de clips
+  (een lege ring, geen enkele foutregel, terwijl de opnamedraad al vóór het eerste segment
+  gesneuveld was op een index). Recept: start de instantie met stderr naar een bestand
+  (`Start-Process ... -RedirectStandardError`) en lees dát erbij. Elke draad die op eigen
+  benen staat verdient bovendien een diagnoseregel die ook logt wanneer er *niets* gebeurt.
 
 ---
 
@@ -2160,6 +2299,103 @@ doet: wachten op een PID, een bestand hernoemen, opnieuw starten.
 - De volledige beslislogica van `Updates` (aanbieden, negeren, een nog nieuwere versie die
   wint, voortgang, mislukking, wegklikken) — twaalf pure unit-tests in
   `crates/app/src/updates.rs`, zonder netwerk of schijf.
+
+---
+
+## Hoe clips in elkaar zitten (fase 15)
+
+Een altijd-draaiende ringbuffer van het scherm dat *deze* pc opneemt; één toets schrijft de
+laatste ~60 seconden weg als een MP4 die buiten de app afspeelt. **Volledig lokaal**: er
+gaat niets over de draad, er hoeft niemand te kijken, en er is geen enkele peer bij
+betrokken. Windows-only — `crates/app/src/clips.rs` is elders een leeg beheerobject dat
+"afwezig" meldt, en de UI verbergt dan alles wat met clips te maken heeft.
+
+```text
+scherm ─► WGC ─► D3D11 ─► eigen Encoder ─► MP4-segmenten (~2 s) in <data>/clips/ring/
+        loopback + microfoon ─► Menger ─► AAC (inbox-MFT) ─► tweede track per segment
+sneltoets ─► laatste N segmenten remuxen ─► <data>/clips/clip-<tijdstempel>.mp4
+```
+
+**Een tweede `Encoder`, geen `IMFSinkWriter`.** De SinkWriter bezit en herstart zijn eigen
+encoder per bestand; elke segmentovergang zou dan een MFT-deactivatie zijn midden in een
+draaiende game (invariant 4). Hier draait één encodersessie door en is elk segment een
+zelfstandig, direct afspeelbaar MP4. Muxing gaat met de `mp4`-crate (0.14). Directe NVENC
+is bekeken en afgevallen: laat de muxing net zo hard aan jou over, en heeft nul ecosysteem.
+
+**H.264, ook al kan de encoder HEVC.** De `mp4`-crate schrijft een lege standaard-`hvcC`
+zonder VPS/SPS/PPS en kan die niet via de publieke API vullen — HEVC-clips initialiseren
+nergens een decoder. Zelfde uitkomst als beslissing 1, om een andere reden.
+
+**Een segment opent alleen op een keyframe en sluit alleen op een keyframe.** Openen op
+iets anders maakt het segment niet zelfstandig decodeerbaar. Sluiten gebeurt zodra het
+segment ouder is dan `SEGMENT_DOEL_HNS` (2 s) én het gevraagde keyframe er ook werkelijk
+doorheen komt; komt de IDR niet, dan loopt het segment door tot de GOP-grens van de encoder
+— een te lang segment is nooit een corrupt segment. Het verzoek (`vraag_keyframe`) wordt
+elke tik herhaald zolang er op gewacht wordt: sommige encoder-MFT's slikken een eenmalig
+verzoek midden in een GOP stilzwijgend in.
+
+**Schrijven gaat naar `.part.mp4` en pas `sluit` hernoemt.** Een half geschreven segment
+kan dus nooit tussen de levende metas terechtkomen. Wat er van een vorige sessie blijft
+liggen gaat bij de volgende start hoe dan ook weg — zie beslissing 33, dat is de kern van
+de hele tijdrekening hier.
+
+**De ring houdt venster + `RING_MARGE_HNS` (4 s).** `te_gooien` is een pure functie over de
+metadata, zodat het retentiebeleid testbaar is zonder GPU. De marge is er zodat het
+nieuwste — mogelijk nog openstaande — segment de telling nooit laat kortvallen.
+
+**Bewaren is een remux, geen her-encodering.** `bewaar_thread` draait op een eigen draad:
+de beeldketen wacht er geen milliseconde op, en in de praktijk staat het bestand er binnen
+een halve seconde. De basis is het **eerste keyframe op of ná de vensterrand**, niet de rand
+zelf — een clip die middenin een GOP begint decodeert tot het volgende IDR niet.
+
+**Twee tijdschalen, en dat is waar het fout ging.** De videotrack staat in hns (10 MHz,
+exact onze eigen klok), de audiotrack in samples (48 kHz). Beide fouten uit beslissing 33
+zaten op die grens. Wie hier iets aanraakt: `abs_hns` is altijd hns, `dur_samples` is altijd
+samples, en er staat één omrekening tussen (`hns_naar_samples`).
+
+**Geluid komt uit twee taps en wordt op één tijdlijn gemengd.** `LoopbackTap` (WASAPI,
+systeem- en spelgeluid) en `MicrofoonTap` (cpal, je eigen stem), allebei genormaliseerd naar
+48 kHz stereo door de tap zelf. De microfoon volgt de keuze uit de instellingen (dezelfde
+`kies_apparaat` als het gesprek gebruikt) en wisselt mee zodra je hem daar aanpast — anders
+neem je stilzwijgend iets anders op dan de anderen van je horen. Elke bron houdt zijn eigen klok bij; `Menger` telt ze op
+dezelfde plek in de buffer op en geeft alleen vrij wat **álle** aanwezige bronnen geleverd
+hebben — daarvóór kan een bron nog terugkomen met een monster dat eerder begint. Elke bron
+mag apart falen: een clip zonder microfoon is nog steeds een clip met spelgeluid, en zonder
+enige bron zijn het gewoon clips zonder geluid.
+
+**De AAC-monsters wachten in een rij tot het beeld ze inhaalt.** Ze gaan het segment in
+zodra er een videopakket met een latere tijd langskomt, en een monster dat vóór het huidige
+segment begint wordt weggegooid — dat hoorde bij de voorganger en is daar ook aangeboden.
+
+**De sneltoets is een eigen Win32-draad met `RegisterHotKey` en een berichtenlus.** Globaal,
+dus hij werkt met de app in de tray en een spel op de voorgrond. Hij doet precies één ding:
+één seintje over een kanaal naar de motor, dezelfde weg die de knop in de UI
+(`UiCommand::ClipseNu`) ook neemt. Instelbaar zonder herstart; standaard F9 (één toets, ver
+van de meeste gamebinds, met één hand te halen). Zie beslissing 33 voor de volgorde waarin
+de oude draad eruit moet.
+
+**Instellingen staan in `config.toml` onder `[clips]`** (`enabled`, `venster_sec`, `monitor`,
+`hotkey`, `map`), alles met `#[serde(default)]`. `map` is waar de clips landen; leeg is
+`<data-map>/clips`. Zelfde vorm als `download_dir` — een clip is een gebruikersbestand dat
+je terugvindt en deelt, en een minuut 1080p is ~90 MB, dus "op die andere schijf" is een
+redelijke wens. De ring hangt eronder (`<map>/ring`) en verhuist mee: bij het wisselen
+wordt de ring van de oude map opgeruimd en begint de nieuwe leeg, precies zoals bij elke
+start. Clips die er al staan blijven staan waar ze staan. Van scherm wisselen terwijl de opname loopt kan de
+keten niet, dus dat herstart hem gewoon — een paar seconden opnieuw opbouwen is genoeg
+troost. Monitornamen worden uniek gemaakt (`#2`, `#3`), anders is de keuze op naam ambigu
+bij twee identieke schermen.
+
+**Diagnostiek, met reden.** De opnamelus logt elke vijf seconden op `debug` wat hij tot dan
+toe zag (beelden, pakketten, keyframes, of er een segment openstaat), bovenin de lus zodat
+hij ook meldt wanneer er *niets* binnenkomt. Dat is er niet voor de sier: **een paniek in
+een spawned thread verdwijnt naar stderr en staat niet in het logbestand**, waardoor een
+dode opnamedraad zich precies zo gedraagt als een lege ring. Dat heeft één avond gekost;
+zie ook "Valkuilen in deze omgeving".
+
+De bestanden: `crates/video/src/opname.rs` (de hele keten, ring en remux),
+`crates/app/src/clips.rs` (beheer, sneltoets, schermkeuze), `crates/audio/src/loopback.rs`
+en `crates/audio/src/microfoon.rs` (de taps). Handmatige testpunten staan in
+`docs/TESTPLAN.md`, sectie "Clips".
 
 ---
 

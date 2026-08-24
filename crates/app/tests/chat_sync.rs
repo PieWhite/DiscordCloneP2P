@@ -115,13 +115,19 @@ impl Peer {
     }
 
     fn zeg(&mut self, tekst: &str) {
-        let cmds = self.chat.plaats_bericht(tekst, Channel::GENERAL).unwrap();
+        let cmds = self
+            .chat
+            .plaats_bericht(tekst, Channel::GENERAL, None)
+            .unwrap();
         self.stuur(cmds);
         self.chat.refresh();
     }
 
     fn dm(&mut self, aan: PeerId, tekst: &str) {
-        let cmds = self.chat.plaats_bericht(tekst, Channel::dm(aan)).unwrap();
+        let cmds = self
+            .chat
+            .plaats_bericht(tekst, Channel::dm(aan), None)
+            .unwrap();
         self.stuur(cmds);
         self.chat.refresh();
     }

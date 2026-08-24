@@ -338,6 +338,7 @@ fn database_van_voor_de_kanalen_uitbreiding_wordt_gemigreerd_niet_geweigerd() {
         let auteur = peer(1);
         let kind = OpKind::Post {
             body: "van voor de migratie".into(),
+            reply_to: None,
         };
         let payload = kind.encode_payload().unwrap();
         conn.execute(

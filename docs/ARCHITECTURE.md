@@ -643,19 +643,40 @@ niemand gevraagd heeft, en die verandert wie welke bytes kan opvragen.
 Een spelletje bovenop dezelfde oplog. Volledige onderbouwing in `docs/OVERDRACHT.md`
 beslissing 31; hier staat alleen hoe het zich tot de rest van dit document verhoudt.
 
-**Wat er reist en wat niet.** Alleen de *uitslag* is een op (`WordleResult`, tag 30,
-additief toegevoegd zonder protocolbump). Het raadsel zelf haalt elke peer op bij NYT — de
-derde bewuste uitzondering op "nul servers", zie invariant 1 in `CLAUDE.md` — en de kaart in
-de chat is helemaal geen op.
+**Wat er reist en wat niet.** De *uitslag* is een op (`WordleResult`, tag 30, additief
+toegevoegd zonder protocolbump). Het raadsel zelf haalt elke peer op bij NYT — de derde
+bewuste uitzondering op "nul servers", zie invariant 1 in `CLAUDE.md`. De oplossing reist
+nooit.
 
-**Waarom de kaart geen op is.** `seq` is per (auteur, kanaal) en er is geen
+**De kaart is normaal geen op.** `seq` is per (auteur, kanaal) en er is geen
 inhoudsgebaseerde op-identiteit, dus drie peers die om 07:00 allemaal een "hier is het
 raadsel van vandaag"-op plaatsen leveren drie kaarten op die de log niet tot één kan
 samenvouwen. Dat is geen tekort van de log maar het antwoord op de verkeerde vraag: de
 kaart draagt geen enkel feit dat een peer niet zelf kan uitrekenen. Hij wordt daarom in
 `crates/app/src/ui/state.rs` in de tijdlijn *geplaatst* in plaats van gesynchroniseerd —
-op de klok, vlak voor het eerste wat er die dag na 07:00 gezegd is, omdat hij geen
-`lamport` heeft om op te sorteren. Alleen op `Channel::GENERAL`.
+op de klok, om 07:00, omdat hij geen `lamport` heeft om op te sorteren. Alleen op
+`Channel::GENERAL`.
+
+**Behalve als iemand hem er met de hand in zet** (`WordleCard`, tag 31, 2026-08-20, ook
+additief). De aanname hierboven — "elke peer kan de kaart zelf uitrekenen" — houdt precies
+zolang ieders ophaal bij NYT lukt. Lukt die bij één peer niet, dan heeft die peer geen
+raadsel, tekent hij geen kaart, en is er geen enkele manier om dat vanuit de app te
+herstellen. Het `+`-menu naast de composer stuurt daarom een op met alleen `day` en
+`number` — nooit een woord, dus wie de kaart zo krijgt kan hem pas spelen als zijn eigen
+ophaal alsnog lukt.
+
+Het bezwaar van hierboven wordt daarbij niet omzeild maar opgevangen, en niet in de log
+maar in de tekenlaag: `fitcom_store::timeline` houdt per dag de **eerste** aankondiging op
+`(lamport, author)` en gooit de rest weg. Drie peers die alledrie drukken geven dus één
+kaart. `(lamport, author)` en niet `(lamport, seq)`, want dit gaat over auteurs heen en
+`seq` telt per auteur — dat is daar geen ordening. Zelfde sleutel als de tijdlijnsortering,
+dus elke peer houdt dezelfde kaart over.
+
+Zo'n handmatige kaart staat niet op 07:00 maar op het moment waarop erop gedrukt is: een
+kaart op 07:00 ligt begraven boven een dag aan berichten, en dan lost hij het probleem niet
+op waarvoor hij bestaat. Die tijd komt van de klok van een andere machine en bepaalt hier
+de *plek* en niet alleen een label, dus hij wordt tweemaal begrensd — `klem_wall_clock`
+(B-42) in de store, en in `ui/state.rs` nog eens naar `[07:00 van die dag, nu]`.
 
 **De sleutel is `day`, de `print_date` van het raadsel als `YYYYMMDD`.** Niet het
 raadselnummer van NYT (dan zou een dag die deze pc nooit ophaalde geen datum hebben) en

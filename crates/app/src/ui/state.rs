@@ -21,6 +21,10 @@ use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// How much of the parent's body rides along in a reply quote, in characters. Roughly
+/// one line; the full text is one click away.
+const REPLY_SNIPPET_LEN: usize = 90;
+
 /// How a `Channel` travels to the frontend and back: `general`, `topic:<uuid>` or
 /// `dm:<uuid>`. A string rather than a nested object because it is used as an object key
 /// and a `data-` attribute on nearly every row in the window.
@@ -91,6 +95,10 @@ pub struct PeerState {
     pub address: String,
     pub avatar: u8,
     pub presence: Presence,
+    /// The status this peer chose for itself ("away", "busy"), while it is online. `None`
+    /// means it never sent one (or is offline): plain online, nothing extra to draw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_status: Option<String>,
     /// Set when `presence` is `broken`: what is wrong, in one sentence.
     pub problem: Option<String>,
     pub app_version: Option<String>,
@@ -112,6 +120,8 @@ pub struct SelfState {
     pub id: String,
     pub name: String,
     pub avatar: u8,
+    /// Our own chosen status: "online", "away" or "busy".
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +129,24 @@ pub struct VoiceState {
     pub joined: bool,
     pub muted: bool,
     pub deafened: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipsState {
+    /// Recording is on.
+    pub enabled: bool,
+    /// How far back a clip reaches, in seconds.
+    pub window_sec: u32,
+    /// Which screen is being recorded (name from the source list).
+    pub monitor: Option<String>,
+    /// The configured global shortcut, as written in the config.
+    pub hotkey: String,
+    /// Where finished clips land; for the open-folder button.
+    pub folder: String,
+    /// The most recent clip, if any was saved this session.
+    pub last_clip: Option<String>,
+    /// Last clip error that has not been replaced yet.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,6 +232,17 @@ pub enum TimelineItem {
         edited: bool,
         mine: bool,
         mentions_you: bool,
+        /// The message this one answers, when it was sent as a reply. The frontend draws
+        /// a clickable quote above the body.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply_to: Option<OpRef>,
+        /// Author and opening text of that parent, resolved on this side. `None` also
+        /// covers a parent that is deleted or not (yet) in our log — the frontend then
+        /// shows "original unavailable" instead of guessing.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply_snippet: Option<ReplySnippet>,
+        /// Reactions grouped per emoji, in the same order every peer folds them to.
+        reactions: Vec<ReactionState>,
     },
     File {
         id: OpRef,
@@ -268,6 +307,26 @@ pub struct OpRef {
     pub author: String,
     pub channel: String,
     pub seq: u64,
+}
+
+/// The quote above a reply: who wrote the parent and how it opens. Built here so the
+/// frontend never has to look an `OpRef` up in the log itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplySnippet {
+    pub author_name: String,
+    /// The parent's body, cut off at roughly one line.
+    pub body: String,
+}
+
+/// One reaction pill under a message.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReactionState {
+    pub emoji: String,
+    pub count: usize,
+    /// Peer UUIDs, in the store's own order; the frontend resolves names for a tooltip.
+    pub peers: Vec<String>,
+    /// Did I react too? Decides whether clicking removes or adds.
+    pub mine: bool,
 }
 
 impl OpRef {
@@ -419,6 +478,14 @@ pub struct UiState {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub do_not_disturb: bool,
+    /// Clip recording (fase 15). `None` where the platform has none — the UI hides
+    /// everything clips-related then.
+    pub clips: Option<ClipsState>,
+    /// Who is typing where, keyed by conversation key ("general", "topic:<uuid>",
+    /// "dm:<peer-uuid>") with the peer UUIDs. Vluchtig — rides along in `state`, which is
+    /// fine: a typing event changes at most a few times a minute, and only while someone
+    /// actually types.
+    pub typing: HashMap<String, Vec<String>>,
     pub update: Option<UpdateState>,
     pub wordle: WordleState,
     pub error: Option<String>,
@@ -519,6 +586,10 @@ impl UiState {
                     address: p.address.clone(),
                     avatar: id.and_then(|i| hues.get(&i).copied()).unwrap_or(3),
                     presence,
+                    user_status: p
+                        .user_status
+                        .filter(|_| presence == Presence::Online)
+                        .map(|s| s.to_string()),
                     problem,
                     app_version,
                     in_call: p.in_voice,
@@ -560,12 +631,22 @@ impl UiState {
                 id: c.me.to_string(),
                 name: my_name,
                 avatar: hues.get(&c.me).copied().unwrap_or(1),
+                status: snap.eigen_status.to_string(),
             },
             peers,
             voice: VoiceState {
                 joined: snap.voice.actief,
                 muted: snap.voice.muted,
                 deafened: snap.voice.deafened,
+            },
+            typing: {
+                let mut map: HashMap<String, Vec<String>> = HashMap::new();
+                for (channel, peer) in &snap.typing {
+                    map.entry(channel_key(*channel))
+                        .or_default()
+                        .push(peer.to_string());
+                }
+                map
             },
             channels,
             own_streams: snap
@@ -613,6 +694,15 @@ impl UiState {
             input_device: snap.input_device.clone(),
             output_device: snap.output_device.clone(),
             do_not_disturb: snap.niet_storen,
+            clips: snap.clips.as_ref().map(|c| ClipsState {
+                enabled: c.aan,
+                window_sec: c.venster_sec,
+                monitor: c.monitor.clone(),
+                hotkey: c.hotkey.clone(),
+                folder: c.map.clone(),
+                last_clip: c.laatste.clone(),
+                error: c.fout.clone(),
+            }),
             wordle: wordle_state(snap, c.me, &hues),
             update: snap.update.as_ref().map(|u| match u {
                 UpdateStatus::Zoeken => UpdateState::Checking,
@@ -662,10 +752,48 @@ pub fn timeline_of(
     // merge at the bottom. Ordering between messages and files stays `(lamport, author)`.
     let mut items: Vec<(u64, PeerId, i64, TimelineItem)> = Vec::new();
 
+    // Parent lookup for reply quotes: only messages of this conversation can be parents
+    // (the fold nulls cross-channel references), so one pass over them is enough.
+    let parents: HashMap<OpId, (&fitcom_store::Message, String)> = snap
+        .timeline
+        .messages
+        .iter()
+        .filter(|m| belongs_to_channel(channel, me, m.channel, m.author))
+        .map(|m| {
+            let mut body = m.body.clone();
+            body.truncate(REPLY_SNIPPET_LEN);
+            (m.id, (m, body))
+        })
+        .collect();
+
+    // Reactions per message id, in the store's own order — already sorted the same way
+    // on every peer.
+    let reactions_of = |id: OpId| -> Vec<ReactionState> {
+        snap.timeline
+            .reactions
+            .iter()
+            .filter(|r| r.target == id)
+            .map(|r| ReactionState {
+                emoji: r.emoji.clone(),
+                count: r.peers.len(),
+                peers: r.peers.iter().map(|p| p.to_string()).collect(),
+                mine: r.peers.contains(&me),
+            })
+            .collect()
+    };
+
     for m in &snap.timeline.messages {
         if !belongs_to_channel(channel, me, m.channel, m.author) {
             continue;
         }
+        // A parent that is deleted or not yet known still travels as a reference; the
+        // frontend shows "original unavailable" when there is no snippet.
+        let snippet = m.reply_to.and_then(|p| {
+            parents.get(&p).map(|(parent, body)| ReplySnippet {
+                author_name: name_of(parent.author),
+                body: body.clone(),
+            })
+        });
         items.push((
             m.lamport,
             m.author,
@@ -680,6 +808,9 @@ pub fn timeline_of(
                 edited: m.edited,
                 mine: m.author == me,
                 mentions_you: m.author != me && tags::bevat_tag(&m.body, my_name),
+                reply_to: m.reply_to.map(OpRef::of),
+                reply_snippet: snippet,
+                reactions: reactions_of(m.id),
             },
         ));
     }
@@ -808,10 +939,20 @@ fn wordle_state(snap: &Snapshot, me: PeerId, hues: &HashMap<PeerId, u8>) -> Word
 
 /// One card per Wordle day, with the time it belongs at. Sorted oldest first.
 ///
-/// A day shows up here as soon as *either* this machine fetched its word *or* somebody's
-/// result for it arrived — the second case is the day you were away and the others played.
+/// A day shows up here as soon as *either* this machine fetched its word, *or* somebody's
+/// result for it arrived, *or* somebody put the card in the chat by hand (the + menu, an
+/// `OpKind::WordleCard`). The second case is the day you were away and the others played;
+/// the third is the day your own fetch failed, so you have no word and would otherwise draw
+/// nothing at all.
+///
 /// Never a day beyond the current one: a peer with a fast clock must not be able to put
 /// tomorrow's card in today's log.
+///
+/// **Where the card sits.** Normally at 07:00, the hour it belongs to. A day somebody
+/// announced by hand sits at the moment they pressed the button instead — that is the whole
+/// point of the button, since a card at 07:00 is buried above a day's worth of messages.
+/// That time comes off another machine's clock, so it is clamped to `[07:00, now]`: a peer
+/// whose clock is wrong may not fling the card to 1970 or into next week.
 fn wordle_cards(
     snap: &Snapshot,
     me: PeerId,
@@ -823,12 +964,15 @@ fn wordle_cards(
             .filter_map(|groep| groep.first().map(|e| (e.day, groep)))
             .collect();
 
+    let kaarten = &snap.timeline.wordle_cards;
+
     let mut dagen: Vec<u32> = snap
         .wordle
         .nummers
         .keys()
         .copied()
         .chain(per_dag.keys().copied())
+        .chain(kaarten.keys().copied())
         .filter(|d| *d <= snap.wordle.dag)
         .collect();
     dagen.sort_unstable();
@@ -867,12 +1011,29 @@ fn wordle_cards(
                 (true, Some(_)) => "continue",
             };
 
+            // 07:00, tenzij iemand de kaart met de hand in de chat zette — dan daar, maar
+            // nooit vóór 07:00 en nooit in de toekomst. Zie de doc hierboven.
+            // Niet `clamp`: die paniekt als de ondergrens boven de bovengrens uitkomt, en
+            // dat mag nooit van een klok afhangen in de tekenlaag.
+            let op_moment = kaarten.get(&day).map_or(wordle::openbaar_op(day), |k| {
+                k.at.max(wordle::openbaar_op(day))
+                    .min(fitcom_store::now_millis().max(wordle::openbaar_op(day)))
+            });
+
             (
-                wordle::openbaar_op(day),
+                op_moment,
                 TimelineItem::Wordle {
                     day,
-                    at: wordle::openbaar_op(day),
-                    number: snap.wordle.nummers.get(&day).copied(),
+                    at: op_moment,
+                    // Wat deze pc zelf weet gaat voor; het nummer uit de aankondiging is
+                    // de terugval voor de dag die we nooit opgehaald kregen. `0` betekent
+                    // daar "onbekend", en dan tekent de kaart gewoon geen nummer.
+                    number: snap
+                        .wordle
+                        .nummers
+                        .get(&day)
+                        .copied()
+                        .or_else(|| kaarten.get(&day).map(|k| k.number).filter(|n| *n != 0)),
                     action: action.to_string(),
                     progress: if vandaag {
                         snap.wordle.bord.as_ref().map_or(0, |b| b.rijen.len() as u8)
@@ -1001,6 +1162,7 @@ mod tests {
             created_at: at,
             edited: false,
             lamport,
+            reply_to: None,
         };
         let timeline = fitcom_store::Timeline {
             messages: vec![
@@ -1097,6 +1259,7 @@ mod tests {
                 in_voice: false,
                 niveau: 0.0,
                 volume: 1.0,
+                user_status: None,
             })
             .collect();
         // Three peers plus me is four identities, so one hue repeats — but never within

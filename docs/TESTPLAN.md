@@ -984,3 +984,30 @@ alleen additief" en er is geen protocolbump geweest.
 
 Per geval genoeg aan: **nummer + werkt / werkt niet + wat je zag**. Bij audio- of
 beeldproblemen is de log van beide kanten waardevol; die staat in `data\logs\`.
+
+## Clips (2026-08-22, fase 15)
+
+Geautomatiseerd gedekt (`cargo test -p fitcom-video -- --ignored`, GPU + scherm nodig):
+de hele keten tot afspeelbaar MP4, een herstart die met een schone ring begint, geluid dat
+het beeld dekt ook als de opname pas ná het opstarten aangaat, AAC-frames met stijgende
+tijden, en de zuivere regels (avcc-conversie, vensterkeuze, ring-retentie, ring legen).
+
+Met de hand, want UI en tweede machine:
+
+1. Instellingen → Clips: aanzetten. Statusbalk blijft rustig; taakbeheer toont een
+   extra GPU-process. Ring groeit in `<data>/clips/ring/` tot ~venster+marge en stopt
+   met groeien.
+2. Tijdens gamen Ctrl+Alt+C drukken (venster mag in de tray): binnen enkele seconden
+   verschijnt `clip-<tijdstempel>.mp4` in `<data>/clips/` en speelt hij buiten de app
+   af — beeld én systeemgeluid, lip-sync over de hele minuut.
+3. Clip maken vlak nadat de recorder aanging: nette foutmelding, geen crash, geen leeg
+   bestand.
+4. Uitzetten: geluidsdraad stopt. Weer aanzetten (of de app herstarten) = de ring wordt
+   leeggeveegd en opnieuw opgebouwd; een clip vlak daarna is korter dan het venster en
+   bevat nooit beelden van vóór het aanzetten. Zie OVERDRACHT beslissing 33 — dit punt
+   stond hier eerst andersom en dát was de bug.
+5. Clipmap wijzigen (Instellingen → Clips → Change…): nieuwe clips landen in de gekozen
+   map, de al bewaarde clips blijven staan waar ze stonden, en de ring van de oude map is
+   weg in plaats van voor altijd blijven liggen. Werkt met de opname aan (hij herstart) en
+   uit.
+6. Frametime-vergelijking spel met recorder aan/uit — de meetpunt-notitie in SPEC.md.

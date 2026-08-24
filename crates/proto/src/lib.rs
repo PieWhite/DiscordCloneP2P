@@ -11,7 +11,7 @@ pub mod media;
 pub mod op;
 
 pub use appversion::is_newer;
-pub use control::{ControlMsg, StreamKind};
+pub use control::{ControlMsg, StreamKind, Typing, UserStatus, UserStatusValue};
 pub use ids::{Channel, OpId, PeerId, TopicId};
 pub use media::{
     MediaHeader, PayloadType, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN, PARITEIT_PAYLOAD_LEN,

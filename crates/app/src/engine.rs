@@ -25,7 +25,9 @@ use crate::wordle::{self, Wordle};
 use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
-use fitcom_proto::control::{StreamKind, VoiceJoin, VoiceLeave};
+use fitcom_proto::control::{
+    StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin, VoiceLeave,
+};
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
 use fitcom_video::{Bron, BronSoort, Codec, D3dContext, DelerConfig, DelerHandle};
@@ -83,6 +85,10 @@ pub struct PeerView {
     /// 0..1, voor de spreekindicatie.
     pub niveau: f32,
     pub volume: f32,
+    /// De door de gebruiker gekozen status van deze peer, zoals hij hem zelf stuurde.
+    /// `None` zolang hij nog niets stuurde (of offline was): dan is hij impliciet
+    /// "online", en de UI hoeft niets extra's te tonen.
+    pub user_status: Option<UserStatusValue>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -203,6 +209,14 @@ pub struct Snapshot {
     /// Onderdrukt alle Windows-meldingen, ook een directe tag naar jezelf. Geldt alleen
     /// voor deze sessie, net als mute/deafen — geen configvermelding.
     pub niet_storen: bool,
+    /// Clips (fase 15): ringbuffer-opname met hotkey. `None` op platforms zonder
+    /// clipondersteuning — de UI verbergt er alles omheen.
+    pub clips: Option<crate::clips::ClipsWeergave>,
+    /// Wie nu aan het typen is: (kanaal, peer). Vluchtig — alleen levende indicaties
+    /// van verbonden peers, zie `TYPING_TTL`.
+    pub typing: Vec<(Channel, PeerId)>,
+    /// Onze eigen gekozen status (`UserStatusValue`). Vluchtig, begint op online.
+    pub eigen_status: UserStatusValue,
     /// Fase 11: staat een peer met een nieuwere versie aangeboden/onderweg/klaar?
     /// `None` betekent: niets aan de hand, iedereen die we spreken zit op onze versie
     /// (of ouder).
@@ -214,10 +228,17 @@ pub struct Snapshot {
 
 #[derive(Debug)]
 pub enum UiCommand {
-    /// Kanaal erbij: het algemene kanaal, of een DM met de gekozen peer.
-    Plaats(String, Channel),
+    /// Kanaal erbij: het algemene kanaal, of een DM met de gekozen peer. Met een
+    /// `reply_to` wordt het bericht een antwoord op dat bericht.
+    Plaats(String, Channel, Option<OpId>),
     Bewerk(OpId, String),
     Verwijder(OpId),
+    /// Reactie op een bericht zetten of (als hij er al staat) intrekken.
+    Reageer(OpId, String),
+    /// "Ik ben aan het typen" in dit kanaal. Vluchtig; de motor throttle zelf.
+    Typing(Channel),
+    /// Eigen aanwezigheidsstatus: 0 online, 1 away, 2 busy (`UserStatusValue`).
+    ZetStatus(u8),
     Gelezen,
     /// Een DM-gesprek is bekeken; telt niet mee voor `Snapshot::ongelezen_dm`.
     GelezenDm(PeerId),
@@ -291,6 +312,22 @@ pub enum UiCommand {
     /// Eén gok op het Wordle-raadsel van vandaag. Het woord komt uit het venster; de
     /// motor beoordeelt het, want de oplossing blijft aan deze kant.
     WordleGok(String),
+    /// De kaart van vandaag met de hand in het algemene kanaal zetten, zodat *iedereen* hem
+    /// ziet — de reddingsklep uit het `+`-menu. Haalt het raadsel eerst op als deze pc het
+    /// nog niet heeft, want zonder dat valt er niets aan te kondigen.
+    WordleInChat,
+    /// Clipopname aan of uit, en dat meteen vastleggen in de config.
+    ZetClips(bool),
+    /// Nú de laatste `venster_sec` seconden als clip wegschrijven. Ook via de globale
+    /// hotkey, die hier op hetzelfde kanaal uitkomt.
+    ClipseNu,
+    /// Welk scherm er voor clips opgenomen wordt (naam uit de bronlijst). Leeg =
+    /// automatisch het eerste.
+    ZetClipMonitor(String),
+    /// De globale clip-sneltoets wisselen, zonder herstart.
+    ZetClipsHotkey(String),
+    /// Waar clips (en de ring eronder) heen gaan. Een lopende opname verhuist mee.
+    ZetClipMap(PathBuf),
 }
 
 pub struct EngineHandle {
@@ -340,6 +377,7 @@ pub fn spawn(
     let (aangeboden, gedownload) = lees_paden_index(&paden_index, &oude_picturesmap, &pictures_dir);
     files.herstel_paden(aangeboden, gedownload);
     let afsluiten_voor_update = Arc::new(AtomicBool::new(false));
+    let clips_beheer = crate::clips::ClipsBeheer::nieuw(config::resolve_clips_dir(&cfg, &data_dir));
 
     let peers = cfg
         .peers
@@ -358,14 +396,31 @@ pub fn spawn(
             in_voice: false,
             niveau: 0.0,
             volume: 1.0,
+            user_status: None,
         })
         .collect();
+
+    // Globale clip-hotkey (standaard F9, instelbaar). Eigen Win32-draad; hij duwt
+    // rechtstreeks op het motorcommandokanaal en werkt dus ook vanuit de tray. Vóór
+    // de Engine-aanmaak: `cfg` verhuist daarin, en de draad hoort bij het object.
+    let clip_hotkey_spec = cfg.clips.hotkey.clone();
+    let (clip_hotkey_verzender, clip_hotkey_ontvanger) = std::sync::mpsc::channel();
+    let hotkey_tx = clip_hotkey_verzender.clone();
+    let hotkey_draad = crate::clips::start_hotkey(&clip_hotkey_spec, move || {
+        let _ = hotkey_tx.send(());
+    })
+    .context("clip-hotkey registreren")
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %format!("{e:#}"), "hotkey uit; clips blijven via de UI werken");
+        crate::clips::HotkeyDraad::dode()
+    });
 
     let engine = Engine {
         mesh,
         chat,
         cfg,
         config_path,
+        hotkey_draad,
         peers,
         verbonden: HashMap::new(),
         voice: None,
@@ -382,6 +437,7 @@ pub fn spawn(
         pictures_dir,
         paden_index,
         wordle: Wordle::nieuw(&data_dir),
+        wordle_aankondigen: false,
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -390,6 +446,13 @@ pub fn spawn(
         kijker_rx,
         fout: None,
         niet_storen: false,
+        clips: clips_beheer,
+        clip_hotkey_verzender,
+        clip_hotkey_ontvanger,
+        typing_tot: HashMap::new(),
+        typing_verzonden: HashMap::new(),
+        peer_status: HashMap::new(),
+        eigen_status: UserStatusValue::ONLINE,
         snap_tx,
         voorgrond: voorgrond.clone(),
         afsluiten_voor_update: afsluiten_voor_update.clone(),
@@ -449,6 +512,9 @@ struct Engine {
     /// Het raadsel van de dag, de eigen gokken en waar dat op schijf staat.
     /// Zie `crate::wordle`.
     wordle: Wordle,
+    /// Er is op "zet hem in de chat" gedrukt terwijl het raadsel er nog niet was; zodra
+    /// het binnenkomt gaat de kaart alsnog de log in. Zie `wordle_in_chat`.
+    wordle_aankondigen: bool,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -466,10 +532,38 @@ struct Engine {
     fout: Option<String>,
     /// Zie `Snapshot::niet_storen`.
     niet_storen: bool,
+    /// Clipopname-beheer (fase 15). Bestaat altijd; op platforms zonder ondersteuning
+    /// is het een no-op die zichzelf afwezig meldt.
+    clips: crate::clips::ClipsBeheer,
+    /// De geregistreerde clip-hotkey. Vervangen (Drop → WM_QUIT → nieuwe draad) zodra
+    /// de gebruiker een andere toets kiest.
+    hotkey_draad: crate::clips::HotkeyDraad,
+    /// De hotkey-draad praat via dit kanaal naar de motor: één seintje = "bewaar nu",
+    /// dezelfde weg als het ClipseNu-commando.
+    clip_hotkey_verzender: std::sync::mpsc::Sender<()>,
+    clip_hotkey_ontvanger: std::sync::mpsc::Receiver<()>,
+    /// Vluchtige typindicaties: tot wanneer deze peer in dit kanaal aan het typen is.
+    /// Geen oplog, geen doorgifte — na een paar seconden stilte of een verbreking is de
+    /// betekenis weg en mag de administratie dat ook zijn.
+    typing_tot: HashMap<(PeerId, Channel), Instant>,
+    /// Wanneer wij voor het laatst een `Typing` in een kanaal stuurden; throttle zodat
+    /// elke toetsaanslag geen bericht wordt.
+    typing_verzonden: HashMap<Channel, Instant>,
+    /// De gekozen status van elke peer deze sessie. Een peer die nog niets stuurde is
+    /// impliciet online.
+    peer_status: HashMap<PeerId, UserStatusValue>,
+    /// Onze eigen gekozen status. Vluchtig: na een herstart beginnen we weer op online.
+    eigen_status: UserStatusValue,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
     afsluiten_voor_update: Arc<AtomicBool>,
 }
+
+/// Hoe lang een `Typing`-indicatie geldig blijft bij de ontvanger.
+const TYPING_TTL: Duration = Duration::from_secs(5);
+/// Hoe vaak we hooguit een `Typing` versturen tijdens doorlopend typen. Ruim onder de
+/// TTL, zodat één verloren bericht de indicatie niet laat flikkeren.
+const TYPING_THROTTLE: Duration = Duration::from_millis(2500);
 
 /// Wat een bestandstaak (hashen, uploaden, downloaden) terugmeldt aan de motor. Losse
 /// tokio-taken raken schijf en netwerk aan; de motor zelf blijft daar los van, net als
@@ -522,6 +616,9 @@ enum FileEvent {
     /// Het raadsel van vandaag is bij NYT opgehaald (2026-08-20). Zie `crate::wordle` voor
     /// waarom dat in de motor gebeurt en niet in de webview.
     WordleGeladen(wordle::Raadsel),
+    /// Een *handmatige* poging is misgegaan; de reden hoort in het venster. Een
+    /// automatische poging meldt niets — zie `wordle_taak`.
+    WordleMislukt(String),
 }
 
 impl Engine {
@@ -532,6 +629,9 @@ impl Engine {
         let r = self.chat.zet_naam(&naam);
         self.verwerk(r);
         self.wordle_inhaalslag();
+        if self.cfg.clips.enabled {
+            self.zet_clips_motor(true);
+        }
         self.publiceer();
 
         let mut ticker = tokio::time::interval(TIK);
@@ -564,6 +664,38 @@ impl Engine {
                     self.verwerk(r);
                     self.ruim_gestopte_camera_op();
                     self.wordle_tick();
+                    // Verlopen typindicaties opruimen; de volgende publiceer() merkt
+                    // het alleen als er ook echt iets verdween.
+                    if !self.typing_tot.is_empty() {
+                        let nu = Instant::now();
+                        self.typing_tot.retain(|_, tot| *tot > nu);
+                    }
+                    // Clip-events (klaar/mislukt) binnenhalen en een doodlopende
+                    // keten signaleren. Een klaargekomen clip krijgt hetzelfde
+                    // geluidje als een stream die start — het is ook een "er wordt
+                    // nu iets voor je opgenomen/geleverd"-moment.
+                    if let Some(_pad) = self.clips.tik() {
+                        self.geluid(crate::geluid::Geluid::StreamAan);
+                    }
+                    if let Some(f) = self.clips.fout() {
+                        if self.fout.is_none() {
+                            self.fout = Some(format!("clips: {f}"));
+                        }
+                    }
+                    // Hotkey-seintjes (F9 of wat de gebruiker koos): zelfde pad als
+                    // ClipseNu.
+                    let mut hotkey_aanvragen = 0usize;
+                    while self.clip_hotkey_ontvanger.try_recv().is_ok() {
+                        hotkey_aanvragen += 1;
+                    }
+                    if hotkey_aanvragen > 0 {
+                        tracing::info!(aanvragen = hotkey_aanvragen, "clip-save aangevraagd via de hotkey");
+                        if self.cfg.clips.enabled && self.clips.aan() {
+                            self.clips.bewaar_nu();
+                        } else {
+                            self.fout = Some("Clips staan uit (instellingen → clips).".into());
+                        }
+                    }
                 }
                 _ = update_ticker.tick() => self.zoek_update(false),
             }
@@ -604,9 +736,17 @@ impl Engine {
                             self.verwerk(r);
                             // Zit ik al in het gesprek, dan moet deze peer dat weten;
                             // hij heeft mijn eerdere melding gemist. Hetzelfde geldt
-                            // voor wat ik deel.
+                            // voor wat ik deel en voor mijn gekozen status.
                             if self.voice.is_some() {
                                 self.meld_voice_status(Some(id));
+                            }
+                            if self.eigen_status != UserStatusValue::ONLINE {
+                                self.stuur_alles(vec![MeshCommand::Send {
+                                    to: id,
+                                    msg: ControlMsg::UserStatus(UserStatus {
+                                        status: self.eigen_status,
+                                    }),
+                                }]);
                             }
                             let cmds = self.streams.bij_verbinding(id);
                             self.stuur_alles(cmds);
@@ -621,6 +761,10 @@ impl Engine {
                             if self.peers_in_voice.remove(&id) {
                                 self.geluid(geluid::Geluid::PeerLeave);
                             }
+                            // Zijn vluchtige statussen zijn ze ook waard: een typindicatie
+                            // van een peer die er niet meer is klopt per definitie niet.
+                            self.typing_tot.retain(|(p, _), _| *p != id);
+                            self.peer_status.remove(&id);
                             let acties = self.streams.bij_verbreking(id);
                             self.voer_uit(acties);
                         }
@@ -680,6 +824,29 @@ impl Engine {
                 ControlMsg::FileResponse(resp) => {
                     self.files.antwoord_ontvangen(&resp);
                 }
+                ControlMsg::Typing(t) => {
+                    // Een DM-typindicatie hoort alleen van de gesprekspartner zelf te
+                    // komen. Het bericht bewijst wíéér hem stuurde, niet dat hij erin
+                    // zit — dus een kanaal waar wij niet de geadresseerde van zijn
+                    // negeren we hier, net als de op zelf bij ontvangst.
+                    if t.channel.dm_peer().is_some_and(|p| p != self.chat.me()) {
+                        tracing::debug!(peer = ?from, "typindicatie voor een vreemde DM genegeerd");
+                    } else {
+                        // Vluchtig en single-hop: alleen bijhouden, nooit doorsturen.
+                        // De tik ruimt de verlopen entries op, zodat de indicatie ook
+                        // verdwijnt als er daarna geen bericht meer komt.
+                        self.typing_tot
+                            .insert((from, t.channel), Instant::now() + TYPING_TTL);
+                    }
+                }
+                ControlMsg::UserStatus(s) => {
+                    if s.status.is_known() {
+                        let was = self.peer_status.insert(from, s.status);
+                        if was != Some(s.status) {
+                            tracing::debug!(peer = ?from, status = %s.status, "status gewijzigd");
+                        }
+                    }
+                }
                 // Fase 11 duwde exe's tussen peers door; sinds fase 13 komt een update
                 // uit de getekende release-feed en gaat de eigen binary nergens meer
                 // heen (`docs/BEVEILIGING.md` B-01, B-21). De varianten blijven in het
@@ -716,7 +883,7 @@ impl Engine {
                     // in het berichttype, dus zonder aparte "sync klaar"-status.
                     let live_post = match &andere {
                         ControlMsg::OpBroadcast(b) => match b.op.kind() {
-                            Ok(Some(OpKind::Post { body })) => Some((b.op.channel, body)),
+                            Ok(Some(OpKind::Post { body, .. })) => Some((b.op.channel, body)),
                             _ => None,
                         },
                         _ => None,
@@ -911,11 +1078,46 @@ impl Engine {
             .arg("--hash")
             .arg(release::bytes_naar_hex(&hash))
             .spawn();
-        match resultaat {
-            Ok(_) => self.afsluiten_voor_update.store(true, Ordering::Relaxed),
+        let mut kind = match resultaat {
+            Ok(k) => k,
             Err(e) => {
                 tracing::error!(error = %e, pad = %updater.display(), "updater niet te starten");
                 self.fout = Some(format!("updater starten mislukt: {e}"));
+                return;
+            }
+        };
+        // Een geslaagde `spawn()` zegt alleen dat het proces bestónd, niet dat het leeft.
+        // Op 2026-08-20 viel de updater van v1.2.4 die nog naast de app stond meteen om op
+        // het nieuwe `--hash` (exitcode 2, vóór zijn eerste logregel, en zonder console
+        // omdat hij een GUI-binary is). Wij zagen alleen "gelukt", sloten het venster, en
+        // niemand verving iets: de app was weg, de update niet uitgevoerd, geen enkele
+        // aanwijzing waarom. Zolang de updater leeft blokkeert hij op ons PID, dus een
+        // proces dat binnen deze tijd al weg is, is per definitie stuk.
+        //
+        // ponytail: 300 ms slapen op de UI-draad; dit is de klik "nu bijwerken en
+        // herstarten" en we sluiten hierna toch af. Een wachtdraad met terugkoppeling
+        // pas als er ooit iets anders na deze plek moet gebeuren.
+        std::thread::sleep(Duration::from_millis(300));
+        match kind.try_wait() {
+            Ok(None) => self.afsluiten_voor_update.store(true, Ordering::Relaxed),
+            Ok(Some(status)) => {
+                tracing::error!(
+                    %status,
+                    pad = %updater.display(),
+                    "updater stopte meteen; er wordt niets vervangen"
+                );
+                self.fout = Some(format!(
+                    "de updater stopte meteen ({status}) en heeft niets vervangen. \
+                     Meestal staat er dan een oude fitcom-updater.exe naast de app: \
+                     haal hem uit de nieuwste release en zet hem naast fitcom.exe. \
+                     Zie ook updater.log in die map."
+                ));
+            }
+            // Niet te bepalen — dan liever doorgaan zoals hiervoor dan een werkende
+            // update tegenhouden op een vraag die we niet beantwoord krijgen.
+            Err(e) => {
+                tracing::warn!(error = %e, "updater-status niet op te vragen; toch afsluiten");
+                self.afsluiten_voor_update.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -1074,6 +1276,35 @@ impl Engine {
     /// Alleen voor een camera. Een gedeeld scherm heeft geen voorbeeldvenster en hoort niet
     /// vanzelf te verdwijnen omdat een deler eruit klapte; daar blijft de aankondiging
     /// staan en probeert de volgende kijker het opnieuw, zoals altijd.
+    /// Zet de clipopname aan of uit, zonder de config aan te raken — de commando-arm
+    /// beslist of dat meegaat naar `config.toml`. Bij het aanzetten wordt hier pas een
+    /// D3D-context geopend: een machine die nooit clips gebruikt hoeft hem niet.
+    fn zet_clips_motor(&mut self, aan: bool) {
+        let d3d = if aan {
+            match self.d3d() {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    self.fout = Some(format!("clips: {e:#}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Err(e) = self.clips.zet(
+            aan,
+            self.cfg.clips.venster_sec,
+            self.cfg.video.fps,
+            self.cfg.video.bitrate,
+            self.cfg.clips.monitor.as_deref(),
+            self.cfg.input_device.as_deref(),
+            d3d.as_ref(),
+        ) {
+            tracing::error!(error = %format!("{e:#}"), "clipopname wisselen mislukt");
+            self.fout = Some(format!("clips: {e:#}"));
+        }
+    }
+
     fn ruim_gestopte_camera_op(&mut self) {
         let dood: Vec<(u32, Option<String>)> = self
             .streams
@@ -1545,9 +1776,122 @@ impl Engine {
 
     fn op_ui_command(&mut self, cmd: UiCommand) {
         match cmd {
-            UiCommand::Plaats(tekst, channel) => {
-                let r = self.chat.plaats_bericht(&tekst, channel);
+            UiCommand::Plaats(tekst, channel, reply_to) => {
+                let r = self.chat.plaats_bericht(&tekst, channel, reply_to);
                 self.verwerk(r);
+                // Het antwoord is verstuurd: de "typt"-indicatie mag weg.
+                self.typing_verzonden.remove(&channel);
+            }
+            UiCommand::Reageer(doel, emoji) => {
+                let r = self.chat.reageer(doel, &emoji);
+                self.verwerk(r);
+            }
+            UiCommand::Typing(channel) => self.stuur_typing(channel),
+            UiCommand::ZetStatus(status) => self.zet_status(status),
+            UiCommand::ZetClips(aan) => {
+                if self.cfg.clips.enabled != aan {
+                    self.cfg.clips.enabled = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+                self.zet_clips_motor(aan);
+                // Bij een mislukte start staat de motor ook echt uit; de schakelaar
+                // mag niet liegen over wat er draait.
+                if aan && !self.clips.aan() {
+                    self.cfg.clips.enabled = false;
+                    let _ = self.cfg.save(&self.config_path);
+                }
+            }
+            UiCommand::ClipseNu => {
+                tracing::info!(
+                    enabled = self.cfg.clips.enabled,
+                    opname_loopt = self.clips.aan(),
+                    "clip-save aangevraagd via de knop"
+                );
+                if self.cfg.clips.enabled && self.clips.aan() {
+                    self.clips.bewaar_nu();
+                } else {
+                    self.fout = Some("Clips staan uit (instellingen → clips).".into());
+                }
+            }
+            UiCommand::ZetClipMonitor(naam) => {
+                let gekozen = if naam.trim().is_empty() {
+                    None
+                } else {
+                    Some(naam)
+                };
+                if self.cfg.clips.monitor != gekozen {
+                    self.cfg.clips.monitor = gekozen.map(|s| s.to_string());
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                        return;
+                    }
+                    // Draait de opname al? Dan meteen herstarten op het nieuwe
+                    // scherm — een wisseling halverwege kan de keten niet aan,
+                    // maar een paar seconden opnieuw opstarten is genoeg troost.
+                    let stond_aan = self.clips.aan();
+                    if stond_aan {
+                        self.zet_clips_motor(false);
+                        self.zet_clips_motor(true);
+                    }
+                }
+            }
+            UiCommand::ZetClipsHotkey(spec) => {
+                let spec = spec.trim().to_string();
+                // Eerst valideren: een typefout mag de werkende toets niet slopen.
+                if let Err(e) = crate::clips::ontled_hotkey(&spec) {
+                    self.fout = Some(format!("sneltoets: {e:#}"));
+                    return;
+                }
+                self.cfg.clips.hotkey = spec.clone();
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    self.fout = Some(format!("config opslaan: {e:#}"));
+                    return;
+                }
+                // Eerst de oude draad écht weg (Drop → WM_QUIT → unregister → join),
+                // pas daarna de nieuwe. In één toewijzing gaat dat mis: Rust maakt de
+                // rechterkant vóór hij de oude laat vallen, en `RegisterHotKey` weigert
+                // een toets die nog geregistreerd staat — dezelfde sneltoets opnieuw
+                // instellen liet je dan zonder sneltoets achter.
+                self.hotkey_draad = crate::clips::HotkeyDraad::dode();
+                // De verzender naar onszelf blijft dezelfde: de tik leest het kanaal uit.
+                self.hotkey_draad = crate::clips::start_hotkey(&spec, {
+                    let tx = self.clip_hotkey_verzender.clone();
+                    move || {
+                        let _ = tx.send(());
+                    }
+                })
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %format!("{e:#}"), "nieuwe clip-hotkey mislukt");
+                    self.fout = Some(format!("sneltoets: {e:#}"));
+                    crate::clips::HotkeyDraad::dode()
+                });
+            }
+            UiCommand::ZetClipMap(pad) => {
+                if let Err(e) = std::fs::create_dir_all(&pad) {
+                    tracing::warn!(error = %e, pad = %pad.display(), "clipmap aanmaken mislukt");
+                    self.fout = Some(format!("clipmap aanmaken: {e}"));
+                    return;
+                }
+                if self.clips.map() == pad {
+                    return;
+                }
+                self.cfg.clips.map = Some(pad.clone());
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    self.fout = Some(format!("config opslaan: {e:#}"));
+                    return;
+                }
+                let stond_aan = self.clips.aan();
+                if stond_aan {
+                    self.zet_clips_motor(false);
+                }
+                // `zet_map` ruimt de ring van de oude map op — die draagt tijden van
+                // deze sessie en wordt nooit meer gelezen. De clips zelf blijven staan.
+                self.clips.zet_map(pad);
+                if stond_aan {
+                    self.zet_clips_motor(true);
+                }
             }
             UiCommand::Bewerk(doel, tekst) => {
                 let r = self.chat.bewerk_bericht(doel, &tekst);
@@ -1658,6 +2002,13 @@ impl Engine {
                     self.verlaten();
                     self.deelnemen();
                 }
+                // De clip-opname kiest zijn microfoon op hetzelfde moment: bij het
+                // starten. Draait hij, dan moet hij dus ook opnieuw, anders neemt hij
+                // stilzwijgend het oude apparaat op tot de volgende herstart.
+                if self.clips.aan() {
+                    self.zet_clips_motor(false);
+                    self.zet_clips_motor(true);
+                }
             }
             UiCommand::ZetDownloadMap(pad) => {
                 if let Err(e) = std::fs::create_dir_all(&pad) {
@@ -1724,6 +2075,7 @@ impl Engine {
             UiCommand::NegeerUpdate(versie) => self.updates.negeer(&versie),
             UiCommand::WisUpdateMelding => self.updates.wis_melding(),
             UiCommand::WordleGok(woord) => self.wordle_gok(&woord),
+            UiCommand::WordleInChat => self.wordle_in_chat(),
         }
     }
 
@@ -1751,8 +2103,46 @@ impl Engine {
     fn wordle_tick(&mut self) {
         if let Some(datum) = self.wordle.moet_ophalen() {
             let tx = self.file_tx.clone();
-            tokio::spawn(wordle_taak(datum, tx));
+            tokio::spawn(wordle_taak(datum, false, tx));
         }
+    }
+
+    /// Het `+`-menu: zet de kaart van vandaag in het algemene kanaal, voor iedereen.
+    ///
+    /// Twee gevallen, en het tweede is waar dit voor bestaat:
+    ///
+    /// - **Het raadsel staat er al.** Dan meteen de op, en klaar.
+    /// - **Het raadsel ontbreekt** (jouw ophaal is mislukt). Dan eerst halen — buiten de
+    ///   kwartierklok om, want daarom druk je erop — en pas aankondigen als hij binnen is.
+    ///   Aankondigen wat we zelf niet hebben zou een kaart zonder nummer opleveren die
+    ///   niemand kan spelen. Lukt het halen niet, dan komt de reden in het venster; de
+    ///   automatische poging blijft stil, deze niet, want hier staat iemand te kijken.
+    ///
+    /// Tweemaal drukken is geen probleem: de log houdt per dag de eerste kaart (invariant
+    /// 6, en `fitcom_store::WordleCardEntry` legt uit hoe).
+    fn wordle_in_chat(&mut self) {
+        match self.wordle.nu_ophalen() {
+            // Niets te halen betekent op deze plek: we hebben hem al.
+            None => self.kondig_wordle_aan(),
+            Some(datum) => {
+                tracing::info!(datum, "wordle handmatig opgevraagd om in de chat te zetten");
+                self.wordle_aankondigen = true;
+                let tx = self.file_tx.clone();
+                tokio::spawn(wordle_taak(datum, true, tx));
+            }
+        }
+    }
+
+    /// De op die de kaart bij iedereen in de tijdlijn zet. Doet niets zonder raadsel — dan
+    /// is er geen dagnummer om mee te sturen.
+    fn kondig_wordle_aan(&mut self) {
+        let dag = self.wordle.huidige_dag();
+        let Some(nummer) = self.wordle.nummer_van(dag) else {
+            return;
+        };
+        tracing::info!(dag, nummer, "wordle-kaart in de chat gezet");
+        let r = self.chat.zet_wordle_kaart(dag, nummer);
+        self.verwerk(r);
     }
 
     /// Bij het starten: staat er een afgerond spel van vandaag op schijf waarvan de uitslag
@@ -1981,6 +2371,14 @@ impl Engine {
                     "wordle van vandaag binnen"
                 );
                 self.wordle.neem_op(raadsel);
+                // Stond de knop uit het +-menu hierop te wachten, dan kan de kaart nu.
+                if std::mem::take(&mut self.wordle_aankondigen) {
+                    self.kondig_wordle_aan();
+                }
+            }
+            FileEvent::WordleMislukt(reden) => {
+                self.wordle_aankondigen = false;
+                self.wordle.fout = Some(reden);
             }
         }
     }
@@ -2078,6 +2476,47 @@ impl Engine {
         notify::nieuw_bericht(&naam, tekst);
     }
 
+    /// "Ik ben aan het typen" naar de anderen sturen, hooguit één keer per
+    /// `TYPING_THROTTLE` per kanaal. Een DM gaat — net als een DM-bericht zelf —
+    /// uitsluitend naar de geadresseerde.
+    fn stuur_typing(&mut self, channel: Channel) {
+        let nu = Instant::now();
+        match self.typing_verzonden.get(&channel) {
+            Some(t) if nu.duration_since(*t) < TYPING_THROTTLE => return,
+            _ => {}
+        }
+        self.typing_verzonden.insert(channel, nu);
+        let cmd = match channel.dm_peer() {
+            Some(naar) => MeshCommand::Send {
+                to: naar,
+                msg: ControlMsg::Typing(Typing { channel }),
+            },
+            None => MeshCommand::Broadcast(ControlMsg::Typing(Typing { channel })),
+        };
+        self.stuur_alles(vec![cmd]);
+    }
+
+    /// Eigen status wisselen en iedereen op de hoogte brengen. Vluchtig: er zit geen op
+    /// achter, dus wie offline was ziet de wisseling pas na zijn verbinding — daarom de
+    /// extra melding bij het opkomen van een verbinding hierboven.
+    fn zet_status(&mut self, status: u8) {
+        let status = UserStatusValue(status);
+        if !status.is_known() || status == self.eigen_status {
+            return;
+        }
+        self.eigen_status = status;
+        let cmds = self
+            .verbonden
+            .keys()
+            .copied()
+            .map(|to| MeshCommand::Send {
+                to,
+                msg: ControlMsg::UserStatus(UserStatus { status }),
+            })
+            .collect();
+        self.stuur_alles(cmds);
+    }
+
     fn verwerk(&mut self, r: Result<Vec<MeshCommand>>) {
         match r {
             Ok(cmds) => self.stuur_alles(cmds),
@@ -2096,6 +2535,11 @@ impl Engine {
             if let Some(id) = p.peer_id {
                 p.in_voice = self.peers_in_voice.contains(&id);
                 p.niveau = niveaus.per_peer.get(&id).copied().unwrap_or(0.0);
+                // Alleen tonen zolang hij er ook is; een status van een offline peer
+                // is tegen de tijd dat hij terugkomt toch verlopen.
+                if self.verbonden.contains_key(&id) {
+                    p.user_status = self.peer_status.get(&id).copied();
+                }
             }
         }
 
@@ -2178,6 +2622,17 @@ impl Engine {
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
             ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
+            clips: self
+                .clips
+                .aanwezig()
+                .then(|| self.clips.weergave(&self.cfg.clips)),
+            typing: self
+                .typing_tot
+                .iter()
+                .filter(|((p, _), _)| self.verbonden.contains_key(p))
+                .map(|((p, c), _)| (*c, *p))
+                .collect(),
+            eigen_status: self.eigen_status,
             update: self.updates.status().cloned(),
             wordle: WordleView {
                 dag: self.wordle.huidige_dag(),
@@ -2707,14 +3162,30 @@ async fn download_taak(
 /// Mislukken is geen fout: `debug` en niet `warn`, precies zoals bij een YouTube-preview.
 /// Offline is een normale toestand (invariant 7) en dit is een spelletje — er komt dan
 /// gewoon geen kaart, en over een kwartier probeert de tik het opnieuw.
-async fn wordle_taak(datum: String, events: mpsc::Sender<FileEvent>) {
+///
+/// Behalve als iemand er zelf om vroeg (`handmatig`). Dan is stil mislukken juist wél
+/// verkeerd: er staat iemand te kijken of er nu iets gebeurt. Alleen in dat geval komt de
+/// reden terug het venster in.
+async fn wordle_taak(datum: String, handmatig: bool, events: mpsc::Sender<FileEvent>) {
     let uitkomst = tokio::task::spawn_blocking(move || wordle::haal_op(&datum)).await;
-    match uitkomst {
+    let reden = match uitkomst {
         Ok(Ok(raadsel)) => {
             let _ = events.send(FileEvent::WordleGeladen(raadsel)).await;
+            return;
         }
-        Ok(Err(e)) => tracing::debug!(error = %format!("{e:#}"), "geen wordle van vandaag"),
-        Err(e) => tracing::warn!(error = %e, "de wordle-taak liep vast"),
+        Ok(Err(e)) => {
+            tracing::debug!(error = %format!("{e:#}"), "geen wordle van vandaag");
+            "Today's puzzle could not be fetched. Is there internet?"
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "de wordle-taak liep vast");
+            "Fetching today's puzzle went wrong."
+        }
+    };
+    if handmatig {
+        let _ = events
+            .send(FileEvent::WordleMislukt(reden.to_string()))
+            .await;
     }
 }
 

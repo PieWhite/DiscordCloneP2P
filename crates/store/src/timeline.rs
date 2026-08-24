@@ -23,6 +23,22 @@ pub struct Message {
     /// Nodig om berichten en bestanden (`FileEntry::lamport`) in de UI in één
     /// chronologische tijdlijn te kunnen samenvoegen — zie fase 8 in `ROADMAP.md`.
     pub lamport: u64,
+    /// Het bericht waarop dit antwoordt, als dat er is. Altijd binnen hetzelfde kanaal:
+    /// een antwoord dat over kanalen heen wijst (en zo het bestaan van een DM zou kunnen
+    /// verraden) komt hier als `None` door, zie de vouw hieronder.
+    pub reply_to: Option<OpId>,
+}
+
+/// Eén reactiegroep: een emoji op één bericht, met wie hem gaf. Alleen groepen met
+/// minstens één peer komen in de lijst — een ingetrokken reactie laat geen spoor na.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    /// Het bericht waarop gereageerd is. Alleen berichten: op bestanden en Wordle-kaarten
+    /// reageren kan niet.
+    pub target: OpId,
+    pub emoji: String,
+    /// Gesorteerd op `PeerId`, zodat alle peers exact dezelfde lijst tonen.
+    pub peers: Vec<PeerId>,
 }
 
 /// Een aangeboden bestand. `id` is de `OpId` van de `FileMeta`-op zelf — die is al
@@ -63,6 +79,32 @@ pub struct WordleEntry {
     pub pattern: String,
 }
 
+/// Een handmatig in de chat gezette Wordle-kaart (2026-08-20). Zie `OpKind::WordleCard`.
+///
+/// **Eerste-schrijver-wint per dag, over alle auteurs heen.** Dat is een strengere regel
+/// dan bij [`WordleEntry`], waar het per (auteur, dag) gaat, en om een andere reden: daar
+/// mag iedereen zijn eigen uitslag hebben, hier is de kaart er één en zouden drie peers die
+/// alledrie op de knop drukken anders drie kaarten voor dezelfde dag opleveren. Precies het
+/// bezwaar dat `docs/ARCHITECTURE.md` noemt tegen een kaart-als-op — het wordt hier
+/// opgevangen in plaats van vermeden.
+///
+/// De sleutel is `(lamport, author)` en niet `(lamport, seq)`: dit gaat over auteurs heen
+/// en dan is `seq` (dat per auteur telt) geen totale ordening. `(lamport, author)` is
+/// dezelfde sleutel waarop de tijdlijn sorteert, dus elke peer houdt dezelfde kaart over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordleCardEntry {
+    /// De `print_date` van het raadsel als `YYYYMMDD`, net als bij [`WordleEntry`].
+    pub day: u32,
+    /// Het raadselnummer zoals de aankondiger het kende. `0` betekent onbekend — de
+    /// tekenlaag geeft dan de voorkeur aan wat deze pc zelf van die dag weet.
+    pub number: u32,
+    /// De `wall_clock` van de aankondiger, millis sinds epoch. Hiermee komt de kaart in de
+    /// tijdlijn te staan op het moment waarop iemand hem erin zette, in plaats van op
+    /// 07:00. Alleen voor weergave, en de tekenlaag begrenst hem — een scheve klok mag de
+    /// kaart niet in 1970 zetten.
+    pub at: i64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Timeline {
     /// Op weergavevolgorde: `(lamport, author)`.
@@ -75,10 +117,16 @@ pub struct Timeline {
     /// kaart in dezelfde volgorde tekent. Niet per kanaal: het scorebord is er één, net
     /// als een bijnaam.
     pub wordle: Vec<WordleEntry>,
+    /// Dagen die iemand met de hand in de chat gezet heeft, hoogstens één per dag. Een map
+    /// en geen `Vec`: de tekenlaag zoekt hier per dag in op.
+    pub wordle_cards: HashMap<u32, WordleCardEntry>,
     /// Subkanalen onder het algemene kanaal en hun huidige titel (fase 9). Bestaan en
     /// titel komen allebei uit `OpKind::SetTopicTitle` — geen apart "aangemaakt"-bericht,
     /// precies zoals een bijnaam geen apart "peer bestaat"-bericht nodig heeft.
     pub topics: HashMap<TopicId, String>,
+    /// Reacties, per bericht gegroepeerd op emoji. Gesorteerd op `(doel, emoji)` zodat
+    /// alle peers ze in dezelfde volgorde tonen; de peers binnen een groep op `PeerId`.
+    pub reactions: Vec<Reaction>,
 }
 
 /// Sorteersleutel die op alle peers dezelfde uitkomst geeft. `wall_clock` mag hier
@@ -87,6 +135,9 @@ pub struct Timeline {
 fn key(op: &Op) -> (u64, PeerId) {
     (op.lamport, op.author)
 }
+
+/// De vouwtoestand van één reactie: wie hem laatst zette en of hij er nog staat.
+type ReactieStem = ((u64, PeerId), bool);
 
 /// B-42: `wall_clock` is volledig door de afzender bepaald en wordt getoond.
 ///
@@ -134,6 +185,10 @@ pub fn build(ops: &[Op]) -> Timeline {
     // sorteersleutel hierboven: binnen één auteur beslist `seq` de gelijkstand, en zonder
     // dat zou een stabiele sortering de uitkomst van de aankomstvolgorde laten afhangen.
     let mut wordle: HashMap<(PeerId, u32), ((u64, u64), WordleEntry)> = HashMap::new();
+    let mut wordle_cards: HashMap<u32, ((u64, PeerId), WordleCardEntry)> = HashMap::new();
+    // Reacties: laatste-schrijver-wins per (doel, emoji, auteur) op `(lamport, author)`,
+    // precies zoals Edit/Delete. De bool zegt of de reactie er op het eind nog staat.
+    let mut reacties: HashMap<(OpId, String, PeerId), ReactieStem> = HashMap::new();
 
     for op in sorted {
         // Onbekende soort: van een nieuwere peer. We bewaren en verspreiden hem wel,
@@ -141,7 +196,7 @@ pub fn build(ops: &[Op]) -> Timeline {
         let Ok(Some(kind)) = op.kind() else { continue };
 
         match kind {
-            OpKind::Post { body } => {
+            OpKind::Post { body, reply_to } => {
                 posts.push((
                     op.id(),
                     Message {
@@ -152,6 +207,16 @@ pub fn build(ops: &[Op]) -> Timeline {
                         created_at: klem_wall_clock(op.wall_clock),
                         edited: false,
                         lamport: op.lamport,
+                        // Een antwoord dat over kanalen heen wijst wordt hier op `None`
+                        // gezet en niet afgewezen: de op zelf blijft gewoon geldige
+                        // geschiedenis die alle peers op dezelfde manier vouwen. Een DM-
+                        // bericht zou anders via een reply-op op het algemene kanaal zijn
+                        // bestaan kunnen verraden — het veld mag nooit meer zeggen dan de
+                        // zichtbaarheidsregel van `VersionVector::visible_to` toestaat.
+                        reply_to: match reply_to {
+                            Some(doel) if doel.channel == op.channel => Some(doel),
+                            _ => None,
+                        },
                     },
                 ));
             }
@@ -237,12 +302,61 @@ pub fn build(ops: &[Op]) -> Timeline {
                     }
                 }
             }
+            OpKind::WordleCard { day, number } => {
+                // Alleen uit het algemene kanaal, en dat wordt hier afgedwongen en niet
+                // alleen in `chat.rs`. Deze fold kiest één winnaar over *alle* auteurs, dus
+                // een kaart-op in een DM zou maar bij twee van de drie peers aankomen
+                // (`VersionVector::visible_to`) en die twee zouden dan blijvend een andere
+                // kaart houden dan de derde. Dat is stille divergentie, en de reden dat dit
+                // een guard is en geen aanname over de aanroeper.
+                if op.channel != Channel::GENERAL {
+                    continue;
+                }
+                // Over auteurs heen, dus `(lamport, author)` en niet `(lamport, seq)` —
+                // zie `WordleCardEntry`. De eerste wint, de rest is een no-op.
+                let k = (op.lamport, op.author);
+                let entry = WordleCardEntry {
+                    day,
+                    number,
+                    // B-42, net als bij een bericht: deze tijd komt volledig van de
+                    // afzender en wordt getoond. De tekenlaag knijpt hem daarna nog
+                    // verder dicht, maar dat mag geen reden zijn om hem hier rauw te laten.
+                    at: klem_wall_clock(op.wall_clock),
+                };
+                match wordle_cards.get(&day) {
+                    Some((prev, _)) if *prev <= k => {}
+                    _ => {
+                        wordle_cards.insert(day, (k, entry));
+                    }
+                }
+            }
             OpKind::DeleteTopic { id } => {
                 let k = key(op);
                 match topics.get(&id) {
                     Some((prev, _)) if *prev >= k => {}
                     _ => {
                         topics.insert(id, (k, TopicChange::Deleted));
+                    }
+                }
+            }
+            OpKind::React {
+                target,
+                emoji,
+                remove,
+            } => {
+                // In het kanaal van het doel, om dezelfde reden als bij Edit: een reactie
+                // op een DM-bericht die zelf op het algemene kanaal staat zou anders door
+                // iedereen gezien worden terwijl de DM zelf niet te zien is — en de
+                // ontvanger van de DM zou hem dan ook nog eens niet terugkrijgen.
+                if target.channel != op.channel {
+                    continue;
+                }
+                let k = key(op);
+                let sleutel = (target, emoji, op.author);
+                match reacties.get(&sleutel) {
+                    Some((prev, _)) if *prev >= k => {}
+                    _ => {
+                        reacties.insert(sleutel, (k, !remove));
                     }
                 }
             }
@@ -295,11 +409,39 @@ pub fn build(ops: &[Op]) -> Timeline {
     let mut wordle: Vec<WordleEntry> = wordle.into_values().map(|(_, e)| e).collect();
     wordle.sort_by_key(|e| (e.day, e.author));
 
+    // Reacties horen bij het bericht dat overblijft. Is dat verwijderd (of was de reactie
+    // ingetrokken, of wees hij naar iets dat geen bericht is), dan verdwijnt de groep mee.
+    // Gegroepeerd per (doel, emoji), gesorteerd op dezelfde sleutel zodat alle peers de
+    // pillen in dezelfde volgorde tonen; de peers binnen een groep op `PeerId`.
+    let mut groepen: HashMap<(OpId, String), Vec<PeerId>> = HashMap::new();
+    for ((target, emoji, peer), (_, actief)) in reacties {
+        if actief && messages.iter().any(|m| m.id == target) {
+            groepen.entry((target, emoji)).or_default().push(peer);
+        }
+    }
+    let mut reactions: Vec<Reaction> = groepen
+        .into_iter()
+        .map(|((target, emoji), mut peers)| {
+            peers.sort_unstable();
+            peers.dedup();
+            Reaction {
+                target,
+                emoji,
+                peers,
+            }
+        })
+        .collect();
+    reactions.sort_unstable_by(|a, b| (&a.target, &a.emoji).cmp(&(&b.target, &b.emoji)));
+
     Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
         files,
         wordle,
+        wordle_cards: wordle_cards
+            .into_iter()
+            .map(|(day, (_, e))| (day, e))
+            .collect(),
         topics: topics
             .into_iter()
             .filter_map(|(id, (_, t))| match t {
@@ -307,6 +449,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                 TopicChange::Deleted => None,
             })
             .collect(),
+        reactions,
     }
 }
 
@@ -331,7 +474,7 @@ mod tests {
     #[test]
     fn volgorde_komt_van_lamport_niet_van_de_klok() {
         // B's PC loopt een uur achter. Dat mag de volgorde niet bepalen.
-        let mut eerst = op(peer(1), 1, 1, OpKind::Post { body: "een".into() });
+        let mut eerst = op(peer(1), 1, 1, OpKind::Post { body: "een".into(), reply_to: None });
         eerst.wall_clock = 9_999_999;
         let mut daarna = op(
             peer(2),
@@ -339,6 +482,7 @@ mod tests {
             2,
             OpKind::Post {
                 body: "twee".into(),
+                reply_to: None,
             },
         );
         daarna.wall_clock = 0;
@@ -350,8 +494,8 @@ mod tests {
 
     #[test]
     fn gelijke_lamport_wordt_op_auteur_beslist() {
-        let a = op(peer(1), 1, 5, OpKind::Post { body: "a".into() });
-        let b = op(peer(2), 1, 5, OpKind::Post { body: "b".into() });
+        let a = op(peer(1), 1, 5, OpKind::Post { body: "a".into(), reply_to: None });
+        let b = op(peer(2), 1, 5, OpKind::Post { body: "b".into(), reply_to: None });
         // Beide aankomstvolgordes moeten hetzelfde resultaat geven.
         let t1 = build(&[a.clone(), b.clone()]);
         let t2 = build(&[b, a]);
@@ -366,6 +510,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "typfuot".into(),
+                reply_to: None,
             },
         );
         let edit = op(
@@ -391,6 +536,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "oeps".into(),
+                reply_to: None,
             },
         );
         let del = op(peer(1), 2, 2, OpKind::Delete { target: post.id() });
@@ -399,7 +545,7 @@ mod tests {
 
     #[test]
     fn laatste_wijziging_wint_ongeacht_aankomstvolgorde() {
-        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into() });
+        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into(), reply_to: None });
         let e1 = op(
             peer(1),
             2,
@@ -430,7 +576,7 @@ mod tests {
 
     #[test]
     fn verwijderen_wint_van_een_eerdere_bewerking() {
-        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into() });
+        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into(), reply_to: None });
         let edit = op(
             peer(1),
             2,
@@ -452,6 +598,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "van peer 1".into(),
+                reply_to: None,
             },
         );
         let kaping = op(
@@ -494,6 +641,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "gewoon".into(),
+                reply_to: None,
             },
         );
         let toekomstig = Op {
@@ -540,6 +688,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "onder ons".into(),
+                reply_to: None,
             },
         );
         let t = build(&[dm]);
@@ -621,6 +770,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "origineel".into(),
+                reply_to: None,
             },
         );
         let edit = op(
@@ -647,6 +797,7 @@ mod tests {
             1,
             OpKind::Post {
                 body: "in project x".into(),
+                reply_to: None,
             },
         );
         let t = build(&[bericht]);
@@ -737,6 +888,120 @@ mod tests {
         assert_eq!(t.topics[&t_id], "project x (terug)");
     }
 
+    /// De hele reden dat de kaart een op mág zijn: drie peers die alledrie op de knop
+    /// drukken leveren één kaart op, niet drie. `docs/ARCHITECTURE.md` noemde dat het
+    /// bezwaar tegen een kaart-als-op; dit is waar het opgevangen wordt.
+    /// Echte tijden, want `klem_wall_clock` (B-42) trekt alles buiten ±7 dagen naar de rand
+    /// en dan zijn drie tijden uit 1970 niet meer uit elkaar te houden.
+    fn kaart(auteur: PeerId, lamport: u64, nummer: u32, wall_clock: i64) -> Op {
+        let mut o = op(
+            auteur,
+            1,
+            lamport,
+            OpKind::WordleCard {
+                day: 20260820,
+                number: nummer,
+            },
+        );
+        o.wall_clock = wall_clock;
+        o
+    }
+
+    #[test]
+    fn drie_peers_die_dezelfde_dag_aankondigen_geven_een_kaart() {
+        let nu = crate::now_millis();
+        let a = kaart(peer(1), 5, 1888, nu - 5_000);
+        let b = kaart(peer(2), 3, 1888, nu - 30_000);
+        let c = kaart(peer(3), 9, 0, nu - 1_000);
+
+        let t = build(&[a.clone(), b.clone(), c.clone()]);
+        assert_eq!(t.wordle_cards.len(), 1);
+        let k = &t.wordle_cards[&20260820];
+        // De eerste op `(lamport, author)` wint: dat is B met lamport 3.
+        assert_eq!(
+            k.at,
+            nu - 30_000,
+            "de kaart hangt aan de vroegste aankondiging"
+        );
+        assert_eq!(k.number, 1888);
+
+        // En de aankomstvolgorde mag daar niets aan veranderen — dat is convergentie.
+        let anders = build(&[c, a, b]);
+        assert_eq!(anders.wordle_cards, t.wordle_cards);
+    }
+
+    /// Gelijke `lamport` tussen twee auteurs: dan beslist de auteur, want `seq` telt per
+    /// auteur en is over auteurs heen geen ordening.
+    #[test]
+    fn bij_gelijke_lamport_beslist_de_auteur_en_niet_wie_er_eerst_was() {
+        let nu = crate::now_millis();
+        let een = kaart(peer(1), 4, 1888, nu - 10_000);
+        let twee = kaart(peer(2), 4, 1888, nu - 20_000);
+
+        assert!(peer(1) < peer(2), "deze test leunt op die volgorde");
+        // Peer 1 wint op auteur, ook al is de kaart van peer 2 ouder — de tijd doet niet
+        // mee aan de ordening, precies zoals bij een bericht.
+        for volgorde in [
+            vec![een.clone(), twee.clone()],
+            vec![twee.clone(), een.clone()],
+        ] {
+            assert_eq!(build(&volgorde).wordle_cards[&20260820].at, nu - 10_000);
+        }
+    }
+
+    /// Een kaart-op buiten `#general` telt niet mee, en dat wordt hier afgedwongen in
+    /// plaats van in de aanroeper. Een DM gaat alleen naar twee van de drie peers, dus zou
+    /// hij wél meetellen dan hielden die twee blijvend een andere kaart over dan de derde —
+    /// stille divergentie, en de fold kiest juist één winnaar over alle auteurs.
+    #[test]
+    fn een_kaart_in_een_dm_telt_niet_mee() {
+        let nu = crate::now_millis();
+        let in_dm = op_in(
+            Channel::dm(peer(2)),
+            peer(1),
+            1,
+            1,
+            OpKind::WordleCard {
+                day: 20260820,
+                number: 1888,
+            },
+        );
+        assert!(build(std::slice::from_ref(&in_dm)).wordle_cards.is_empty());
+
+        // En hij mag de echte kaart uit #general ook niet verdringen, ook al is hij eerder.
+        let algemeen = kaart(peer(3), 9, 1888, nu - 1_000);
+        let t = build(&[in_dm, algemeen]);
+        assert_eq!(t.wordle_cards.len(), 1);
+        assert_eq!(t.wordle_cards[&20260820].at, nu - 1_000);
+    }
+
+    /// Twee verschillende dagen zijn twee kaarten; het samenvouwen gaat per dag.
+    #[test]
+    fn elke_dag_houdt_zijn_eigen_kaart() {
+        let gisteren = op(
+            peer(1),
+            1,
+            1,
+            OpKind::WordleCard {
+                day: 20260819,
+                number: 1887,
+            },
+        );
+        let vandaag = op(
+            peer(1),
+            2,
+            2,
+            OpKind::WordleCard {
+                day: 20260820,
+                number: 1888,
+            },
+        );
+        let t = build(&[gisteren, vandaag]);
+        assert_eq!(t.wordle_cards.len(), 2);
+        assert_eq!(t.wordle_cards[&20260819].number, 1887);
+        assert_eq!(t.wordle_cards[&20260820].number, 1888);
+    }
+
     fn uitslag(day: u32, guesses: u8, solved: bool) -> OpKind {
         OpKind::WordleResult {
             day,
@@ -821,5 +1086,130 @@ mod tests {
         );
         let t = build(&[b, a]);
         assert_eq!(t.nicknames[&peer(1)], "Rick2");
+    }
+
+    fn reactie(
+        auteur: PeerId,
+        seq: u64,
+        lamport: u64,
+        doel: OpId,
+        emoji: &str,
+        remove: bool,
+    ) -> Op {
+        op(
+            auteur,
+            seq,
+            lamport,
+            OpKind::React {
+                target: doel,
+                emoji: emoji.into(),
+                remove,
+            },
+        )
+    }
+
+    fn post(body: &str) -> OpKind {
+        OpKind::Post {
+            body: body.into(),
+            reply_to: None,
+        }
+    }
+
+    fn antwoord(body: &str, op_doel: OpId) -> OpKind {
+        OpKind::Post {
+            body: body.into(),
+            reply_to: Some(op_doel),
+        }
+    }
+
+    #[test]
+    fn reacties_groeperen_per_emoji_en_zijn_gesorteerd() {
+        let bericht = op(peer(1), 1, 1, post("hoi"));
+        let t = build(&[
+            bericht.clone(),
+            reactie(peer(2), 1, 2, bericht.id(), "👍", false),
+            reactie(peer(3), 1, 3, bericht.id(), "👍", false),
+            reactie(peer(2), 2, 4, bericht.id(), "🎉", false),
+        ]);
+        assert_eq!(t.reactions.len(), 2);
+        // Gesorteerd op emoji: 🎉 komt voor 👍 in de Unicode-volgorde van de bytes.
+        assert_eq!(t.reactions[0].emoji, "🎉");
+        assert_eq!(t.reactions[0].peers, vec![peer(2)]);
+        assert_eq!(t.reactions[1].emoji, "👍");
+        assert_eq!(t.reactions[1].peers, vec![peer(2), peer(3)]);
+    }
+
+    #[test]
+    fn intrekken_wint_van_het_plaatsen_en_andersom() {
+        let bericht = op(peer(1), 1, 1, post("hoi"));
+        let aan = reactie(peer(2), 1, 2, bericht.id(), "👍", false);
+        let uit = reactie(peer(2), 2, 3, bericht.id(), "👍", true);
+
+        let weg = build(&[bericht.clone(), aan.clone(), uit.clone()]);
+        assert!(weg.reactions.is_empty());
+
+        // En weer terugplaatsen met een latere op.
+        let terug = reactie(peer(2), 3, 9, bericht.id(), "👍", false);
+        let weer_aan = build(&[bericht.clone(), aan, uit, terug]);
+        assert_eq!(weer_aan.reactions.len(), 1);
+        assert_eq!(weer_aan.reactions[0].peers, vec![peer(2)]);
+    }
+
+    #[test]
+    fn reactie_op_verwijderd_bericht_verdwijnt_mee() {
+        let bericht = op(peer(1), 1, 1, post("hoi"));
+        let del = op(peer(1), 2, 2, OpKind::Delete { target: bericht.id() });
+        let aan = reactie(peer(2), 3, 3, bericht.id(), "👍", false);
+        let t = build(&[aan, del, bericht]);
+        assert!(t.messages.is_empty());
+        assert!(t.reactions.is_empty());
+    }
+
+    #[test]
+    fn iedereen_mag_reageren_maar_niet_in_het_verkeerde_kanaal() {
+        // De reactie zelf staat in de DM (goed), maar wijst via een algemene-op naar een
+        // DM-bericht: die moet geweigerd worden, want het algemene kanaal wordt breed
+        // gedeeld en zou zo het bestaan van de DM verraden.
+        let dm_bericht = op_in(Channel::dm(peer(2)), peer(1), 1, 1, post("onder ons"));
+        let kanaalvreemd = op(
+            peer(2),
+            1,
+            2,
+            OpKind::React {
+                target: dm_bericht.id(),
+                emoji: "👍".into(),
+                remove: false,
+            },
+        );
+        let t = build(&[dm_bericht, kanaalvreemd]);
+        assert_eq!(t.messages.len(), 1);
+        assert!(t.reactions.is_empty());
+    }
+
+    #[test]
+    fn antwoord_komt_op_het_bericht_terug() {
+        let origineel = op(peer(1), 1, 1, post("de vraag"));
+        let doel = origineel.id();
+        let antwoord_op = op(peer(2), 1, 2, antwoord("het antwoord", doel));
+        let t = build(&[antwoord_op, origineel]);
+        assert_eq!(t.messages[1].reply_to, Some(doel));
+        assert_eq!(t.messages[0].reply_to, None);
+    }
+
+    #[test]
+    fn antwoord_over_kanalen_heen_wordt_geen() {
+        // Een reply-op op het algemene kanaal die naar een DM-bericht wijst: de verwijzing
+        // mag nooit breder zichtbaar worden dan het bericht zelf.
+        let dm_bericht = op_in(Channel::dm(peer(2)), peer(1), 1, 1, post("onder ons"));
+        let antwoord = op_in(
+            Channel::GENERAL,
+            peer(1),
+            2,
+            2,
+            antwoord("openbaar", dm_bericht.id()),
+        );
+        let t = build(&[dm_bericht, antwoord]);
+        assert_eq!(t.messages[1].body, "openbaar");
+        assert_eq!(t.messages[1].reply_to, None);
     }
 }

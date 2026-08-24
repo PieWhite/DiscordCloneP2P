@@ -163,3 +163,30 @@ matige verbinding.
 - Kleine commits per afgeronde stap, direct op `main`.
 - Tests waar ze het werk aantoonbaar sneller/veiliger maken (protocol, sync, jitterbuffer).
   Geen testdekking als doel op zich. Media handmatig testen met peer 2.
+
+## Clips (2026-08-22, fase 15)
+
+Een ringbuffer-recorder naast de deler: zelfde scherm via WGC, eigen H.264-encodersessie
+(hardware-MFT), segmenten van ~2 s als zelfstandige MP4's in `<data>/clips/ring/`.
+Ctrl+Alt+C remuxt de laatste N seconden (standaard 60) naar één clip in `<data>/clips/`.
+
+Vastgelegd uit het media-onderzoek (ROADMAP fase 15):
+
+- **Geen SinkWriter**: die bezit en herstart zijn encoder per bestand — een
+  segmentovergang betekent een MFT-reactivatie midden in een draaiende game. Hier draait
+  één encodersessie door en is elk segment al een compleet MP4.
+- **Geen directe NVENC voor deze functie**: de `nvenc`-crate (0.1.0, één versie,
+  verwaarloosbaar ecosysteem) lost het muxing-probleem niet op dat we met de `mp4`-crate
+  óók hebben. De regel in TODO.md blijft staan voor het latencyspoor.
+- **H.264 voor clips**, ongeacht de share-codec: de mp4-crate kan geen geldige hvcC
+  schrijven, dus HEVC-clips zouden nergens afspeelbaar zijn.
+- **Geluid**: inbox-AAC-encoder (software), 192 kbit/s stereo, tweede track per segment.
+  Proces-exclusieve loopback — de eigen stem zit er niet in, zoals bij delen.
+
+**Bitrate en fps van clips delen de instellingen van screenshare.** Het is hetzelfde
+beeld; een apart profiel is een knop meer zonder vraag die hij beantwoordt.
+
+**Meetpunt dat open staat:** de keten is nog nooit uren aaneengesloten actief geweest.
+De SPEC-eis "geen merkbare impact op een draaiende game" geldt hier dubbel, want de
+encoder draait nu dóór terwijl gespeeld wordt. Eerste echte gamesessie met de recorder
+aan is dus meteen de meting: frametime-histogram met recorder aan versus uit.

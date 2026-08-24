@@ -20,12 +20,9 @@ const { listen } = window.__TAURI__.event;
 const { getCurrentWindow } = window.__TAURI__.window;
 
 /* macOS gets native traffic lights (titleBarStyle Overlay): hide our own window
-   buttons via the body class, and say ⌘ where Windows says Ctrl. */
+   buttons via the body class. */
 if (navigator.platform.startsWith("Mac")) {
   document.body.classList.add("mac");
-  for (const k of document.querySelectorAll(".composer-hint kbd")) {
-    if (k.textContent === "Ctrl") k.textContent = "⌘";
-  }
 }
 
 /* ---------------------------------------------------------------- state */
@@ -44,8 +41,14 @@ const V = {
   dm: null,                  // last opened DM peer id
   members: true,
   settingsTab: "account",
-  overlay: "none",           // none | ac | drop
+  overlay: "none",           // none | ac | drop | plus
   editing: null,             // OpRef of the message being edited
+  /** Reply being composed: { op, name, body } shown as a chip above the composer. */
+  replyTo: null,
+  /** OpRef whose emoji quick-bar is open, or null. */
+  emojiFor: null,
+  /** Last moment we told the engine we were typing; one notification per window. */
+  lastTypingSent: 0,
   acIndex: 0,
   acMatches: [],
   /** Half-typed messages, per conversation. Switching away must not lose them, and must
@@ -155,10 +158,15 @@ function fmtDay(ms) {
 
 function avatar(peer, size = 32, dot = false, ring = false) {
   const initial = (peer.name || "?").trim().charAt(0).toUpperCase() || "?";
-  const state = peer.self ? selfPresence() : peer.presence;
+  /* A chosen status ("away", "busy") wins over the connection state while it exists —
+     the engine only sends one for a peer that is online. */
+  const state = peer.user_status || (peer.self ? selfPresence() : peer.presence);
   const d = dot ? `<i class="dot" data-state="${state}"></i>` : "";
   return `<span class="av-wrap${ring ? " speak-ring" : ""}"><span class="avatar avatar--${size} av-${peer.avatar}">${esc(initial)}</span>${d}</span>`;
 }
+
+/** The label a chosen status gets in rosters and tooltips. */
+const statusLabel = s => ({ away: "Away", busy: "Busy" }[s] || "");
 
 /** The engine's own peer, shaped like the others so one avatar function covers both. */
 const selfPeer = () => ({ ...S.self, presence: selfPresence(), self: true });
@@ -657,10 +665,38 @@ function wordleCard(item) {
 
 const sameOp = (a, b) => a && b && a.author === b.author && a.channel === b.channel && a.seq === b.seq;
 
+/** The quick-pick emoji for reactions. Small on purpose: eight covers what this chat
+    actually uses, and the pill row itself takes any emoji already there. */
+const QUICK_EMOJI = ["👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "👀"];
+
+const reactionPill = (r, msgOp) => `<button class="pill${r.mine ? " pill--mine" : ""}" data-pill-op='${opAttr(msgOp)}' data-emoji="${esc(r.emoji)}"
+    title="${esc(r.peers.join(", "))}">
+  <span class="pill-emoji">${esc(r.emoji)}</span><span class="num">${r.count}</span>
+</button>`;
+
 function renderMessage(item, grouped, at) {
   const author = item.mine ? selfPeer() : (peerById(item.author) || { name: item.author_name, avatar: item.avatar, presence: "offline" });
   const time = at ? fmtTime(at) : "";
-  return `<article class="msg${grouped ? " msg--grouped" : " msg--start"}${item.mentions_you ? " msg--mentions" : ""}">
+  /* A reply carries its context quote, so grouping it under another message would hide
+     exactly the thing that makes it a reply. */
+  const isReply = item.kind === "message" && item.reply_to;
+  const quote = isReply ? (() => {
+    const s = item.reply_snippet;
+    return `<button class="msg-quote" data-jump-reply='${opAttr(item.reply_to)}'>
+      ${s
+        ? `<span class="msg-quote-name">${esc(s.author_name)}</span><span class="msg-quote-body">${esc(s.body)}</span>`
+        : '<span class="msg-quote-body msg-quote-gone">Original message unavailable</span>'}
+    </button>`;
+  })() : "";
+  const reactions = item.kind === "message" && item.reactions?.length
+    ? `<div class="msg-reactions">${item.reactions.map(r => reactionPill(r, item.id)).join("")}
+       <button class="pill pill--add" data-react-open='${opAttr(item.id)}' title="Add reaction">+</button></div>`
+    : "";
+  const quickBar = V.emojiFor && sameOp(V.emojiFor, item.id)
+    ? `<div class="emoji-bar" role="menu">${QUICK_EMOJI.map(e =>
+        `<button data-emoji="${e}" title="React with ${e}">${e}</button>`).join("")}</div>`
+    : "";
+  return `<article class="msg${grouped ? " msg--grouped" : " msg--start"}${item.mentions_you ? " msg--mentions" : ""}${isReply ? " msg--reply" : ""}">
     <div class="msg-gutter">
       ${grouped ? `<span class="stamp-hover">${time}</span>` : avatar(author, 40)}
     </div>
@@ -670,9 +706,14 @@ function renderMessage(item, grouped, at) {
         <span class="msg-stamp">${time}</span>
         ${item.edited ? '<span class="msg-edited">(edited)</span>' : ""}
       </div>`}
+      ${quote}
       ${itemContent(item)}
+      ${reactions}
+      ${quickBar}
     </div>
     <div class="msg-actions">
+      ${item.kind === "message" ? `<button data-reply-to='${opAttr(item.id)}' data-reply-name="${esc(item.author_name)}" data-reply-text="${esc(item.body.slice(0, 90))}" title="Reply">${ic("i-msg", "icon", 'style="width:15px;height:15px"')}<span class="sr">Reply to this message</span></button>` : ""}
+      ${item.kind === "message" ? `<button data-react-open='${opAttr(item.id)}' title="Add reaction"><span class="act-smiley">🙂</span><span class="sr">Add reaction</span></button>` : ""}
       ${item.mine && item.kind === "message" ? `<button data-edit='${opAttr(item.id)}' title="Edit">${ic("i-edit", "icon", 'style="width:15px;height:15px"')}<span class="sr">Edit this message</span></button>` : ""}
       ${item.mine ? `<button data-danger data-delete='${opAttr(item.id)}' title="Delete">${ic("i-trash", "icon", 'style="width:15px;height:15px"')}<span class="sr">Delete this</span></button>` : ""}
       ${!item.mine && item.kind === "message" ? `<button data-copy='${esc(item.body)}' title="Copy text">${ic("i-file", "icon", 'style="width:15px;height:15px"')}<span class="sr">Copy this message</span></button>` : ""}
@@ -747,7 +788,8 @@ function renderTimeline() {
     }
     const grouped = item.author === lastAuthor
       && at && lastAt && at - lastAt < GROUP_WINDOW
-      && !item.mentions_you;
+      && !item.mentions_you
+      && !(item.kind === "message" && item.reply_to);
     html += renderMessage(item, grouped, at);
     lastAuthor = item.author;
     lastAt = at || lastAt;
@@ -781,6 +823,7 @@ function memberRow(p, opts = {}) {
         <span class="mem-name">${esc(p.name)}</span>
         ${me ? '<span class="mem-you">YOU</span>' : ""}
       </div>
+      ${p.user_status ? `<div class="mem-sub mem-status">${esc(statusLabel(p.user_status))}</div>` : ""}
       ${opts.sub ? `<div class="mem-sub">${esc(opts.sub)}</div>` : ""}
       ${opts.tools ? `<div class="mem-tools">
         <button class="mem-mute" aria-pressed="${muted}" data-pmute="${esc(p.id)}" title="${muted ? `Unmute ${esc(p.name)}` : `Mute ${esc(p.name)}`}">
@@ -895,14 +938,29 @@ function renderOverlays() {
   const drop = $("drop-slot");
   const input = $("composer-input");
   const open = V.overlay === "ac" && V.acMatches.length > 0;
+  const plus = V.overlay === "plus";
 
-  ac.innerHTML = open ? `<div class="ac">
+  // Both overlays sit in the same slot above the composer and neither can be open with the
+  // other, so they share it — and the + menu borrows the .ac popover styling wholesale.
+  if (plus) {
+    ac.innerHTML = `<div class="ac">
+      <div class="ac-head" id="plus-head">Put in #general</div>
+      <div role="menu" id="plus-menu" aria-labelledby="plus-head">
+        <button class="ac-item" role="menuitem" data-plus="wordle">${ic("i-tiles")}Today's Wordle
+          <small>everyone sees it</small></button>
+      </div>
+    </div>`;
+  } else {
+    ac.innerHTML = open ? `<div class="ac">
     <div class="ac-head" id="ac-head">Members matching @${esc(V.acQuery || "")}</div>
     <div role="listbox" id="ac-list" aria-labelledby="ac-head">
       ${V.acMatches.map((p, i) => `<button class="ac-item" role="option" id="ac-opt-${i}"
         aria-selected="${i === V.acIndex}" data-ac="${esc(p.name)}">${avatar(p, 20)}${esc(p.name)}${i === V.acIndex ? "<small>Tab</small>" : ""}</button>`).join("")}
     </div>
   </div>` : "";
+  }
+  const plusBtn = $("plus");
+  if (plusBtn) plusBtn.setAttribute("aria-expanded", String(plus));
   input.setAttribute("aria-expanded", String(open));
   if (open) input.setAttribute("aria-activedescendant", `ac-opt-${V.acIndex}`);
   else input.removeAttribute("aria-activedescendant");
@@ -1006,6 +1064,7 @@ const SET_TABS = [
   { id: "account", name: "Account", icon: "i-users" },
   { id: "audio", name: "Audio", icon: "i-mic" },
   { id: "video", name: "Video", icon: "i-monitor" },
+  { id: "clips", name: "Clips", icon: "i-play" },
   { id: "files", name: "Files", icon: "i-image" },
   { id: "network", name: "Network", icon: "i-signal" },
 ];
@@ -1013,6 +1072,8 @@ const SET_TABS = [
 /** Fetched the first time the Audio tab is shown; Refresh drops it so a headset that was
     just plugged in appears. */
 let devices = null;
+/** Monitors for the clips tab, fetched once when it opens; monitors rarely change. */
+let clipMonitors = null;
 
 /** What the Account tab says next to "Check for updates". The full error is spelled out
     rather than summarised: every way this feed can break is a sentence the user needs. */
@@ -1048,6 +1109,18 @@ const SET_BODY = {
       <div class="control-row">
         <input class="text-input" id="set-name" value="${esc(S.self.name)}" style="min-width:240px">
         <button class="btn btn--accent" id="save-name">Save</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="set-status">Status</label>
+      <span class="field-help">What the others see next to your name. Volatile: after a
+        restart you are plain online again.</span>
+      <div class="control-row">
+        <select id="set-status" class="text-input" style="min-width:240px">
+          <option value="online"${S.self.status === "online" ? " selected" : ""}>Online</option>
+          <option value="away"${S.self.status === "away" ? " selected" : ""}>Away</option>
+          <option value="busy"${S.self.status === "busy" ? " selected" : ""}>Busy</option>
+        </select>
       </div>
     </div>
     <div class="field">
@@ -1203,6 +1276,79 @@ const SET_BODY = {
       </div>
     </div>`,
 
+  clips: () => {
+    if (!S.clips) {
+      return `<h2>Clips</h2>
+        <p>Clip recording is not available on this platform.</p>`;
+    }
+    const c = S.clips;
+    const hk = esc(c.hotkey.toUpperCase());
+    const monitors = clipMonitors;
+    const monitorOptions = !monitors
+      ? `<option value="">${c.monitor ? esc(c.monitor) : "automatic"}</option>`
+      : [`<option value=""${c.monitor ? "" : " selected"}>Automatic (first screen)</option>`]
+          .concat(monitors.map(m => `<option value="${esc(m)}"${c.monitor === m ? " selected" : ""}>${esc(m)}</option>`))
+          .join("");
+    return `
+    <h2>Clips</h2>
+    <p>While enabled, a screen is recorded into a rolling buffer that never leaves your
+       machine. Press ${hk} — anywhere, also while the app sits in the tray — to save
+       the last ${c.window_sec} seconds as a playable clip, with game sound and your
+       microphone mixed in.</p>
+    <div class="field">
+      <div class="switch-row">
+        <div>
+          <span class="field-label">Record for clips</span>
+          <span class="field-help">Uses the same frame rate and bitrate as screen sharing.
+            Roughly 90 MB of disk per minute; older buffer parts are deleted
+            automatically.</span>
+        </div>
+        <button class="switch" aria-pressed="${c.enabled}" id="clips-toggle"
+                aria-label="Record for clips"></button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="clips-monitor">Screen</label>
+      <span class="field-help">Which screen gets recorded while the switch is on.</span>
+      <div class="control-row">
+        <select id="clips-monitor" class="text-input" style="min-width:280px">${monitorOptions}</select>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Shortcut</span>
+      <span class="field-help">Click the box and press the key or combination you want.
+        Esc cancels. Applies immediately, no restart.</span>
+      <div class="control-row">
+        <button class="text-input hotkey-capture" id="clips-hotkey-capture"
+                data-wait="${V.hotkeyWait ? "true" : "false"}"
+                aria-label="Clip shortcut, click to record a key combination">
+          ${V.hotkeyWait ? "Press keys… Esc cancels" : hk}
+        </button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Clips folder</span>
+      <span class="field-help">Where saved clips land. Clips already saved stay where
+        they are; the rolling buffer moves along and starts empty.</span>
+      <div class="control-row">
+        <code class="mono code-inline">${esc(c.folder)}</code>
+        <button class="btn btn--ghost" id="btn-clips-dir">Change…</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="field-label">Save a clip now</span>
+      <span class="field-help">${c.error ? esc(c.error) : "Writes the last window to the clips folder."}</span>
+      <div class="control-row">
+        <button class="btn btn--accent" id="clip-now" ${c.enabled ? "" : "disabled"}>${ic("i-play")}Save last ${c.window_sec}s</button>
+        <button class="btn btn--ghost" id="open-clips-folder">${ic("i-open")}Open folder</button>
+      </div>
+    </div>
+    ${c.last_clip ? `<div class="field">
+      <span class="field-label">Last saved</span>
+      <div class="control-row"><code class="mono code-inline">${esc(c.last_clip)}</code></div>
+    </div>` : ""}`;
+  },
+
   files: () => `
     <h2>Files</h2>
     <p>Shared files land in the folder you pick. Images go to a <code class="mono">Pictures</code>
@@ -1317,6 +1463,8 @@ function render() {
   renderOverlays();
   renderError();
   renderStatus();
+  renderReplyChip();
+  renderTyping();
   /* Niet hertekenen zolang de gebruiker in een veld staat. Een `change` op een schuif laat
      de motor opslaan, dat geeft een state-event, en dat bouwde het hele paneel opnieuw op —
      met het element waar de focus op stond erbij. Gevolg: pijltjestoetsen op een schuif
@@ -1478,8 +1626,12 @@ function wordleBoardHtml(w) {
 function wordleStatus(w) {
   const board = w.board;
   if (!board) {
-    return `<p class="wdl-line">Today's word could not be fetched yet. It is tried again every
-      quarter of an hour; without it there is nothing to guess.</p>`;
+    // A manual attempt puts its reason here. Without this the + menu looks identical
+    // whether it failed or is still going, which is the one thing the presser needs to know.
+    return (w.error ? `<p class="wdl-line" data-error>${esc(w.error)}</p>` : "") +
+      `<p class="wdl-line">Today's word could not be fetched yet. It is tried again every
+      quarter of an hour; without it there is nothing to guess. <b>+</b> beside the message
+      box tries now and puts the card in the chat for everyone.</p>`;
   }
   if (board.done && board.won) {
     return `<p class="wdl-line">Solved in ${board.rows.length} of ${w.tries}.</p>`;
@@ -1590,6 +1742,8 @@ function openChannel(key) {
   V.view = "channels";
   V.channel = key;
   V.editing = null;
+  V.replyTo = null;
+  V.emojiFor = null;
   V.overlay = "none";
   afterConversationChange();
 }
@@ -1599,6 +1753,8 @@ function openDm(id) {
   V.view = "dms";
   V.dm = id;
   V.editing = null;
+  V.replyTo = null;
+  V.emojiFor = null;
   V.overlay = "none";
   afterConversationChange();
 }
@@ -1619,6 +1775,14 @@ async function loadTimeline() {
 
 document.addEventListener("click", async e => {
   const t = e.target;
+
+  /* An open + menu closes on any click that is not the button or one of its items, the way
+     a menu is supposed to behave. First, before any of the handlers below can return early
+     and leave it hanging open over the composer. The click itself still goes through. */
+  if (V.overlay === "plus" && !t.closest("#plus") && !t.closest("[data-plus]")) {
+    V.overlay = "none";
+    renderOverlays();
+  }
 
   /* A link goes to the system browser, never to this webview — it is the whole app, and
      there is no way back from a page it navigated to. */
@@ -1677,6 +1841,19 @@ document.addEventListener("click", async e => {
   if (t.closest("#btn-deaf")) return invoke("set_deafened", { deafened: !S.voice.deafened });
   if (t.closest("#btn-dnd")) return invoke("set_do_not_disturb", { on: !S.do_not_disturb });
   if (t.closest("#attach")) return invoke("pick_and_offer_file", { channel: activeChannel() });
+  if (t.closest("#plus")) {
+    V.overlay = V.overlay === "plus" ? "none" : "plus";
+    return renderOverlays();
+  }
+  const plusItem = t.closest("[data-plus]");
+  if (plusItem) {
+    V.overlay = "none";
+    renderOverlays();
+    // No board opens: this is "put it in the chat", not "play it". The card lands in the
+    // log for everyone, and you start it from there like any other day.
+    if (plusItem.dataset.plus === "wordle") invoke("post_wordle_card");
+    return;
+  }
   if (t.closest("#error-dismiss")) return invoke("dismiss_error");
 
   const source = t.closest("[data-source]");
@@ -1739,6 +1916,44 @@ document.addEventListener("click", async e => {
   const copy = t.closest("[data-copy]");
   if (copy) return navigator.clipboard.writeText(copy.dataset.copy);
 
+  /* Replies, reactions and their two small popovers. The reply chip survives a re-render
+     because it is its own slot; the emoji bar lives inside the message it belongs to. */
+  const reply = t.closest("[data-reply-to]");
+  if (reply) {
+    V.replyTo = {
+      op: JSON.parse(reply.dataset.replyTo),
+      name: reply.dataset.replyName,
+      body: reply.dataset.replyText,
+    };
+    renderReplyChip();
+    return input.focus();
+  }
+  if (t.closest("#reply-cancel")) { V.replyTo = null; renderReplyChip(); return input.focus(); }
+
+  const reactOpen = t.closest("[data-react-open]");
+  if (reactOpen) {
+    V.emojiFor = V.emojiFor && sameOp(V.emojiFor, JSON.parse(reactOpen.dataset.reactOpen))
+      ? null
+      : JSON.parse(reactOpen.dataset.reactOpen);
+    return render();
+  }
+  const emoji = t.closest("[data-emoji]");
+  if (emoji) {
+    const op = V.emojiFor;
+    V.emojiFor = null;
+    invoke("react_message", { op, emoji: emoji.dataset.emoji });
+    return render();
+  }
+  const pill = t.closest(".pill[data-pill-op]");
+  if (pill) {
+    // Toggling is decided on the engine side, which knows whether we already reacted.
+    return invoke("react_message", { op: JSON.parse(pill.dataset.pillOp), emoji: pill.dataset.emoji });
+  }
+  if (!t.closest(".emoji-bar") && V.emojiFor) {
+    V.emojiFor = null;
+    render();
+  }
+
   const acItem = t.closest("[data-ac]");
   if (acItem) return acceptSuggestion(acItem.dataset.ac);
 
@@ -1764,6 +1979,14 @@ document.addEventListener("click", async e => {
   }
 
   if (t.closest("#save-name")) return invoke("set_display_name", { name: $("set-name").value });
+  if (t.closest("#clips-toggle")) return invoke("set_clips", { enabled: !S.clips.enabled });
+  if (t.closest("#clips-hotkey-capture")) {
+    V.hotkeyWait = true;
+    return renderSettings();
+  }
+  if (t.closest("#clip-now")) return invoke("clip_now");
+  if (t.closest("#open-clips-folder")) return invoke("open_clips_folder");
+  if (t.closest("#btn-clips-dir")) return invoke("pick_clips_dir");
   if (t.closest("#btn-download-dir")) return invoke("pick_download_dir");
   if (t.closest("#refresh-devices")) { devices = null; return loadDevices(); }
 
@@ -1772,6 +1995,9 @@ document.addEventListener("click", async e => {
     V.settingsTab = tab.dataset.tab;
     renderSettings();
     if (V.settingsTab === "audio" && !devices) loadDevices();
+    if (V.settingsTab === "clips" && !clipMonitors && S.clips) {
+      invoke("clip_monitors").then(m => { clipMonitors = m; renderSettings(); });
+    }
     return;
   }
 
@@ -1861,6 +2087,9 @@ document.addEventListener("change", e => {
       set: S.sound.set, volume: Number(e.target.value) / 100,
     });
   }
+  if (e.target.id === "set-status") {
+    return invoke("set_user_status", { status: e.target.value });
+  }
   if (e.target.id === "set-in" || e.target.id === "set-out") {
     return invoke("set_audio_devices", {
       input: $("set-in").value || null,
@@ -1877,6 +2106,35 @@ async function loadDevices() {
 /* ---------------------------------------------------------------- composer */
 
 const input = $("composer-input");
+
+/** The "replying to X" chip above the composer. Lives in its own slot so sending a
+    state event does not have to redraw the composer. */
+function renderReplyChip() {
+  const el = $("reply-slot");
+  if (!V.replyTo) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="reply-chip">
+    <span class="reply-chip-label">Replying to</span>
+    <span class="reply-chip-name">${esc(V.replyTo.name)}</span>
+    <span class="reply-chip-body">${esc(V.replyTo.body)}</span>
+    <button id="reply-cancel" title="Cancel reply">${ic("i-x", "icon", 'style="width:14px;height:14px"')}<span class="sr">Cancel reply</span></button>
+  </div>`;
+}
+
+/** Who is typing in the open conversation. Reads the live state; called from `render`
+    and from every state event, since typing arrives without a timeline change. */
+function renderTyping() {
+  const el = $("typing-slot");
+  const ids = (S.typing || {})[activeChannel()] || [];
+  const names = ids.map(id => peerById(id)?.name).filter(Boolean);
+  if (!names.length) {
+    if (el.innerHTML) el.innerHTML = "";
+    return;
+  }
+  const who = names.length === 1 ? esc(names[0])
+    : names.length === 2 ? `${esc(names[0])} and ${esc(names[1])}`
+    : `${esc(names[0])} and ${names.length - 1} others`;
+  el.innerHTML = `<div class="typing"><i></i><i></i><i></i><span>${who} ${names.length === 1 ? "is" : "are"} typing…</span></div>`;
+}
 
 function growComposer() {
   const tl = $("timeline");
@@ -1912,6 +2170,12 @@ function updateAutocomplete() {
 input.addEventListener("input", () => {
   growComposer();
   updateAutocomplete();
+  /* One "typing" per window while typing continuously; the engine throttles too, but
+     this keeps the wire quiet for the common single-keystroke case as well. */
+  if (input.value.trim() && Date.now() - V.lastTypingSent > 2500) {
+    V.lastTypingSent = Date.now();
+    invoke("notify_typing", { channel: activeChannel() });
+  }
 });
 
 input.addEventListener("keydown", e => {
@@ -1931,9 +2195,12 @@ input.addEventListener("keydown", e => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
-    invoke("send_message", { channel: activeChannel(), text });
+    const replyTo = V.replyTo?.op || null;
+    invoke("send_message", { channel: activeChannel(), text, replyTo });
     input.value = "";
     delete V.drafts[activeChannel()];
+    V.lastTypingSent = 0;
+    if (V.replyTo) { V.replyTo = null; renderReplyChip(); }
     growComposer();
     const tl = $("timeline");
     tl.scrollTop = tl.scrollHeight;
@@ -1966,9 +2233,43 @@ document.addEventListener("keydown", e => {
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (dlg.open || promptDlg.open || picker.open || lightbox.open || wordleDlg.open) return;   // <dialog> closes itself
+  if (V.hotkeyWait) { V.hotkeyWait = false; return renderSettings(); }
   if (V.editing) { V.editing = null; return render(); }
+  if (V.emojiFor) { V.emojiFor = null; return render(); }
+  if (V.replyTo) { V.replyTo = null; return renderReplyChip(); }
   if (V.overlay !== "none") { V.overlay = "none"; return renderOverlays(); }
 });
+
+/* The clip-shortcut capture box: while waiting, every keydown becomes the new
+   combination. Modifiers alone only update what the box shows; a real key completes
+   it and sends it straight to the engine, which validates and re-registers. Keys the
+   wire format does not know (arrows, punctuation) are ignored silently — the box
+   keeps waiting instead of saving something unusable. */
+document.addEventListener("keydown", e => {
+  if (!V.hotkeyWait) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const mods = [];
+  if (e.ctrlKey) mods.push("ctrl");
+  if (e.altKey) mods.push("alt");
+  if (e.shiftKey) mods.push("shift");
+  if (e.metaKey) mods.push("win");
+  const k = e.key;
+  if (["Control", "Alt", "Shift", "Meta"].includes(k)) {
+    if (mods.length) {
+      const box = $("clips-hotkey-capture");
+      if (box) box.textContent = mods.join("+") + "+…";
+    }
+    return;
+  }
+  if (k === "Escape") { V.hotkeyWait = false; renderSettings(); return; }
+  let name = null;
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(k)) name = k.toLowerCase();
+  else if (/^[a-z0-9]$/i.test(k)) name = k.toLowerCase();
+  if (!name) return;
+  V.hotkeyWait = false;
+  invoke("set_clip_hotkey", { hotkey: [...mods, name].join("+") });
+}, true);
 
 document.addEventListener("keydown", e => {
   if (e.target.id !== "edit-input") return;

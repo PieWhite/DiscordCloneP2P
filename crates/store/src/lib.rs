@@ -38,7 +38,7 @@ use fitcom_proto::{Channel, Op, OpKind, PeerId, VersionVector};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-pub use timeline::{FileEntry, Message, Timeline, WordleEntry};
+pub use timeline::{FileEntry, Message, Timeline, WordleCardEntry, WordleEntry};
 
 // Doorgeven zodat de app niet ook nog een directe afhankelijkheid op `proto` nodig heeft
 // voor de types die overal in de chat-code voorkomen.
@@ -913,9 +913,21 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Kortere schrijfwijze voor de meest voorkomende op.
+/// Kortere schrijfwijze voor de meest voorkomende op: een bericht zonder antwoordreferentie.
 pub fn post(body: impl Into<String>) -> OpKind {
-    OpKind::Post { body: body.into() }
+    OpKind::Post {
+        body: body.into(),
+        reply_to: None,
+    }
+}
+
+/// Een bericht dat antwoordt op een ander bericht in hetzelfde kanaal. De tekenlaag zet
+/// de verwijzing op `None` als hij over kanalen heen wijst — zie `timeline::build`.
+pub fn post_als_antwoord(body: impl Into<String>, reply_to: OpId) -> OpKind {
+    OpKind::Post {
+        body: body.into(),
+        reply_to: Some(reply_to),
+    }
 }
 
 /// De uitslag van één Wordle-dag vastleggen. `day` is de `print_date` van het raadsel als
@@ -928,6 +940,13 @@ pub fn wordle_result(day: u32, guesses: u8, solved: bool, pattern: impl Into<Str
         solved,
         pattern: pattern.into(),
     }
+}
+
+/// De kaart van één Wordle-dag met de hand in het algemene kanaal zetten (2026-08-20).
+/// `number` mag `0` zijn als deze pc het raadselnummer niet kent; zie
+/// `fitcom_store::WordleCardEntry`.
+pub fn wordle_card(day: u32, number: u32) -> OpKind {
+    OpKind::WordleCard { day, number }
 }
 
 /// Een bestand aanbieden. De op zelf is de identificatie van de overdracht — zie

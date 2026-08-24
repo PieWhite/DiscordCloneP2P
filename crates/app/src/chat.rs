@@ -113,8 +113,46 @@ impl Chat {
 
     // -- uitgaand ----------------------------------------------------------
 
-    pub fn plaats_bericht(&mut self, tekst: &str, channel: Channel) -> Result<Vec<MeshCommand>> {
-        self.eigen_op(channel, fitcom_store::post(tekst.trim()))
+    pub fn plaats_bericht(
+        &mut self,
+        tekst: &str,
+        channel: Channel,
+        reply_to: Option<OpId>,
+    ) -> Result<Vec<MeshCommand>> {
+        // Een antwoord hoort in het gesprek waarop hij antwoordt. De tekenlaag vangt een
+        // kanaalvreemde verwijzing al af (zie `fitcom_store::timeline`), maar hier gaan we
+        // bewust een fout uit geven: dit is onze eigen verzendweg, dus een mismatch is
+        // een bug in de app zelf en geen vreemde op van de draad.
+        if let Some(doel) = reply_to {
+            if doel.channel != channel {
+                anyhow::bail!("antwoord wijst naar een ander kanaal dan het bericht zelf");
+            }
+        }
+        let kind = match reply_to {
+            Some(doel) => fitcom_store::post_als_antwoord(tekst.trim(), doel),
+            None => fitcom_store::post(tekst.trim()),
+        };
+        self.eigen_op(channel, kind)
+    }
+
+    /// Zet een reactie op een bericht (of haalt hem weg als hij er nu staat). De emoji
+    /// en het kanaalregelen doet de op zelf; hier gaat het alleen om de toggle: kijken
+    /// of deze peer deze emoji op dit bericht nu actief heeft.
+    pub fn reageer(&mut self, doel: OpId, emoji: &str) -> Result<Vec<MeshCommand>> {
+        let me = self.me();
+        let actief = self
+            .timeline()
+            .reactions
+            .iter()
+            .any(|r| r.target == doel && r.emoji == emoji && r.peers.contains(&me));
+        self.eigen_op(
+            doel.channel,
+            OpKind::React {
+                target: doel,
+                emoji: emoji.to_string(),
+                remove: actief,
+            },
+        )
     }
 
     /// Kanaal komt van `doel.channel`: een bewerking hoort per definitie in hetzelfde
@@ -197,6 +235,20 @@ impl Chat {
             Channel::GENERAL,
             fitcom_store::wordle_result(dag, pogingen, gewonnen, patroon),
         )
+    }
+
+    /// De kaart van een Wordle-dag met de hand in het algemene kanaal zetten (2026-08-20).
+    ///
+    /// Doet niets als die dag er al een heeft — van onszelf of van een ander. De op is toch
+    /// idempotent (per dag wint de eerste, zie `fitcom_store::WordleCardEntry`), dus een
+    /// tweede zou niets veranderen behalve de log laten groeien; zelfde reden als bij
+    /// `meld_wordle` en `zet_naam`. Wie nog een keer drukt krijgt dus geen tweede kaart en
+    /// verplaatst de eerste ook niet.
+    pub fn zet_wordle_kaart(&mut self, dag: u32, nummer: u32) -> Result<Vec<MeshCommand>> {
+        if self.timeline.wordle_cards.contains_key(&dag) {
+            return Ok(Vec::new());
+        }
+        self.eigen_op(Channel::GENERAL, fitcom_store::wordle_card(dag, nummer))
     }
 
     /// Legt een bestandsaanbod vast in de oplog, precies zoals een bericht — dat is het
