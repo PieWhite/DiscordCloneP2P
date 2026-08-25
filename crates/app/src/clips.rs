@@ -493,6 +493,11 @@ mod backend {
         }
         #[allow(clippy::unused_self)]
         pub fn bewaar_nu(&mut self) {}
+        /// Er is hier geen opnameketen, dus er valt ook nooit iets te melden.
+        #[allow(clippy::unused_self)]
+        pub fn fout(&self) -> Option<String> {
+            None
+        }
         pub fn tik(&mut self) -> Option<std::path::PathBuf> {
             None
         }
