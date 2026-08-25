@@ -109,6 +109,9 @@ pub struct EigenStreamView {
     /// Onze eigen camera in plaats van een scherm. De UI heeft dit nodig om de
     /// camera-knop ingedrukt te tonen en om te weten welke stream hij weer uitzet.
     pub is_camera: bool,
+    /// Terugblik op wat wij zelf uitsturen, voor de tegel in de streamstrook. Alleen een
+    /// camera heeft die (zie `heeft_voorbeeld`); `None` tot het eerste beeld binnen is.
+    pub miniatuur: Option<Miniatuur>,
 }
 
 /// Een bron die een ander deelt.
@@ -1244,8 +1247,9 @@ impl Engine {
         })
     }
 
-    /// Of deze eigen stream een eigen terugblikvenster heeft. Dat is precies de camera:
-    /// naar een gedeeld scherm kijk je al.
+    /// Of deze eigen stream een terugblik oplevert — een miniatuur van wat we uitsturen,
+    /// voor de tegel in de streamstrook. Dat is precies de camera: naar een gedeeld scherm
+    /// kijk je al.
     ///
     /// Gevolg voor de levensduur van de deler: hij bestaat zolang de camera aan staat, en
     /// niet alleen zolang er iemand kijkt.
@@ -1256,11 +1260,6 @@ impl Engine {
             .any(|s| s.id == stream_id && s.kind == StreamKind::CAMERA)
     }
 
-    /// De titel van dat venster. Engelstalig, zoals alles wat de gebruiker ziet.
-    fn voorbeeld_titel(bron: &Bron) -> Option<String> {
-        (bron.soort == BronSoort::Camera).then(|| format!("You — {}", bron.naam))
-    }
-
     /// Zet de camera uit als zijn deler er niet meer is.
     ///
     /// Nodig sinds de opname bij het *aanzetten* begint in plaats van bij de eerste kijker
@@ -1269,11 +1268,7 @@ impl Engine {
     /// te wachten. De deler heeft geen kanaal terug naar de motor, dus hij legt zijn reden
     /// neer en die wordt hier op de tik opgehaald.
     ///
-    /// Vangt tegelijk het nette geval: het voorbeeldvenster gesloten terwijl niemand kijkt.
-    /// Dan is er niets mis, maar de knop hoort wel terug op "uit" te springen in plaats van
-    /// "aan" te blijven staan boven iets dat niet meer draait.
-    ///
-    /// Alleen voor een camera. Een gedeeld scherm heeft geen voorbeeldvenster en hoort niet
+    /// Alleen voor een camera. Een gedeeld scherm heeft geen terugblik en hoort niet
     /// vanzelf te verdwijnen omdat een deler eruit klapte; daar blijft de aankondiging
     /// staan en probeert de volgende kijker het opnieuw, zoals altijd.
     /// Zet de clipopname aan of uit, zonder de config aan te raken — de commando-arm
@@ -1323,7 +1318,7 @@ impl Engine {
                     tracing::warn!(stream = id, error = %f, "camera gestopt door een fout");
                     self.fout = Some(format!("camera: {f}"));
                 }
-                None => tracing::info!(stream = id, "camera uit; eigen venster was gesloten"),
+                None => tracing::info!(stream = id, "camera uit; de deler was al gestopt"),
             }
             self.stop_met_delen(id);
         }
@@ -1332,7 +1327,8 @@ impl Engine {
     /// Een bron aankondigen. Er wordt nog niets opgenomen — dat is het hele punt.
     ///
     /// Levert het toegekende stream-id op, zodat de aanroeper er nog iets mee kan (de
-    /// camera start meteen zijn eigen voorbeeldvenster). `None` als het niet lukte.
+    /// camera begint meteen op te nemen voor zijn eigen terugblik). `None` als het niet
+    /// lukte.
     fn deel_bron(&mut self, bron: Bron) -> Option<u32> {
         let afmeting = match fitcom_video::capture::afmeting_van(&bron) {
             Ok(a) => a,
@@ -1384,8 +1380,8 @@ impl Engine {
         self.stuur_alles(cmds);
         self.voer_uit(acties);
         // Expliciet, niet via `Actie::StopDelen`: die komt er alleen als er iemand kéék,
-        // en een camera met een voorbeeldvenster loopt ook zonder kijkers. Dit sluit dus
-        // zowel de opname als het eigen venster. Een no-op voor alles wat geen deler had.
+        // en een camera met een terugblik loopt ook zonder kijkers. Dit sluit dus de
+        // opname zelf. Een no-op voor alles wat geen deler had.
         self.delers.remove(&id);
         // Fase 10: het laatste scherm weg betekent ook het geluid weg, zonder dat de
         // gebruiker dat apart hoeft te doen. Een camera heeft er niets mee te maken.
@@ -1421,8 +1417,8 @@ impl Engine {
                 match bronnen.into_iter().find(|b| b.soort == BronSoort::Camera) {
                     Some(camera) => {
                         // Anders dan bij een scherm gaat de opname hier meteen aan: het
-                        // eigen venster is de reden dat je de camera aanzet, en zonder
-                        // opname is er niets in te zien. Het lampje gaat dus aan zodra je
+                        // jezelf terugzien is de reden dat je de camera aanzet, en zonder
+                        // opname is er niets te zien. Het lampje gaat dus aan zodra je
                         // hem aanzet — dat is precies wat "ik wil mezelf zien" betekent.
                         if let Some(id) = self.deel_bron(camera) {
                             if let Err(e) = self.start_deler(id, Vec::new()) {
@@ -1518,9 +1514,9 @@ impl Engine {
                 }
                 Actie::StartDelen { stream_id, kijkers } => {
                     // Een camera loopt al vóór de eerste kijker, want daar hangt het eigen
-                    // voorbeeldvenster aan. Dan is "de eerste kijker" niets anders dan een
-                    // adres erbij — tenzij die deler intussen gestopt is (venster dicht,
-                    // of eruit geklapt), en dan hoort hij opnieuw op.
+                    // terugblik aan. Dan is "de eerste kijker" niets anders dan een adres
+                    // erbij — tenzij die deler intussen eruit geklapt is, en dan hoort hij
+                    // opnieuw op.
                     match self.delers.get(&stream_id) {
                         Some(d) if !d.gestopt() => d.zet_kijkers(kijkers),
                         _ => {
@@ -1546,7 +1542,7 @@ impl Engine {
                         }
                     }
                     // De laatste kijker weg betekent niet dat de deler weg moet: draagt
-                    // deze stream een eigen voorbeeldvenster, dan blijf je jezelf zien.
+                    // deze stream een eigen terugblik, dan blijf je jezelf zien.
                     // Alleen de kijkerslijst gaat leeg, en dan codeert de deel-lus niets
                     // meer. Het echte opruimen doet `stop_met_delen`.
                     if self.heeft_voorbeeld(stream_id) {
@@ -1634,7 +1630,7 @@ impl Engine {
         drop(self.delers.remove(&stream_id));
 
         let d3d = self.d3d()?;
-        let voorbeeld = Self::voorbeeld_titel(&bron);
+        let voorbeeld = bron.soort == BronSoort::Camera;
         let handle = fitcom_video::deel(
             &d3d,
             DelerConfig {
@@ -2560,6 +2556,7 @@ impl Engine {
                 kijkers: s.kijkers.len(),
                 is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
                 is_camera: s.kind == StreamKind::CAMERA,
+                miniatuur: self.delers.get(&s.id).and_then(|d| d.miniatuur()),
             })
             .collect();
 

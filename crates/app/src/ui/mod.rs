@@ -525,11 +525,29 @@ fn spawn_thumbnails(app: tauri::AppHandle, rx: tokio::sync::watch::Receiver<Arc<
             let snap = rx.borrow().clone();
             let ui: tauri::State<'_, Ui> = app.state();
 
+            // Wat wij zelf uitsturen hoort in dezelfde strook als wat we van een ander
+            // bekijken, dus het loopt door dezelfde pomp. Alleen de sleutel verschilt: een
+            // eigen stream heeft geen eigenaar, dus `self-` in plaats van een peer-id.
+            let eigen = snap
+                .eigen_streams
+                .iter()
+                .filter(|s| !s.is_geluid)
+                .map(|s| (format!("self-{}", s.stream_id), s.miniatuur.as_ref()));
+            let vreemd = snap
+                .streams
+                .iter()
+                .filter(|s| !s.is_geluid && s.kijken)
+                .map(|s| {
+                    (
+                        format!("{}-{}", s.eigenaar, s.stream_id),
+                        s.miniatuur.as_ref(),
+                    )
+                });
+
             let mut alive: Vec<String> = Vec::new();
-            for s in snap.streams.iter().filter(|s| !s.is_geluid && s.kijken) {
-                let key = format!("{}-{}", s.eigenaar, s.stream_id);
+            for (key, thumb) in eigen.chain(vreemd) {
                 alive.push(key.clone());
-                let Some(thumb) = &s.miniatuur else { continue };
+                let Some(thumb) = thumb else { continue };
                 let frame = Arc::as_ptr(&thumb.data) as *const u8 as usize;
                 if last.get(&key) == Some(&frame) {
                     continue;

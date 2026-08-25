@@ -193,10 +193,14 @@ toegevoegd zonder protocolbump. Zie `docs/OVERDRACHT.md` beslissing 22.
   Elke thread die MF aanraakt roept `zorg_dat_mf_draait()` op *zichzelf* aan. Er staat
   bewust geen `CoUninitialize` tegenover; de docstring legt uit waarom en dat is geen
   omissie om op te ruimen. Beslissing 25.
-- **De camera heeft een eigen terugblikvenster** (`DelerConfig::voorbeeld`), en daarom
-  bestaat er voor een camera een deler zonder kijkers. "Er wordt pas opgenomen als er iemand
-  kijkt" geldt onverkort voor een **scherm**; bij een camera ben jij die iemand.
-  Beslissing 26.
+- **De camera heeft een eigen terugblik** (`DelerConfig::voorbeeld`), en daarom bestaat er
+  voor een camera een deler zonder kijkers. "Er wordt pas opgenomen als er iemand kijkt"
+  geldt onverkort voor een **scherm**; bij een camera ben jij die iemand. Beslissing 26.
+  Die terugblik is **een tegel in de streamstrook, geen venster** (beslissing 34): de
+  deel-lus legt twee keer per seconde een `kijker::maak_miniatuur` in `Gedeeld::miniatuur`,
+  de motor haalt hem op via `DelerHandle::miniatuur()` en de tegel heet `self-<stream_id>`.
+  Zet er geen tweede venster naast terug — dat kostte een swapchain plus een volle
+  `CopyResource` per beeld, en invariant 4 gaat vóór.
 - **Windows-code is op de Mac te typechecken** met een losse crate die `camera.rs` via
   `#[path]` insluit (`cargo check --target x86_64-pc-windows-msvc` op de workspace zelf
   loopt stuk op `ring`). Recept in beslissing 22 — gebruik dit vóór je Windows-code

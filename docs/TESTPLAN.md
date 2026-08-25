@@ -763,15 +763,15 @@ Uit en binnen een halve seconde weer aan. Dit is het geval dat vóór deze ronde
 werken (de leesthread hield het apparaat nog vast) en waar nu maximaal een halve seconde op
 gewacht wordt. Werkt hij niet, kijk dan in de log naar `deel-thread stopte niet binnen`.
 
-**C.9 Je eigen camerabeeld**
-Camera aan → er komt een venster "You — <cameranaam>" met je eigen beeld, ook als er
+**C.9 Je eigen camerabeeld (herzien 2026-08-25, beslissing 34)**
+Camera aan → er komt **geen** tweede venster. In de streamstrook boven de tijdlijn staat
+binnen een halve seconde een tegel "You · <cameranaam>" met je eigen beeld erin, ook als er
 niemand kijkt. Controleren: staat het niet op zijn kop en niet in spiegelbeeld ten opzichte
-van wat de kijker ziet? Camera uit → venster sluit. F11 en dubbelklik doen beeldvullend,
-Escape eruit.
-Daarna: het voorbeeldvenster met de sluitknop dichtdoen terwijl er niemand kijkt → de
-opname hoort te stoppen (lampje uit) **en de camera-knop hoort terug op uit te springen**,
-binnen een tik. En met een kijker erbij: venster dicht → de kijker blijft gewoon beeld
-krijgen, en de camera gaat pas uit als ook die laatste kijker weg is.
+van wat de kijker ziet? Camera uit → tegel weg.
+Daarna met een kijker erbij: die kijker weg laten gaan → jouw tegel blijft beeld houden
+(het LIVE-label hoort eraf te gaan, want er kijkt niemand meer) en de camera blijft aan tot
+je hem zelf uitzet. Scherm delen ernaast → die tegel houdt het luie icoontje: naar je eigen
+scherm kijk je al.
 
 **C.9b Camera aanzetten terwijl hij bezet is**
 Teams of Zoom met de camera open laten staan en dan hier de camera aanzetten. Verwacht: een

@@ -88,7 +88,7 @@ fn main() {
                     codec: Codec::H264,
                     fps: env_u32("KETEN_FPS", 60),
                     bitrate: env_u32("KETEN_BITRATE", 25_000_000),
-                    voorbeeld: None,
+                    voorbeeld: false,
                 },
                 vec![doel],
             )?;

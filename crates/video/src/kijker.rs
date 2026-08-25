@@ -36,7 +36,7 @@ const KEYFRAME_PAUZE: Duration = Duration::from_millis(500);
 /// Hoe vaak er een miniatuur voor het overzicht in het hoofdvenster wordt afgeleid.
 /// Dit is geen weergavepad — twee keer per seconde is ruim genoeg om levend te ogen en
 /// te weinig om ook maar iets te merken van de GPU-naar-CPU-kopie die het kost.
-const MINIATUUR_INTERVAL: Duration = Duration::from_millis(500);
+pub(crate) const MINIATUUR_INTERVAL: Duration = Duration::from_millis(500);
 /// Breedte van de miniatuur; de hoogte volgt de beeldverhouding van de bron.
 const MINIATUUR_BREEDTE: u32 = 192;
 /// Zo lang moet de vastgezette bronpoort stil liggen voordat een andere poort hem mag
@@ -830,7 +830,10 @@ fn naar_hns(tijdstempel: u32) -> i64 {
 /// Verkleint het getoonde beeld tot een miniatuur voor het overzicht in het
 /// hoofdvenster. Loopt via `D3dContext::lees_bgra_miniatuur`, dat alleen de nodige
 /// pixels uit de uitleestextuur bemonstert in plaats van het hele beeld te kopiëren.
-fn maak_miniatuur(d3d: &D3dContext, beeld: &crate::d3d::Beeld) -> Result<Miniatuur> {
+///
+/// Ook de deler gebruikt dit, voor de terugblik op je eigen camera: dezelfde tegel in
+/// dezelfde strook, dus dezelfde maat en hetzelfde tempo.
+pub(crate) fn maak_miniatuur(d3d: &D3dContext, beeld: &crate::d3d::Beeld) -> Result<Miniatuur> {
     let (bron_b, bron_h) = crate::d3d::afmetingen(beeld);
     let hoogte = ((MINIATUUR_BREEDTE as u64 * bron_h as u64) / bron_b.max(1) as u64).max(1) as u32;
     let data = d3d.lees_bgra_miniatuur(beeld, MINIATUUR_BREEDTE, hoogte)?;

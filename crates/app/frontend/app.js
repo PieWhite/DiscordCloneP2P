@@ -906,8 +906,12 @@ function renderStrip() {
       live: true,
       icon: s.is_camera ? "i-cam" : "i-monitor",
     })),
+    /* Your own tile carries a thumbnail too, keyed `self-<id>`: the engine's sharing loop
+       hands one over for a camera, which is how you see yourself without a second window.
+       A shared screen has none — you are already looking at it — so that tile stays the
+       idle mark. */
     ...(S.own_streams || []).filter(s => !s.is_audio).map(s => ({
-      key: null,
+      key: `self-${s.stream_id}`,
       who: "You",
       what: s.title,
       live: s.viewers > 0,

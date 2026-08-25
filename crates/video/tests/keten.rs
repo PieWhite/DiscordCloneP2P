@@ -82,9 +82,9 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             codec: Codec::H264,
             fps: env_u32("KETEN_FPS", 60),
             bitrate: env_u32("KETEN_BITRATE", 25_000_000),
-            // Geen eigen voorbeeldvenster: deze test meet de keten, en een tweede
-            // swapchain ernaast zou meten wat er niet gemeten wordt.
-            voorbeeld: None,
+            // Geen terugblik: deze test meet de keten, en een miniatuur per halve
+            // seconde ernaast zou meten wat er niet gemeten wordt.
+            voorbeeld: false,
         },
         vec![doel],
     )

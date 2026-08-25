@@ -870,6 +870,12 @@ daadwerkelijk mee weg is, moet C.7/C.8 in `docs/TESTPLAN.md` uitwijzen.
 
 ### 26. Je eigen camera hangt aan de deler, niet aan een tweede opname (2026-08-10)
 
+> **Deels ingehaald door beslissing 34 (2026-08-25):** het venster hieronder bestaat niet
+> meer — de terugblik is een tegel in de streamstrook geworden. Wat hier over de
+> *levensduur* van de deler staat (bestaat ook zonder kijkers, codeert niet zonder kijkers,
+> het lampje gaat aan bij het aanzetten) geldt onverkort; lees 34 voor wat er van het
+> venster in de plaats gekomen is en waarom.
+
 Rick wilde zichzelf kunnen zien als hij de camera aanzet. De verleiding is een tweede
 opname met een eigen venster ernaast, en dat kán niet: Media Foundation geeft een camera aan
 één iemand tegelijk uit, dus die tweede opname zou de deler het apparaat afpakken (of
@@ -1446,6 +1452,56 @@ Plus drie tests in `crates/video/tests/opname_eind.rs` (`--ignored`, GPU + scher
 één nieuwe die de opname bewust drie seconden ná procesbegin start: dát is de test die de
 twee geluidsfouten vangt, want met de opname meteen bij het opstarten valt het verschil
 tussen "sinds procesbegin" en "sinds opnamebegin" weg.
+
+### 34. De terugblik op je eigen camera is een tegel, niet een venster (2026-08-25)
+
+Rick: "als ik mijn camera aanzet wil ik geen tweede venster, ik wil mezelf in dat kleine
+voorbeeldvakje zien." Dat vakje bestond al — de streamstrook boven de tijdlijn zette voor
+je eigen stream een tegel neer — maar die tegel had nooit een beeld: hij kreeg
+`key: null` in `renderStrip`, dus er was niets om een `thumb://`-URL van te maken en er
+stond permanent het luie icoontje in. Het echte beeld ging naar een los Win32-venster
+(beslissing 26).
+
+**Wat er weg is.** `DelerConfig::voorbeeld` was `Option<String>` — een venstertitel — en is
+nu een `bool`. De deel-lus opent geen `Venster` meer, pompt geen berichten en kan er dus
+ook niet meer op afknappen. Weg daarmee:
+
+- Het fatale foutpad "voorbeeldvenster niet te openen". Er is niets meer te openen.
+- Het pad "venster dicht en niemand kijkt, dus stoppen" (en `geen_kijkers`). De camera loopt
+  nu tot je hem uitzet of tot de deler eruit klapt. `ruim_gestopte_camera_op` blijft nodig
+  voor precies dat tweede geval — camera in gebruik door Teams, encoder wil niet — en
+  daarmee is die functie terug tot waar hij voor bedoeld was.
+- De titel `"You — <camera>"`. De tegel zegt al "You".
+
+**Wat ervoor terugkomt is het pad dat er al lag.** De deel-lus roept twee keer per seconde
+`kijker::maak_miniatuur` aan op de textuur die de encoder toch al krijgt — letterlijk
+dezelfde functie, dezelfde 192 pixels breed, hetzelfde tempo als de tegel van iemand
+anders — en legt het resultaat in `Gedeeld::miniatuur`. De motor haalt hem op zijn tik op
+via `DelerHandle::miniatuur()` en zet hem in `EigenStreamView`; `spawn_thumbnails` pompt
+eigen en vreemde streams nu door dezelfde lus en `renderStrip` geeft de eigen tegel de
+sleutel `self-<stream_id>`.
+
+**Waarom dit goedkoper is dan wat het vervangt**, en dat is de reden dat het geen afweging
+was: het venster kostte een tweede D3D11-swapchain plus een volledige `CopyResource` van
+elk opgenomen beeld (720p30 = dertig kopieën per seconde) plus een `Present`. De tegel kost
+één geschaalde GPU-naar-CPU-uitlezing van 192 px breed, twee keer per seconde. Invariant 4
+("gamen wint") gaat er dus op vooruit.
+
+**De `Mutex` in `Gedeeld` is geen inbreuk op "geen locks op het hete pad."** Het beeld zelf
+raakt hem niet: de lus zet er twee keer per seconde een `Arc` in en laat het slot meteen
+weer los, net zoals `fout` en `kijkers` er al stonden.
+
+**Wat blijft staan uit beslissing 26**, want dat was het echte punt daar en niet het
+venster: een camera-deler bestaat óók zonder kijkers (jij bent de kijker), zonder kijkers
+wordt er niet gecodeerd, en het lampje gaat aan zodra je de camera aanzet. `heeft_voorbeeld`
+heet nog zo en betekent nog hetzelfde — "deze eigen stream levert een terugblik op" — maar
+dat is nu een miniatuur in plaats van een venster.
+
+**Niet geverifieerd op deze machine, en dat kan hier ook niet:** macOS neemt bewust geen
+camera op (`TODO.md`), dus `voorbeeld` staat er nooit aan. Getypecheckt, `clippy` schoon,
+`cargo build` op mac. Wat Rick op Windows moet zien: camera aan → geen tweede venster,
+en binnen een halve seconde staat er beeld in de "You"-tegel boven de tijdlijn, ook als er
+niemand kijkt. Camera uit → tegel weg. Zie `docs/TESTPLAN.md` C.9.
 
 ## Bugs die de tests eruit haalden
 

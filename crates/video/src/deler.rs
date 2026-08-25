@@ -8,11 +8,12 @@
 //! kern van de afspraak dat delen niets kost als niemand meekijkt: er wordt dan niet
 //! opgenomen, niet gecodeerd en niets verstuurd.
 //!
-//! **Eén uitzondering, en die is expliciet:** met [`DelerConfig::voorbeeld`] gezet is er
-//! een eigen venster waarin je ziet wat je uitstuurt, en dan is de kijker die de thread
-//! rechtvaardigt de gebruiker zelf. De camera gebruikt dat; een scherm nooit — daar kijk je
-//! al naar. Zonder kijkers wordt er in beide gevallen niet gecodeerd en niets verstuurd:
-//! de lus stopt vóór de encoder, niet erna.
+//! **Eén uitzondering, en die is expliciet:** met [`DelerConfig::voorbeeld`] gezet legt de
+//! lus twee keer per seconde een miniatuur neer van wat hij opneemt, en dan is de kijker
+//! die de thread rechtvaardigt de gebruiker zelf — hij ziet zichzelf terug in de
+//! streamstrook van het hoofdvenster. De camera gebruikt dat; een scherm nooit — daar kijk
+//! je al naar. Zonder kijkers wordt er in beide gevallen niet gecodeerd en niets
+//! verstuurd: de lus stopt vóór de encoder, niet erna.
 //!
 //! # Waarom er nergens een lock op het beeldpad zit
 //!
@@ -80,24 +81,27 @@ pub struct DelerConfig {
     pub codec: Codec,
     pub fps: u32,
     pub bitrate: u32,
-    /// Een eigen venster met dit als titel, waarin je ziet wat je zelf uitstuurt.
-    /// `None` is de gewone gang van zaken voor een gedeeld scherm — daar kijk je al naar.
+    /// Een terugblik op wat je zelf uitstuurt: de lus legt twee keer per seconde een
+    /// [`Miniatuur`](crate::kijker::Miniatuur) neer die de motor via
+    /// [`DelerHandle::miniatuur`] ophaalt en het
+    /// hoofdvenster als tegel in de streamstrook toont. `false` is de gewone gang van
+    /// zaken voor een gedeeld scherm — daar kijk je al naar.
     ///
-    /// Voor een camera is dit wél gezet: zonder terugblik weet je niet of je in beeld
-    /// zit, of het licht klopt, of dat je camera de lensdop nog voorheeft. Het venster
-    /// leeft op de deel-thread en gebruikt de textuur die de encoder toch al krijgt, dus
-    /// er komt geen tweede opname en geen tweede decoder aan te pas — dat is ook het
-    /// enige dat kán, want Media Foundation geeft een camera niet twee keer uit.
-    pub voorbeeld: Option<String>,
+    /// Voor een camera staat dit aan: zonder terugblik weet je niet of je in beeld zit, of
+    /// het licht klopt, of dat je camera de lensdop nog voorheeft. Hij komt van de textuur
+    /// die de encoder toch al krijgt, dus er komt geen tweede opname en geen tweede
+    /// decoder aan te pas — dat is ook het enige dat kán, want Media Foundation geeft een
+    /// camera niet twee keer uit.
+    pub voorbeeld: bool,
 }
 
 struct Gedeeld {
     kijkers: Mutex<Vec<SocketAddr>>,
     keyframe_gevraagd: AtomicBool,
     stop: AtomicBool,
-    /// De deel-lus is klaar: gestopt op verzoek, het voorbeeldvenster dicht, of eruit
-    /// geklapt op een fout. Zonder dit kan de motor een dode deler niet van een levende
-    /// onderscheiden, en dat is gaan tellen zodra een deler ook zonder kijkers bestaat.
+    /// De deel-lus is klaar: gestopt op verzoek, of eruit geklapt op een fout. Zonder dit
+    /// kan de motor een dode deler niet van een levende onderscheiden, en dat is gaan
+    /// tellen zodra een deler ook zonder kijkers bestaat.
     gestopt: AtomicBool,
     /// Waaróp de lus eruit klapte, als hij eruit klapte. De reden waarom dit niet alleen
     /// in de log staat: de opname van een camera begint nu bij het aanzetten, en "camera
@@ -106,6 +110,11 @@ struct Gedeeld {
     fout: Mutex<Option<String>>,
     /// Voor de UI: hoeveel beelden we tot nu toe verstuurd hebben.
     beelden: std::sync::atomic::AtomicU64,
+    /// De laatste terugblik op wat we opnemen, als [`DelerConfig::voorbeeld`] aan staat.
+    /// Twee keer per seconde vervangen; de motor haalt hem op zijn eigen tik op. Een
+    /// `Mutex` op het beeldpad zou hier niet mogen, maar dit is het pad niet: de lus zet
+    /// er twee keer per seconde een `Arc` in en laat het slot meteen weer los.
+    miniatuur: Mutex<Option<crate::kijker::Miniatuur>>,
 }
 
 pub struct DelerHandle {
@@ -151,6 +160,13 @@ impl DelerHandle {
     pub fn fout(&self) -> Option<String> {
         self.gedeeld.fout.lock().ok().and_then(|f| f.clone())
     }
+
+    /// De laatste terugblik op wat we uitsturen, of `None` als deze deler er geen maakt
+    /// ([`DelerConfig::voorbeeld`] uit) of het eerste beeld nog niet binnen is. Kopiëren
+    /// kost een refcount: de pixels zitten achter een `Arc`.
+    pub fn miniatuur(&self) -> Option<crate::kijker::Miniatuur> {
+        self.gedeeld.miniatuur.lock().ok().and_then(|m| m.clone())
+    }
 }
 
 impl Drop for DelerHandle {
@@ -189,6 +205,7 @@ pub fn deel(d3d: &D3dContext, cfg: DelerConfig, kijkers: Vec<SocketAddr>) -> Res
         gestopt: AtomicBool::new(false),
         fout: Mutex::new(None),
         beelden: std::sync::atomic::AtomicU64::new(0),
+        miniatuur: Mutex::new(None),
     });
 
     let d3d = d3d.clone();
@@ -248,20 +265,10 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
     let mut pacer = Pacer::nieuw(cfg.fps);
     let mut tempo = Verzendtempo::nieuw(cfg.bitrate, Instant::now());
 
-    // Het terugblikvenster hoort bij deze thread, want een Win32-venster hoort bij de
-    // thread die hem aanmaakt en alleen die mag hem bedienen.
-    //
-    // Lukt het openen niet, dan is dat hier wél fataal: wie de camera aanzet doet dat om
-    // zichzelf te zien, en "aan, maar je ziet niets en er staat niets in beeld" is de
-    // slechtste van de drie uitkomsten. De motor leest de reden op zijn tik en zet de
-    // knop terug op uit (`ruim_gestopte_camera_op`).
-    let mut voorbeeld = match &cfg.voorbeeld {
-        Some(titel) => Some(
-            crate::venster::Venster::open(d3d, titel, breedte, hoogte)
-                .context("eigen voorbeeldvenster openen")?,
-        ),
-        None => None,
-    };
+    // Wanneer we voor het laatst een terugblik neergelegd hebben. In het verleden gezet,
+    // zodat het eerste beeld er meteen een oplevert en de tegel niet een halve seconde
+    // leeg blijft.
+    let mut laatste_voorbeeld = Instant::now() - crate::kijker::MINIATUUR_INTERVAL;
 
     let spoor_begin = Instant::now();
     let mut spoor = crate::spoor::Spoor::nieuw(
@@ -271,26 +278,6 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
-
-        // Berichten van het eigen venster afhandelen vóórdat we op een beeld gaan
-        // wachten, anders reageert de sluitknop pas op het volgende beeld.
-        if let Some(v) = &mut voorbeeld {
-            if !v.pomp() {
-                tracing::info!("eigen voorbeeldvenster gesloten");
-                voorbeeld = None;
-            }
-        }
-        // Het venster is dus door de gebruiker gesloten — het openen zelf was hierboven
-        // fataal. Kijkt er dan ook niemand meer, dan is er geen reden om de camera nog open
-        // te houden: stoppen, en de motor zet de knop terug op uit. Kijkt er nog wel iemand,
-        // dan blijven we gewoon delen, alleen zonder venster.
-        if cfg.voorbeeld.is_some() && voorbeeld.is_none() && geen_kijkers(gedeeld) {
-            tracing::info!(
-                stream = cfg.stream_id,
-                "voorbeeld dicht en niemand kijkt; opname stopt"
-            );
-            break;
-        }
 
         let Some(mut opname) = capture.volgende_frame(FRAME_WACHT) else {
             continue;
@@ -309,13 +296,22 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         }
         let binnen = Instant::now();
 
-        // Jezelf terugzien gaat op het tempo van de opname, niet op dat van de encoder:
-        // dit is de textuur die de encoder hieronder ook krijgt, dus het kost één
-        // GPU-kopie en geen tweede opname. Vóór de pacer, zodat een lage `fps` het
-        // voorbeeld niet hakkelig maakt.
-        if let Some(v) = &mut voorbeeld {
-            if let Err(e) = v.toon(&opname.textuur) {
-                tracing::warn!(error = %format!("{e:#}"), "eigen voorbeeld niet te tonen");
+        // Jezelf terugzien loopt op hetzelfde tempo als de tegel van iemand anders:
+        // dezelfde `maak_miniatuur` op dezelfde 2 Hz, alleen van de opnametextuur in
+        // plaats van van een gedecodeerd beeld. Eén GPU-naar-CPU-kopie van 192 pixels
+        // breed, twee keer per seconde — geen tweede opname, geen encoder, geen socket.
+        // Vóór de pacer, zodat een lage `fps` de terugblik niet stilzet.
+        if cfg.voorbeeld && laatste_voorbeeld.elapsed() >= crate::kijker::MINIATUUR_INTERVAL {
+            laatste_voorbeeld = Instant::now();
+            match crate::kijker::maak_miniatuur(d3d, &opname.textuur) {
+                Ok(m) => {
+                    if let Ok(mut slot) = gedeeld.miniatuur.lock() {
+                        *slot = Some(m);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(error = %format!("{e:#}"), "eigen miniatuur maken mislukt")
+                }
             }
         }
 
@@ -439,12 +435,6 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
         s.klaar();
     }
     Ok(())
-}
-
-/// Kijkt er op dit moment niemand? Alleen om te beslissen of de lus nog een reden heeft
-/// te bestaan; het echte versturen leest de lijst zelf opnieuw.
-fn geen_kijkers(gedeeld: &Arc<Gedeeld>) -> bool {
-    gedeeld.kijkers.lock().map(|k| k.is_empty()).unwrap_or(true)
 }
 
 /// Houdt de momentane verzendsnelheid onder een plafond, zonder een gewoon beeld op te
