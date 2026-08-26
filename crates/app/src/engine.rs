@@ -15,6 +15,7 @@
 use crate::chat::Chat;
 use crate::config::{self, Config, SoundConfig, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
+use crate::gebruik::{self, Gebruik};
 use crate::geluid;
 use crate::notify;
 use crate::release::{self, Release};
@@ -44,6 +45,11 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// Snel genoeg voor een spreekindicatie die niet hakkelt. Een momentopname is goedkoop:
 /// de timeline zit erin als `Arc`, dus publiceren kost geen kopie van de geschiedenis.
 const TIK: Duration = Duration::from_millis(100);
+
+/// Hoe vaak de terugblik opnieuw uitgerekend wordt. Hij loopt over de hele oplog, en
+/// niemand kijkt naar de seconde nauwkeurig naar een weekoverzicht. Meteen ook het moment
+/// waarop de gemeten tijd naar schijf gaat, dus een crash kost hoogstens deze minuut.
+const OVERZICHT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Hoe vaak een lopende download zijn voortgang naar de UI duwt. Bij 1 Gbit komen er
 /// per seconde veel te veel gelezen stukjes langs om elk apart te melden.
@@ -226,6 +232,10 @@ pub struct Snapshot {
     pub update: Option<UpdateStatus>,
     /// Het spelletje van de dag en het scorebord (2026-08-20).
     pub wordle: WordleView,
+    /// De terugblik over de afgelopen week. Bewust **niet** in `UiState`: hij verandert
+    /// elke seconde en zou dan bij elke tik een `state`-event afdwingen. De UI haalt hem
+    /// met `get_recap` uit deze momentopname op, net als de tijdlijn.
+    pub overzicht: Arc<gebruik::Overzicht>,
     pub fout: Option<String>,
 }
 
@@ -441,6 +451,9 @@ pub fn spawn(
         paden_index,
         wordle: Wordle::nieuw(&data_dir),
         wordle_aankondigen: false,
+        gebruik: Gebruik::nieuw(&data_dir),
+        overzicht: Arc::new(gebruik::Overzicht::default()),
+        overzicht_van: None,
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -518,6 +531,16 @@ struct Engine {
     /// Er is op "zet hem in de chat" gedrukt terwijl het raadsel er nog niet was; zodra
     /// het binnenkomt gaat de kaart alsnog de log in. Zie `wordle_in_chat`.
     wordle_aankondigen: bool,
+    /// Gemeten gesprek- en deeltijd per dag, op de eigen schijf. Zie `crate::gebruik`.
+    gebruik: Gebruik,
+    /// De laatst uitgerekende terugblik. Staat hier en niet in `UiState`: hij verandert
+    /// elke seconde, en dan zou hij bij elke tik een `state`-event afdwingen. De UI vraagt
+    /// hem op wanneer het paneel opengaat, net als de tijdlijn.
+    overzicht: Arc<gebruik::Overzicht>,
+    /// Wanneer `overzicht` voor het laatst opnieuw uitgerekend werd; `None` tot de eerste
+    /// keer. Geen `Instant` in het verleden als beginwaarde: op een pc die net opgestart
+    /// is loopt de monotone klok nog geen minuut, en dan paniekt die aftrekking.
+    overzicht_van: Option<Instant>,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -667,6 +690,7 @@ impl Engine {
                     self.verwerk(r);
                     self.ruim_gestopte_camera_op();
                     self.wordle_tick();
+                    self.meet_gebruik();
                     // Verlopen typindicaties opruimen; de volgende publiceer() merkt
                     // het alleen als er ook echt iets verdween.
                     if !self.typing_tot.is_empty() {
@@ -2093,6 +2117,59 @@ impl Engine {
         }
     }
 
+    /// Eén meetstap voor de terugblik: wie zit er nu in het gesprek, en wie deelt er iets.
+    ///
+    /// Bureaubladgeluid telt niet als delen. Dat komt sinds fase 10 vanzelf met een scherm
+    /// mee, dus het zou elke gedeelde monitor dubbel tellen — dezelfde reden waarom
+    /// `StreamKind::is_scherm()` bestaat.
+    ///
+    /// Wat hier gemeten wordt is wat **deze pc gezien heeft**: een peer die deelt terwijl
+    /// wij offline zijn telt niet mee. Zie de moduledoc van `crate::gebruik`.
+    fn meet_gebruik(&mut self) {
+        let me = self.chat.me();
+
+        let mut in_voice: Vec<PeerId> = self.peers_in_voice.iter().copied().collect();
+        if self.voice.is_some() && !in_voice.contains(&me) {
+            in_voice.push(me);
+        }
+
+        let mut deelt: Vec<PeerId> = Vec::new();
+        if self
+            .streams
+            .eigen()
+            .iter()
+            .any(|s| s.kind != StreamKind::DESKTOP_AUDIO)
+        {
+            deelt.push(me);
+        }
+        for s in self.streams.vreemd() {
+            if s.kind != StreamKind::DESKTOP_AUDIO && !deelt.contains(&s.eigenaar) {
+                deelt.push(s.eigenaar);
+            }
+        }
+
+        self.gebruik.tik(&in_voice, &deelt);
+
+        if self
+            .overzicht_van
+            .is_none_or(|t| t.elapsed() >= OVERZICHT_INTERVAL)
+        {
+            self.overzicht_van = Some(Instant::now());
+            self.gebruik.bewaar();
+            match self.chat.alle_ops() {
+                Ok(ops) => {
+                    let o = self.gebruik.overzicht(
+                        &ops,
+                        &self.chat.timeline().wordle,
+                        gebruik::VENSTER_DAGEN,
+                    );
+                    self.overzicht = Arc::new(o);
+                }
+                Err(e) => tracing::warn!(error = %e, "oplog niet te lezen voor de terugblik"),
+            }
+        }
+    }
+
     /// Op elke tik: staat het raadsel van vandaag er nog niet, dan halen we het op.
     /// `moet_ophalen` houdt zelf bij dat dat hoogstens één keer per kwartier gebeurt, dus
     /// dit is in rust een maplookup en niets meer.
@@ -2637,6 +2714,7 @@ impl Engine {
                 nummers: self.wordle.bekende_dagen().collect(),
                 fout: self.wordle.fout.clone(),
             },
+            overzicht: self.overzicht.clone(),
             fout: self.fout.clone(),
         }));
     }

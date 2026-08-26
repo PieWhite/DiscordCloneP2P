@@ -5,7 +5,7 @@
 //! here decides anything — it translates an IPC call into a message on the engine's
 //! channel and returns.
 
-use super::state::{self, OpRef, TimelineItem, UiState};
+use super::state::{self, OpRef, Recap, TimelineItem, UiState};
 use super::Ui;
 use crate::engine::{self, UiCommand};
 #[cfg(windows)]
@@ -34,6 +34,14 @@ pub fn get_timeline(ui: State<'_, Ui>, channel: String) -> Vec<TimelineItem> {
     let snap = ui.engine.snapshot.borrow().clone();
     let channel = state::parse_channel(&channel);
     state::timeline_of(&snap, channel, ui.me, &ui.display_name(&snap))
+}
+
+/// The last seven days. Fetched when the Recap panel opens rather than pushed with the
+/// state, because every figure in it moves while a call is running.
+#[tauri::command]
+pub fn get_recap(ui: State<'_, Ui>) -> Recap {
+    let snap = ui.engine.snapshot.borrow().clone();
+    state::recap_of(&snap, ui.me)
 }
 
 /// Send a chat message. `reply_to` is `Some` when the composer had a reply open; the

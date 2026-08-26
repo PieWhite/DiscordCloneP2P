@@ -177,6 +177,23 @@ Wat je niet mag omdraaien:
   kan worden zonder allocatie. Een test bewaakt het. De oplossing van NYT is altijd
   toegestaan, ook als hij niet in de lijst staat.
 
+## Terugblik van de week (2026-08-26)
+Beslissing 35 in `docs/OVERDRACHT.md`. `crates/app/src/gebruik.rs` is de hele motorkant.
+Wat je niet mag omdraaien:
+
+- **Gemeten tijd blijft lokaal en wordt nooit een op.** `VoiceJoin`/`VoiceLeave` zijn
+  vluchtig, dus tijd in het gesprek staat nergens; elke peer meet op zijn eigen tik wat hij
+  ziet en zet dat in `<data>/gebruik.json`. Er een op van maken is dezelfde val als bij de
+  Wordle-kaart: drie peers die hetzelfde feit in een append-only log schrijven.
+- **Tellen gaat over `Chat::alle_ops`, niet over de tijdlijn.** `timeline::build` klemt
+  `wall_clock` op ±7 dagen (B-42): alles ouder komt daar op dezelfde tijdstempel uit, dus
+  een venster groter dan een week zou stilzwijgend de hele geschiedenis meetellen.
+- **De Wordle-punten komen uit `wordle::standen`** op de dagen in het venster — nooit een
+  tweede telling, anders loopt het uit de pas met het scorebord in de chat.
+- **Het overzicht zit in `Snapshot` en niet in `UiState`**, wordt eens per minuut
+  uitgerekend en de UI haalt hem met `get_recap` op. Erin zetten is tien `state`-events per
+  seconde zodra er een gesprek loopt.
+
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`
 (Media Foundation, alleen Windows) levert dezelfde `Opgenomen` als de schermopname, dus

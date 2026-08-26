@@ -1503,6 +1503,55 @@ camera op (`TODO.md`), dus `voorbeeld` staat er nooit aan. Getypecheckt, `clippy
 en binnen een halve seconde staat er beeld in de "You"-tegel boven de tijdlijn, ook als er
 niemand kijkt. Camera uit → tegel weg. Zie `docs/TESTPLAN.md` C.9.
 
+### 35. De terugblik meet lokaal en gaat nooit de draad op (2026-08-26)
+
+Een weekoverzicht: hoe lang je in het gesprek zat, wie er deelde, wie wat stuurde, en het
+Wordle-scorebord van die week. `crates/app/src/gebruik.rs` is de hele motorkant.
+
+**Tijd in het gesprek staat nergens.** `VoiceJoin`/`VoiceLeave` zijn vluchtige
+control-berichten, net als `Typing` en `UserStatus` — na een herstart is er geen spoor van.
+De verleiding is er een op van te maken, en dat is precies de val uit beslissing 31: drie
+peers die elke minuut een regel in een append-only log schrijven, voor een feit waar
+niemand het over eens hoeft te zijn. Dus meet elke peer op zijn eigen tik wie er in het
+gesprek zit en wie er deelt, en dat blijft in `<data>/gebruik.json` staan. **Niets hiervan
+gaat over de draad, en er komt geen op bij.**
+
+De prijs, en die is bewust: het overzicht is "zoals deze pc het zag". Was je een avond
+offline, dan telt die avond bij jou niet mee en bij de anderen wel. Dat staat ook zo in de
+UI-tekst — het weg willen poetsen zou betekenen dat er alsnog iets over de draad moet.
+
+**Wat je niet mag omdraaien:**
+
+- **Tellen gaat over de rauwe ops, niet over de tijdlijn.** `timeline::build` klemt
+  `wall_clock` op ±7 dagen rond nu (B-42), dus élk bericht ouder dan een week krijgt daar
+  exact dezelfde tijdstempel. Voor een venster van zeven dagen valt dat toevallig goed uit;
+  zou iemand het venster op een maand zetten, dan telt hij stilzwijgend de hele
+  geschiedenis mee. `Chat::alle_ops` bestaat precies hiervoor.
+- **De puntenregel wordt hergebruikt, niet nagebouwd.** `wordle::standen` op alleen de dagen
+  in het venster. Een tweede telling hier gaat vroeg of laat uit de pas lopen met het
+  scorebord in de chat, en dan is er geen manier om te zien welke van de twee klopt.
+- **Het overzicht zit niet in `UiState`.** Elk getal erin loopt op zolang er een gesprek
+  draait, en `spawn_state_pusher` vergelijkt de geserialiseerde `UiState`: erin zetten
+  betekent tien `state`-events per seconde, precies wat de scheiding met `meters` moet
+  voorkomen. Hij hangt in `Snapshot`, wordt eens per minuut uitgerekend, en de UI haalt hem
+  met `get_recap` op wanneer het paneel opengaat — hetzelfde patroon als `get_timeline`.
+- **Eén tik telt hoogstens vijf seconden bij** (`MAX_STAP`). De motor tikt tien keer per
+  seconde; alles daarboven is een pc die geslapen heeft. Zonder die grens boekt één keer
+  dichtklappen van de laptop acht uur "in gesprek".
+- **Bureaubladgeluid telt niet als delen.** Het komt sinds fase 10 vanzelf met een scherm
+  mee, dus meetellen is elke gedeelde monitor dubbel tellen.
+
+**Waar het staat:** motor in `gebruik.rs` (met de meetstap in `Engine::meet_gebruik`),
+weergavelaag in `ui/state.rs::recap_of` + `commands::get_recap`, en een tabblad "Recap" in
+het instellingenscherm — het enige bestaande paneeloppervlak; een eigen plek in de linkerbalk
+kost drie keer zoveel en levert hetzelfde.
+
+**Getest:** zes unit-tests in `gebruik.rs` op de dingen die stilzwijgend fout gaan — boeken
+op de juiste peer en dag, de slaapstandgrens, dagen buiten het venster, de volgorde, en een
+rondje naar schijf en terug inclusief het snoeien van te oude dagen. **Niet geverifieerd:**
+hoe het paneel eruitziet en of de getallen na een echt gesprek kloppen — dat vraagt een
+tweede machine en een gesprek van enige lengte, net als bij elke andere mediafunctie.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

@@ -455,6 +455,40 @@ pub struct WordleState {
     pub tries: u8,
 }
 
+/// One person's week, for the Recap panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecapRow {
+    pub peer: String,
+    pub name: String,
+    pub avatar: u8,
+    pub mine: bool,
+    /// Seconds in the call, as this machine saw it. Someone who talked while we were
+    /// offline is not counted — see `crate::gebruik` for why that is the honest number.
+    pub voice_sec: u64,
+    /// Seconds with a screen, window or camera shared. Desktop audio is not counted: it
+    /// rides along with a screen and would double every share.
+    pub shared_sec: u64,
+    pub messages: u32,
+    pub files: u32,
+    pub wordle_points: u32,
+    pub wordle_played: u32,
+    pub wordle_solved: u32,
+}
+
+/// The last seven days, fetched with `get_recap` when the panel opens.
+///
+/// Not part of `UiState`: every figure in here moves while a call is running, and a state
+/// event fires on any change to that struct. Same reasoning as the timeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct Recap {
+    /// Length of the window in days.
+    pub days: u32,
+    /// First day in the window, `YYYYMMDD`.
+    pub from: u32,
+    /// Busiest first. Only people who did something show up.
+    pub rows: Vec<RecapRow>,
+}
+
 /// Everything the window needs to draw itself, minus the timeline.
 ///
 /// The timeline is fetched per conversation with `get_timeline` instead of riding along
@@ -732,6 +766,37 @@ impl UiState {
             minimize_to_tray: c.minimize_to_tray,
             timeline_revision,
         }
+    }
+}
+
+/// The recap the engine last computed, with names and avatars filled in.
+///
+/// Nothing is recalculated here — the engine owns the numbers, this only dresses them for
+/// the window. That keeps the one place where the week is counted in the engine, next to
+/// the measurement itself.
+pub fn recap_of(snap: &Snapshot, me: PeerId) -> Recap {
+    let hues = avatar_hues(me, &snap.peers);
+    let o = &snap.overzicht;
+    Recap {
+        days: o.dagen,
+        from: o.vanaf,
+        rows: o
+            .regels
+            .iter()
+            .map(|r| RecapRow {
+                peer: r.peer.to_string(),
+                name: display_name(snap, r.peer, &r.peer.to_string()[..8]),
+                avatar: hues.get(&r.peer).copied().unwrap_or(3),
+                mine: r.peer == me,
+                voice_sec: r.voice_ms / 1000,
+                shared_sec: r.deel_ms / 1000,
+                messages: r.berichten,
+                files: r.bestanden,
+                wordle_points: r.punten,
+                wordle_played: r.gespeeld,
+                wordle_solved: r.opgelost,
+            })
+            .collect(),
     }
 }
 

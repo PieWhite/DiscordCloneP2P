@@ -128,6 +128,22 @@ function fmtSize(bytes) {
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
 
+/** A span of seconds as "6h 12m" / "45m" / "30s". Recap figures only — everything else
+    in this window that counts time counts milliseconds. */
+function fmtSpan(sec) {
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m`;
+  return `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, "0")}m`;
+}
+
+/** A `YYYYMMDD` day number, as the engine writes them, spelled out. */
+function fmtDayNum(n) {
+  if (!n) return "";
+  const d = new Date(Math.floor(n / 10000), (Math.floor(n / 100) % 100) - 1, n % 100);
+  return d.toLocaleDateString([], { day: "numeric", month: "long" });
+}
+
 const mbit = bits => Math.round(bits / 1_000_000);
 /** A 0..1 volume as whole percents, which is what every slider in this window speaks. */
 const volPct = v => Math.round((v || 0) * 100);
@@ -1071,6 +1087,7 @@ const SET_TABS = [
   { id: "clips", name: "Clips", icon: "i-play" },
   { id: "files", name: "Files", icon: "i-image" },
   { id: "network", name: "Network", icon: "i-signal" },
+  { id: "recap", name: "Recap", icon: "i-wave" },
 ];
 
 /** Fetched the first time the Audio tab is shown; Refresh drops it so a headset that was
@@ -1078,6 +1095,9 @@ const SET_TABS = [
 let devices = null;
 /** Monitors for the clips tab, fetched once when it opens; monitors rarely change. */
 let clipMonitors = null;
+/** The week, refetched every time the Recap tab opens — the figures move while a call
+    runs, which is exactly why they are not in the pushed state. */
+let recap = null;
 
 /** What the Account tab says next to "Check for updates". The full error is spelled out
     rather than summarised: every way this feed can break is a sentence the user needs. */
@@ -1419,7 +1439,61 @@ const SET_BODY = {
         </span>
       </div>
     </div>`,
+
+  recap: () => {
+    if (!recap) return `<h2>Recap</h2><p>Working out the week…</p>`;
+    const mine = recap.rows.find(r => r.mine);
+    return `
+    <h2>Recap</h2>
+    <p>The last ${recap.days} days${recap.from ? `, since ${esc(fmtDayNum(recap.from))}` : ""}.
+       Counted on this machine and kept here — nothing about your week is sent to the
+       others. Time
+       someone spent in a call while you were offline is not in these numbers, because this
+       app was not there to see it.</p>
+    ${mine && mine.voice_sec
+      ? `<p>You were in the call for
+         <strong>${esc(fmtSpan(mine.voice_sec))}</strong>.</p>`
+      : ""}
+    <div class="field">
+      <span class="field-label">Everyone</span>
+      <span class="field-help">Longest in the call first. Screen time counts a shared
+        screen, window or camera — not the desktop sound that rides along with it.</span>
+      ${recap.rows.length ? `<div class="peer-table">
+        ${recap.rows.map(r => `
+          <div class="peer-row">
+            ${avatar(r, 24)}
+            <span class="peer-id">
+              <span class="peer-name">${esc(r.name)}${r.mine ? " (you)" : ""}</span>
+              <span class="peer-addr">${esc(recapLine(r)) || "quiet week"}</span>
+            </span>
+            <span class="num">${esc(fmtSpan(r.voice_sec))}</span>
+          </div>`).join("")}
+      </div>` : `<p>Nothing yet. The count starts at the first call, message or file.</p>`}
+    </div>
+    <div class="field">
+      <span class="field-label">Refresh</span>
+      <span class="field-help">The engine recalculates once a minute, so a call you just
+        left may still be a moment behind.</span>
+      <div class="control-row">
+        <button class="btn btn--ghost" id="refresh-recap">${ic("i-retry")}Refresh</button>
+      </div>
+    </div>`;
+  },
 };
+
+/** The second line of a recap row: everything except the call time, which is the figure on
+    the right. Zeroes are left out rather than printed — "0 files" is noise. */
+function recapLine(r) {
+  const bits = [];
+  if (r.messages) bits.push(`${r.messages} message${r.messages === 1 ? "" : "s"}`);
+  if (r.files) bits.push(`${r.files} file${r.files === 1 ? "" : "s"}`);
+  if (r.shared_sec) bits.push(`${fmtSpan(r.shared_sec)} sharing`);
+  if (r.wordle_played) {
+    bits.push(`Wordle ${r.wordle_solved}/${r.wordle_played}` +
+      (r.wordle_points ? `, ${r.wordle_points} point${r.wordle_points === 1 ? "" : "s"}` : ""));
+  }
+  return bits.join(" · ");
+}
 
 function renderSettings() {
   $("settings").innerHTML = `
@@ -1993,6 +2067,7 @@ document.addEventListener("click", async e => {
   if (t.closest("#btn-clips-dir")) return invoke("pick_clips_dir");
   if (t.closest("#btn-download-dir")) return invoke("pick_download_dir");
   if (t.closest("#refresh-devices")) { devices = null; return loadDevices(); }
+  if (t.closest("#refresh-recap")) return loadRecap();
 
   const tab = t.closest("[data-tab]");
   if (tab) {
@@ -2002,6 +2077,9 @@ document.addEventListener("click", async e => {
     if (V.settingsTab === "clips" && !clipMonitors && S.clips) {
       invoke("clip_monitors").then(m => { clipMonitors = m; renderSettings(); });
     }
+    // Always refetched, never cached: unlike devices and monitors these figures move
+    // while you are looking at them.
+    if (V.settingsTab === "recap") loadRecap();
     return;
   }
 
@@ -2105,6 +2183,11 @@ document.addEventListener("change", e => {
 async function loadDevices() {
   devices = await invoke("list_audio_devices");
   if (V.view === "settings" && V.settingsTab === "audio") renderSettings();
+}
+
+async function loadRecap() {
+  recap = await invoke("get_recap");
+  if (V.view === "settings" && V.settingsTab === "recap") renderSettings();
 }
 
 /* ---------------------------------------------------------------- composer */

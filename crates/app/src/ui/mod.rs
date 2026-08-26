@@ -252,6 +252,7 @@ pub fn run(
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
             commands::get_timeline,
+            commands::get_recap,
             commands::send_message,
             commands::edit_message,
             commands::delete_message,

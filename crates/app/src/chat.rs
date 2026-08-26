@@ -84,6 +84,12 @@ impl Chat {
         &self.timeline
     }
 
+    /// De rauwe ops, zoals ze in de log staan. Voor de terugblik (`crate::gebruik`), die
+    /// `wall_clock` ongeklemd nodig heeft — de tijdlijn klemt hem op ±7 dagen (B-42).
+    pub fn alle_ops(&self) -> Result<Vec<Op>> {
+        self.store.all_ops()
+    }
+
     pub fn timeline_arc(&self) -> Arc<Timeline> {
         self.timeline.clone()
     }
