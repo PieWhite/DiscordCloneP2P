@@ -260,7 +260,8 @@ enum OpKind {
     // later: React, Reply — nieuwe varianten, geen migratie
     SetTopicTitle{ id: TopicId, title: String },  // fase 9, zie "Kanalen"
     DeleteTopic{ id: TopicId },                    // fase 9, zie "Kanalen"
-    WordleResult{ day: u32, guesses: u8, solved: bool, pattern: String },  // zie "Wordle"
+    WordleResult{ day: u32, guesses: u8, solved: bool, pattern: String,
+                  seconds: Option<u32> },                                 // zie "Wordle"
 }
 ```
 
@@ -696,6 +697,15 @@ niets, net als bij `SetNick`.
 aaneengesloten stukken naast elkaar en is het één doorloop — dat is nodig, want het wordt bij
 elke momentopname opnieuw gerekend. Een dag is één punt waard voor iedereen die hem in het
 laagste aantal pogingen oploste, en telt alleen als er minstens twee peers speelden.
+
+**Gelijk aantal pogingen wordt op speeltijd beslist** (2026-08-30). `seconds` is de tijd
+tussen de eerste en de laatste gok, gemeten op de eigen klok en additief toegevoegd aan
+`WordleResult` — een `Option`, dus een payload zonder dat veld decodeert naar `None` en er
+was geen protocolbump nodig, precies zoals bij `Post::reply_to`. `None` betekent "niet
+gemeten" en verliest van elke gemeten tijd; alleen ongemeten uitslagen naast elkaar delen
+het punt zoals vóór deze regel. De tijd is niet vergelijkbaar tússen klokken en dat hoeft
+ook niet: elke peer meet een *duur* en niet een moment, dus een pc die tien minuten
+voorloopt verandert er niets aan.
 
 ## Automatische updates
 

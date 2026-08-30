@@ -284,7 +284,15 @@ op_kinds! {
     // `2` goed, rijen achter elkaar zonder scheidingsteken. Het gerade woord zelf gaat
     // nooit mee — dat zou het raadsel verklappen aan wie nog moet spelen, precies zoals
     // het echte Wordle alleen vierkantjes deelt.
-    30 => WordleResult { day: u32, guesses: u8, solved: bool, pattern: String },
+    //
+    // `seconds` is de speelduur: van de eerste gok tot de laatste, in hele seconden.
+    // Additief erbij (2026-08-30) om een gelijkspel op `guesses` te breken — de snelste
+    // krijgt het punt, zie `crate::wordle::winnaars` in de app. Optioneel en aan het eind,
+    // dezelfde additieve-veldregel als `Post::reply_to`: een uitslag van een oudere peer
+    // decodeert naar `None` en telt dan als "tijd onbekend". Een oneerlijk lage waarde is
+    // net zo mogelijk als een oneerlijke `guesses`; dat is geen aanvalsoppervlak maar een
+    // afspraak tussen drie vrienden.
+    30 => WordleResult { day: u32, guesses: u8, solved: bool, pattern: String, seconds: Option<u32> },
     // "Zet de kaart van deze dag in het algemene kanaal" (2026-08-20). De handmatige
     // reddingsklep achter het +-menu, voor als het automatisch ophalen bij iemand niet
     // lukte: die peer heeft dan zelf geen raadsel en tekent dus ook geen kaart.
@@ -482,6 +490,7 @@ mod tests {
                 guesses: 4,
                 solved: true,
                 pattern: "000100120102201222222".into(),
+                seconds: Some(97),
             },
         ];
         for kind in kinds {
@@ -492,7 +501,8 @@ mod tests {
 
     /// Een payload zonder `reply_to` komt van een oudere peer; die moet als een gewoon
     /// bericht met `reply_to: None` doorkomen. Dit is de additieve-veldregel uit de
-    /// moduledoc, nu concreet voor het enige veld dat er gebruik van maakt.
+    /// moduledoc, concreet voor de twee velden die er gebruik van maken — `reply_to` en
+    /// `WordleResult::seconds`.
     #[test]
     fn post_zonder_reply_to_komt_van_een_oudere_peer_door() {
         #[derive(Serialize)]
@@ -508,11 +518,53 @@ mod tests {
             &mut ser,
         )
         .unwrap();
-        let op = rauwe_op(1, 1, OpKind::Post { body: String::new(), reply_to: None }.tag(), out);
+        let op = rauwe_op(
+            1,
+            1,
+            OpKind::Post {
+                body: String::new(),
+                reply_to: None,
+            }
+            .tag(),
+            out,
+        );
         match op.kind().unwrap() {
             Some(OpKind::Post { body, reply_to }) => {
                 assert_eq!(body, "van een oude build");
                 assert_eq!(reply_to, None);
+            }
+            other => panic!("verkeerde soort: {other:?}"),
+        }
+
+        // Idem voor de speelduur (2026-08-30): een uitslag van vóór de klok komt door als
+        // "tijd onbekend" en niet als een fout. `winnaars` laat hem dan elk gelijkspel
+        // verliezen; zie `crate::wordle` in de app.
+        #[derive(Serialize)]
+        struct OudeUitslag {
+            day: u32,
+            guesses: u8,
+            solved: bool,
+            pattern: String,
+        }
+        let mut out = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut out).with_struct_map();
+        serde::Serialize::serialize(
+            &OudeUitslag {
+                day: 20_260_820,
+                guesses: 3,
+                solved: true,
+                pattern: "2".repeat(15),
+            },
+            &mut ser,
+        )
+        .unwrap();
+        let op = rauwe_op(1, 1, 30, out);
+        match op.kind().unwrap() {
+            Some(OpKind::WordleResult {
+                guesses, seconds, ..
+            }) => {
+                assert_eq!(guesses, 3);
+                assert_eq!(seconds, None);
             }
             other => panic!("verkeerde soort: {other:?}"),
         }
@@ -604,9 +656,12 @@ mod tests {
         // `u64::MAX` wordt in SQLite een `-1`, dus `MAX(lamport)` ziet hem nooit en de
         // eerlijke klok kan nooit meer inlopen — terwijl `timeline::build` in `u64`
         // vergelijkt en deze op dus élke last-writer-wins-vergelijking wint, voorgoed.
-        let payload = OpKind::Post { body: "x".into(), reply_to: None }
-            .encode_payload()
-            .unwrap();
+        let payload = OpKind::Post {
+            body: "x".into(),
+            reply_to: None,
+        }
+        .encode_payload()
+        .unwrap();
         let op = rauwe_op(1, u64::MAX, 1, payload);
         assert!(draad_fout(&op).contains("lamport"), "{}", draad_fout(&op));
 
@@ -624,9 +679,12 @@ mod tests {
             u64::MAX,
             1,
             1,
-            OpKind::Post { body: "x".into(), reply_to: None }
-                .encode_payload()
-                .unwrap(),
+            OpKind::Post {
+                body: "x".into(),
+                reply_to: None,
+            }
+            .encode_payload()
+            .unwrap(),
         );
         assert!(draad_fout(&op).contains("seq"), "{}", draad_fout(&op));
     }
@@ -656,9 +714,12 @@ mod tests {
         ));
 
         // En bij het decoderen, want de afzender hoeft onze encoder niet te gebruiken.
-        let payload = OpKind::Post { body: te_lang, reply_to: None }
-            .encode_payload()
-            .unwrap();
+        let payload = OpKind::Post {
+            body: te_lang,
+            reply_to: None,
+        }
+        .encode_payload()
+        .unwrap();
         let op = rauwe_op(1, 1, 1, payload);
         assert!(
             draad_fout(&op).contains("berichttekst"),
@@ -694,6 +755,7 @@ mod tests {
                     guesses: 6,
                     solved: false,
                     pattern: "2".repeat(MAX_WORDLE_PATROON_LEN + 1),
+                    seconds: None,
                 },
                 "wordle-patroon",
             ),

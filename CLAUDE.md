@@ -172,6 +172,12 @@ Wat je niet mag omdraaien:
 - **De puntenregel is N-agnostisch:** minstens twee deelnemers (`MIN_SPELERS`), een punt
   voor iedereen met het laagste aantal pogingen onder de oplossers, en niemand opgelost is
   niemand een punt. Nooit `peers.len()`, nooit een 3.
+- **Bij gelijke pogingen wint de kortste speeltijd** (2026-08-30, beslissing 36). De klok
+  loopt van je eerste gok tot je laatste — niet vanaf het openen van het bord, want dat
+  moment kent de motor niet en een bord dat blijft openstaan is geen speeltijd. De duur
+  reist als `seconds` (optioneel, additief) mee met `OpKind::WordleResult`. Een uitslag
+  **zonder** tijd telt als traagst denkbaar en verliest dus elk gelijkspel; nooit `0`
+  invullen voor "onbekend", dat zou hem juist elk gelijkspel laten winnen.
 - **`wordle_woorden.txt` heeft een strikt formaat** dat de code gebruikt: vijf ASCII-kleine
   letters plus newline per rij, gesorteerd, zes bytes per rij, zodat er binair op gezocht
   kan worden zonder allocatie. Een test bewaakt het. De oplossing van NYT is altijd

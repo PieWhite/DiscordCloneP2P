@@ -28,6 +28,15 @@
 //! niet tegen een aanvaller (het is je eigen spel), maar tegen het te makkelijk maken van
 //! iets waar de hele grap in zit.
 //!
+//! # De klok loopt van de eerste gok tot de laatste
+//!
+//! Bij een gelijk aantal pogingen wint de snelste (2026-08-30). Gemeten wordt de tijd
+//! tussen je eerste en je laatste gok, lokaal, en die reist als `seconds` mee met de
+//! uitslag-op. Niet vanaf het openen van het bord: dat moment bestaat in de motor niet —
+//! het venster opent zijn eigen dialoog zonder de motor iets te vragen — en het zou ook de
+//! verkeerde meting zijn, want dan telt een bord dat de hele ochtend open blijft staan mee
+//! als speeltijd.
+//!
 //! # De dag begint om 07:00
 //!
 //! Een Wordle-dag loopt van 07:00 tot 07:00 lokale tijd, want dat is het moment waarop de
@@ -119,6 +128,15 @@ struct Dag {
     oplossing: String,
     #[serde(default)]
     gokken: Vec<String>,
+    /// Millis sinds epoch bij de eerste gok. Staat op schijf zodat de klok een herstart
+    /// midden in een spel overleeft.
+    #[serde(default)]
+    begonnen: Option<i64>,
+    /// De speelduur in hele seconden, vastgezet op het moment dat het spel klaar was.
+    /// Bevroren en niet uit `begonnen` herrekend: `te_melden` draait bij het starten, en
+    /// dan is "nu" een uur na de laatste gok. `None` op een spel van vóór 2026-08-30.
+    #[serde(default)]
+    seconden: Option<u32>,
 }
 
 impl Dag {
@@ -164,6 +182,9 @@ pub struct Bord {
     pub gewonnen: bool,
     /// Alleen gevuld als het spel klaar is. Zie de moduledoc.
     pub oplossing: Option<String>,
+    /// De speelduur in hele seconden, pas gevuld als het spel klaar is — er tikt hier
+    /// bewust niets mee tijdens het spelen: dat zou elke seconde een `state`-event zijn.
+    pub seconden: Option<u32>,
 }
 
 /// Wat een gok opleverde.
@@ -181,6 +202,8 @@ pub enum Gok {
         pogingen: u8,
         gewonnen: bool,
         patroon: String,
+        /// Hele seconden tussen de eerste en de laatste gok. Breekt een gelijkspel.
+        seconden: u32,
     },
     /// Niet aangenomen. De tekst is Engels: hij gaat rechtstreeks het venster in.
     Geweigerd(&'static str),
@@ -289,6 +312,8 @@ impl Wordle {
                 nummer: r.nummer,
                 oplossing: r.oplossing,
                 gokken: Vec::new(),
+                begonnen: None,
+                seconden: None,
             },
         );
         self.bewaar();
@@ -313,6 +338,7 @@ impl Wordle {
             klaar,
             gewonnen: d.gewonnen(),
             oplossing: klaar.then(|| d.oplossing.to_uppercase()),
+            seconden: d.seconden,
         })
     }
 
@@ -360,14 +386,24 @@ impl Wordle {
             return Gok::Geweigerd("Not in the word list.");
         }
 
+        let nu = Local::now().timestamp_millis();
+        // De eerste aangenomen gok start de klok — een geweigerde gok is hierboven al
+        // teruggekeerd, dus intypen wat geen woord is kost geen tijd.
+        let begonnen = *d.begonnen.get_or_insert(nu);
         d.gokken.push(woord);
         let klaar = d.klaar();
         let uitkomst = if klaar {
+            // `max(0)`: de klok van deze pc kan tussen twee gokken door verzet zijn
+            // (NTP, of met de hand). Een negatieve duur is dan geen fout om op vast te
+            // lopen, maar wel een die het scorebord zou winnen.
+            let seconden = ((nu - begonnen).max(0) / 1000).min(u32::MAX as i64) as u32;
+            d.seconden = Some(seconden);
             Gok::Klaar {
                 dag,
                 pogingen: d.gokken.len() as u8,
                 gewonnen: d.gewonnen(),
                 patroon: d.patroon(),
+                seconden,
             }
         } else {
             Gok::Verder
@@ -378,11 +414,22 @@ impl Wordle {
 
     /// Wat er van de huidige dag in de oplog hoort te staan, als het spel klaar is.
     /// Gebruikt bij het starten: mislukte het vastleggen ooit, dan komt het er alsnog in.
-    pub fn te_melden(&self) -> Option<(u32, u8, bool, String)> {
+    ///
+    /// Een spel dat op schijf stond van vóór de klok heeft geen duur, en meldt zich dan
+    /// met `None`. Niet met `0`: dat zou een gelijkspel op die dag *winnen* in plaats van
+    /// eerlijk te zeggen dat er niets gemeten is.
+    pub fn te_melden(&self) -> Option<(u32, u8, bool, String, Option<u32>)> {
         let dag = self.huidige_dag();
         let d = self.dagen.get(&dag)?;
-        d.klaar()
-            .then(|| (dag, d.gokken.len() as u8, d.gewonnen(), d.patroon()))
+        d.klaar().then(|| {
+            (
+                dag,
+                d.gokken.len() as u8,
+                d.gewonnen(),
+                d.patroon(),
+                d.seconden,
+            )
+        })
     }
 
     fn bewaar(&self) {
@@ -512,19 +559,33 @@ pub struct Stand {
 /// De peers die op deze dag een punt krijgen.
 ///
 /// Leeg als de dag niet meetelt: minder dan [`MIN_SPELERS`] deelnemers (je krijgt geen
-/// punt voor alleen spelen), of niemand die het woord vond. Meer dan één naam betekent een
-/// gelijkspel, en dan krijgen ze allemaal hun punt — zo heeft Rick het gevraagd.
+/// punt voor alleen spelen), of niemand die het woord vond.
+///
+/// **De minste pogingen wint, en bij gelijk de kortste speeltijd** (2026-08-30). Blijft
+/// het daarna nog gelijk — dezelfde seconde, of twee uitslagen zonder gemeten tijd — dan
+/// krijgen ze allebei hun punt; een gelijkspel is niet verboden, er is alleen een tweede
+/// maat bijgekomen om het mee te breken.
+///
+/// Een uitslag zonder tijd ([`WordleEntry::seconds`] is `None`: een peer op een oudere
+/// build, of een spel dat al klaar was toen de klok ingebouwd werd) telt als "traagst
+/// denkbaar". Verliezen van een gemeten tijd is de eerlijke uitkomst: `0` invullen zou hem
+/// elk gelijkspel laten winnen, en zijn spel duurde niet nul seconden — het is niet
+/// gemeten. Zijn er alléén zulke uitslagen, dan is het weer een gedeeld punt en gedraagt
+/// deze functie zich precies als vóór de klok.
 ///
 /// `dag` is een aaneengesloten stuk uitslagen van één dag; `standen` snijdt die eruit.
 pub fn winnaars(dag: &[WordleEntry]) -> Vec<PeerId> {
     if dag.len() < MIN_SPELERS {
         return Vec::new();
     }
+    let tijd = |e: &WordleEntry| e.seconds.unwrap_or(u32::MAX);
     let Some(beste) = dag.iter().filter(|e| e.solved).map(|e| e.guesses).min() else {
         return Vec::new();
     };
-    dag.iter()
-        .filter(|e| e.solved && e.guesses == beste)
+    let op_beste = || dag.iter().filter(|e| e.solved && e.guesses == beste);
+    let snelste = op_beste().map(tijd).min().unwrap_or(u32::MAX);
+    op_beste()
+        .filter(|e| tijd(e) == snelste)
         .map(|e| e.author)
         .collect()
 }
@@ -663,7 +724,13 @@ mod tests {
             guesses,
             solved,
             pattern: String::new(),
+            seconds: None,
         }
+    }
+
+    fn in_tijd(mut e: WordleEntry, seconden: u32) -> WordleEntry {
+        e.seconds = Some(seconden);
+        e
     }
 
     /// De binaire zoekopdracht in `is_woord` rekent met een vaste rijlengte in plaats van
@@ -792,6 +859,43 @@ mod tests {
         assert_eq!(winnaars(&gelijk), vec![peer(1), peer(2)]);
     }
 
+    /// De regel van 2026-08-30: gelijk aantal pogingen, dan wint de kortste speeltijd.
+    #[test]
+    fn bij_gelijke_pogingen_wint_de_snelste() {
+        let dag = [
+            in_tijd(uitslag(20_260_820, peer(1), 4, true), 300),
+            in_tijd(uitslag(20_260_820, peer(2), 4, true), 95),
+            // Sneller, maar met meer pogingen: pogingen gaan vóór.
+            in_tijd(uitslag(20_260_820, peer(3), 5, true), 20),
+        ];
+        assert_eq!(winnaars(&dag), vec![peer(2)]);
+
+        // Op de seconde gelijk blijft een gedeeld punt.
+        let gelijk = [
+            in_tijd(uitslag(20_260_820, peer(1), 3, true), 88),
+            in_tijd(uitslag(20_260_820, peer(2), 3, true), 88),
+        ];
+        assert_eq!(winnaars(&gelijk), vec![peer(1), peer(2)]);
+    }
+
+    /// Een uitslag zonder gemeten tijd verliest van een gemeten tijd, en verliest van
+    /// niets anders: twee ongemeten uitslagen delen het punt zoals vóór de klok.
+    #[test]
+    fn een_uitslag_zonder_tijd_wint_geen_gelijkspel() {
+        let dag = [
+            uitslag(20_260_820, peer(1), 4, true),
+            in_tijd(uitslag(20_260_820, peer(2), 4, true), 600),
+        ];
+        assert_eq!(winnaars(&dag), vec![peer(2)]);
+
+        // Maar minder pogingen wint nog steeds, gemeten of niet.
+        let sneller_maar_slechter = [
+            uitslag(20_260_820, peer(1), 3, true),
+            in_tijd(uitslag(20_260_820, peer(2), 4, true), 10),
+        ];
+        assert_eq!(winnaars(&sneller_maar_slechter), vec![peer(1)]);
+    }
+
     #[test]
     fn niemand_opgelost_is_niemand_een_punt() {
         let dag = [
@@ -889,6 +993,9 @@ mod tests {
                 pogingen: 2,
                 gewonnen: true,
                 patroon: "0100022222".into(),
+                // Twee gokken op een paar millis van elkaar; de klok liep wel, maar staat
+                // op nul hele seconden.
+                seconden: 0,
             }
         );
         let bord = w2.bord().unwrap();
@@ -898,7 +1005,10 @@ mod tests {
             w2.gok("slate"),
             Gok::Geweigerd("Today's puzzle is already finished.")
         );
-        assert_eq!(w2.te_melden().map(|t| (t.1, t.2)), Some((2, true)));
+        assert_eq!(
+            w2.te_melden().map(|t| (t.1, t.2, t.4)),
+            Some((2, true, Some(0)))
+        );
 
         let _ = std::fs::remove_dir_all(&map);
     }
@@ -920,8 +1030,51 @@ mod tests {
                 pogingen: 6,
                 gewonnen: false,
                 patroon: "0".repeat(30),
+                seconden: 0,
             }
         );
+        let _ = std::fs::remove_dir_all(&map);
+    }
+
+    /// De klok start bij de eerste gok en stopt bij de laatste. Niet met een `sleep`
+    /// gemeten maar door het startmoment te verzetten — dat toetst dezelfde som en houdt
+    /// de test snel.
+    #[test]
+    fn de_klok_loopt_van_de_eerste_gok_tot_de_laatste() {
+        let map = std::env::temp_dir().join("fitcom-wordle-test-klok");
+        let _ = std::fs::remove_dir_all(&map);
+        std::fs::create_dir_all(&map).unwrap();
+
+        let mut w = met_raadsel(&map, "murky");
+        let dag = w.huidige_dag();
+        assert_eq!(w.gok("crane"), Gok::Verder);
+
+        // Anderhalve minuut eerder begonnen.
+        let begin = w.dagen.get(&dag).unwrap().begonnen.expect("klok gestart");
+        w.dagen.get_mut(&dag).unwrap().begonnen = Some(begin - 90_000);
+
+        let Gok::Klaar { seconden, .. } = w.gok("murky") else {
+            panic!("het spel hoort klaar te zijn");
+        };
+        assert_eq!(seconden, 90);
+        // En de duur ligt vast: een herstart herrekent hem niet tegen "nu".
+        let w2 = Wordle::nieuw(&map);
+        assert_eq!(w2.te_melden().map(|t| t.4), Some(Some(90)));
+        assert_eq!(w2.bord().and_then(|b| b.seconden), Some(90));
+
+        // Een klok die achteruit sprong levert geen negatieve — en dus onverslaanbare —
+        // tijd op.
+        let _ = std::fs::remove_dir_all(&map);
+        std::fs::create_dir_all(&map).unwrap();
+        let mut terug = met_raadsel(&map, "murky");
+        assert_eq!(terug.gok("crane"), Gok::Verder);
+        let begin = terug.dagen.get(&dag).unwrap().begonnen.unwrap();
+        terug.dagen.get_mut(&dag).unwrap().begonnen = Some(begin + 60_000);
+        let Gok::Klaar { seconden, .. } = terug.gok("murky") else {
+            panic!("het spel hoort klaar te zijn");
+        };
+        assert_eq!(seconden, 0);
+
         let _ = std::fs::remove_dir_all(&map);
     }
 

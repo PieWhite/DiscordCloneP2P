@@ -77,6 +77,10 @@ pub struct WordleEntry {
     /// Vijf tekens per rij, `0`/`1`/`2`, rijen achter elkaar. Wat het echte Wordle als
     /// vierkantjes deelt; het gerade woord staat er nooit in.
     pub pattern: String,
+    /// Speelduur in hele seconden, van de eerste gok tot de laatste. `None` betekent
+    /// "onbekend" — een uitslag van vóór 2026-08-30 of van een oudere peer. Breekt een
+    /// gelijkspel op `guesses`; zie `OpKind::WordleResult`.
+    pub seconds: Option<u32>,
 }
 
 /// Een handmatig in de chat gezette Wordle-kaart (2026-08-20). Zie `OpKind::WordleCard`.
@@ -286,6 +290,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                 guesses,
                 solved,
                 pattern,
+                seconds,
             } => {
                 let k = (op.lamport, op.seq);
                 let entry = WordleEntry {
@@ -294,6 +299,7 @@ pub fn build(ops: &[Op]) -> Timeline {
                     guesses,
                     solved,
                     pattern,
+                    seconds,
                 };
                 match wordle.get(&(op.author, day)) {
                     Some((prev, _)) if *prev <= k => {}
@@ -1008,6 +1014,7 @@ mod tests {
             guesses,
             solved,
             pattern: "2".repeat(5 * guesses as usize),
+            seconds: Some(60 * guesses as u32),
         }
     }
 

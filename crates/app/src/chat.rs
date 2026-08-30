@@ -227,6 +227,7 @@ impl Chat {
         pogingen: u8,
         gewonnen: bool,
         patroon: String,
+        seconden: Option<u32>,
     ) -> Result<Vec<MeshCommand>> {
         let me = self.me();
         if self
@@ -239,7 +240,7 @@ impl Chat {
         }
         self.eigen_op(
             Channel::GENERAL,
-            fitcom_store::wordle_result(dag, pogingen, gewonnen, patroon),
+            fitcom_store::wordle_result(dag, pogingen, gewonnen, patroon, seconden),
         )
     }
 

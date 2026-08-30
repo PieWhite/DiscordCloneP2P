@@ -628,6 +628,19 @@ const wordleButton = item => {
   }
 };
 
+/** A solve time as "1:23". Minutes and seconds, not `fmtSpan`'s rounded minutes: a tie on
+    guesses is decided on the seconds, so rounding them away would draw two different
+    results as the same time. */
+const fmtClock = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+
+/** One result as "4/6 &middot; 1:23". A peer that sends no time (an older build, or a game
+    that was already over when the clock arrived) simply shows none. */
+function wordleResult(r, tries) {
+  const score = r.solved ? `${r.guesses}/${tries}` : "failed";
+  const noTime = r.seconds === null || r.seconds === undefined;
+  return noTime ? score : `${score} &middot; ${fmtClock(r.seconds)}`;
+}
+
 /** The shared squares of one result: five to a row, one row per guess made. */
 const wordleGrid = pattern => {
   const cells = [...String(pattern)].filter(c => "012".includes(c));
@@ -643,7 +656,7 @@ function wordleCard(item) {
   const scores = item.results.length
     ? `<ul class="wdl-scores">${item.results.map(r => `<li class="wdl-score" data-won="${r.won}">
         <span class="wdl-who au-${r.avatar}">${esc(r.mine ? "You" : r.name)}</span>
-        <span class="wdl-tries num">${r.solved ? `${r.guesses}/${tries}` : "failed"}</span>
+        <span class="wdl-tries num">${wordleResult(r, tries)}</span>
         ${spoilers ? wordleGrid(r.pattern) : ""}
       </li>`).join("")}</ul>`
     : "";
@@ -1712,7 +1725,11 @@ function wordleStatus(w) {
       box tries now and puts the card in the chat for everyone.</p>`;
   }
   if (board.done && board.won) {
-    return `<p class="wdl-line">Solved in ${board.rows.length} of ${w.tries}.</p>`;
+    /* The time is what breaks a tie on guesses, so it belongs next to the guesses. A game
+       finished before this window had a clock has none, and then the line reads as before. */
+    const clock = board.seconds === null || board.seconds === undefined
+      ? "" : `, in ${fmtClock(board.seconds)}`;
+    return `<p class="wdl-line">Solved in ${board.rows.length} of ${w.tries}${clock}.</p>`;
   }
   if (board.done) {
     return `<p class="wdl-line">Out of guesses. The word was <b>${esc(board.solution || "")}</b>.</p>`;
@@ -1741,8 +1758,8 @@ function wordleStandings(w) {
   if (!w.standings.length) {
     return `<div class="wdl-stand"><h3>Standings</h3>
       <p class="wdl-empty">Nobody has finished a puzzle yet. A day is worth one point to
-        whoever solved it in the fewest guesses — and only when at least two of you
-        played.</p></div>`;
+        whoever solved it in the fewest guesses, and on a tie to whoever was quickest —
+        and only when at least two of you played.</p></div>`;
   }
   return `<div class="wdl-stand"><h3>Standings</h3>
     <div class="wdl-row wdl-row-head"><span>Name</span><span class="wdl-pts">Pts</span>

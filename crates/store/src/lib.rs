@@ -932,13 +932,20 @@ pub fn post_als_antwoord(body: impl Into<String>, reply_to: OpId) -> OpKind {
 
 /// De uitslag van één Wordle-dag vastleggen. `day` is de `print_date` van het raadsel als
 /// `YYYYMMDD`; zie `OpKind::WordleResult` voor waarom dat de sleutel is en niet de dag
-/// waarop je speelde.
-pub fn wordle_result(day: u32, guesses: u8, solved: bool, pattern: impl Into<String>) -> OpKind {
+/// waarop je speelde. `seconds` is de speelduur, en breekt een gelijkspel op `guesses`.
+pub fn wordle_result(
+    day: u32,
+    guesses: u8,
+    solved: bool,
+    pattern: impl Into<String>,
+    seconds: Option<u32>,
+) -> OpKind {
     OpKind::WordleResult {
         day,
         guesses,
         solved,
         pattern: pattern.into(),
+        seconds,
     }
 }
 

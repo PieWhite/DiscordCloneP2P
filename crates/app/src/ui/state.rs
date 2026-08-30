@@ -215,6 +215,10 @@ pub struct WordleScore {
     /// The squares, five characters per row: `0` miss, `1` near, `2` hit. Empty if the
     /// peer runs a build that did not send one.
     pub pattern: String,
+    /// How long the game took, first guess to last, in whole seconds. `None` for a result
+    /// from before the clock existed, or from a peer that does not send one — the window
+    /// then draws no time. Equal guesses are broken by this; see `crate::wordle::winnaars`.
+    pub seconds: Option<u32>,
     /// Took the point for this day. More than one means a draw, and then they all did.
     pub won: bool,
 }
@@ -425,6 +429,9 @@ pub struct WordleBoard {
     /// Only once the game is over. While it runs, the answer stays in the engine — see
     /// `crate::wordle`.
     pub solution: Option<String>,
+    /// How long the finished game took, in whole seconds. Nothing ticks here while you
+    /// play; it appears when the game is over. `None` for a game from before the clock.
+    pub seconds: Option<u32>,
 }
 
 /// One line of the leaderboard.
@@ -995,6 +1002,7 @@ fn wordle_state(snap: &Snapshot, me: PeerId, hues: &HashMap<PeerId, u8>) -> Word
             done: b.klaar,
             won: b.gewonnen,
             solution: b.oplossing.clone(),
+            seconds: b.seconden,
         }),
         error: snap.wordle.fout.clone(),
         standings,
@@ -1058,14 +1066,18 @@ fn wordle_cards(
                     guesses: e.guesses,
                     solved: e.solved,
                     pattern: e.pattern.clone(),
+                    seconds: e.seconds,
                     won: winners.contains(&e.author),
                 })
                 .collect();
-            // Best first: whoever solved it, in the fewest guesses. A peer id breaks the
-            // tie so every machine draws the same order.
-            results.sort_by(|a, b| {
-                (!a.solved, a.guesses, &a.peer).cmp(&(!b.solved, b.guesses, &b.peer))
-            });
+            // Best first: whoever solved it, in the fewest guesses, and then the quickest
+            // — the same order the point is handed out in, so the winner sits on top. An
+            // unmeasured time sorts last, exactly as it scores. A peer id breaks what is
+            // left over, so every machine draws the same order.
+            fn sorteersleutel(s: &WordleScore) -> (bool, u8, u32, &str) {
+                (!s.solved, s.guesses, s.seconds.unwrap_or(u32::MAX), &s.peer)
+            }
+            results.sort_by(|a, b| sorteersleutel(a).cmp(&sorteersleutel(b)));
 
             let vandaag = day == snap.wordle.dag;
             let action = match (vandaag, snap.wordle.bord.as_ref()) {
@@ -1241,6 +1253,7 @@ mod tests {
                 guesses: 3,
                 solved: true,
                 pattern: "2".repeat(15),
+                seconds: Some(120),
             }],
             ..Default::default()
         };
@@ -1283,6 +1296,7 @@ mod tests {
                     guesses: 4,
                     solved: true,
                     pattern: String::new(),
+                    seconds: None,
                 },
                 fitcom_store::WordleEntry {
                     day: 20_260_821,
@@ -1290,6 +1304,7 @@ mod tests {
                     guesses: 2,
                     solved: true,
                     pattern: String::new(),
+                    seconds: None,
                 },
             ],
             ..Default::default()

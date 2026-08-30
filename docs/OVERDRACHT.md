@@ -1241,8 +1241,9 @@ Een dag naspelen kan niet — alleen het huidige raadsel neemt gokken aan.
 wint of gelijkspeelt, en alleen als beide spelers gespeeld hebben". Met drie peers is
 "beide" onbepaald; de regel is nu **minstens twee deelnemers** (`MIN_SPELERS`). Zo krijg je
 geen punt voor alleen spelen, maar legt één peer op vakantie de competitie niet stil.
-Verder: een punt voor iedereen met het laagste aantal pogingen onder de oplossers (dus
-gelijkspel = allebei een punt), en heeft niemand het woord gevonden dan scoort niemand.
+Verder: een punt voor iedereen met het laagste aantal pogingen onder de oplossers, en heeft
+niemand het woord gevonden dan scoort niemand. *Sinds beslissing 36 (2026-08-30) breekt de
+speeltijd zo'n gelijkspel: gelijk aantal pogingen, dan wint de snelste.*
 
 **De 14.855 toegestane gokwoorden staan in de repo** (`crates/app/src/wordle_woorden.txt`,
 89 kB, via `include_str!` in de exe). Rick koos expliciet voor "alleen echte woorden" boven
@@ -1551,6 +1552,49 @@ op de juiste peer en dag, de slaapstandgrens, dagen buiten het venster, de volgo
 rondje naar schijf en terug inclusief het snoeien van te oude dagen. **Niet geverifieerd:**
 hoe het paneel eruitziet en of de getallen na een echt gesprek kloppen — dat vraagt een
 tweede machine en een gesprek van enige lengte, net als bij elke andere mediafunctie.
+
+### 36. Een gelijkspel in Wordle wordt op de klok beslist (2026-08-30)
+
+Rick vroeg: wie het woord in evenveel pogingen vindt, maar er minder tijd over deed, krijgt
+het punt. Tot nu toe deelden ze het.
+
+**Wat gemeten wordt: de tijd tussen je eerste gok en je laatste.** Niet vanaf het openen van
+het bord. Dat moment bestaat in de motor namelijk niet — het venster opent zijn Wordle-dialoog
+zelf en vraagt de motor niets — dus het invoeren zou een nieuw commando plus plumbing kosten.
+En het zou de verkeerde meting zijn: een bord dat de hele ochtend open blijft staan is geen
+speeltijd. De prijs, en die is bewust: wie eerst vijf minuten nadenkt en dan in twintig
+seconden vier woorden intikt, meet twintig seconden. Dat is de ondergrens van elke meting die
+niet in je hoofd kan kijken, en met drie vrienden geen probleem waard.
+
+De klok staat in `<data>/wordle.json` (`begonnen`, millis bij de eerste gok) en overleeft dus
+een herstart midden in een spel. Bij het afronden wordt de duur **bevroren** in `seconden` en
+niet later uit `begonnen` herrekend: `te_melden` draait bij het starten van de app, en dan is
+"nu" een uur na je laatste gok.
+
+**Op de draad: `seconds: Option<u32>` op `WordleResult`, additief.** Optioneel veld aan het
+eind van een map-encoded payload, dezelfde truc als `Post::reply_to`, dus geen protocolbump —
+een oudere peer negeert de sleutel en zijn eigen uitslagen komen als `None` binnen.
+
+**`None` telt als traagst denkbaar en verliest elk gelijkspel.** De verleiding is `0` in te
+vullen voor "onbekend"; dat zou zo'n uitslag juist *elk* gelijkspel laten winnen. Twee
+ongemeten uitslagen naast elkaar delen het punt nog steeds, dus zonder deze functie gedraagt
+alles zich precies als vóór vandaag. Dat dekt zowel een peer die nog niet bijgewerkt is als
+het ene spel dat op elke pc al klaar was toen de klok arriveerde.
+
+**Wat er niét tikt.** Er loopt geen klok in `UiState` tijdens het spelen. Dat zou elke seconde
+een `state`-event zijn, precies waar de scheiding met `meters` voor bestaat. Je ziet je tijd
+als het spel klaar is: in de dialoog ("Solved in 3 of 6, in 1:12.") en op de kaart in de
+tijdlijn, naast de pogingen.
+
+**Vergelijkbaarheid tussen klokken is geen eis** — elke peer meet een *duur*, geen moment. Een
+pc die tien minuten voorloopt verandert er niets aan. Een klok die *tijdens* een spel verzet
+wordt kan wel een negatieve duur opleveren; die wordt op nul geklemd, want negatief zou
+onverslaanbaar zijn.
+
+**Getest:** twee tests op de puntenregel (snelste wint, ongemeten verliest maar deelt onderling)
+en één op de klok zelf — starten bij de eerste gok, de som, bevroren blijven over een herstart,
+en de terugspringende klok. **Niet geverifieerd:** hoe het met drie echte peers op één ochtend
+uitpakt.
 
 ## Bugs die de tests eruit haalden
 

@@ -2109,10 +2109,13 @@ impl Engine {
             pogingen,
             gewonnen,
             patroon,
+            seconden,
         } = self.wordle.gok(woord)
         {
-            tracing::info!(dag, pogingen, gewonnen, "wordle afgerond");
-            let r = self.chat.meld_wordle(dag, pogingen, gewonnen, patroon);
+            tracing::info!(dag, pogingen, gewonnen, seconden, "wordle afgerond");
+            let r = self
+                .chat
+                .meld_wordle(dag, pogingen, gewonnen, patroon, Some(seconden));
             self.verwerk(r);
         }
     }
@@ -2222,8 +2225,10 @@ impl Engine {
     /// niet in de log zit, dan komt hij er alsnog in. Zelfde gedachte als `zet_naam`, dat
     /// ook elke start controleert of de log klopt met wat hier waar is.
     fn wordle_inhaalslag(&mut self) {
-        if let Some((dag, pogingen, gewonnen, patroon)) = self.wordle.te_melden() {
-            let r = self.chat.meld_wordle(dag, pogingen, gewonnen, patroon);
+        if let Some((dag, pogingen, gewonnen, patroon, seconden)) = self.wordle.te_melden() {
+            let r = self
+                .chat
+                .meld_wordle(dag, pogingen, gewonnen, patroon, seconden);
             self.verwerk(r);
         }
     }

@@ -974,7 +974,16 @@ Speel een keer laat op de avond en kijk om 00:30 nog eens: de kaart van "vandaag
 steeds die van gisteravond te zijn, en een dag die je om 00:30 afmaakt hoort op de dag van
 gisteren geboekt te worden (kijk in `wordle.json`, en bij de ander in het scorebord).
 
-**W.10 Een oudere build in de mesh**
+**W.10 De snelste wint een gelijkspel** (2026-08-30)
+Zorg dat jullie tweeën de dag in **hetzelfde aantal pogingen** oplossen, en dat één van jullie
+er merkbaar langer over doet (wacht een minuut tussen twee gokken). Op de kaart hoort achter
+de pogingen een tijd te staan (`4/6 · 1:23`), hoort de snelste bovenaan te staan en als enige
+het punt te krijgen, en hoort het scorebord dat te volgen. Controleer ook dat de dialoog na je
+laatste gok **Solved in 4 of 6, in 1:23.** zegt. Sluit de app een keer af midden in een spel:
+de klok hoort door te lopen vanaf je *eerste* gok, dus de tijd na herstart hoort de hele duur
+te zijn en niet alleen die na het opnieuw starten.
+
+**W.11 Een oudere build in de mesh**
 Alleen te doen als er nog een instantie van vóór deze versie is: die hoort de
 `WordleResult`-ops op te slaan en door te sturen zonder ze te begrijpen (er verschijnt daar
 niets), en de derde peer hoort ze via hem alsnog te krijgen. Dit is de invariant "protocol
