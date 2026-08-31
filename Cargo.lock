@@ -1176,7 +1176,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fitcom"
-version = "1.6.6"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-audio"
-version = "1.6.6"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "block2",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-net"
-version = "1.6.6"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "fitcom-proto",
@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-proto"
-version = "1.6.6"
+version = "1.7.0"
 dependencies = [
  "rmp-serde",
  "serde",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-store"
-version = "1.6.6"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "fitcom-proto",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "fitcom-video"
-version = "1.6.6"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "block2",
