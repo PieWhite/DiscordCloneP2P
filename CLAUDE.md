@@ -89,6 +89,10 @@ crates/app/frontend/           index.html, app.css, app.js, fonts/ — in de exe
   verandert: dan stuurt de app in rust weer tien events per seconde.
 - **Het pop-out kijkvenster is een eigen Win32-venster met eigen D3D11-swapchain.**
   Het hete videopad raakt de UI-stack nergens.
+- **Een URL naar een eigen protocol (`thumb`, `asset`) bouw je met `convertFileSrc`**, nooit
+  met de hand: WKWebView wil `thumb://localhost/`, WebView2 `http://thumb.localhost/`. De CSP
+  in `tauri.conf.json` moet beide vormen noemen. Met de hand gebouwd was de streamstrook op
+  Windows een rij donkere vlakken (beslissing 37).
 - **Geen fixed-version WebView2-runtime** (~180 MB) — dat sloopt "losse exe in een zip".
   Evergreen zit standaard in Windows 11 en alle drie draaien Windows 11.
 - **`design/main-window.html` is de reproductiedoelstelling**, `design/shots/` zijn de 19

@@ -88,7 +88,7 @@ fn main() {
                     codec: Codec::H264,
                     fps: env_u32("KETEN_FPS", 60),
                     bitrate: env_u32("KETEN_BITRATE", 25_000_000),
-                    voorbeeld: false,
+                    voorbeeld: true,
                 },
                 vec![doel],
             )?;
@@ -112,6 +112,26 @@ fn main() {
             );
 
             anyhow::ensure!(getoond >= 20, "maar {getoond} beelden; de keten valt stil");
+
+            // De terugblik op wat je zelf deelt: dezelfde miniatuur als de tegel in de
+            // streamstrook. Er moet er een liggen, en hij mag niet leeg (zwart) zijn.
+            let mini = deler
+                .miniatuur()
+                .ok_or_else(|| anyhow::anyhow!("de deler legde geen eigen miniatuur neer"))?;
+            println!("eigen miniatuur: {}×{}", mini.breedte, mini.hoogte);
+            anyhow::ensure!(
+                mini.data.len() == (mini.breedte * mini.hoogte * 4) as usize,
+                "miniatuur heeft {} bytes voor {}×{}",
+                mini.data.len(),
+                mini.breedte,
+                mini.hoogte
+            );
+            anyhow::ensure!(
+                mini.data
+                    .chunks_exact(4)
+                    .any(|px| px[0] > 16 || px[1] > 16 || px[2] > 16),
+                "de eigen miniatuur is helemaal zwart"
+            );
             anyhow::ensure!(
                 kapot * 4 < getoond,
                 "te veel kapot onderweg: {kapot} tegen {getoond}"

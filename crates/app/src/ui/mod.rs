@@ -591,6 +591,10 @@ fn encode_thumbnail(thumb: &fitcom_video::Miniatuur) -> Option<Vec<u8>> {
     }
     for px in rgba.chunks_exact_mut(4) {
         px.swap(0, 2);
+        // The alpha byte means nothing on the way here — Media Foundation's RGB32 leaves
+        // it at 0 — and an `<img>` honours it, so a camera tile came out transparent:
+        // the tile's dark background, read as "black". A thumbnail is opaque by definition.
+        px[3] = 255;
     }
     let buffer = image::RgbaImage::from_raw(thumb.breedte, thumb.hoogte, rgba)?;
     let mut png = Vec::new();

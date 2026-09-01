@@ -936,9 +936,10 @@ function renderStrip() {
       icon: s.is_camera ? "i-cam" : "i-monitor",
     })),
     /* Your own tile carries a thumbnail too, keyed `self-<id>`: the engine's sharing loop
-       hands one over for a camera, which is how you see yourself without a second window.
-       A shared screen has none — you are already looking at it — so that tile stays the
-       idle mark. */
+       hands one over for every stream it is sending — your camera, so you see yourself
+       without a second window, and your screen, so you can tell what the others are
+       looking at. A screen is only captured while someone watches, so until then that
+       tile stays the idle mark. */
     ...(S.own_streams || []).filter(s => !s.is_audio).map(s => ({
       key: `self-${s.stream_id}`,
       who: "You",
@@ -2443,7 +2444,10 @@ listen("meters", e => { M = JSON.parse(e.payload); applyMeters(); });
 listen("thumbnail", e => {
   const { key, revision } = e.payload;
   const first = !thumbUrls[key];
-  thumbUrls[key] = `thumb://localhost/${key}?${revision}`;
+  // `convertFileSrc` knows the platform: `thumb://localhost/…` in WKWebView, but
+  // `http://thumb.localhost/…` in WebView2. Hardcoding the former gave Windows a tile
+  // that never loaded — a dark box where the picture should be.
+  thumbUrls[key] = `${convertFileSrc(key, "thumb")}?${revision}`;
   const img = $(`thumb-${key}`);
   if (img) img.src = thumbUrls[key];
   // The first frame turns the idle mark into an image, which needs the tile rebuilt.

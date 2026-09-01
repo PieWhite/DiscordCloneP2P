@@ -15,9 +15,6 @@
         "dragDropEnabled": true,
         "visible": false
       }
-    ],
-    "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost thumb: data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
-    }
+    ]
   }
 }

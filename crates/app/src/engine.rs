@@ -115,8 +115,8 @@ pub struct EigenStreamView {
     /// Onze eigen camera in plaats van een scherm. De UI heeft dit nodig om de
     /// camera-knop ingedrukt te tonen en om te weten welke stream hij weer uitzet.
     pub is_camera: bool,
-    /// Terugblik op wat wij zelf uitsturen, voor de tegel in de streamstrook. Alleen een
-    /// camera heeft die (zie `heeft_voorbeeld`); `None` tot het eerste beeld binnen is.
+    /// Terugblik op wat wij zelf uitsturen, voor de tegel in de streamstrook. `None` zolang
+    /// er geen deler draait (een scherm zonder kijkers) en tot het eerste beeld binnen is.
     pub miniatuur: Option<Miniatuur>,
 }
 
@@ -1271,12 +1271,13 @@ impl Engine {
         })
     }
 
-    /// Of deze eigen stream een terugblik oplevert — een miniatuur van wat we uitsturen,
-    /// voor de tegel in de streamstrook. Dat is precies de camera: naar een gedeeld scherm
-    /// kijk je al.
+    /// Of deze eigen stream een deler verdient zónder kijkers — dat is precies de camera,
+    /// want daar ben jij de kijker: de deler bestaat zolang de camera aan staat. Een scherm
+    /// wordt pas opgenomen als er iemand kijkt (invariant 4), dus zijn deler gaat weg met
+    /// de laatste kijker.
     ///
-    /// Gevolg voor de levensduur van de deler: hij bestaat zolang de camera aan staat, en
-    /// niet alleen zolang er iemand kijkt.
+    /// De terugblik zelf (de tegel in de streamstrook) levert elke deler, ook een scherm;
+    /// dit gaat alleen over de levensduur.
     fn heeft_voorbeeld(&self, stream_id: u32) -> bool {
         self.streams
             .eigen()
@@ -1654,7 +1655,6 @@ impl Engine {
         drop(self.delers.remove(&stream_id));
 
         let d3d = self.d3d()?;
-        let voorbeeld = bron.soort == BronSoort::Camera;
         let handle = fitcom_video::deel(
             &d3d,
             DelerConfig {
@@ -1663,7 +1663,10 @@ impl Engine {
                 codec: self.codec(),
                 fps: self.cfg.video.fps,
                 bitrate: self.cfg.video.bitrate,
-                voorbeeld,
+                // Elke deler levert een terugblik, ook een scherm: zo zie je wat de
+                // anderen zien. Wat wél alleen voor de camera geldt is dat de deler
+                // blijft bestaan zonder kijkers — zie `heeft_voorbeeld`.
+                voorbeeld: true,
             },
             kijkers,
         )?;

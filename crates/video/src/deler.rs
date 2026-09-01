@@ -84,11 +84,9 @@ pub struct DelerConfig {
     /// Een terugblik op wat je zelf uitstuurt: de lus legt twee keer per seconde een
     /// [`Miniatuur`](crate::kijker::Miniatuur) neer die de motor via
     /// [`DelerHandle::miniatuur`] ophaalt en het
-    /// hoofdvenster als tegel in de streamstrook toont. `false` is de gewone gang van
-    /// zaken voor een gedeeld scherm — daar kijk je al naar.
-    ///
-    /// Voor een camera staat dit aan: zonder terugblik weet je niet of je in beeld zit, of
-    /// het licht klopt, of dat je camera de lensdop nog voorheeft. Hij komt van de textuur
+    /// hoofdvenster als tegel in de streamstrook toont. Staat aan voor elke deler: bij
+    /// een scherm zie je zo wat de anderen zien, bij een camera of je in beeld zit, of het
+    /// licht klopt, of dat je camera de lensdop nog voorheeft. Hij komt van de textuur
     /// die de encoder toch al krijgt, dus er komt geen tweede opname en geen tweede
     /// decoder aan te pas — dat is ook het enige dat kán, want Media Foundation geeft een
     /// camera niet twee keer uit.

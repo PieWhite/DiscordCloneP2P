@@ -770,8 +770,18 @@ niemand kijkt. Controleren: staat het niet op zijn kop en niet in spiegelbeeld t
 van wat de kijker ziet? Camera uit → tegel weg.
 Daarna met een kijker erbij: die kijker weg laten gaan → jouw tegel blijft beeld houden
 (het LIVE-label hoort eraf te gaan, want er kijkt niemand meer) en de camera blijft aan tot
-je hem zelf uitzet. Scherm delen ernaast → die tegel houdt het luie icoontje: naar je eigen
-scherm kijk je al.
+je hem zelf uitzet. Scherm delen ernaast → die tegel toont het luie icoontje tot er iemand
+kijkt, en dan je eigen scherm (herzien 2026-09-01, beslissing 37); laatste kijker weg → weer
+het icoontje.
+
+**C.9c Tegels op Windows (2026-09-01, beslissing 37)**
+Dit is de controle die op de mac niet kan: op Windows liet elke tegel — eigen camera én de
+stream van een ander — een donker vlak zien, omdat de webview `thumb://localhost/` vroeg waar
+WebView2 `http://thumb.localhost/` verwacht, en de CSP dat adres bovendien niet toeliet.
+Verwacht nu: camera aan → binnen een halve seconde je eigen beeld in de "You"-tegel, en de
+tegel van een stream die je bekijkt toont het beeld van de ander. Blijft het donker, open dan
+de webview-devtools (rechtsklik → Inspect in een debug-build) en kijk naar de console: een
+CSP-melding of een 404 op `thumb.localhost` wijst de dader aan.
 
 **C.9b Camera aanzetten terwijl hij bezet is**
 Teams of Zoom met de camera open laten staan en dan hier de camera aanzetten. Verwacht: een

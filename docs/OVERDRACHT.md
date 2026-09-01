@@ -1596,6 +1596,47 @@ en één op de klok zelf — starten bij de eerste gok, de som, bevroren blijven
 en de terugspringende klok. **Niet geverifieerd:** hoe het met drie echte peers op één ochtend
 uitpakt.
 
+### 37. De tegels waren op Windows nooit te zien, en een gedeeld scherm krijgt er ook een (2026-09-01)
+
+Rick: "de camera preview en screenshare preview werken nog niet, je ziet alleen zwart."
+
+**Het zwart was geen zwart beeld maar een `<img>` die niet laadde.** Twee oorzaken, allebei
+Windows-specifiek en allebei buiten het bereik van wat hier op de mac te zien was:
+
+1. De frontend bouwde de URL zelf: `thumb://localhost/<key>`. Dat is de vorm van WKWebView.
+   WebView2 kent geen eigen schema's en Tauri vertaalt ze daar naar `http://thumb.localhost/`.
+   Tauri's `convertFileSrc(pad, protocol)` kent dat verschil; de YouTube-miniaturen gingen er
+   al doorheen (`asset`), de streamtegels niet. Nu wel.
+2. De CSP in `tauri.conf.json` liet voor `img-src` alleen `asset:` en `http://asset.localhost`
+   toe. `thumb:` stond alleen in `tauri.macos.conf.json` — dus precies op het platform waar de
+   URL al klopte. Beide vormen staan nu in de basisconfig en de mac-override is weg, want hij
+   was een deelverzameling.
+
+Een `<img>` met een geblokkeerde bron is een leeg vlak met de tegelachtergrond (`--c-space`)
+erachter. Dat is het "zwart". Op de mac klopten URL én CSP, dus daar werkten de tegels van
+een ander al; de eigen tegel stond daar op het luie icoontje omdat een scherm bewust geen
+terugblik had.
+
+**Derde, kleinere: de alfa-byte.** De camera levert RGB32 uit Media Foundation en die laat de
+vierde byte op 0. `encode_thumbnail` nam hem mee de PNG in, en een `<img>` gehoorzaamt alfa —
+dus zelfs met een werkende URL was de camerategel doorzichtig geweest. De alfa staat nu vast
+op 255: een miniatuur is per definitie dekkend.
+
+**En een gedeeld scherm krijgt nu wél een terugblik.** `DelerConfig::voorbeeld` staat aan
+voor elke deler. De redenering van beslissing 34 ("naar je eigen scherm kijk je al") klopt
+voor een monitor, maar niet voor een venster dat achter de game staat, en niet voor de vraag
+"zien ze mijn goede scherm?". De kosten zijn die van beslissing 34: één geschaalde
+uitlezing van 192 px breed, twee keer per seconde, van de textuur die de encoder toch al
+krijgt. Wat **niet** verandert is de levensduur: een scherm wordt pas opgenomen als er
+iemand kijkt (invariant 4), dus zonder kijkers is er geen deler, geen miniatuur en staat de
+tegel op het icoontje. `heeft_voorbeeld` in `engine.rs` gaat alleen nog over die levensduur
+en is camera-only gebleven.
+
+**Geverifieerd op de mac:** `cargo run -p fitcom-video --example mac_keten` controleert nu ook
+dat de deler een eigen miniatuur neerlegt (192 px breed, niet zwart) — geslaagd op het
+hoofdscherm. **Niet geverifieerd, en dat kan hier niet:** de twee Windows-oorzaken zelf. Zie
+`docs/TESTPLAN.md` C.9c.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
