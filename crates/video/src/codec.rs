@@ -252,7 +252,8 @@ impl Encoder {
                     let mut buf = vec![0u8; grootte];
                     // `GetBlob` vult de vooraf geschaafde buffer precies; de lengte
                     // komt van `GetBlobSize`. Zelfde stijl als `GetString` in `mf.rs`.
-                    t.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None).ok()?;
+                    t.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None)
+                        .ok()?;
                     Some(buf)
                 })
                 .unwrap_or_default()

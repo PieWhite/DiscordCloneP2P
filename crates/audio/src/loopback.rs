@@ -137,10 +137,7 @@ fn lus(
 
 /// Leest alle pakketten die er nu klaarstaan en geeft ze als één chunk terug.
 #[cfg(windows)]
-fn chunks_lezen(
-    capture_client: &wasapi::AudioCaptureClient,
-    bytes: &mut VecDeque<u8>,
-) -> Vec<f32> {
+fn chunks_lezen(capture_client: &wasapi::AudioCaptureClient, bytes: &mut VecDeque<u8>) -> Vec<f32> {
     while matches!(capture_client.get_next_packet_size(), Ok(Some(n)) if n > 0) {
         if capture_client.read_from_device_to_deque(bytes).is_err() {
             break;

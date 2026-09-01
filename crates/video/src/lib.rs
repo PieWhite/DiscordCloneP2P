@@ -47,11 +47,6 @@ pub mod venster;
 /// `Capture::start` er een te openen.
 #[cfg(windows)]
 pub mod camera;
-/// Ringbuffer-recorder achter de clips (fase 15). Windows-only: de opnameketen zelf
-/// bestaat ook voor macOS, maar het bureaubladgeluid van een clip loopt via de
-/// WASAPI-loopback en dat heeft geen mac-tegenhanger in deze crate.
-#[cfg(windows)]
-pub mod opname;
 pub mod deler;
 pub mod fragment;
 pub mod kijker;
@@ -59,6 +54,11 @@ pub mod kijker;
 pub mod kleur;
 #[cfg(windows)]
 pub mod mf;
+/// Ringbuffer-recorder achter de clips (fase 15). Windows-only: de opnameketen zelf
+/// bestaat ook voor macOS, maar het bureaubladgeluid van een clip loopt via de
+/// WASAPI-loopback en dat heeft geen mac-tegenhanger in deze crate.
+#[cfg(windows)]
+pub mod opname;
 pub mod spoor;
 
 pub use capture::{beschikbare_bronnen, Bron, BronSoort};

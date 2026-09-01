@@ -42,7 +42,10 @@ fn post(author: PeerId, channel: Channel, seq: u64, lamport: u64, tekst: &str) -
         channel,
         seq,
         lamport,
-        &OpKind::Post { body: tekst.into(), reply_to: None },
+        &OpKind::Post {
+            body: tekst.into(),
+            reply_to: None,
+        },
     )
 }
 

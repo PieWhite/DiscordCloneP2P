@@ -480,7 +480,15 @@ mod tests {
     #[test]
     fn volgorde_komt_van_lamport_niet_van_de_klok() {
         // B's PC loopt een uur achter. Dat mag de volgorde niet bepalen.
-        let mut eerst = op(peer(1), 1, 1, OpKind::Post { body: "een".into(), reply_to: None });
+        let mut eerst = op(
+            peer(1),
+            1,
+            1,
+            OpKind::Post {
+                body: "een".into(),
+                reply_to: None,
+            },
+        );
         eerst.wall_clock = 9_999_999;
         let mut daarna = op(
             peer(2),
@@ -500,8 +508,24 @@ mod tests {
 
     #[test]
     fn gelijke_lamport_wordt_op_auteur_beslist() {
-        let a = op(peer(1), 1, 5, OpKind::Post { body: "a".into(), reply_to: None });
-        let b = op(peer(2), 1, 5, OpKind::Post { body: "b".into(), reply_to: None });
+        let a = op(
+            peer(1),
+            1,
+            5,
+            OpKind::Post {
+                body: "a".into(),
+                reply_to: None,
+            },
+        );
+        let b = op(
+            peer(2),
+            1,
+            5,
+            OpKind::Post {
+                body: "b".into(),
+                reply_to: None,
+            },
+        );
         // Beide aankomstvolgordes moeten hetzelfde resultaat geven.
         let t1 = build(&[a.clone(), b.clone()]);
         let t2 = build(&[b, a]);
@@ -551,7 +575,15 @@ mod tests {
 
     #[test]
     fn laatste_wijziging_wint_ongeacht_aankomstvolgorde() {
-        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into(), reply_to: None });
+        let post = op(
+            peer(1),
+            1,
+            1,
+            OpKind::Post {
+                body: "v1".into(),
+                reply_to: None,
+            },
+        );
         let e1 = op(
             peer(1),
             2,
@@ -582,7 +614,15 @@ mod tests {
 
     #[test]
     fn verwijderen_wint_van_een_eerdere_bewerking() {
-        let post = op(peer(1), 1, 1, OpKind::Post { body: "v1".into(), reply_to: None });
+        let post = op(
+            peer(1),
+            1,
+            1,
+            OpKind::Post {
+                body: "v1".into(),
+                reply_to: None,
+            },
+        );
         let edit = op(
             peer(1),
             2,
@@ -1165,7 +1205,14 @@ mod tests {
     #[test]
     fn reactie_op_verwijderd_bericht_verdwijnt_mee() {
         let bericht = op(peer(1), 1, 1, post("hoi"));
-        let del = op(peer(1), 2, 2, OpKind::Delete { target: bericht.id() });
+        let del = op(
+            peer(1),
+            2,
+            2,
+            OpKind::Delete {
+                target: bericht.id(),
+            },
+        );
         let aan = reactie(peer(2), 3, 3, bericht.id(), "👍", false);
         let t = build(&[aan, del, bericht]);
         assert!(t.messages.is_empty());

@@ -4,9 +4,9 @@ pub mod codec;
 pub mod jitter;
 #[cfg(windows)]
 pub mod loopback;
-pub mod mix;
 #[cfg(windows)]
 pub mod microfoon;
+pub mod mix;
 pub mod session;
 
 pub use jitter::{Frame, JitterBuffer};
