@@ -1,0 +1,58 @@
+name: Build macOS App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to attach the asset to (e.g. v1.7.1)'
+        required: false
+        default: 'v1.7.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure Unix line endings and execute permissions
+        run: |
+          tr -d '\r' < scripts/bundle-mac.sh > scripts/bundle-mac.sh.tmp
+          mv scripts/bundle-mac.sh.tmp scripts/bundle-mac.sh
+          chmod +x scripts/bundle-mac.sh
+
+      - name: Build and bundle macOS app
+        run: ./scripts/bundle-mac.sh
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FitCommunication-macos
+          path: target/bundle/FitCommunication-*-macos.zip
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          ZIP_FILE=$(ls target/bundle/FitCommunication-*-macos.zip | head -n 1)
+          echo "Tag: $TAG"
+          echo "Asset: $ZIP_FILE"
+          if [ -n "$TAG" ] && [ -f "$ZIP_FILE" ]; then
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Uploading $ZIP_FILE to release $TAG..."
+              gh release upload "$TAG" "$ZIP_FILE" --clobber
+            else
+              echo "Release $TAG not found. Skipping release upload."
+            fi
+          fi
