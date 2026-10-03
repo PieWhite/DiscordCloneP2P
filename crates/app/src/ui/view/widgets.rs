@@ -123,8 +123,8 @@ fn presence_dot(dot: Dot) -> Div {
     };
     div()
         .absolute()
-        .right(px(-4.))
-        .bottom(px(-4.))
+        .right(px(-2.))
+        .bottom(px(-2.))
         .size(px(13.))
         .border_2()
         .border_color(c::INK)
@@ -299,6 +299,15 @@ pub fn badge(count: usize, quiet: bool) -> Div {
         .text_size(px(11.))
         .line_height(px(18.))
         .child(count.to_string())
+}
+
+/// `letter-spacing` for the short uppercase labels, which GPUI's text cannot space: one
+/// text element per character, `spacing` px after each, as CSS adds it.
+pub fn tracked(text: &str, spacing: f32) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .children(text.chars().map(|ch| div().mr(px(spacing)).child(ch.to_string())))
 }
 
 const POINTER_SVG: &[u8] =
