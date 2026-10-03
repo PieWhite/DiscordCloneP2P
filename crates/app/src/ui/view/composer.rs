@@ -1,4 +1,4 @@
-//! Slice C: the composer window and everything around it — the error banner and typing
+//! Slice C: the composer window and everything around it: the error banner and typing
 //! line above it, the reply chip (`v.reply_to`), the multiline auto-growing input (Enter
 //! sends, Shift+Enter breaks, the 4096 limit of the old `maxlength`), drafts per
 //! conversation (`swap_draft`), @-autocomplete (`v.overlay`, `v.ac_*`), the attach button
