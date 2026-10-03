@@ -237,7 +237,9 @@ fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super
         // A `<button>`: as wide as its content, up to 480px.
         .self_start()
         .flex()
-        .items_baseline()
+        // Both runs are 12px, so centre is the baseline; taffy's baseline pass also
+        // measured the text unconstrained, which defeated the ellipsis.
+        .items_center()
         .gap(px(6.))
         .max_w(px(480.))
         .mb(px(4.))
@@ -258,17 +260,16 @@ fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super
             Some(s) => d
                 .child(div().flex_none().text_color(c::PAPER).child(s.author_name.clone()))
                 // `white-space: nowrap` folded the parent's line breaks into spaces.
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(s.body.split_whitespace().collect::<Vec<_>>().join(" ")),
-                ),
-            None => d.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child("Original message unavailable")),
+                .child(ellipsis_line(s.body.split_whitespace().collect::<Vec<_>>().join(" "))),
+            None => d.child(ellipsis_line("Original message unavailable".into())),
         })
         .into_any_element()
+}
+
+/// One line cut off with an ellipsis. GPUI truncates only text whose width the layout
+/// hands it, so the box grows from zero (`flex_1`) instead of from its content.
+fn ellipsis_line(text: String) -> Div {
+    div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text)
 }
 
 /// `itemContent`: the edit field, the body plus its YouTube cards, or the file.
