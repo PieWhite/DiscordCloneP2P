@@ -698,6 +698,15 @@ impl AppView {
             _subscriptions: subscriptions,
         };
         this.apply_width(window);
+        // The window can open without becoming active (autostart at login, a launch from the
+        // background), and the observer above only hears changes: start from the real state,
+        // or a window nobody looks at swallows unread counts and desktop notifications.
+        let active = window.is_window_active();
+        this.ui
+            .engine
+            .voorgrond
+            .store(active, std::sync::atomic::Ordering::Relaxed);
+        this.v_mut().focused = active;
         this.load_timeline();
         // The boot sequence of `app.js`: draw, then mark the open conversation read.
         commands::mark_read(&this.ui, &active_channel(&this.v));

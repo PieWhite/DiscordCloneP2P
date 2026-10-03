@@ -1273,6 +1273,20 @@ mod window_tests {
     }
 
     /// Revert to see it fail: drop the `PressEnter` arm in `ComposerPane::new`.
+    /// A test window opens inactive, like a window started by autostart behind others. It must
+    /// not count as looked at: the engine sends desktop notifications only for a window that
+    /// is not in front. Dropping the seeding in `AppView::new` makes this fail.
+    #[gpui_kit::test]
+    fn a_window_that_opens_inactive_is_not_in_front(cx: &mut TestAppContext) {
+        let h = Harness::new(cx);
+        let focused = h.app.read_with(cx, |app, _| app.v.focused);
+        let in_front =
+            h.ui.engine
+                .voorgrond
+                .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!((focused, in_front), (false, false));
+    }
+
     #[gpui_kit::test]
     fn enter_sends_the_trimmed_text_with_the_reply_and_clears(cx: &mut TestAppContext) {
         let mut h = Harness::new(cx);
