@@ -102,7 +102,7 @@ itself. Depth is a hard offset shadow in the void, the way a sprite casts one. S
 is a full cell inversion — paper ground, space ink — inherited from the source machines'
 one selection device.
 
-Product truth binds the world: no network fetch ever (fonts are bundled woff2), "gaming
+Product truth binds the world: no network fetch ever (fonts are bundled TTF, inside the binary), "gaming
 wins" (no layout-property transitions, zero infinite animations), offline and
 reconnecting are normal states and are never alarm-colored, and the theme is fixed dark
 with `color-scheme: dark` so native chrome (scrollbars, selects, caret) stays in-world.
@@ -402,4 +402,4 @@ lifts the screen off the whole row.
   connecting is amber, and neither is coral.
 - **Don't** derive values from `design/main-window.html` or `design/shots/` — they
   document the replaced 2026-08-04 world and are anti-reference here.
-- **Don't** fetch a font or any asset from the network; faces ship as bundled woff2.
+- **Don't** fetch a font or any asset from the network; faces ship as bundled TTF inside the binary.

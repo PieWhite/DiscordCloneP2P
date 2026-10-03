@@ -3,7 +3,7 @@
 //!
 //! # Waarom het opsommen niet via ScreenCaptureKit gaat
 //!
-//! `list_sources` is een synchroon Tauri-commando: de UI vraagt en wil meteen
+//! `list_sources` is een synchrone aanroep uit het venster: de UI vraagt en wil meteen
 //! antwoord. `SCShareableContent` bestaat alleen met een completion handler, en de
 //! main thread daarop laten wachten is een hang wachten op een moment. CoreGraphics
 //! kan hetzelfde synchroon (`CGGetActiveDisplayList`, `CGWindowListCopyWindowInfo`),

@@ -809,9 +809,6 @@ pub fn recap_of(snap: &Snapshot, me: PeerId) -> Recap {
     }
 }
 
-/// Messages and files of one conversation, merged into the single chronological order
-/// the timeline draws. `lamport` is the sort key both carry for exactly this reason —
-/// wall clocks differ per machine and would order the thread differently per peer.
 /// The longest side a picture may have to be drawn in the window. The webview decoded a
 /// peer's picture in its own renderer process; GPUI decodes it in ours and uploads it as
 /// one GPU texture (16384 is the D3D11/Metal ceiling), so a picture past this is shown as
@@ -823,6 +820,9 @@ fn drawable_inline(path: &Path) -> bool {
     image::image_dimensions(path).is_ok_and(|(w, h)| w <= MAX_INLINE_SIDE && h <= MAX_INLINE_SIDE)
 }
 
+/// Messages and files of one conversation, merged into the single chronological order
+/// the timeline draws. `lamport` is the sort key both carry for exactly this reason —
+/// wall clocks differ per machine and would order the thread differently per peer.
 pub fn timeline_of(
     snap: &Snapshot,
     channel: Channel,

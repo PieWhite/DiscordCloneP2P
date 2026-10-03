@@ -3,7 +3,7 @@
 //!
 //! # Hoe dit zonder eigen renderpad kan
 //!
-//! AppKit is main-thread-only, maar de main-runloop van de app draait al (Tauri).
+//! AppKit is main-thread-only, maar de main-runloop van de app draait al (GPUI).
 //! Het venster wordt dus via de main-queue aangemaakt; daarna raakt de kijk-thread
 //! AppKit niet meer aan. Tonen loopt via `AVSampleBufferVideoRenderer.enqueue` — die
 //! is thread-veilig, dus de kijk-thread en de gedeelde `Weergaveklok` blijven de

@@ -61,7 +61,7 @@ pub fn zorg_dat_mf_draait() {
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if hr.is_err() {
             // `RPC_E_CHANGED_MODE` is normaal en onschuldig: de vensterthread zit al in
-            // het single-threaded apartment van WebView2, en MF werkt daar ook.
+            // een single-threaded apartment van de UI-laag, en MF werkt daar ook.
             tracing::debug!(hresult = ?hr, "thread zat al in een ander COM-apartment");
         }
     });

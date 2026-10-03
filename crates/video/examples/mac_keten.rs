@@ -148,7 +148,7 @@ fn main() {
         klaar_werk.store(true, Ordering::Relaxed);
     });
 
-    // De main-runloop pompen tot de werkthread klaar is; dit is wat Tauri in de echte
+    // De main-runloop pompen tot de werkthread klaar is; dit is wat GPUI in de echte
     // app doet.
     let lus = objc2_foundation::NSRunLoop::mainRunLoop();
     while !klaar.load(Ordering::Relaxed) {
