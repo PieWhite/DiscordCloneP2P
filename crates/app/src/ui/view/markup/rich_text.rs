@@ -360,3 +360,45 @@ impl Element for RichText {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RichText;
+    use gpui_kit::base::{TextSelection, TextSelectionLayer};
+    use gpui_kit::{
+        div, px, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, Window,
+    };
+
+    struct View;
+
+    impl Render for View {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let text = "\u{2009}\u{200A}@Sander\u{2009}\u{200A} hoi";
+            let plate = std::iter::once(0..text.len() - 4).collect();
+            div().size_full().child(TextSelectionLayer).child(
+                div().w(px(600.)).h(px(40.)).child(
+                    RichText::new("run", text)
+                        .plates(plate, gpui_kit::black())
+                        .no_copy(vec![0, 3, 13, 16]),
+                ),
+            )
+        }
+    }
+
+    /// Dragging across a padded mention copies the words without the padding. Drop the
+    /// `no_copy` filter in `paint` and the thin spaces end up on the clipboard.
+    #[gpui_kit::test]
+    fn a_selection_copies_without_the_mention_padding(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| View);
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.simulate_mouse_down(gpui_kit::point(px(0.), px(10.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(gpui_kit::point(px(590.), px(10.)), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(gpui_kit::point(px(590.), px(10.)), MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(TextSelection::selected_text(window, cx), "@Sander hoi");
+        });
+    }
+}

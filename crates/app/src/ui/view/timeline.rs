@@ -25,7 +25,7 @@ use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::{
     div, list, prelude::FluentBuilder, px, AnyElement, App, AppContext, Context, Entity, InteractiveElement,
-    IntoElement, ListAlignment, ListOffset, ListState, ParentElement, Pixels, Point, Render,
+    IntoElement, ListAlignment, ListState, ParentElement, Pixels, Point, Render,
     StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
 };
 use std::collections::{HashMap, HashSet};
@@ -309,7 +309,7 @@ impl TimelinePane {
         if let Some(scroll) = d.scroll.as_deref() {
             let (ix, px_in) = scroll.split_once('+').unwrap_or((scroll, "0"));
             let item_ix = if ix == "top" { 0 } else { ix.parse::<usize>().map_or(0, |i| i + offset) };
-            self.list.scroll_to(ListOffset {
+            self.list.scroll_to(gpui_kit::ListOffset {
                 item_ix,
                 offset_in_item: px(px_in.parse().unwrap_or(0.)),
             });

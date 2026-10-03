@@ -228,11 +228,14 @@ fn edited_mark() -> Div {
     div().text_size(px(10.)).text_color(c::SILVER).child("(edited)")
 }
 
-/// `.msg-quote`: who wrote the parent and how it opens, or that it is gone.
+/// `.msg-quote`: who wrote the parent and how it opens, or that it is gone. A click brings
+/// the parent into view (the webview drew it as a button without a handler).
 fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super::super::super::state::ReplySnippet>) -> AnyElement {
     let pane = ctx.pane.clone();
     div()
         .id(ElementId::Name(format!("{key}-quote").into()))
+        // A `<button>`: as wide as its content, up to 480px.
+        .self_start()
         .flex()
         .items_baseline()
         .gap(px(6.))
@@ -269,12 +272,16 @@ fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super
 }
 
 /// `itemContent`: the edit field, the body plus its YouTube cards, or the file.
-fn content(ctx: &RowCtx, item: &TimelineItem, key: &SharedString, _window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+fn content(ctx: &RowCtx, item: &TimelineItem, key: &SharedString, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     match item {
         TimelineItem::Message { id, body, mentions_you, .. } => {
+            // The one call site of the in-place editor. Slice C owns it as
+            // `composer::render_edit_box(&ctx.snap, id, body, window, cx)`; at that merge
+            // this branch becomes that call, and `Editing`, `TimelinePane::sync_editing`,
+            // `RowCtx::edit` and `edit_box` below go.
             if ctx.snap.v.editing.as_ref() == Some(id) {
                 if let Some(input) = &ctx.edit {
-                    return vec![edit_box(input, _window, cx)];
+                    return vec![edit_box(input, window, cx)];
                 }
             }
             let mut out = markup::render_body(&ctx.snap, key, body, *mentions_you);
