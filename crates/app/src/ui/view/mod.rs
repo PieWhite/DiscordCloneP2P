@@ -1104,6 +1104,11 @@ impl AppView {
         if let Some(dialog) = dialog {
             self.open_dialog(dialog, window, cx);
         }
+        if let Some(text) = &d.composer_text {
+            self.panes.composer.update(cx, |c, cx| c.debug_type(text, window, cx));
+            let s = self.s.clone();
+            composer::update_autocomplete(self.v_mut(), &s, text);
+        }
         let _ = channel_of;
         cx.notify();
     }

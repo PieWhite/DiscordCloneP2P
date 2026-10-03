@@ -210,6 +210,7 @@ impl Fixture {
 /// | `menu=<channel-key>` | channel context menu |
 /// | `hotkey=1` | clip hotkey capture waiting |
 /// | `focused=0` | window treated as unfocused |
+/// | `text=<draft>` | composer holding `<draft>` (`\n` is a line break), focused, as if typed |
 #[derive(Debug, Default, Clone)]
 pub struct DebugView {
     pub view: Option<View>,
@@ -228,6 +229,7 @@ pub struct DebugView {
     pub menu: Option<String>,
     pub hotkey_wait: bool,
     pub focused: Option<bool>,
+    pub composer_text: Option<String>,
 }
 
 /// A dialog named in the script. Resolved against the state when it is applied, because
@@ -311,6 +313,7 @@ impl DebugView {
                 "menu" => d.menu = Some(value.to_string()),
                 "hotkey" => d.hotkey_wait = flag,
                 "focused" => d.focused = Some(flag),
+                "text" => d.composer_text = Some(value.replace("\\n", "\n")),
                 other => tracing::warn!(item = other, "FITCOM_DEBUG_VIEW: unknown item"),
             }
         }
