@@ -21,6 +21,7 @@ use fitcom_net::PeerStatus;
 use fitcom_proto::{Channel, OpId, PeerId, TopicId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// How much of the parent's body rides along in a reply quote, in characters. Roughly
 /// one line; the full text is one click away.
@@ -260,9 +261,9 @@ pub enum TimelineItem {
         mine: bool,
         transfer: TransferState,
         /// Absolute path in the content-addressed picture folder, for an image whose
-        /// bytes are actually on this machine. The frontend turns it into an `asset:`
-        /// URL. `None` covers both "not an image" and "not downloaded yet", and the card
-        /// falls back to the generic form — the same rule the egui build used.
+        /// bytes are actually on this machine and that fits [`MAX_INLINE_SIDE`]. The
+        /// timeline draws it from disk. `None` covers "not an image", "not downloaded yet"
+        /// and "too large to draw", and the card falls back to the generic form.
         image_path: Option<String>,
         /// Where the bytes are on this machine — our own offer, or a finished download.
         /// `Some` is what turns the download button into an open button, so it is also
@@ -811,6 +812,18 @@ pub fn recap_of(snap: &Snapshot, me: PeerId) -> Recap {
 /// Messages and files of one conversation, merged into the single chronological order
 /// the timeline draws. `lamport` is the sort key both carry for exactly this reason —
 /// wall clocks differ per machine and would order the thread differently per peer.
+/// The longest side a picture may have to be drawn in the window. The webview decoded a
+/// peer's picture in its own renderer process; GPUI decodes it in ours and uploads it as
+/// one GPU texture (16384 is the D3D11/Metal ceiling), so a picture past this is shown as
+/// a plain file card instead of taking the app down.
+const MAX_INLINE_SIDE: u32 = 8192;
+
+/// Reads only the header, so a decompression bomb costs a few bytes here.
+fn drawable_inline(path: &Path) -> bool {
+    image::image_dimensions(path)
+        .is_ok_and(|(w, h)| w <= MAX_INLINE_SIDE && h <= MAX_INLINE_SIDE)
+}
+
 pub fn timeline_of(
     snap: &Snapshot,
     channel: Channel,
@@ -892,22 +905,27 @@ pub fn timeline_of(
         if !belongs_to_channel(channel, me, f.channel, f.author) {
             continue;
         }
-        let image_path = files::is_afbeelding(&f.name)
+        let picture = files::is_afbeelding(&f.name)
             .then(|| {
                 snap.pictures_dir
                     .join(files::hash_bestandsnaam(&f.hash, &f.name))
             })
-            .filter(|p| p.exists())
-            .map(|p| p.display().to_string());
+            .filter(|p| p.exists());
         // An image resolves through the content-addressed path even when the engine has
         // no record of it — that path is derived, not remembered, so it survives a
         // restart on its own. Everything else leans on `FileView::local_path`.
-        let local_path = image_path.clone().or_else(|| {
-            f.local_path
-                .as_deref()
-                .filter(|p| p.exists())
-                .map(|p| p.display().to_string())
-        });
+        let local_path = picture
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .or_else(|| {
+                f.local_path
+                    .as_deref()
+                    .filter(|p| p.exists())
+                    .map(|p| p.display().to_string())
+            });
+        let image_path = picture
+            .filter(|p| drawable_inline(p))
+            .map(|p| p.display().to_string());
 
         items.push((
             f.lamport,
@@ -1147,6 +1165,19 @@ pub fn belongs_to_channel(open: Channel, me: PeerId, channel: Channel, author: P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_past_the_gpu_ceiling_is_not_drawn_inline() {
+        let dir = std::env::temp_dir().join(format!("fitcom-inline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fits = dir.join("fits.png");
+        let wide = dir.join("wide.png");
+        image::RgbaImage::new(MAX_INLINE_SIDE, 1).save(&fits).unwrap();
+        image::RgbaImage::new(MAX_INLINE_SIDE + 1, 1).save(&wide).unwrap();
+        let drawn = (drawable_inline(&fits), drawable_inline(&wide));
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(drawn, (true, false));
+    }
 
     fn peer(n: u8) -> PeerId {
         let mut b = [0u8; 16];
