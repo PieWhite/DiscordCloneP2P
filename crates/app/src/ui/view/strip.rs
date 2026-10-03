@@ -15,8 +15,9 @@ use super::super::state::{OwnStreamState, StreamState};
 use super::super::theme::{self, c};
 use super::{AppHandle, PaneInit};
 use gpui_kit::{
-    div, img, prelude::FluentBuilder, px, Context, Entity, InteractiveElement, IntoElement, ObjectFit,
-    ParentElement, Render, RenderImage, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window,
+    div, img, prelude::FluentBuilder, px, Context, Entity, InteractiveElement, IntoElement,
+    ObjectFit, ParentElement, Render, RenderImage, SharedString, StatefulInteractiveElement,
+    Styled, StyledImage, Window,
 };
 use std::sync::Arc;
 
@@ -209,10 +210,24 @@ mod tests {
     #[test]
     fn the_strip_lists_watched_then_own_visual_streams() {
         let streams = vec![stream("p1", 1, true, false), stream("p1", 2, false, false)];
-        let own_streams = vec![own(3, 0, false, false), own(4, 0, true, false), own(5, 1, false, true)];
+        let own_streams = vec![
+            own(3, 0, false, false),
+            own(4, 0, true, false),
+            own(5, 1, false, true),
+        ];
         let t = tiles(&streams, &own_streams);
-        let keys: Vec<_> = t.iter().map(|t| (t.key.as_str(), t.live, t.camera)).collect();
-        assert_eq!(keys, vec![("p1-1", true, false), ("self-3", false, false), ("self-5", true, true)]);
+        let keys: Vec<_> = t
+            .iter()
+            .map(|t| (t.key.as_str(), t.live, t.camera))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("p1-1", true, false),
+                ("self-3", false, false),
+                ("self-5", true, true)
+            ]
+        );
         assert_eq!(t[1].who, "You");
     }
 }

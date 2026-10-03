@@ -16,9 +16,9 @@ use super::format;
 use super::widgets::{Btn, BtnKind};
 use super::{AppSnapshot, AppView, Dialog, ViewState};
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, Context, Div, HighlightStyle,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement,
-    Styled, StyledText, Window,
+    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, Context, Div,
+    HighlightStyle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, StyledText, Window,
 };
 use std::collections::HashMap;
 
@@ -49,7 +49,9 @@ impl WordleKey {
             k => {
                 let mut chars = k.chars();
                 match (chars.next(), chars.next()) {
-                    (Some(ch), None) if ch.is_ascii_alphabetic() => Some(WordleKey::Letter(ch.to_ascii_lowercase())),
+                    (Some(ch), None) if ch.is_ascii_alphabetic() => {
+                        Some(WordleKey::Letter(ch.to_ascii_lowercase()))
+                    }
                     _ => None,
                 }
             }
@@ -70,7 +72,12 @@ pub fn typed_row(v: &ViewState, landed: usize) -> &str {
 /// `wordleKey` on plain data: reconciles with the landed row count first (a landed row
 /// clears the typed letters), then applies `key`. Returns the guess to send, if any, and
 /// whether the typed letters changed.
-pub fn apply_key(typed: &mut String, rows: &mut Option<usize>, landed: usize, key: WordleKey) -> (Option<String>, bool) {
+pub fn apply_key(
+    typed: &mut String,
+    rows: &mut Option<usize>,
+    landed: usize,
+    key: WordleKey,
+) -> (Option<String>, bool) {
     let mut changed = false;
     if *rows != Some(landed) {
         if rows.is_some() && !typed.is_empty() {
@@ -133,15 +140,30 @@ fn result_line(r: &WordleScore, tries: u8) -> String {
 /// `wordleGrid`: the shared squares, five to a row, one row per guess; nothing for a
 /// pattern shorter than one row.
 fn pips(pattern: &str) -> Option<Div> {
-    let cells: Vec<u8> = pattern.bytes().filter(|b| matches!(b, b'0'..=b'2')).map(|b| b - b'0').collect();
+    let cells: Vec<u8> = pattern
+        .bytes()
+        .filter(|b| matches!(b, b'0'..=b'2'))
+        .map(|b| b - b'0')
+        .collect();
     if cells.len() < WORD_LEN {
         return None;
     }
     let rows = cells.chunks(WORD_LEN).map(|row| {
-        div().flex().gap(px(2.)).children(row.iter().map(|m| div().size(px(8.)).bg(mark_colour(*m))))
+        div()
+            .flex()
+            .gap(px(2.))
+            .children(row.iter().map(|m| div().size(px(8.)).bg(mark_colour(*m))))
     });
     // 6px margin plus the 3px the old inline-grid gained from sitting on a line box.
-    Some(div().mt(px(9.)).flex().flex_col().items_center().gap(px(2.)).children(rows))
+    Some(
+        div()
+            .mt(px(9.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(2.))
+            .children(rows),
+    )
 }
 
 fn mark_colour(m: u8) -> gpui_kit::Rgba {
@@ -159,14 +181,24 @@ fn card_button(snap: &AppSnapshot, day: u32, action: &str, progress: u8) -> Btn 
     let open = snap
         .app
         .listener(|app, _: &ClickEvent, window, cx| app.open_dialog(Dialog::Wordle, window, cx));
-    let btn = |label: String, icon: Icon, kind: BtnKind| Btn::new(("wdl-btn", day), label).icon(icon).kind(kind);
+    let btn = |label: String, icon: Icon, kind: BtnKind| {
+        Btn::new(("wdl-btn", day), label).icon(icon).kind(kind)
+    };
     match action {
         "play" => btn("Play today's puzzle".into(), Icon::Play, BtnKind::Accent).on_click(open),
-        "continue" => {
-            btn(format!("Continue \u{00b7} {progress}/{tries}"), Icon::Play, BtnKind::Accent).on_click(open)
-        }
+        "continue" => btn(
+            format!("Continue \u{00b7} {progress}/{tries}"),
+            Icon::Play,
+            BtnKind::Accent,
+        )
+        .on_click(open),
         "done" => btn("Show the board".into(), Icon::Tiles, BtnKind::Ghost).on_click(open),
-        "waiting" => btn("Today's word has not arrived yet".into(), Icon::Tiles, BtnKind::Plain).disabled(true),
+        "waiting" => btn(
+            "Today's word has not arrived yet".into(),
+            Icon::Tiles,
+            BtnKind::Plain,
+        )
+        .disabled(true),
         _ => btn("Standings".into(), Icon::Tiles, BtnKind::Ghost).on_click(open),
     }
 }
@@ -174,7 +206,12 @@ fn card_button(snap: &AppSnapshot, day: u32, action: &str, progress: u8) -> Btn 
 /// The puzzle-of-the-day card in the log (`wordleCard`). Today's card leads with its
 /// button; a past day leads with the scores and keeps a small Standings button under them.
 /// The others' squares stay hidden until your own game of today is over.
-pub fn render_card(snap: &AppSnapshot, item: &TimelineItem, _window: &mut Window, _cx: &mut App) -> AnyElement {
+pub fn render_card(
+    snap: &AppSnapshot,
+    item: &TimelineItem,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> AnyElement {
     let TimelineItem::Wordle {
         day,
         at,
@@ -206,28 +243,39 @@ pub fn render_card(snap: &AppSnapshot, item: &TimelineItem, _window: &mut Window
                 .flex_col()
                 .items_center()
                 .text_size(px(11.5))
-                .child(
-                    div()
-                        .w_full()
-                        .text_center()
-                        .truncate()
-                        .child(if r.mine { "You".to_string() } else { r.name.clone() }),
-                )
+                .child(div().w_full().text_center().truncate().child(if r.mine {
+                    "You".to_string()
+                } else {
+                    r.name.clone()
+                }))
                 .child(
                     div()
                         .mt(px(1.))
                         .text_color(if won { theme::ON_INVERT } else { c::SILVER })
                         .child(result_line(r, tries)),
                 )
-                .when_some(spoilers.then(|| pips(&r.pattern)).flatten(), |d, grid| d.child(grid))
+                .when_some(spoilers.then(|| pips(&r.pattern)).flatten(), |d, grid| {
+                    d.child(grid)
+                })
         }))
     });
 
     let note: Option<String> = if results.is_empty() {
-        Some(if past { "Nobody played this one." } else { "Nobody has played yet today." }.into())
+        Some(
+            if past {
+                "Nobody played this one."
+            } else {
+                "Nobody has played yet today."
+            }
+            .into(),
+        )
     } else if !scored {
         let first = &results[0];
-        let who = if first.mine { "You".to_string() } else { first.name.clone() };
+        let who = if first.mine {
+            "You".to_string()
+        } else {
+            first.name.clone()
+        };
         Some(format!(
             "{who} played alone, so this day is worth no point yet. It counts as soon as somebody else joins in."
         ))
@@ -248,7 +296,11 @@ pub fn render_card(snap: &AppSnapshot, item: &TimelineItem, _window: &mut Window
         .border_color(c::SPACE)
         .text_color(c::PAPER)
         .child(Icon::Tiles.size(14.))
-        .child(div().text_size(px(12.)).child(card_title(*number).to_uppercase()))
+        .child(
+            div()
+                .text_size(px(12.))
+                .child(card_title(*number).to_uppercase()),
+        )
         .child(
             div()
                 .ml_auto()
@@ -261,8 +313,12 @@ pub fn render_card(snap: &AppSnapshot, item: &TimelineItem, _window: &mut Window
         .p(px(10.))
         .flex()
         .flex_col()
-        .when(!past, |d| d.child(card_button(snap, day, action, *progress).full_width()))
-        .when_some(scores, |d, scores| d.child(scores.when(!past, |s| s.mt(px(10.)))))
+        .when(!past, |d| {
+            d.child(card_button(snap, day, action, *progress).full_width())
+        })
+        .when_some(scores, |d, scores| {
+            d.child(scores.when(!past, |s| s.mt(px(10.))))
+        })
         .when_some(note, |d, note| {
             d.child(
                 div()
@@ -346,7 +402,11 @@ fn board(w: &WordleState, typed: &str) -> Div {
     let board = w.board.as_ref();
     let rows = board.map(|b| b.rows.as_slice()).unwrap_or_default();
     let running = board.is_some_and(|b| !b.done);
-    let live: Vec<char> = if running { typed.chars().collect() } else { Vec::new() };
+    let live: Vec<char> = if running {
+        typed.chars().collect()
+    } else {
+        Vec::new()
+    };
     div()
         .flex()
         .flex_col()
@@ -355,10 +415,22 @@ fn board(w: &WordleState, typed: &str) -> Div {
         .children((0..w.tries as usize).map(|r| {
             div().flex().gap(px(5.)).children((0..WORD_LEN).map(|col| {
                 if let Some(row) = rows.get(r) {
-                    let letter = row.word.chars().nth(col).map(String::from).unwrap_or_default();
-                    cell(letter, Some(row.marks.get(col).copied().unwrap_or(0)), false)
+                    let letter = row
+                        .word
+                        .chars()
+                        .nth(col)
+                        .map(String::from)
+                        .unwrap_or_default();
+                    cell(
+                        letter,
+                        Some(row.marks.get(col).copied().unwrap_or(0)),
+                        false,
+                    )
                 } else if r == rows.len() && running {
-                    let letter = live.get(col).map(|ch| ch.to_ascii_uppercase().to_string()).unwrap_or_default();
+                    let letter = live
+                        .get(col)
+                        .map(|ch| ch.to_ascii_uppercase().to_string())
+                        .unwrap_or_default();
                     cell(letter, None, true)
                 } else {
                     cell(String::new(), None, false)
@@ -405,7 +477,11 @@ fn status(w: &WordleState) -> Vec<Div> {
             .seconds
             .map(|s| format!(", in {}", format::fmt_clock(s)))
             .unwrap_or_default();
-        return vec![line(format!("Solved in {} of {}{clock}.", board.rows.len(), w.tries), None, false)];
+        return vec![line(
+            format!("Solved in {} of {}{clock}.", board.rows.len(), w.tries),
+            None,
+            false,
+        )];
     }
     if board.done {
         let solution = board.solution.clone().unwrap_or_default();
@@ -416,7 +492,11 @@ fn status(w: &WordleState) -> Vec<Div> {
     if let Some(e) = &w.error {
         return vec![line(e.clone(), None, true)];
     }
-    vec![line(format!("Guess {} of {}.", board.rows.len() + 1, w.tries), None, false)]
+    vec![line(
+        format!("Guess {} of {}.", board.rows.len() + 1, w.tries),
+        None,
+        false,
+    )]
 }
 
 /// `wordleKeys`: the on-screen keyboard, only while a game runs.
@@ -436,7 +516,10 @@ fn keyboard(snap: &AppSnapshot, w: &WordleState) -> Option<Div> {
             .border_1()
             .text_size(px(if wide { 11. } else { 12.5 }))
             .cursor_pointer()
-            .on_click(snap.app.listener(move |app, _: &ClickEvent, _, cx| press(app, k, cx)));
+            .on_click(
+                snap.app
+                    .listener(move |app, _: &ClickEvent, _, cx| press(app, k, cx)),
+            );
         let d = match mark {
             Some(0) => d
                 .bg(theme::WDL_MISS)
@@ -444,17 +527,35 @@ fn keyboard(snap: &AppSnapshot, w: &WordleState) -> Option<Div> {
                 .text_color(c::SILVER)
                 // A ruled-out letter is half-density dither, not faded: it stays readable.
                 .child(theme::dither(Dither::Half, c::SPACE, 2.)),
-            Some(m) => d.bg(mark_colour(m)).border_color(mark_colour(m)).text_color(theme::ON_INVERT),
-            None => d.bg(c::SPACE).border_color(theme::BORDER_STRONG).text_color(theme::TEXT),
+            Some(m) => d
+                .bg(mark_colour(m))
+                .border_color(mark_colour(m))
+                .text_color(theme::ON_INVERT),
+            None => d
+                .bg(c::SPACE)
+                .border_color(theme::BORDER_STRONG)
+                .text_color(theme::TEXT),
         };
-        d.hover(|s| s.bg(c::PAPER).border_color(c::PAPER).text_color(theme::ON_INVERT))
-            .child(div().relative().child(label.to_uppercase()))
+        d.hover(|s| {
+            s.bg(c::PAPER)
+                .border_color(c::PAPER)
+                .text_color(theme::ON_INVERT)
+        })
+        .child(div().relative().child(label.to_uppercase()))
     };
     let rows = KEYS.iter().enumerate().map(|(i, row)| {
         div()
             .flex()
             .gap(px(4.))
-            .when(i == 2, |d| d.child(key("wkey-enter".into(), "Enter".into(), None, true, WordleKey::Enter)))
+            .when(i == 2, |d| {
+                d.child(key(
+                    "wkey-enter".into(),
+                    "Enter".into(),
+                    None,
+                    true,
+                    WordleKey::Enter,
+                ))
+            })
             .children(row.chars().map(|ch| {
                 key(
                     format!("wkey-{ch}").into(),
@@ -464,9 +565,25 @@ fn keyboard(snap: &AppSnapshot, w: &WordleState) -> Option<Div> {
                     WordleKey::Letter(ch),
                 )
             }))
-            .when(i == 2, |d| d.child(key("wkey-back".into(), "Back".into(), None, true, WordleKey::Back)))
+            .when(i == 2, |d| {
+                d.child(key(
+                    "wkey-back".into(),
+                    "Back".into(),
+                    None,
+                    true,
+                    WordleKey::Back,
+                ))
+            })
     });
-    Some(div().mt(px(12.)).flex().flex_col().items_center().gap(px(4.)).children(rows))
+    Some(
+        div()
+            .mt(px(12.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(4.))
+            .children(rows),
+    )
 }
 
 /// `wordleStandings`.
@@ -476,7 +593,13 @@ fn standings(w: &WordleState) -> Div {
         .pt(px(10.))
         .border_t_1()
         .border_color(theme::BORDER)
-        .child(div().mb(px(6.)).text_size(px(11.)).text_color(c::SILVER).child("STANDINGS"));
+        .child(
+            div()
+                .mb(px(6.))
+                .text_size(px(11.))
+                .text_color(c::SILVER)
+                .child("STANDINGS"),
+        );
     if w.standings.is_empty() {
         return wrap.child(
             div()
@@ -498,17 +621,40 @@ fn standings(w: &WordleState) -> Div {
             .py(px(4.))
             .child(div().flex_1().min_w_0().child(name))
             .child(div().min_w(px(26.)).flex().justify_end().child(pts))
-            .child(div().min_w(px(46.)).flex().justify_end().text_color(c::SILVER).child(played))
-            .child(div().min_w(px(46.)).flex().justify_end().text_color(c::SILVER).child(solved))
+            .child(
+                div()
+                    .min_w(px(46.))
+                    .flex()
+                    .justify_end()
+                    .text_color(c::SILVER)
+                    .child(played),
+            )
+            .child(
+                div()
+                    .min_w(px(46.))
+                    .flex()
+                    .justify_end()
+                    .text_color(c::SILVER)
+                    .child(solved),
+            )
     };
     wrap.child(
-        row("NAME".into(), "PTS".into(), "PLAYED".into(), "SOLVED".into())
-            .text_size(px(10.5))
-            .text_color(c::SILVER),
+        row(
+            "NAME".into(),
+            "PTS".into(),
+            "PLAYED".into(),
+            "SOLVED".into(),
+        )
+        .text_size(px(10.5))
+        .text_color(c::SILVER),
     )
     .children(w.standings.iter().map(|st| {
         row(
-            if st.mine { "You".into() } else { st.name.clone() },
+            if st.mine {
+                "You".into()
+            } else {
+                st.name.clone()
+            },
             st.points.to_string(),
             st.played.to_string(),
             st.solved.to_string(),
@@ -537,7 +683,12 @@ pub fn render_panel(snap: &AppSnapshot, _window: &mut Window, _cx: &mut App) -> 
 mod tests {
     use super::*;
 
-    fn keys(typed: &mut String, rows: &mut Option<usize>, landed: usize, ks: &str) -> Option<String> {
+    fn keys(
+        typed: &mut String,
+        rows: &mut Option<usize>,
+        landed: usize,
+        ks: &str,
+    ) -> Option<String> {
         let mut sent = None;
         for ch in ks.chars() {
             let k = match ch {
@@ -579,6 +730,10 @@ mod tests {
         assert_eq!(rows, Some(3));
 
         v.wordle_rows = None;
-        assert_eq!(typed_row(&v, 3), "cranx", "never reconciled counts as current");
+        assert_eq!(
+            typed_row(&v, 3),
+            "cranx",
+            "never reconciled counts as current"
+        );
     }
 }

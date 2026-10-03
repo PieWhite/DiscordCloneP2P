@@ -21,13 +21,19 @@ use super::wordle::{self, WordleKey};
 use super::{AppHandle, AppSnapshot, ConfirmAction, ContextMenu, Dialog, PromptAction};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{
-    div, img, prelude::FluentBuilder, px, relative, size, AnyElement, App, AppContext, ClickEvent, Context, Entity,
-    Focusable, InteractiveElement, IntoElement, KeyDownEvent, ObjectFit, ParentElement, Pixels, SharedString, Size,
-    StatefulInteractiveElement, Styled, StyledImage, Subscription, Window,
+    div, img, prelude::FluentBuilder, px, relative, size, AnyElement, App, AppContext, ClickEvent,
+    Context, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ObjectFit,
+    ParentElement, Pixels, SharedString, Size, StatefulInteractiveElement, Styled, StyledImage,
+    Subscription, Window,
 };
 use std::path::{Path, PathBuf};
 
-pub fn render_dialog(snap: &AppSnapshot, dialog: &Dialog, window: &mut Window, cx: &mut App) -> AnyElement {
+pub fn render_dialog(
+    snap: &AppSnapshot,
+    dialog: &Dialog,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     match dialog {
         Dialog::Confirm {
             title,
@@ -56,15 +62,28 @@ pub fn render_dialog(snap: &AppSnapshot, dialog: &Dialog, window: &mut Window, c
 
 /// The old frontend had no context menu: a right-click on a sub-channel opens the rename
 /// prompt directly (slice A). Nothing opens this layer, so it draws nothing.
-pub fn render_context_menu(_snap: &AppSnapshot, _menu: &ContextMenu, _window: &mut Window, _cx: &mut App) -> AnyElement {
+pub fn render_context_menu(
+    _snap: &AppSnapshot,
+    _menu: &ContextMenu,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> AnyElement {
     div().into_any_element()
 }
 
-fn close_button(snap: &AppSnapshot, id: &'static str, label: &'static str, kind: BtnKind) -> AnyElement {
+fn close_button(
+    snap: &AppSnapshot,
+    id: &'static str,
+    label: &'static str,
+    kind: BtnKind,
+) -> AnyElement {
     Btn::new(id, label)
         .kind(kind)
         .dialog()
-        .on_click(snap.app.listener(|app, _: &ClickEvent, window, cx| app.close_dialog(window, cx)))
+        .on_click(
+            snap.app
+                .listener(|app, _: &ClickEvent, window, cx| app.close_dialog(window, cx)),
+        )
         .into_any_element()
 }
 
@@ -82,10 +101,21 @@ fn paragraph(text: impl Into<SharedString>) -> impl IntoElement {
 
 // ------------------------------------------------------------------ confirm
 
-fn confirm(snap: &AppSnapshot, title: &str, text: &str, ok: &str, danger: bool, action: &ConfirmAction) -> AnyElement {
+fn confirm(
+    snap: &AppSnapshot,
+    title: &str,
+    text: &str,
+    ok: &str,
+    danger: bool,
+    action: &ConfirmAction,
+) -> AnyElement {
     let action = action.clone();
     let yes = Btn::new("confirm-yes", ok.to_string())
-        .kind(if danger { BtnKind::Danger } else { BtnKind::Accent })
+        .kind(if danger {
+            BtnKind::Danger
+        } else {
+            BtnKind::Accent
+        })
         .dialog()
         .on_click(snap.app.listener(move |app, _: &ClickEvent, window, cx| {
             app.close_dialog(window, cx);
@@ -113,7 +143,13 @@ struct PromptField {
 }
 
 /// `submitPrompt`: close first, then act; an empty value does nothing (`PromptAction::run`).
-fn submit_prompt(app: &AppHandle, action: &PromptAction, value: &str, window: &mut Window, cx: &mut App) {
+fn submit_prompt(
+    app: &AppHandle,
+    action: &PromptAction,
+    value: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     app.update(cx, |app, cx| {
         app.close_dialog(window, cx);
         let ui = app.ui().clone();
@@ -140,12 +176,16 @@ fn prompt(
         let value = value.to_string();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
         let (app, action) = (snap.app.clone(), action.clone());
-        let enter = cx.subscribe_in(&input, window, move |_, input, ev: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = ev {
-                let value = input.read(cx).value().to_string();
-                submit_prompt(&app, &action, &value, window, cx);
-            }
-        });
+        let enter = cx.subscribe_in(
+            &input,
+            window,
+            move |_, input, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    let value = input.read(cx).value().to_string();
+                    submit_prompt(&app, &action, &value, window, cx);
+                }
+            },
+        );
         PromptField {
             input,
             primed: false,
@@ -179,8 +219,14 @@ fn prompt(
         .items_center()
         .px(px(10.))
         .border_1()
-        .border_color(if focused { theme::ACCENT } else { theme::BORDER_STRONG })
-        .when(!focused, |d| d.hover(|s| s.border_color(theme::BORDER_INPUT)))
+        .border_color(if focused {
+            theme::ACCENT
+        } else {
+            theme::BORDER_STRONG
+        })
+        .when(!focused, |d| {
+            d.hover(|s| s.border_color(theme::BORDER_INPUT))
+        })
         .bg(c::SPACE)
         .child(
             Input::new(&input)
@@ -251,8 +297,19 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
                     .text_color(c::SILVER)
                     .cursor_pointer()
                     .hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT))
-                    .child(pointer().opacity(0.).group_hover(group, |st| st.opacity(1.)))
-                    .child((if s.is_window { Icon::File } else { Icon::Monitor }).size(15.))
+                    .child(
+                        pointer()
+                            .opacity(0.)
+                            .group_hover(group, |st| st.opacity(1.)),
+                    )
+                    .child(
+                        (if s.is_window {
+                            Icon::File
+                        } else {
+                            Icon::Monitor
+                        })
+                        .size(15.),
+                    )
                     .child(div().min_w_0().truncate().child(s.name.clone()))
                     .on_click(snap.app.listener(move |app, _: &ClickEvent, window, cx| {
                         app.close_dialog(window, cx);
@@ -279,7 +336,9 @@ pub fn fit_within(image: Size<Pixels>, bounds: Size<Pixels>) -> Size<Pixels> {
     if image.width <= px(0.) || image.height <= px(0.) {
         return bounds;
     }
-    let scale = (bounds.width / image.width).min(bounds.height / image.height).min(1.);
+    let scale = (bounds.width / image.width)
+        .min(bounds.height / image.height)
+        .min(1.);
     size(image.width * scale, image.height * scale)
 }
 
@@ -321,14 +380,20 @@ fn lightbox(
         .flatten();
 
     let picture = allowed.then(|| {
-        let image = img(src.to_path_buf()).id("lightbox-img").flex_none().on_click(toggle_size(&snap.app));
+        let image = img(src.to_path_buf())
+            .id("lightbox-img")
+            .flex_none()
+            .on_click(toggle_size(&snap.app));
         match (natural, actual_size) {
             (Some(n), true) => image.w(n.width).h(n.height),
             (Some(n), false) => {
                 let fitted = fit_within(n, bounds);
                 image.w(fitted.width).h(fitted.height)
             }
-            (None, _) => image.w(bounds.width).h(bounds.height).object_fit(ObjectFit::Contain),
+            (None, _) => image
+                .w(bounds.width)
+                .h(bounds.height)
+                .object_fit(ObjectFit::Contain),
         }
     });
 
@@ -342,7 +407,9 @@ fn lightbox(
         .max_w(bounds.width)
         .max_h(bounds.height)
         .bg(c::SPACE)
-        .when(actual_size, |d| d.overflow_scroll().items_start().justify_start())
+        .when(actual_size, |d| {
+            d.overflow_scroll().items_start().justify_start()
+        })
         .when(!actual_size, |d| d.items_center().justify_center())
         .on_click(close_beside)
         .children(picture);
@@ -355,10 +422,17 @@ fn lightbox(
         .px(px(14.))
         .py(px(12.))
         .child(
-            Btn::new("lightbox-size", if actual_size { "Fit to window" } else { "Actual size" })
-                .kind(BtnKind::Ghost)
-                .dialog()
-                .on_click(toggle_size(&snap.app)),
+            Btn::new(
+                "lightbox-size",
+                if actual_size {
+                    "Fit to window"
+                } else {
+                    "Actual size"
+                },
+            )
+            .kind(BtnKind::Ghost)
+            .dialog()
+            .on_click(toggle_size(&snap.app)),
         )
         .child(
             Btn::new("lightbox-open", "Open")
@@ -370,7 +444,12 @@ fn lightbox(
                     }
                 })),
         )
-        .child(close_button(snap, "lightbox-close", "Close", BtnKind::Accent));
+        .child(close_button(
+            snap,
+            "lightbox-close",
+            "Close",
+            BtnKind::Accent,
+        ));
 
     let window_frame = WindowFrame::new(name.to_string())
         .width(None)
@@ -404,7 +483,12 @@ fn wordle_dialog(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyEl
         .width(Some(340.))
         .max_h(viewport.height - px(32.))
         .child(panel)
-        .foot(vec![close_button(snap, "wordle-close", "Close", BtnKind::Accent)]);
+        .foot(vec![close_button(
+            snap,
+            "wordle-close",
+            "Close",
+            BtnKind::Accent,
+        )]);
     // Typing goes to the board while its window is open; the drawn keys take the same path.
     modal_layer(frame, &snap.dialog_focus, None)
         .on_key_down(snap.app.listener(|app, ev: &KeyDownEvent, _, cx| {
@@ -426,11 +510,16 @@ mod tests {
     fn fit_bounds_both_dimensions_and_never_enlarges() {
         let bounds = size(px(1128.), px(570.));
         let landscape = fit_within(size(px(1440.), px(810.)), bounds);
-        assert!((f32::from(landscape.height) - 570.).abs() < 0.01 && f32::from(landscape.width) < 1128.);
+        assert!(
+            (f32::from(landscape.height) - 570.).abs() < 0.01 && f32::from(landscape.width) < 1128.
+        );
         let portrait = fit_within(size(px(900.), px(1200.)), bounds);
         assert!((f32::from(portrait.height) - 570.).abs() < 0.01);
         assert!((f32::from(portrait.width) - 427.5).abs() < 0.01);
         let small = fit_within(size(px(200.), px(100.)), bounds);
-        assert_eq!((f32::from(small.width), f32::from(small.height)), (200., 100.));
+        assert_eq!(
+            (f32::from(small.width), f32::from(small.height)),
+            (200., 100.)
+        );
     }
 }
