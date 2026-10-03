@@ -617,7 +617,7 @@ impl Render for ComposerPane {
                 d.child(render_error(&snap, error))
             })
             .when_some(typing_text(&names), |d, text| {
-                d.child(render_typing(text, window, cx))
+                d.child(render_typing(text, &self.app, window, cx))
             })
             .child(
                 div()
@@ -731,10 +731,21 @@ fn render_error(snap: &AppSnapshot, error: String) -> impl IntoElement {
         )
 }
 
-/// `renderTyping`: three stepping dots and the sentence. The dots are their own view, so
-/// their timer exists only while the line is drawn and stops with it.
-fn render_typing(text: String, window: &mut Window, cx: &mut App) -> impl IntoElement {
-    let dots = window.use_keyed_state("typing-dots", cx, |_, cx| TypingDots::new(cx));
+/// `renderTyping`: three stepping dots and the sentence. The dots are their own view with
+/// their own timer, which runs only while somebody types: it stops by itself when the line
+/// empties, even in a hidden window where no frame drops the view.
+fn render_typing(
+    text: String,
+    app: &AppHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let dots = window.use_keyed_state("typing-dots", cx, |_, _| TypingDots {
+        app: app.clone(),
+        step: 0,
+        ticker: None,
+    });
+    dots.update(cx, |dots, cx| dots.keep_ticking(cx));
     div()
         .flex()
         .items_center()
@@ -748,28 +759,38 @@ fn render_typing(text: String, window: &mut Window, cx: &mut App) -> impl IntoEl
 }
 
 struct TypingDots {
+    app: AppHandle,
     step: u64,
-    _ticker: Task<()>,
+    /// `None` once the loop below has ended (nobody typing); the next render restarts it.
+    ticker: Option<Task<()>>,
 }
 
 impl TypingDots {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let ticker = cx.spawn(async move |this, cx| loop {
+    fn keep_ticking(&mut self, cx: &mut Context<Self>) {
+        if self.ticker.is_some() {
+            return;
+        }
+        self.ticker = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(BLINK_STEP_MS))
                 .await;
-            let stepped = this.update(cx, |dots, cx| {
-                dots.step = dots.step.wrapping_add(1);
-                cx.notify();
+            let typing = this.update(cx, |dots, cx| {
+                let typing = dots
+                    .app
+                    .snapshot(cx)
+                    .is_some_and(|s| !s.typing_names().is_empty());
+                if typing {
+                    dots.step = dots.step.wrapping_add(1);
+                    cx.notify();
+                } else {
+                    dots.ticker = None;
+                }
+                typing
             });
-            if stepped.is_err() {
+            if !matches!(typing, Ok(true)) {
                 return;
             }
-        });
-        TypingDots {
-            step: 0,
-            _ticker: ticker,
-        }
+        }));
     }
 }
 
@@ -1498,6 +1519,43 @@ mod window_tests {
             vec![(root_op.to_op_id().unwrap(), "oud nieuw".to_string())]
         );
         assert!(h.app.read_with(cx, |app, _| app.v.editing.is_none()));
+    }
+
+    /// The blink costs nothing once nobody types, even if no frame is drawn to drop it.
+    /// Revert to see it fail: make the ticker loop ignore `typing`.
+    #[gpui_kit::test]
+    fn the_typing_dots_stop_when_nobody_types(cx: &mut TestAppContext) {
+        let h = Harness::new(cx);
+        let set_typing = |who: Vec<String>, cx: &mut TestAppContext| {
+            h.app.update(cx, |app, _| {
+                let mut s = (*app.s).clone();
+                s.typing.insert("general".into(), who);
+                app.s = Arc::new(s);
+            })
+        };
+        set_typing(vec![SANDER.into()], cx);
+        let handle = h.app.read_with(cx, |app, _| app.handle.clone());
+        let dots = cx.new(|_| TypingDots {
+            app: handle,
+            step: 0,
+            ticker: None,
+        });
+        dots.update(cx, |d, cx| d.keep_ticking(cx));
+        cx.executor()
+            .advance_clock(Duration::from_millis(BLINK_STEP_MS * 3));
+        cx.run_until_parked();
+        let stepped = dots.read_with(cx, |d, _| d.step);
+        assert!(stepped >= 2, "{stepped}");
+
+        set_typing(Vec::new(), cx);
+        cx.executor()
+            .advance_clock(Duration::from_millis(BLINK_STEP_MS * 3));
+        cx.run_until_parked();
+        assert!(
+            dots.read_with(cx, |d, _| d.ticker.is_none()),
+            "the ticker ended"
+        );
+        assert!(dots.read_with(cx, |d, _| d.step) <= stepped + 1);
     }
 
     /// Revert to see it fail: return `false` from `paste_image` for images.
