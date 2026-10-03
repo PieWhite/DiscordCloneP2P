@@ -21,9 +21,11 @@ use gpui_kit::{
 use std::ops::Range;
 
 /// `.msg-text { max-width: 72ch }` at 15px in the bitmap face, whose ASCII is half-width
-/// (7.5px). The extra half pixel keeps a line of exactly 72 characters from wrapping on
-/// rounding, as it did not in the webview.
-pub const TEXT_MEASURE: f32 = 540.5;
+/// (7.5px). GPUI's wrapper counts the space after the last word of a line, so the measure
+/// holds 72 characters plus that space (547.5px) but not 73 plus one (555px).
+pub const TEXT_MEASURE: f32 = 548.;
+/// `.code { max-width: 72ch }`, a box and not a line of text: the plain 540px.
+const CODE_MEASURE: f32 = 540.;
 
 // ------------------------------------------------------------------ parsing
 
@@ -344,7 +346,50 @@ pub fn render_body(snap: &AppSnapshot, key: &SharedString, text: &str, mentions_
         .collect()
 }
 
+/// `.mention { padding: 0 3px }` has no counterpart in a text run, so the padding is a
+/// thin plus a hair space on each side (about 3px at 15px in the fallback face; the
+/// bitmap face has neither), drawn on the plate and left out of a copy. Returns the text
+/// to draw, the spans moved along, the plate ranges (padding included) and the byte
+/// offsets of the inserted characters.
+pub fn pad_mentions(text: &str, spans: Vec<Span>) -> (String, Vec<Span>, Vec<Range<usize>>, Vec<usize>) {
+    const PAD: [char; 2] = ['\u{2009}', '\u{200A}'];
+    let mut out = String::with_capacity(text.len() + spans.len() * 12);
+    let mut moved = Vec::with_capacity(spans.len());
+    let mut plates = Vec::new();
+    let mut pads = Vec::new();
+    let mut pad = |out: &mut String| {
+        for ch in PAD {
+            pads.push(out.len());
+            out.push(ch);
+        }
+    };
+    let mut at = 0;
+    for span in spans {
+        out.push_str(&text[at..span.range.start]);
+        let mention = matches!(span.kind, SpanKind::Mention | SpanKind::MentionSelf);
+        let plate_start = out.len();
+        if mention {
+            pad(&mut out);
+        }
+        let start = out.len();
+        out.push_str(&text[span.range.clone()]);
+        let end = out.len();
+        if mention {
+            pad(&mut out);
+            plates.push(plate_start..out.len());
+        }
+        at = span.range.end;
+        moved.push(Span {
+            range: start..end,
+            kind: span.kind,
+        });
+    }
+    out.push_str(&text[at..]);
+    (out, moved, plates, pads)
+}
+
 fn render_text(key: &SharedString, i: usize, text: String, spans: Vec<Span>) -> AnyElement {
+    let (text, spans, plates, pads) = pad_mentions(&text, spans);
     let highlights: Vec<(Range<usize>, HighlightStyle)> = spans.iter().map(|s| (s.range.clone(), span_style(&s.kind))).collect();
     let links = spans
         .iter()
@@ -352,11 +397,6 @@ fn render_text(key: &SharedString, i: usize, text: String, spans: Vec<Span>) -> 
             SpanKind::Link(url) => Some((s.range.clone(), SharedString::from(url.clone()))),
             _ => None,
         })
-        .collect();
-    let plates = spans
-        .iter()
-        .filter(|s| matches!(s.kind, SpanKind::Mention | SpanKind::MentionSelf))
-        .map(|s| s.range.clone())
         .collect();
     div()
         .max_w(px(TEXT_MEASURE))
@@ -367,7 +407,8 @@ fn render_text(key: &SharedString, i: usize, text: String, spans: Vec<Span>) -> 
             RichText::new(ElementId::NamedInteger(key.clone(), i as u64), text)
                 .highlights(highlights)
                 .links(links)
-                .plates(plates, c::SPACE),
+                .plates(plates, c::SPACE)
+                .no_copy(pads),
         )
         .into_any_element()
 }
@@ -379,7 +420,7 @@ fn render_code(key: &SharedString, i: usize, info: String, code: String, tokens:
     div()
         .mt(px(6.))
         .mb(px(2.))
-        .max_w(px(TEXT_MEASURE))
+        .max_w(px(CODE_MEASURE))
         .border_1()
         .border_color(theme::BORDER)
         .bg(theme::BG_CODE)
@@ -499,6 +540,21 @@ mod tests {
                 ("id12", Tok::Key),
             ]
         );
+    }
+
+    /// The padding goes around mentions only, the spans move with it and the plates take
+    /// it in. Drop the second `pad` call and the plate ends at the name.
+    #[test]
+    fn mentions_get_padding_links_do_not() {
+        let text = "@Sander kijk https://a.nl";
+        let spans = inline_spans(text, &["Sander"], "Rick", false);
+        let (out, moved, plates, pads) = pad_mentions(text, spans);
+        let p = "\u{2009}\u{200A}";
+        assert_eq!(out, format!("{p}@Sander{p} kijk https://a.nl"));
+        assert_eq!(&out[moved[0].range.clone()], "@Sander");
+        assert_eq!(&out[moved[1].range.clone()], "https://a.nl");
+        assert_eq!(&out[plates[0].clone()], format!("{p}@Sander{p}"));
+        assert_eq!(pads, [0, 3, 13, 16]);
     }
 
     #[test]

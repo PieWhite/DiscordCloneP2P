@@ -123,6 +123,10 @@ fn item_op(item: &TimelineItem) -> Option<&OpRef> {
     }
 }
 
+fn item_mine(item: &TimelineItem) -> bool {
+    matches!(item, TimelineItem::Message { mine: true, .. } | TimelineItem::File { mine: true, .. })
+}
+
 // ------------------------------------------------------------------ the pane
 
 /// A YouTube preview as the pane knows it: asked and waiting, or answered (`None` stays a
@@ -217,9 +221,16 @@ impl TimelinePane {
                 let suffix = (0..max - prefix)
                     .take_while(|&k| same_at(old_tl.len() - 1 - k, new_tl.len() - 1 - k))
                     .count();
+                // What I just sent lands at the end: show it, wherever the reader was, as
+                // the webview did after sending (the composer cannot reach this list).
+                let sent = new_tl
+                    .last()
+                    .filter(|i| item_mine(i))
+                    .and_then(item_op)
+                    .is_some_and(|op| !old_tl.iter().rev().any(|o| item_op(o) == Some(op)));
                 self.list
                     .splice(offset + prefix..offset + old_tl.len() - suffix, new_tl.len() - prefix - suffix);
-                if pinned {
+                if pinned || sent {
                     self.list.scroll_to_end();
                 }
             }
@@ -464,10 +475,22 @@ impl Render for TimelinePane {
                     .right_0()
                     .bottom_0()
                     .w(px(12.))
-                    .child(Scrollbar::vertical(&self.list).id("timeline-scrollbar").mode(ScrollbarMode::Always)),
+                    .child(timeline_scrollbar(&self.list)),
             )
             .into_any_element()
     }
+}
+
+/// The thin steel elevator the webview drew (4px, 3px off the edge), silver under the
+/// pointer. Same width in every state, so the kit has no width animation to run.
+fn timeline_scrollbar(list: &ListState) -> Scrollbar {
+    let thumb = |colour: gpui_kit::Rgba| {
+        move |t: gpui_kit::base::ScrollbarThumbStyle| t.bg(colour).width(px(4.)).inset(px(3.)).radius(px(0.))
+    };
+    Scrollbar::vertical(list)
+        .id("timeline-scrollbar")
+        .mode(ScrollbarMode::Always)
+        .styles(|s| s.thumb(thumb(c::STEEL)).thumb_hover(thumb(c::SILVER)).thumb_active(thumb(c::SILVER)))
 }
 
 // ------------------------------------------------------------------ head

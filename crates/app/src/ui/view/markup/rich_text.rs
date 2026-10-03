@@ -17,12 +17,10 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, SharedString,
     StyledText, Subscription, TextLayout, Window,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
-/// `.mention { padding: 0 3px }`: the plate reaches this far past the glyphs.
-const PLATE_PAD: f32 = 3.;
 
 pub struct RichText {
     id: ElementId,
@@ -31,6 +29,9 @@ pub struct RichText {
     links: Rc<Vec<(Range<usize>, SharedString)>>,
     plates: Vec<Range<usize>>,
     plate_color: Hsla,
+    /// Byte offsets of characters that are layout only (the mention padding) and are left
+    /// out of what Copy puts on the clipboard.
+    no_copy: Rc<Vec<usize>>,
 }
 
 impl RichText {
@@ -43,6 +44,7 @@ impl RichText {
             links: Rc::new(Vec::new()),
             plates: Vec::new(),
             plate_color: c::SPACE.into(),
+            no_copy: Rc::new(Vec::new()),
         }
     }
 
@@ -64,6 +66,12 @@ impl RichText {
         self.plate_color = color.into();
         self
     }
+
+    /// Characters (by byte offset) that are drawn but never copied.
+    pub fn no_copy(mut self, offsets: Vec<usize>) -> Self {
+        self.no_copy = Rc::new(offsets);
+        self
+    }
 }
 
 /// What survives between frames: the selection participant, the subscription that
@@ -72,11 +80,13 @@ struct Retained {
     handle: TextSelectionHandle,
     _repaint: Subscription,
     pressed: Rc<Cell<Option<usize>>>,
+    copy: Rc<RefCell<String>>,
 }
 
 pub struct Layout {
     handle: TextSelectionHandle,
     pressed: Rc<Cell<Option<usize>>>,
+    copy: Rc<RefCell<String>>,
 }
 
 pub struct Prepaint {
@@ -182,16 +192,23 @@ impl Element for RichText {
                         },
                         cx,
                     );
+                    // What this run contributes to a copy, worked out at paint from the
+                    // selected ranges minus the layout-only characters.
+                    let copy = Rc::new(RefCell::new(String::new()));
+                    let source = copy.clone();
+                    handle.copy_with(move |_| source.borrow().clone(), cx);
                     Retained {
                         handle,
                         _repaint: repaint,
                         pressed: Rc::new(Cell::new(None)),
+                        copy,
                     }
                 });
                 retained.handle.set_fallback_copy_text(text.to_string(), cx);
                 let state = Layout {
                     handle: retained.handle.clone(),
                     pressed: retained.pressed.clone(),
+                    copy: retained.copy.clone(),
                 };
                 (state, retained)
             },
@@ -229,7 +246,6 @@ impl Element for RichText {
             .plates
             .iter()
             .flat_map(|r| line_rects(&layout, &self.text, r.clone()))
-            .map(|r| Bounds::new(point(r.origin.x - px(PLATE_PAD), r.origin.y), size(r.size.width + px(2. * PLATE_PAD), r.size.height)))
             .collect();
         let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
             .with_text_bounds(vec![bounds])
@@ -261,6 +277,15 @@ impl Element for RichText {
         if before != TextSelection::selected_text(window, cx) {
             window.refresh();
         }
+        let copied: String = projection
+            .ranges()
+            .iter()
+            .flatten()
+            .flat_map(|r| self.text[r.clone()].char_indices().map(move |(i, ch)| (r.start + i, ch)))
+            .filter(|(i, _)| !self.no_copy.contains(i))
+            .map(|(_, ch)| ch)
+            .collect();
+        *state.copy.borrow_mut() = copied;
 
         for plate in &prepaint.plates {
             window.paint_quad(quad(*plate, self.plate_color));

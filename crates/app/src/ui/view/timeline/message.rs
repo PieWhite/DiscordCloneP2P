@@ -254,7 +254,15 @@ fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super
         .map(|d| match snippet {
             Some(s) => d
                 .child(div().flex_none().text_color(c::PAPER).child(s.author_name.clone()))
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s.body.clone())),
+                // `white-space: nowrap` folded the parent's line breaks into spaces.
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(s.body.split_whitespace().collect::<Vec<_>>().join(" ")),
+                ),
             None => d.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child("Original message unavailable")),
         })
         .into_any_element()
@@ -588,8 +596,9 @@ pub(super) fn render_dm_intro(peer: &PeerState) -> Div {
         .child(avatar(&peer.name, peer.avatar, 40., None, false))
         .child(div().mt(px(10.)).mb(px(4.)).text_size(px(19.)).child(peer.name.clone()))
         .child(
+            // `max-width: 60ch` at 13px, plus the trailing space GPUI's wrapper counts.
             div()
-                .max_w(px(390.))
+                .max_w(px(397.))
                 .text_size(px(13.))
                 .line_height(relative(1.55))
                 .text_color(c::SILVER)
@@ -654,8 +663,9 @@ pub(super) fn render_empty(name: &str) -> Div {
                     .child(div().mt(px(8.)).w(px(96.)).child(theme::band(px(4.)))),
             )
             .child(
+                // `max-width: 44ch` at 13px, plus the trailing space GPUI's wrapper counts.
                 div()
-                    .max_w(px(286.))
+                    .max_w(px(293.))
                     .text_size(px(13.))
                     .line_height(relative(1.55))
                     .text_color(c::SILVER)

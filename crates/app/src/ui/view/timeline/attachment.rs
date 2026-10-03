@@ -315,7 +315,20 @@ fn render_shot(
                             cx,
                         )
                     }))
-                    .child(img(source).w_full().aspect_ratio(w as f32 / h as f32)),
+                    // The box takes the card's width and the picture's ratio; the image
+                    // fills it. On the image itself a relative width makes GPUI fall back
+                    // to the picture's own pixel height.
+                    .child(
+                        div().relative().w_full().aspect_ratio(w as f32 / h as f32).child(
+                            img(source)
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .aspect_ratio(w as f32 / h as f32)
+                                .object_fit(ObjectFit::Fill),
+                        ),
+                    ),
             )
             .child(
                 div()
@@ -357,7 +370,8 @@ pub(super) fn youtube_card(ctx: &RowCtx, key: &SharedString, id: &str, p: &Youtu
                     .h(px(90.))
                     .overflow_hidden()
                     .bg(c::SPACE)
-                    .child(img(thumb).size_full().object_fit(ObjectFit::Cover))
+                    // An explicit ratio, or the image's own 4:3 overrides the 90px height.
+                    .child(img(thumb).w(px(160.)).h(px(90.)).aspect_ratio(160. / 90.).object_fit(ObjectFit::Cover))
                     .child(
                         div()
                             .absolute()
