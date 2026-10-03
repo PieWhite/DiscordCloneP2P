@@ -33,7 +33,8 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
      `youtube.com/oembed` en `i.ytimg.com`, één keer per video, daarna van schijf
      (`<data>/youtube/`). **Het ophalen zit in de motor en nooit in het venster**: het
      venster tekent alleen van schijf (`Ui::image_path_allowed`), dus een bericht van een
-     peer kan geen verbinding uit het venster laten vertrekken. Mislukt het, dan blijft het een gewone link. Onderbouwing: beslissing 30.
+     peer kan geen verbinding uit het venster laten vertrekken. Mislukt het, dan blijft het
+     een gewone link. Onderbouwing: beslissing 30.
    - *2026-08-20:* `crates/app/src/wordle.rs` haalt het woord van de dag op bij
      `nytimes.com/svc/wordle/v2/<datum>.json`. **Eén GET per dag per peer**, daarna van
      schijf (`<data>/wordle.json`). Elke peer haalt het zelf op: geen peer die het voor de
@@ -320,7 +321,7 @@ cargo fmt --all
 cargo run -p fitcom-video --example mac_keten   # macOS: hele videoketen op loopback
 ./scripts/bundle-mac.sh              # macOS: FitCommunication.app + zip
 FITCOM_UI_FIXTURE=<map> cargo run -p fitcom    # fixturemodus, alleen debug
-FITCOM_DEBUG_VIEW="tab=audio" FITCOM_DEBUG_SIZE=980x720 FITCOM_UI_FIXTURE=<map> cargo run -p fitcom
+FITCOM_DEBUG_VIEW="view=settings;tab=audio" FITCOM_DEBUG_SIZE=980x720 FITCOM_UI_FIXTURE=<map> cargo run -p fitcom
                                      # zelfde, met beginstand (tab, dialoog, scroll) en maat
 ```
 
