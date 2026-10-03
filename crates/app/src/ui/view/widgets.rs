@@ -22,7 +22,8 @@ use super::format;
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Context, Div, ElementId, Entity,
     FocusHandle, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    RenderOnce, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
+    Refineable, RenderOnce, Rgba, SharedString, Stateful, StatefulInteractiveElement, StyleRefinement,
+    Styled, Window,
 };
 use std::rc::Rc;
 
@@ -217,6 +218,9 @@ impl RenderOnce for Btn {
             BtnKind::Ghost => (None, theme::TEXT, theme::BORDER_STRONG),
             BtnKind::Danger => (Some(c::SPACE), theme::DANGER_TEXT, theme::DANGER_LINE),
         };
+        // GPUI paints a box shadow under the element too, where CSS clips it to the outside:
+        // a ghost dialog button would read as void-filled. Dialogs are ink, so fill with ink.
+        let bg = bg.or(self.dialog.then_some(c::INK));
         let group: SharedString = format!("btn-{:?}", self.id).into();
         let enabled = !self.disabled;
         let kind = self.kind;
@@ -343,8 +347,10 @@ pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) 
 pub struct WindowFrame {
     title: SharedString,
     width: Option<Pixels>,
+    truncate_title: bool,
     children: Vec<AnyElement>,
     foot: Vec<AnyElement>,
+    style: StyleRefinement,
 }
 
 impl WindowFrame {
@@ -352,9 +358,16 @@ impl WindowFrame {
         WindowFrame {
             title: title.into(),
             width: Some(px(420.)),
+            truncate_title: false,
             children: Vec::new(),
             foot: Vec::new(),
+            style: StyleRefinement::default(),
         }
+    }
+    /// One line with an ellipsis instead of wrapping (the lightbox's file name).
+    pub fn truncate_title(mut self) -> Self {
+        self.truncate_title = true;
+        self
     }
     /// `None` sizes the window by its content (the lightbox).
     pub fn width(mut self, width: Option<f32>) -> Self {
@@ -368,6 +381,13 @@ impl WindowFrame {
     }
 }
 
+/// Refines the window's root: a max height for the Wordle window, a fixed width.
+impl Styled for WindowFrame {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
 impl ParentElement for WindowFrame {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
@@ -378,7 +398,7 @@ impl RenderOnce for WindowFrame {
     fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
         // `min(420px, 100vw - 48px)`.
         let max = window.viewport_size().width - px(48.);
-        div()
+        let mut root = div()
             .flex()
             .flex_col()
             .when_some(self.width, |d, w| d.w(w.min(max)))
@@ -396,6 +416,7 @@ impl RenderOnce for WindowFrame {
                     .border_color(c::SPACE)
                     .text_color(c::PAPER)
                     .text_size(px(14.))
+                    .when(self.truncate_title, |d| d.truncate())
                     .child(self.title.to_uppercase()),
             )
             .children(self.children)
@@ -410,7 +431,9 @@ impl RenderOnce for WindowFrame {
                         .pb(px(20.))
                         .children(self.foot),
                 )
-            })
+            });
+        root.style().refine(&self.style);
+        root
     }
 }
 
