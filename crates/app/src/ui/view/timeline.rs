@@ -22,11 +22,10 @@ use super::super::Ui;
 use super::widgets::tooltip;
 use super::{format, markup, AppHandle, AppSnapshot, PaneInit, View};
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::{
-    div, list, prelude::FluentBuilder, px, AnyElement, App, AppContext, Context, Entity, InteractiveElement,
+    div, list, prelude::FluentBuilder, px, AnyElement, App, Context, InteractiveElement,
     IntoElement, ListAlignment, ListState, ParentElement, Pixels, Point, Render,
-    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
+    StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -137,13 +136,6 @@ enum Yt {
     Done(Option<YoutubePreview>),
 }
 
-/// The message being edited in place, with its text field.
-struct Editing {
-    op: OpRef,
-    input: Entity<TextareaState>,
-    _enter: Subscription,
-}
-
 /// What the list was last built from.
 struct Shown {
     key: String,
@@ -163,7 +155,6 @@ pub struct TimelinePane {
     /// pokes 12px into the row above, which must not take the hover from it).
     hover_row: Option<usize>,
     hover_strip: Option<usize>,
-    edit: Option<Editing>,
     yt: HashMap<String, Yt>,
     /// The press that closed the emoji bar from outside, so the click it ends on the same
     /// message's react button does not open it again (`data-react-open` toggled).
@@ -183,7 +174,6 @@ impl TimelinePane {
             shown: None,
             hover_row: None,
             hover_strip: None,
-            edit: None,
             yt: HashMap::new(),
             emoji_closed_by: None,
             #[cfg(debug_assertions)]
@@ -324,56 +314,6 @@ impl TimelinePane {
         }
     }
 
-    /// `v.editing` names the message; the field lives here, made when editing starts and
-    /// dropped when it ends (Enter saves, Escape at the root cancels).
-    fn sync_editing(&mut self, snap: &AppSnapshot, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(op) = snap.v.editing.clone() else {
-            self.edit = None;
-            return;
-        };
-        if self.edit.as_ref().is_some_and(|e| e.op == op) {
-            return;
-        }
-        let body = snap
-            .tl
-            .iter()
-            .find_map(|i| match i {
-                TimelineItem::Message { id, body, .. } if *id == op => Some(body.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let lines = body.split('\n').count().saturating_sub(1) as u32;
-        let column = body.rsplit('\n').next().map_or(0, |l| l.encode_utf16().count()) as u32;
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(2, 6)
-                .submit_on_enter(true)
-                .default_value(body)
-        });
-        input.update(cx, |state, cx| {
-            state.set_cursor_position(gpui_kit::component::input::Position::new(lines, column), window, cx);
-            state.focus(window, cx);
-        });
-        let app = self.app.clone();
-        let ui = self.ui.clone();
-        let target = op.clone();
-        let enter = cx.subscribe_in(&input, window, move |_, input, event: &InputEvent, _, cx| {
-            if let InputEvent::PressEnter { shift: false, .. } = event {
-                let text = input.read(cx).value().to_string();
-                commands::edit_message(&ui, &target, &text);
-                app.update(cx, |app, cx| {
-                    app.v_mut().editing = None;
-                    cx.notify();
-                });
-            }
-        });
-        self.edit = Some(Editing {
-            op,
-            input,
-            _enter: enter,
-        });
-    }
-
     fn set_hover_row(&mut self, ix: usize, hovered: bool, cx: &mut Context<Self>) {
         let before = self.hover_row;
         if hovered {
@@ -417,13 +357,12 @@ pub(super) struct RowCtx {
     offset: usize,
     dm_peer: Option<PeerState>,
     hover: Option<usize>,
-    edit: Option<Entity<TextareaState>>,
     yt: Rc<HashMap<String, Option<YoutubePreview>>>,
     pane: WeakEntity<TimelinePane>,
 }
 
 impl Render for TimelinePane {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(snap) = self.app.snapshot(cx) else {
             return div().into_any_element();
         };
@@ -432,7 +371,6 @@ impl Render for TimelinePane {
             .flatten();
         let intro = dm_peer.is_some();
         self.sync_list(&snap, intro, cx);
-        self.sync_editing(&snap, window, cx);
 
         if snap.tl.is_empty() {
             return match &dm_peer {
@@ -455,7 +393,6 @@ impl Render for TimelinePane {
             offset: usize::from(intro),
             dm_peer,
             hover: self.hover_strip.or(self.hover_row),
-            edit: self.edit.as_ref().map(|e| e.input.clone()),
             yt: Rc::new(yt),
             pane: self.this.clone(),
         });

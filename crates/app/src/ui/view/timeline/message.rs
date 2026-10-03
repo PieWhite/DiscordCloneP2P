@@ -7,11 +7,9 @@ use super::super::super::theme::{self, c, Dither};
 use super::super::widgets::{avatar, tooltip};
 use super::super::{commands, format, markup, wordle, Dialog, ReplyTo};
 use super::{attachment, Row, RowCtx};
-use gpui_kit::component::input::Textarea;
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, ClipboardItem, Div, ElementId,
-    Focusable, HighlightStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, Window,
+    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, ClipboardItem, Div, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window,
 };
 
 /// `QUICK_EMOJI`: eight cover what this chat uses; the pill row takes any emoji already there.
@@ -276,14 +274,8 @@ fn ellipsis_line(text: String) -> Div {
 fn content(ctx: &RowCtx, item: &TimelineItem, key: &SharedString, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     match item {
         TimelineItem::Message { id, body, mentions_you, .. } => {
-            // The one call site of the in-place editor. Slice C owns it as
-            // `composer::render_edit_box(&ctx.snap, id, body, window, cx)`; at that merge
-            // this branch becomes that call, and `Editing`, `TimelinePane::sync_editing`,
-            // `RowCtx::edit` and `edit_box` below go.
             if ctx.snap.v.editing.as_ref() == Some(id) {
-                if let Some(input) = &ctx.edit {
-                    return vec![edit_box(input, window, cx)];
-                }
+                return vec![super::super::composer::render_edit_box(&ctx.snap, id, body, window, cx)];
             }
             let mut out = markup::render_body(&ctx.snap, key, body, *mentions_you);
             out.extend(
@@ -297,47 +289,6 @@ fn content(ctx: &RowCtx, item: &TimelineItem, key: &SharedString, window: &mut W
         TimelineItem::File { .. } => vec![attachment::render_file(ctx, item, key)],
         TimelineItem::Wordle { .. } => Vec::new(),
     }
-}
-
-/// `.msg-edit`: the message's text in place, Enter saves, Escape cancels, empty deletes.
-fn edit_box(input: &gpui_kit::Entity<gpui_kit::component::input::TextareaState>, window: &mut Window, cx: &mut App) -> AnyElement {
-    let focused = input.read(cx).focus_handle(cx).is_focused(window);
-    let hint = "Enter saves \u{00b7} Esc cancels \u{00b7} empty deletes";
-    let strong = |word: &str| {
-        let at = hint.find(word).unwrap_or(0);
-        (
-            at..at + word.len(),
-            HighlightStyle {
-                color: Some(c::PAPER.into()),
-                ..Default::default()
-            },
-        )
-    };
-    div()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .min_h(px(32.))
-                .max_h(px(168.))
-                .px(px(9.))
-                .py(px(7.))
-                .border_1()
-                .border_color(if focused { theme::ACCENT } else { theme::BORDER_STRONG })
-                .bg(c::SPACE)
-                .text_color(theme::TEXT)
-                .text_size(px(15.))
-                .line_height(relative(1.5))
-                .child(Textarea::new(input).appearance(false)),
-        )
-        .child(
-            div()
-                .mt(px(5.))
-                .text_size(px(11.))
-                .text_color(c::SILVER)
-                .child(StyledText::new(hint).with_highlights([strong("Enter"), strong("Esc")])),
-        )
-        .into_any_element()
 }
 
 /// The names behind a pill, for its tooltip (the webview showed the raw peer ids).
