@@ -2,7 +2,7 @@
 version: 1
 slug: "crates-app-src-ui"
 primary_target: "crates/app/src/ui"
-related_targets: ["crates/app/frontend"]
+related_targets: ["crates/app/src/ui/view", "crates/app/src/ui/theme.rs"]
 ---
 
 # Hoofdvenster — FitCommunication
@@ -61,7 +61,7 @@ op vierkante, dubbel-omrande vensters; magenta als dé primaire actie (Join the 
 niets anders); cyaan voor links, focus en live voortgang; DotGothic16 als bitmapletter
 (één gewicht — hiërarchie is grootte, kleur en celinversie); selectie inverteert zijn
 cellen; afwezig dithert naar halve dichtheid (sprite en statusregel, nooit de naam);
-schaduwen zijn harde offsets; toestandswissels klikken in stappen (`steps()`), niets fadet
+schaduwen zijn harde offsets; toestandswissels klikken in stappen, niets fadet
 en niets loopt oneindig. Het faalcriterium dat Rick koos: **"moeilijker af te lezen is een
 fout"** — leesbaarheid in een donkere kamer wint van elke stijlvondst.
 
@@ -78,16 +78,32 @@ Discord/Slack blijft de lat voor gedragsafwerking (toetsenbord, staten, dichthei
   Nederlands; de vertaling zit op één plek, `ui/state.rs`.
 - **De `Snapshot`/`UiCommand`-grens blijft staan.** Deze herstyling raakte alleen
   `frontend/` plus drie renderdetails in `app.js` (icoongrammatica, naamkleurklassen,
-  ledenlijst-titelbalk); geen enkel commando of event veranderde.
+  ledenlijst-titelbalk); geen enkel commando of event veranderde. (Op 2026-10-04 is
+  `frontend/` vervangen door GPUI-views in `crates/app/src/ui/view/`; de grens hield ook
+  toen.)
 
 ## Beslist (2026-08-12, deze ronde)
 
 - **Palet en typografie staan in `DESIGN.md`** (herschreven uit de gebouwde wereld door de
   documenter) en in `.impeccable/design.json`.
-- **DotGothic16** (OFL) lokaal gebundeld in `crates/app/frontend/fonts/`; Archivo is weg,
+- **DotGothic16** (OFL) lokaal gebundeld, sinds 2026-10-04 als TTF in
+  `crates/app/src/ui/assets/fonts/` en in de exe gebakken; Archivo is weg,
   JetBrains Mono blijft voor code en gemeten getallen — een benoemde concessie: echte code
   in de chat vraagt een echte mono.
 - **Eén decoratieve handtekening:** de horizonband (geditherde schemerstreep) — onderrand
   titelbalk, onderrand instellingenvenster, streep onder lege-staat-koppen. Nergens anders.
-- **Iconen:** zelfde 29 symbolen, hertekend als grammatica: stroke 2, vierkante caps,
-  verstek-joins, geen afgeronde rects. De regel staat boven het `<defs>`-blok.
+- **Iconen:** hertekend als grammatica: stroke 2, vierkante caps, verstek-joins, geen
+  afgeronde rects. Inmiddels 35 symbolen plus het merkteken, als losse SVG's in
+  `crates/app/src/ui/assets/icons/`; de regel staat in de moduledoc van `ui/icons.rs`.
+
+## Beslist (2026-10-04, GPUI)
+
+- **De weergave is GPUI via gpui-kit 0.7** (`docs/OVERDRACHT.md` beslissing 39). De wereld
+  is nagetekend in `crates/app/src/ui/theme.rs`: dezelfde zestien kleuren, elk aliastoken
+  uit de oude `app.css`, de 2px-dither en de horizonband.
+- **Bekende verschillen**, klein en bewust: geen letter-spacing (`tracked()` benadert het
+  voor de kapitaalstroken), keuzelijsten in DotGothic16, de snelle emojibalk in de
+  berichtstroom, en schuiven en schakelaars uit gpui-base-primitieven omdat die van
+  gpui-kit veren en pilvormig zijn. De volledige lijst staat in beslissing 39.
+- **Vergelijken gaat in de fixturemodus** (`FITCOM_UI_FIXTURE`, alleen debug), tegen
+  `DESIGN.md`. `design/shots/` blijft de oude wereld.

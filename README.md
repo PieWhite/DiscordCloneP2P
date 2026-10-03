@@ -20,7 +20,9 @@ alleen op Windows;** een mac kan wel naar de camera van een Windows-peer kijken 
 - [Tailscale](https://tailscale.com/), geïnstalleerd en ingelogd op elke machine, met
   alle machines in hetzelfde tailnet
 - Om zelf te bouwen: Rust (stable; op Windows met de MSVC-toolchain) en `cmake`
-  (libopus wordt vanuit broncode meegebouwd). Op macOS: `xcode-select --install` en
+  (libopus wordt vanuit broncode meegebouwd). Op Windows hoort bij MSVC de Windows SDK
+  (zit in de C++-workload van de VS Build Tools): een release-build haalt er `fxc.exe` uit
+  voor de shaders van de weergave. Op macOS: `xcode-select --install` en
   `brew install cmake`.
 
 ## Installeren op een PC
@@ -163,7 +165,9 @@ cargo build --release
 ```
 
 De exe komt in `target/release/fitcom.exe`. Die is los te kopiëren; er is geen runtime
-of installatie nodig op de doel-PC.
+of installatie nodig op de doel-PC. Kopieer altijd een release-build: een debug-exe
+compileert zijn shaders bij het starten uit de bronnen op de bouwmachine en tekent op een
+andere pc niets.
 
 ## Testen met meerdere instanties op één PC
 

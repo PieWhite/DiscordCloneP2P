@@ -17,16 +17,57 @@ desktop
 > (2026-08-06, op verzoek uitgesteld; `TODO.md`). Kijken naar de camera van een
 > Windows-peer werkt op de mac wel. Al het andere is featurepariteit.
 >
-> **Het weergavesubstraat is wél webtechnologie** (Tauri v2 — zie `## Stack`).
-> CSS, design tokens, echte typografie, motion en impeccable's detector zijn dus allemaal
-> van toepassing. Wat níet van toepassing is: mobiele breakpoints, touch-doelgroottes,
-> browserchroom, SEO en meerdere viewports. Er zijn twee engines — Chromium via WebView2
-> op Windows, WebKit via WKWebView op macOS — in een venster dat de gebruiker vrij kan
-> verslepen en maximaliseren op een scherm van 1080p tot 3440×1440. De frontend gebruikt
-> bewust geen API's die maar op één van de twee bestaan; de `-webkit-`-prefixes die er
-> voor WebView2 al stonden doen op WebKit gewoon werk.
+> **Het weergavesubstraat is sinds 2026-10-04 geen webtechnologie meer** maar GPUI (zie
+> `## Stack`): Rust-views die zelf tekenen, via Metal op macOS en DirectX 11 op Windows.
+> Design tokens, echte typografie en de motion-regels uit `DESIGN.md` gelden onverkort, nu
+> in Rust (`crates/app/src/ui/theme.rs`); CSS en de twee browserengines zijn weg. Wat níet
+> van toepassing is: mobiele breakpoints, touch-doelgroottes, browserchroom, SEO en
+> meerdere viewports. Het venster is vrij te verslepen en te maximaliseren op een scherm van
+> 1080p tot 3440×1440, met een minimum van 780×460. *(Van 2026-08-04 tot 2026-10-04 was
+> het Tauri v2, met Chromium via WebView2 op Windows en WebKit via WKWebView op macOS.)*
 
 ## Stack
+
+**Rust-kern + GPUI-weergave (gpui-kit 0.7).** Uitgevoerd 2026-10-04, ter vervanging van
+Tauri v2, op Ricks verzoek: de app moet minder kosten om open te hebben. Zie
+`docs/OVERDRACHT.md`, beslissing 39. De afweging van fase 12 staat hieronder als historie;
+de reden van toen (het ontwerpplafond van egui) blijft gelden, en het zestienkleurenveld is
+in GPUI na te tekenen.
+
+Wat gebleven is: **de vijf niet-UI-crates en de motor onaangeroerd**, en de
+`Snapshot`/`UiCommand`-grens. `ui/state.rs` is hetzelfde contract, `ui/commands.rs` heeft
+dezelfde bodies als gewone Rust-functies. Opnieuw geschreven is wat de webview was:
+`crates/app/frontend/` werd `crates/app/src/ui/view/`.
+
+Wat de wissel oplevert:
+
+- **Geen webview, dus ook niet zijn prijs.** De 381 MB werkset van fitcom plus zes
+  WebView2-processen, WebView2 als Windows-component die jij niet in de hand hebt, en een
+  tweede taal in de repo: alle drie weg. De weergave is Rust, in hetzelfde proces als de
+  motor. De gemeten cijfers van GPUI staan in beslissing 39.
+- **De app in rust doet nog steeds niets.** De drie feeds blijven en worden pas wakker als er iets
+  verschilt. Daarbovenop hertekent een meters-tik alleen de kleine meterweergaven, en zijn
+  de zware panelen (kanalen, leden, tijdlijn, instellingen) gecachet.
+- **Geen script, geen HTML.** De beveiligingsbevindingen die aan de webview hingen (B-52
+  t/m B-56) hebben geen aanvalsoppervlak meer; de regels erachter staan nu gewoon in code.
+
+Wat het kost, expliciet:
+
+- **Windows is nog door niemand gestart.** Al het verifiëren gebeurde op de Mac:
+  fixturemodus, 97 referentietoestanden, headless venstertests, en een typecheck voor
+  Windows. Tot iemand `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)", heeft afgelopen,
+  is het op Windows onbewezen.
+- **Afbeeldingen worden in ons eigen proces gedecodeerd** in plaats van in de sandbox van
+  WebView2. Begrensd op 8192 px per zijde; zie B-61 in `docs/BEVEILIGING.md`.
+- **Kleine verschillen met de webview:** geen letter-spacing (benaderd), keuzelijsten in
+  DotGothic16, de emojibalk in de berichtstroom, een selectie die alleen de zichtbare rijen
+  kopieert, en plakken alleen met de focus in de composer. Volledige lijst in beslissing 39.
+- **Een vastgepinde momentopname.** GPUI komt als `gpui-pre` 0.3.7 (Zeds GPUI op
+  crates.io), vastgepind door gpui-kit 0.7, en is pre-1.0.
+- **Het pop-out kijkvenster verandert niet.** Eigen Win32-venster, eigen D3D11-swapchain;
+  het hete videopad raakt de UI-stack nog steeds nergens.
+
+### Historie: Tauri v2 (2026-08-04 tot 2026-10-04)
 
 **Rust-kern + Tauri v2-weergave.** Besloten én uitgevoerd 2026-08-04, ter vervanging van
 egui/eframe. Zie `ROADMAP.md`, fase 12, en `docs/OVERDRACHT.md`, beslissing 19 en 20.
@@ -180,7 +221,7 @@ Vastliggende technische randvoorwaarden die ontwerpwerk niet mag omzeilen:
   path.** De UI is een pure weergave van een momentopname; de chat- en sync-lus draait op de
   tokio-runtime en **nooit in de weergavelus**. Reden: een UI tekent niet als het venster
   verborgen of geminimaliseerd is, en dat is precies het moment waarop je een melding wilt
-  krijgen. Dat gold voor egui en geldt onverkort voor een webview.
+  krijgen. Dat gold voor egui, gold voor de webview, en geldt onverkort voor GPUI.
 - **H.264 is de standaardcodec, niet HEVC** (HEVC-decode hangt op Windows aan een
   Store-uitbreiding die er niet standaard op zit). **AV1 valt af** zolang de RTX 2080 Super
   meedoet — die kan het niet encoden en niet decoden. **4:4:4 is afgewezen, niet uitgesteld:**
@@ -254,6 +295,9 @@ finish-review met eindoordeel *ship*; `.impeccable/design.json` is meegegenereer
   (1440p/ultrawide, de WASAPI-exclude-route, een echt versieverschil) zijn achterhaald.
   **Ontwerpwerk hoeft dus met geen enkel functioneel voorbehoud te rekenen** — er is niets
   half werkend dat een UI zou moeten verhullen of van een waarschuwing voorzien.
+- **De GPUI-weergave (2026-10-04) is alleen op macOS bekeken**, in de fixturemodus en met
+  headless tests. Op Windows heeft nog niemand hem gestart; de bevestiging hierboven ging
+  over de Tauri-build. Zie `docs/OVERDRACHT.md`, beslissing 39.
 - Er zijn **geen** gebruikers buiten deze drie, geen testimonials, geen klanten, geen
   benchmarks tegen Discord, geen prijs, geen licentie en geen publieke distributie. Niets
   daarvan verzinnen.

@@ -1,8 +1,8 @@
 # P2P communicatie-app — projectcontext
 
 Servervrij Discord-alternatief voor 3 vaste peers over een Tailscale-tailnet.
-Rust-kern. Windows 11 + macOS 14+ (Apple Silicon). UI-stack: Tauri v2 op WebView2
-(Windows) / WKWebView (macOS).
+Rust-kern. Windows 11 + macOS 14+ (Apple Silicon). UI-stack: GPUI via gpui-kit 0.7
+(DirectX 11 op Windows, Metal op macOS).
 
 ## Documenten
 | Bestand | Wanneer lezen |
@@ -31,14 +31,14 @@ foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
      Onderbouwing: `docs/OVERDRACHT.md` beslissing 23.
    - *2026-08-20:* `crates/app/src/youtube.rs` haalt titel en miniatuur op bij
      `youtube.com/oembed` en `i.ytimg.com`, één keer per video, daarna van schijf
-     (`<data>/youtube/`). **Het ophalen zit in de motor en nooit in de webview**: de CSP
-     blijft dicht, dus een bericht van een peer kan geen verbinding uit het venster laten
-     vertrekken. Mislukt het, dan blijft het een gewone link. Onderbouwing: beslissing 30.
+     (`<data>/youtube/`). **Het ophalen zit in de motor en nooit in het venster**: het
+     venster tekent alleen van schijf (`Ui::image_path_allowed`), dus een bericht van een
+     peer kan geen verbinding uit het venster laten vertrekken. Mislukt het, dan blijft het een gewone link. Onderbouwing: beslissing 30.
    - *2026-08-20:* `crates/app/src/wordle.rs` haalt het woord van de dag op bij
      `nytimes.com/svc/wordle/v2/<datum>.json`. **Eén GET per dag per peer**, daarna van
      schijf (`<data>/wordle.json`). Elke peer haalt het zelf op: geen peer die het voor de
      anderen doet (invariant 2) en het antwoord staat nooit op de draad. Ook hier zit het
-     ophalen in de motor en niet in de webview. Mislukt het, dan is er die dag geen kaart
+     ophalen in de motor en niet in het venster. Mislukt het, dan is er die dag geen kaart
      en werkt de rest door. Onderbouwing: beslissing 31.
 2. **Geen host-peer.** Alle peers zijn gelijkwaardig. Elke instantie initieert én
    accepteert. Geen enkele functie mag afhangen van "peer X is er".
@@ -67,37 +67,50 @@ irrelevant; een codec die misschien niet werkt bij je vriend is dat niet.
 Gemeten onderbouwing: `docs/SPEC.md`.
 
 ## UI-stack
-**Tauri v2 op WebView2**, uitgevoerd in fase 12 (2026-08-04) ter vervanging van egui.
-Onderbouwing en kosten: `PRODUCT.md` sectie `## Stack`, `docs/OVERDRACHT.md` beslissing
-19 en 20.
+**GPUI via gpui-kit 0.7**, sinds 2026-10-04, ter vervanging van Tauri v2 (dat in fase 12
+egui verving). DirectX 11 + DirectComposition op Windows, Metal op macOS; geen webview, geen
+script, geen HTML. Onderbouwing en prijs: `docs/OVERDRACHT.md` beslissing 39 (en 19 voor de
+vorige wissel), `PRODUCT.md` sectie `## Stack`.
 
 ```
-crates/app/src/ui/mod.rs       Vensterbootstrap, tray, events, thumb://-protocol
-crates/app/src/ui/state.rs     Snapshot -> UiState (JSON), NL -> EN vertaling
-crates/app/src/ui/commands.rs  IPC -> UiCommand
-crates/app/frontend/           index.html, app.css, app.js, fonts/ — in de exe gebakken
+crates/app/src/ui/mod.rs       Bootstrap: app + venster, tray, sluiten-naar-tray, afsluiten,
+                               focus, bestanden slepen, Ui::image_path_allowed
+crates/app/src/ui/bridge.rs    De drie feeds: state, meters, miniaturen
+crates/app/src/ui/state.rs     Snapshot -> UiState, NL -> EN vertaling
+crates/app/src/ui/commands.rs  Eén functie per UiCommand, plus kiezers en vensterknoppen
+crates/app/src/ui/theme.rs     De zestien kleuren en alle tokens, maten, schaduwen, fonts
+crates/app/src/ui/icons.rs     Iconen als ingebedde SVG; bestanden in ui/assets/
+crates/app/src/ui/fixture.rs   Alleen debug: het venster gevoed uit JSON
+crates/app/src/ui/view/        AppView (de wortel) en één bestand per gebied
 ```
 
-- **`proto`, `store`, `net`, `audio` en `video` zijn UI-vrij.** Geen egui-aanroep, en
-  introduceer er ook geen Tauri.
+- **`proto`, `store`, `net`, `audio` en `video` zijn UI-vrij.** Geen GPUI-aanroep, en
+  introduceer er ook geen andere toolkit.
 - **De `Snapshot`/`UiCommand`-grens blijft staan.** De UI leest een momentopname en
-  stuurt commando's terug; daarom was deze wissel goedkoop. Hem opgeven maakt een
+  stuurt commando's terug; daarom waren beide wissels goedkoop. Hem opgeven maakt een
   volgende weer duur.
-- **Drie events, bewust gescheiden.** `state` alleen bij een echte wijziging (wordt
-  geserialiseerd en met de vorige vergeleken), `meters` op 4 Hz voor spreekniveau en
-  RTT, `thumbnail` op 2 Hz voor de streamstrook. Zet niets in `UiState` dat elke tik
-  verandert: dan stuurt de app in rust weer tien events per seconde.
+- **Drie feeds, bewust gescheiden** (`ui/bridge.rs`). `state` alleen bij een echte
+  wijziging (`UiState` vergeleken met `PartialEq`), `meters` op 4 Hz en alleen bij
+  verandering, voor spreekniveau en RTT, en die tik hertekent alleen de kleine
+  `meter_view`s. Miniaturen op 2 Hz, rechtstreeks van BGRA naar `RenderImage`. Zet niets in
+  `UiState` dat elke tik verandert: dan wordt het venster in rust weer tien keer per seconde
+  wakker.
+- **Kanalen, leden, tijdlijn en instellingen zijn gecachte views** (`.cached(..)`): ze
+  hertekenen alleen als hun invoer verandert. Niets animeert door of veert (invariant 4);
+  de typindicator knippert op een getrapte timer, en alleen terwijl iemand typt.
 - **Het pop-out kijkvenster is een eigen Win32-venster met eigen D3D11-swapchain.**
   Het hete videopad raakt de UI-stack nergens.
-- **Een URL naar een eigen protocol (`thumb`, `asset`) bouw je met `convertFileSrc`**, nooit
-  met de hand: WKWebView wil `thumb://localhost/`, WebView2 `http://thumb.localhost/`. De CSP
-  in `tauri.conf.json` moet beide vormen noemen. Met de hand gebouwd was de streamstrook op
-  Windows een rij donkere vlakken (beslissing 37).
-- **Geen fixed-version WebView2-runtime** (~180 MB) — dat sloopt "losse exe in een zip".
-  Evergreen zit standaard in Windows 11 en alle drie draaien Windows 11.
-- **`design/main-window.html` is de reproductiedoelstelling**, `design/shots/` zijn de 19
-  gerenderde toestanden om tegen te vergelijken, `DESIGN.md` + `.impeccable/design.json`
-  zijn het ontwerpsysteem. Een kleurwaarde of radius die niet uit een token komt is een bug.
+- **Een afbeelding van schijf gaat altijd door `Ui::image_path_allowed`**: absoluut, geen
+  `..`, binnen de levende `pictures_dir` of de YouTube-cache. Dat is de `asset:`-scope van
+  de webview, nu als regel in code. Het venster haalt nooit iets van internet.
+- **Er staat geen runtime naast de exe.** WebView2 Evergreen was de prijs van Tauri; met
+  GPUI is er niets meer om te installeren of vast te pinnen, en "losse exe in een zip" blijft.
+- **Het ontwerp is het zestienkleurenveld:** `DESIGN.md` + `.impeccable/design.json`, in
+  Rust `ui/theme.rs`. Een kleurwaarde of radius die niet uit een token komt is een bug.
+  `design/main-window.html` en `design/shots/` zijn de oudere grijze wereld en geen
+  referentie meer; vergelijken doe je in de fixturemodus (zie Bouwen).
+- **Venstergedrag heeft headless tests** (gpui-kit `test-support`, naast de views):
+  toetsenbord, plakken, slepen. `cargo test -p fitcom` draait ze mee.
 - **UI-taal is Engels**, motor en overige crates blijven Nederlands.
 
 ## macOS-port (2026-08-05)
@@ -125,9 +138,10 @@ Zelfde codebase, cfg-geselecteerde siblingmodules onder `crates/video/src/mac/`
 ## Bestanden openen en YouTube-previews (2026-08-20)
 Beslissing 29 en 30 in `docs/OVERDRACHT.md`. Wat je niet mag omdraaien:
 
-- **De webview noemt nooit een pad.** `open_file` krijgt dezelfde `OpRef` als de
+- **Een view noemt nooit een pad.** `open_file` krijgt dezelfde `OpRef` als de
   downloadknop en zoekt het pad zelf op in de momentopname van de motor. Zelfde patroon als
-  B-52 (`offer_files` met indices).
+  B-52 (`offer_files` met indices in `Ui::dropped`). Er is geen script meer om dit te
+  misbruiken; de regel blijft, want hij houdt ook een fout in een view tegen.
 - **Een uitvoerbare extensie krijgt de map, niet het bestand** (`files::opent_als_code`),
   en de knop zegt dan "Show". Eén klik in de tijdlijn mag nooit "start wat een ander mij
   stuurde" zijn.
@@ -150,8 +164,9 @@ de regel staat: `<downloadmap>/Pictures`, bestandsnaam is de inhoudshash.
   een afbeelding is *afgeleid* (uit de hash) en niet onthouden; laten staan betekent uit de
   tijdlijn verdwijnen. `verhuis_afbeeldingen` + `verhuisd_pad` voor de onthouden paden.
 - **Het venster leest de map uit `Snapshot::pictures_dir`**, niet uit `ui::Constants`: hij
-  kan tijdens het draaien wijzigen. `pick_download_dir` opent de nieuwe map ook voor het
-  `asset:`-protocol, anders laadt de webview er geen enkele afbeelding uit.
+  kan tijdens het draaien wijzigen. `Ui::image_path_allowed` leest hem daarom bij elke
+  aanroep uit de levende momentopname; een kopie van bij het starten zou na het verzetten
+  van de downloadmap elke afbeelding weigeren.
 - **De laatste stap is `zet_op_zijn_plek` en geen kale `rename`.** Staat het doel er al met
   de juiste grootte, dan zijn dat dezelfde bytes (de naam is de hash) en is er niets te
   vervangen — op Windows mislukt vervangen van een bestand dat een ander proces net leest.
@@ -165,7 +180,7 @@ Wat je niet mag omdraaien:
   kaarten die de log niet tot één kan maken. De kaart draagt ook geen enkel feit dat een
   peer niet zelf kan uitrekenen; hij wordt lokaal in de tijdlijn gezet, op de klok. Wat wél
   reist zijn de uitslagen (`OpKind::WordleResult`, tag 30).
-- **De oplossing blijft in de motor tot het spel klaar is.** De webview stuurt een gok en
+- **De oplossing blijft in de motor tot het spel klaar is.** Het venster stuurt een gok en
   krijgt vijf kleuren terug. Zet het woord nooit in `UiState` zolang `klaar == false`.
 - **Een Wordle-dag loopt van 07:00 tot 07:00 en de sleutel is de `print_date` van het
   raadsel**, niet de lokale datum van het moment van spelen. Anders boeken twee peers
@@ -232,6 +247,7 @@ toegevoegd zonder protocolbump. Zie `docs/OVERDRACHT.md` beslissing 22.
   `#[path]` insluit (`cargo check --target x86_64-pc-windows-msvc` op de workspace zelf
   loopt stuk op `ring`). Recept in beslissing 22 — gebruik dit vóór je Windows-code
   aanraakt zonder Windows. Werkt ook voor `mf.rs`, `venster.rs` en `app/src/geluid.rs`.
+  De hele workspace kan sinds beslissing 39 ook, met mingw-w64; het recept staat daar.
 
 ## Geluidjes (2026-08-10, sets erbij in 1.0.1)
 `crates/app/src/geluid.rs` rekent de zes korte tonen zelf uit en speelt ze buiten de
@@ -269,10 +285,22 @@ plus de Xcode Command Line Tools. `.cargo/config.toml` zet
 `CMAKE_POLICY_VERSION_MINIMUM=3.5`, want de libopus uit `audiopus_sys` is van 2021 en
 zijn CMakeLists vraagt een minimum dat CMake 4 weigert.
 
-Geen Node, geen frontend-bouwstap: `tauri-build` bakt `crates/app/frontend/` in de exe,
-dus `cargo build` bouwt de hele app — maar wel opnieuw bouwen na een frontendwijziging.
-`crates/app/icons/icon.ico` (Windows) en `icons/icon.png` (macOS) moeten bestaan,
-anders weigert `tauri-build`.
+Geen Node en geen frontend-bouwstap: de weergave is Rust, en fonts en iconen uit
+`crates/app/src/ui/assets/` zitten in de exe. `cargo build` bouwt de hele app.
+
+- **macOS:** de Xcode Command Line Tools volstaan. gpui-kit zet `runtime_shaders` aan,
+  dus er is geen Metal-compiler nodig. `bundle-mac.sh` haalt het icoon uit `icons/icon.png`.
+- **Windows:** een *release*-build compileert de HLSL-shaders van GPUI met `fxc.exe` uit de
+  Windows SDK (via `GPUI_FXC_PATH`, `PATH` of het register; zonder paniekt de build). Die
+  SDK komt mee met de C++-workload van de VS Build Tools die MSVC toch al vraagt. Een
+  debug-build compileert de shaders pas bij het starten, uit de cargo-registry van de
+  bouwmachine: zo'n exe tekent alleen daar. Uitdelen gaat altijd met een release-build.
+- **Windows:** `build.rs` bakt `icons/icon.ico` en `windows-app.manifest` (common controls
+  v6, PerMonitorV2-DPI) in de exe via `winresource`. Ontbreekt er een, dan faalt de build.
+
+**Fixturemodus** (alleen debug): het venster zonder mesh, store en motor, gevoed uit JSON
+(`state.json` verplicht, de rest staat in `ui/fixture.rs`). Zo is elke toestand te tekenen en
+te screenshotten zonder tweede machine en zonder klikken.
 
 **Windows: sluit draaiende instanties af vóór elke build**, anders faalt `cargo build`
 met "Toegang geweigerd (os error 5)". macOS heeft die beperking niet.
@@ -291,6 +319,9 @@ cargo fmt --all
 ./scripts/run-peers.sh --stop
 cargo run -p fitcom-video --example mac_keten   # macOS: hele videoketen op loopback
 ./scripts/bundle-mac.sh              # macOS: FitCommunication.app + zip
+FITCOM_UI_FIXTURE=<map> cargo run -p fitcom    # fixturemodus, alleen debug
+FITCOM_DEBUG_VIEW="tab=audio" FITCOM_DEBUG_SIZE=980x720 FITCOM_UI_FIXTURE=<map> cargo run -p fitcom
+                                     # zelfde, met beginstand (tab, dialoog, scroll) en maat
 ```
 
 ## Werkafspraken

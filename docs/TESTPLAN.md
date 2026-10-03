@@ -583,6 +583,10 @@ gamet en kijk of de frametimes van de game er anders uitzien dan voorheen.*
 
 ## Fase 12 — UI-stack naar Tauri v2
 
+> *Sinds 2026-10-04 is de weergave GPUI. De gevallen hieronder gingen over de Tauri-build en
+> noemen Tauri-specifieke oorzaken (`thumbnail`-event, `thumb://`, Tauri-events). Voor de
+> huidige build: "GPUI-weergave (2026-10-04)" verderop.*
+
 De weergavelaag is vervangen; functioneel hoort er niets veranderd te zijn. Wat hieronder
 staat kan alleen met echte hardware of een tweede machine, want daar zit precies het deel
 dat de migratie een nieuw transport of een nieuw invoerpad gaf.
@@ -775,6 +779,8 @@ kijkt, en dan je eigen scherm (herzien 2026-09-01, beslissing 37); laatste kijke
 het icoontje.
 
 **C.9c Tegels op Windows (2026-09-01, beslissing 37)**
+*Sinds 2026-10-04 bestaan webview, CSP en `thumb://` niet meer; de tegels zijn opnieuw te
+controleren in V.10 hieronder. Wat hier staat is de controle voor de Tauri-build.*
 Dit is de controle die op de mac niet kan: op Windows liet elke tegel — eigen camera én de
 stream van een ander — een donker vlak zien, omdat de webview `thumb://localhost/` vroeg waar
 WebView2 `http://thumb.localhost/` verwacht, en de CSP dat adres bovendien niet toeliet.
@@ -998,6 +1004,114 @@ Alleen te doen als er nog een instantie van vóór deze versie is: die hoort de
 `WordleResult`-ops op te slaan en door te sturen zonder ze te begrijpen (er verschijnt daar
 niets), en de derde peer hoort ze via hem alsnog te krijgen. Dit is de invariant "protocol
 alleen additief" en er is geen protocolbump geweest.
+
+## GPUI-weergave (2026-10-04)
+
+De weergave is van Tauri naar GPUI gewisseld (`docs/OVERDRACHT.md` beslissing 39). Op de
+Mac is elke toestand naast de oude weergave gelegd, en toetsenbord, plakken en slepen zijn
+headless getest. **Op Windows heeft nog niemand deze build gestart**: alles onder "Windows"
+is daar nooit gebeurd, dus begin daar. Gebruik een **release**-build; een debug-exe tekent
+alleen op de pc die hem bouwde.
+
+### Windows
+
+**V.1 Starten en tekenen**
+Start `fitcom.exe`. Het venster hoort meteen donker te openen, zonder witte flits, met
+titelbalk, rail, kanalen, tijdlijn, leden en statusbalk. *Blijft het venster leeg of zwart,
+dan is dat het D3D11-pad van GPUI of zijn shaders, niet de motor: kijk in de log of de mesh
+wel opkomt.*
+
+**V.2 Het tray-menu**
+Rechtsklik op het tray-icoon: "Openen" en "Afsluiten". "Afsluiten" sluit de app echt af (de
+ander ziet je offline gaan). Dubbelklik op het icoon en "Openen" halen het venster allebei
+terug. *De tray draait op een eigen Win32-thread die het venster via zijn HWND toont: werkt
+"Afsluiten" wel en "Openen" niet, dan zit het in die koppeling.*
+
+**V.3 Sluiten naar de tray, en terug**
+Klik het kruisje rechtsboven (met `minimize_to_tray = true`). Het venster verdwijnt, de app
+blijft in de tray en blijft synchroniseren: laat de ander een bericht sturen en haal het
+venster terug, het bericht hoort er al te staan. Doe dit drie keer achter elkaar. *Komt het
+venster terug zonder inhoud, of pas na een klik, zeg dat erbij.*
+
+**V.4 Snap layouts en de titelbalk**
+Hang met de muis boven de maximaliseerknop: Windows 11 hoort zijn snap layouts te tonen.
+Sleep het venster aan de titelbalk, dubbelklik de titelbalk (maximaliseren en terug), sleep
+het tegen een schermrand (snap), en schud het (Aero shake). *De knoppen en de titelbalk laat
+GPUI door Windows zelf hit-testen via `WindowControlArea`; doet één van deze dingen niets,
+dan zit het in die markering, niet in de knop.*
+
+**V.5 Minimaliseren, maximaliseren, sluiten**
+Elk van de drie knoppen één keer, en daarna Alt+F4. Minimaliseren gaat naar de taakbalk,
+maximaliseren vult het scherm, en Alt+F4 doet hetzelfde als het kruisje
+(naar de tray). Hover over elke knop: hij hoort op te lichten, het kruisje in koraal.
+
+**V.6 Slepen vanuit Verkenner**
+Sleep één bestand, en daarna drie tegelijk, het venster in. Tijdens het hangen hoort de
+"Drop to share"-overlay te verschijnen, en na loslaten hetzelfde aanbod als via de knop, in
+het open gesprek. *Komt de overlay wel en het aanbod niet (of andersom), zeg welke.*
+
+**V.7 Een schermafdruk plakken**
+Win+Shift+S, klik in het invoerveld en druk Ctrl+V. Er hoort meteen een bestandsaanbod te
+verschijnen en bij de ander een inline afbeelding. Plak daarna gewone tekst: die hoort als
+tekst in het invoerveld te komen. *Plakken werkt alleen met de focus in het invoerveld; dat
+is bewust anders dan in de webview.*
+
+**V.8 Een melding**
+Venster naar de tray, laat iemand `@jouwnaam` sturen: de Windows-melding hoort te komen. Met
+het venster op de voorgrond hoort er geen te komen, met niet-storen aan ook niet. *De motor
+beslist dit; de weergave meldt alleen of het venster de focus heeft, en dat is nieuwe code.*
+
+**V.9 Schaal 125% en 150%**
+Zet in Windows-instellingen → Beeldscherm de schaal op 125%, en daarna op 150%. Tekst en
+iconen horen scherp te blijven (niet wazig opgerekt), de pixelletter blijft op zijn raster,
+en niets valt buiten het venster. Sleep het venster ook van het ene scherm naar het andere
+als die een andere schaal hebben. *Wazig betekent dat de DPI-markering uit het manifest niet
+gepakt is.*
+
+**V.10 Streamtegels**
+Laat iemand een scherm delen en kijk mee: boven de tijdlijn hoort een tegel met live beeld
+te staan, ongeveer twee keer per seconde bijgewerkt. Zet je eigen camera aan: binnen een
+halve seconde staat je eigen beeld in de "You"-tegel, niet doorzichtig. Kijk een paar
+minuten mee en houd taakbeheer open: het GPU-geheugen van fitcom hoort niet te blijven
+groeien.
+
+**V.11 Het pop-out kijkvenster**
+Open een stream in zijn eigen venster: dat werkt als voorheen (eigen venster, F11 en
+dubbelklik voor beeldvullend). *Het is bij de wissel niet aangeraakt; dit is de controle
+dat de nieuwe weergave er niet tussen zit.*
+
+**V.12 In rust naast een game**
+Start een game, zet de app op het tweede scherm (venster open, geen gesprek), en daarna in
+de tray. Kijk in taakbeheer naar fitcom: processortijd hoort rond nul te liggen, en de game
+mag niets merken. Doe het ook tijdens een gesprek. *Dit is invariant 4; de gemeten
+cijfers staan in beslissing 39.*
+
+### macOS
+
+**V.13 Tray: Openen en Afsluiten**
+Klik het icoon in de menubalk: "Openen" haalt het venster naar voren, "Afsluiten" sluit de
+app echt af.
+
+**V.14 Sluiten naar de tray, heen en terug**
+Rode knop: het venster verdwijnt, de app blijft in de menubalk. Terug via "Openen" en via
+het Dock-icoon. Drie keer.
+
+**V.15 Cmd+Q en Cmd+H**
+Cmd+Q sluit de app echt af (de ander ziet je offline gaan), Cmd+H verbergt hem.
+
+**V.16 Hover**
+Ga met de muis over een bericht (de acties horen te verschijnen), over een kanaal, een lid,
+een knop in het spraakpaneel en de knoppen in de instellingen. Elk hoort een eigen
+hovertoestand te tonen. *Dit kon tijdens de bouw niet met de hand.*
+
+**V.17 Toetsenbordfocus**
+Tab door het venster: de focusring hoort zichtbaar van knop naar knop te gaan, in een
+logische volgorde. In het invoerveld: @ opent de lijst, pijltjes en Enter kiezen, Esc sluit.
+*Tab zonder open @-lijst doet bewust niets.*
+
+**V.18 Plakken en slepen**
+Cmd+Ctrl+Shift+4 (schermafdruk naar het klembord), dan Cmd+V in het invoerveld: een aanbod. Sleep een
+bestand vanuit de Finder het venster in: overlay, dan aanbod.
 
 ## Wat je terugkoppelt
 

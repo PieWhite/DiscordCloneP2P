@@ -154,12 +154,13 @@ matige verbinding.
 - Distributie: zip met exe, handmatig naar de andere twee.
 
 ### Proces
-- Techstack: **Rust-kern + Tauri v2 (WebView2) voor de weergave.** Oorspronkelijk
-  egui/eframe; op 2026-08-04 omgedraaid omdat het ontwerpplafond van egui te laag bleek, en
-  diezelfde dag uitgevoerd (fase 12). De vijf niet-UI-crates (`proto`, `store`, `net`,
-  `audio`, `video`) zijn onaangeroerd gebleven — die bevatten geen egui-aanroepen.
-  Volledige onderbouwing en de kosten (WebView2 als Windows-component, tweede taal,
-  geheugen, nieuw transport voor de miniaturenstrook) staan in `PRODUCT.md`, `## Stack`.
+- Techstack: **Rust-kern + GPUI (via gpui-kit 0.7) voor de weergave**, sinds 2026-10-04.
+  Oorspronkelijk egui/eframe; op 2026-08-04 omgedraaid naar Tauri v2 (WebView2) omdat het
+  ontwerpplafond van egui te laag bleek (fase 12), en op 2026-10-04 naar GPUI om de prijs
+  van de webview kwijt te raken (geheugen, WebView2 als Windows-component, een tweede taal).
+  De vijf niet-UI-crates (`proto`, `store`, `net`, `audio`, `video`) zijn beide keren
+  onaangeroerd gebleven. Onderbouwing en kosten: `PRODUCT.md`, `## Stack`, en
+  `docs/OVERDRACHT.md`, beslissing 19 en 39.
 - Kleine commits per afgeronde stap, direct op `main`.
 - Tests waar ze het werk aantoonbaar sneller/veiliger maken (protocol, sync, jitterbuffer).
   Geen testdekking als doel op zich. Media handmatig testen met peer 2.

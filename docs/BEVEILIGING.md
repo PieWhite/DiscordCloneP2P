@@ -139,6 +139,37 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 > - **Nog steeds latent:** een gecachte JPEG wordt door de webview gedecodeerd, net als een
 >   gedeelde afbeelding — zie B-22, die op dezelfde grond deels open staat.
 
+> **Addendum 2026-10-04 (UI-stack naar GPUI, `docs/OVERDRACHT.md` beslissing 39).** De
+> weergave is geen webview meer maar GPUI via gpui-kit 0.7: Rust-views die zelf tekenen via
+> Metal (macOS) of DirectX 11 (Windows), in hetzelfde proces als de motor. Er is geen
+> script-engine, geen HTML, geen CSP en geen IPC-brug meer. Wat dat met dit document doet:
+>
+> - **De klasse "elk script in de webview kan elk commando aanroepen" heeft geen
+>   aanvalsoppervlak meer.** Dat raakt B-52, B-53, B-54, B-55 en B-56, plus de vier die aan
+>   de webview-bestanden zelf vastzaten: B-48 (het capability-bestand), B-49 en B-58
+>   (`app.js`) en B-59 (de `thumb://`-handler). Ze staan in de tabel als *vervallen als
+>   aanvalsoppervlak*, met hun geschiedenis erbij. B-54 en B-55 stonden nog open; die zijn
+>   daarmee van de lijst openstaande punten af.
+> - **De verdedigingsregels blijven, nu als gewone coderegels.** Ze beschermen ook tegen een
+>   fout in onze eigen views, niet alleen tegen een script. Een view noemt nooit een pad
+>   (`open_file` en `download_file` nemen een `OpRef` en zoeken het pad op in de
+>   momentopname; gesleepte bestanden gaan per index via `Ui::dropped`); een uitvoerbare
+>   extensie krijgt "Show"; het YouTube-id wordt in Rust opnieuw gecontroleerd; `open_link`
+>   laat alleen `http(s)` door; de Wordle-oplossing staat nooit in `UiState` zolang het spel
+>   loopt; de extensie-allowlist van B-53 staat er nog.
+> - **De `asset:`-scope is een regel in code geworden.** `Ui::image_path_allowed` laat het
+>   venster een afbeelding van schijf alleen tekenen als het pad absoluut is, geen `..`
+>   bevat en in de huidige `pictures_dir` (uit de levende momentopname) of in de
+>   YouTube-cachemap ligt. Elke `img()` met een pad gaat erdoorheen.
+> - **Invariant 1 verandert niet.** Het ophalen bij YouTube en NYT zat al in de motor en
+>   zit er nog. Het venster haalt niets van internet; zonder CSP is dat een regel voor wie
+>   views schrijft, niet meer iets wat de webview afdwingt.
+> - **Nieuw: B-61 (MIDDEL).** Een afbeelding decoderen gebeurde in het gesandboxte
+>   renderproces van WebView2 en gebeurt nu in ons eigen proces. Een decompressiebom die
+>   vroeger hoogstens dat renderproces omlegde, raakt nu de hele app, motor inbegrepen.
+>   Begrensd met `state::MAX_INLINE_SIDE`; het restant is het aantal frames van een GIF.
+>   B-22 verwijst voor het decoderen naar B-61.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
@@ -212,7 +243,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 
 ## Overzicht
 
-60 bevindingen. De ID's zijn stabiel; verwijs ernaar in commits.
+61 bevindingen. De ID's zijn stabiel; verwijs ernaar in commits.
 
 | ID | Ernst | Bevinding | Waar |
 |---|---|---|---|
@@ -235,11 +266,11 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-17 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Pre-auth geheugenuitputting: 16 MiB per frame × onbegrensd aantal verbindingen | `net/framing.rs:39`, `net/mesh.rs:865` |
 | B-18 | HOOG | Het UDP-mediapad kent geen authenticatie en geen replaybescherming | `net/media.rs:64-156` |
 | B-19 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `UpdateSubresource` met genegeerde bufferlengte en gestript stride-teken | `video/codec.rs:741-765` |
-| B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief | `app/ui/commands.rs:241-246` |
-| B-53 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%` | `app/ui/commands.rs:255-271` |
+| B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de indexregel blijft | `app/ui/commands.rs:241-246` |
+| B-53 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%`. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de allowlist blijft | `app/ui/commands.rs:255-271` |
 | B-20 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — TOCTOU: de update wordt niet opnieuw geverifieerd vlak vóór toepassen | `app/engine.rs:707-736` |
 | B-21 | ~~MIDDEL~~ | **Opgelost (fase 13)** — de eigen exe wordt nergens meer aangeboden | `app/engine.rs` |
-| B-22 | MIDDEL | **Deels (2026-08-13)** — Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens | `app/engine.rs:636-658` |
+| B-22 | MIDDEL | **Deels (2026-08-13)** — Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens. Het decoderen zit sinds 2026-10-04 in ons eigen proces: zie B-61 | `app/engine.rs:636-658` |
 | B-23 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
 | B-24 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |
 | B-25 | ~~MIDDEL~~ | **Deels (2026-08-13)** — `?msg` weg en rate-limited; het vroeg sluiten van een niet-koppelbare verbinding blijft bewust achterwege (parkeren is by design) | `net/mesh.rs:632-640` |
@@ -254,9 +285,10 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-34 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — `seq` u64→i64 levert 2⁶³ permanent inerte maar opgeslagen sleutels | `store/lib.rs:436` |
 | B-35 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — `atty 0.2.14` — RUSTSEC-2021-0145, onbereikbaar maar aanwezig | `Cargo.lock` |
 | B-36 | MIDDEL | libopus wordt uit een 2021-snapshot meegebouwd | `audio/Cargo.toml:15` |
-| B-54 | MIDDEL | `apply_update` is een ongeconditioneerd IPC-commando | `app/ui/commands.rs:315-318` |
-| B-55 | MIDDEL | Geen `on_navigation`-beleid; het klikpad gaat sinds 1.0.2 wél naar de systeembrowser | `app/ui/mod.rs`, `app/ui/commands.rs::open_link` |
-| B-56 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Latente XSS: escaping is de verantwoordelijkheid van de aanroeper | `frontend/app.js:252-263,531` |
+| B-54 | ~~MIDDEL~~ | **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** (was open). `apply_update` is een ongeconditioneerd IPC-commando | `app/ui/commands.rs:315-318` |
+| B-55 | ~~MIDDEL~~ | **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** (was grotendeels gedicht). Geen `on_navigation`-beleid; het klikpad gaat sinds 1.0.2 wél naar de systeembrowser | `app/ui/mod.rs`, `app/ui/commands.rs::open_link` |
+| B-56 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Latente XSS: escaping is de verantwoordelijkheid van de aanroeper. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:252-263,531` (weg) |
+| B-61 | MIDDEL | **Deels (2026-10-04)**: afbeeldingen worden in ons eigen proces gedecodeerd; begrensd op 8192 px per zijde, het aantal frames van een GIF niet | `app/ui/state.rs::MAX_INLINE_SIDE` |
 | B-37 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `frag_index + 1` overflow-paniek doodt de kijkerthread stil | `video/fragment.rs:262` |
 | B-38 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
 | B-39 | LAAG | `read_kind` leest elk byte ≠ 1 als "bestand" | `net/filestream.rs:68` |
@@ -268,12 +300,12 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-45 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `data.len() as u32` truncatie vlak vóór een volledige memcpy | `video/codec.rs:593` |
 | B-46 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Release-profiel: geen CFG, geen `overflow-checks`, geen `strip` | `Cargo.toml:18-21` |
 | B-47 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Portable modus zet schrijfbare data naast een zelf-overschrijvende exe | `app/config.rs:230-236` |
-| B-48 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Devtools-capability zonder buildconditie | `app/capabilities/default.json:13` |
-| B-49 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Mention-vervanging loopt ná linkificatie en breekt gegenereerde HTML | `frontend/app.js:162-172` |
+| B-48 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Devtools-capability zonder buildconditie. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/capabilities/default.json:13` (weg) |
+| B-49 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Mention-vervanging loopt ná linkificatie en breekt gegenereerde HTML. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:162-172` (weg) |
 | B-50 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `Spoor` groeit onbegrensd | `video/spoor.rs:31-33` |
 | B-57 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Meldingen schakelen zichzelf permanent uit na één fout | `app/notify.rs:16,38-41` |
-| B-58 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `highlight()` verminkt ge-escapete apostrofs | `frontend/app.js:178-187` |
-| B-59 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unwrap()` op een mutex in de `thumb://`-handler | `app/ui/mod.rs:168` |
+| B-58 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `highlight()` verminkt ge-escapete apostrofs. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:178-187` (weg) |
+| B-59 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unwrap()` op een mutex in de `thumb://`-handler. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/ui/mod.rs:168` (handler weg) |
 | B-60 | LAAG | Elk `fitcom-updater*.exe` naast de app telt als de updater | `app/engine.rs::zoek_updater` |
 | B-51 | ~~INFO~~ | **Opgelost (2026-08-13)** — `LamportClock` is dode code; de echte klok is `max_lamport()` | `proto/op.rs:150-172` |
 
@@ -952,6 +984,11 @@ tegen `pitch × even(hoogte) × 3 / 2` vóór de kopie (met `Unlock2D` op beide 
 
 ## B-52 — `offer_files` accepteert willekeurige paden uit de webview
 
+> **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39, 2026-10-04).** Er is
+> geen script meer dat `offer_files` kan aanroepen. De fix blijft staan: `offer_files` neemt
+> indices in `Ui::dropped`, gevuld door de drop-handler van het venster, zodat geen view een
+> eigen pad kan noemen. Wat hieronder staat is de oorspronkelijke bevinding.
+
 **Waar:** `crates/app/src/ui/commands.rs:241-246`.
 
 ```rust
@@ -977,6 +1014,11 @@ datadiefstal zou betekenen in plaats van alleen schermschade.
 (`commands.rs:155-187`) al goed doet.
 
 ## B-53 — `offer_pasted_image` schrijft webview-bytes naar een webview-pad
+
+> **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39, 2026-10-04).** De
+> bytes komen nu uit GPUI's klembord-API in de composer, niet uit een script. De
+> extensie-allowlist blijft staan in `offer_pasted_image`. Wat hieronder staat is de
+> oorspronkelijke bevinding.
 
 **Waar:** `crates/app/src/ui/commands.rs:255-271`.
 
@@ -1035,6 +1077,9 @@ gigabytes in de renderer.
 videominiaturen te encoderen (`ui/mod.rs:409-421`). Het decoderen doet WebView2.
 **Oplossing:** alleen automatisch downloaden onder een plafond (bijv. 16 MiB), en de
 afmetingen vooraf aftasten met `ImageReader::into_dimensions()` (leest alleen de header).
+*Update 2026-10-04:* het decoderen doet WebView2 niet meer. GPUI decodeert in ons eigen
+proces, en het aftasten van de header is daarvoor gebouwd (`ui/state.rs::MAX_INLINE_SIDE`).
+Wat er van dit deel over is, staat in B-61.
 
 ## B-23 — Geen kanaalcontrole bij ontvangst
 `crates/store/src/lib.rs:240`, `crates/app/src/chat.rs:307-308`. `visible_to` wordt alleen op
@@ -1157,6 +1202,12 @@ stilte. **Oplossing:** een onderhouden binding of een verse libopus vendoren; mi
 gedateerde notitie zodat dit terugkomt.
 
 ## B-54 — `apply_update` is een ongeconditioneerd IPC-commando
+> **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39, 2026-10-04).** Er is
+> geen script meer dat het bevestigingsvenster kan overslaan: `apply_update` en
+> `delete_all_images` zijn gewone Rust-functies, en alleen de bevestigingsdialoog roept ze
+> aan (`ConfirmAction` in `ui/view/mod.rs`). De les blijft: een onomkeerbare actie loopt
+> altijd via die dialoog. Wat hieronder staat is de oorspronkelijke bevinding.
+
 `crates/app/src/ui/commands.rs:315-318`. Elk script in de webview kan het bevestigingsvenster
 (`app.js:1198-1205`) overslaan en een klaarstaande update meteen toepassen. Op zichzelf
 begrensd — het bestand is geverifieerd tegen wat de peer aankondigde — maar dat is precies de
@@ -1172,6 +1223,12 @@ patroon blijft: elke poort die alleen in de frontend zit, is er voor een script 
 webview niet.
 
 ## B-55 — Geen navigatiebeleid
+> **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39, 2026-10-04).** Er is
+> niets meer om naartoe te navigeren: een link is getekende tekst die bij een klik
+> `open_link` aanroept, en `open_link` laat alleen `http(s)` door naar de systeembrowser,
+> als één argument. Middenklik, `target="_blank"` en `window.open` bestaan niet. Wat
+> hieronder staat is de oorspronkelijke bevinding.
+
 `crates/app/src/ui/mod.rs:162-276` registreert geen `on_navigation`. De linkifier
 (`app.js:164`) beperkt het schema correct tot `https?`, maar wat er bij een klik gebeurt
 beslist de app niet. Lost WebView2 `target="_blank"` op als navigatie in hetzelfde venster,
@@ -1190,6 +1247,10 @@ gewone klikpad (een middenklik of `window.open` valt erbuiten). De bevinding bli
 daarom staan, met minder gewicht.
 
 ## B-56 — Latente XSS: escaping is de verantwoordelijkheid van de aanroeper
+> **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39, 2026-10-04).** Er is
+> geen `innerHTML` en geen HTML: GPUI tekent tekst als tekst, dus een peernaam kan geen
+> markup meer worden. Wat hieronder staat is de oorspronkelijke bevinding.
+
 `crates/app/frontend/app.js:252-263` (sink `:302`) en `:531` (aanroepers `:576-589`).
 `voiceHint()` interpoleert peernamen — volledig door de peer bepaald via `OpKind::SetNick`,
 zonder lengte- of inhoudsvalidatie — ongeëscaped in `innerHTML`. **Vandaag onbereikbaar**: die
@@ -1199,6 +1260,42 @@ niet. Ook dat is vandaag veilig, omdat de betreffende waarden vaste strings met 
 zijn. Beide zijn één refactor verwijderd van een echte injectie.
 **Oplossing:** `esc()` in de sink, niet bij de aanroeper — `${esc(others[0].name)}` en
 `<div class="mem-sub">${esc(opts.sub)}</div>`, en de `esc()` bij `:589` weghalen.
+
+## B-61: Afbeeldingen worden in ons eigen proces gedecodeerd
+`crates/app/src/ui/state.rs` (`MAX_INLINE_SIDE`, `drawable_inline`). *Nieuw met de
+GPUI-wissel, 2026-10-04 (beslissing 39).*
+
+WebView2 decodeerde een afbeelding van een peer in zijn eigen, gesandboxte renderproces.
+GPUI doet dat in ons proces, met de `image`-crate (standaard een allocatiegrens van
+512 MiB), en zet daarna elke afbeelding als één GPU-textuur in zijn atlas; 16384 px is het
+plafond van D3D11 en Metal. Een afbeelding van een ander komt via B-22 vanzelf binnen en
+wordt getekend zodra het gesprek open staat, zonder klik. Een decompressiebom die vroeger
+hoogstens een renderproces omlegde, raakt nu de hele app, inclusief de motor die
+synchroniseert en meldt. Valt het proces erop om, dan gebeurt dat opnieuw zodra dat gesprek
+weer open staat.
+
+**Wat er tegen gedaan is.** `MAX_INLINE_SIDE = 8192`: zegt de header van een afbeelding dat
+hij groter is, dan wordt het een gewone bestandskaart (Open werkt nog, en dan decodeert een
+ander programma hem). Alleen de header wordt gelezen (`image::image_dimensions`), eens per
+opbouw van de tijdlijn, dus een bom kost hier een paar bytes. Samen met de grens van 16 MiB
+op het vanzelf ophalen (B-22) is één stilstaande afbeelding zo begrensd op
+8192 × 8192 × 4 bytes = 256 MiB gedecodeerd.
+
+**Wat open blijft.** Een geanimeerde GIF wordt in zijn geheel gedecodeerd, en het aantal
+frames is niet begrensd. LZW perst een effen frame tot bijna niets, dus binnen 16 MiB op de
+draad past een GIF die gedecodeerd vele gigabytes kost. De grens geldt bovendien per
+afbeelding, niet per gesprek.
+
+**Waarom MIDDEL.** Niet LAAG: het pad loopt zonder klik, en de bom is een gewoon bericht van
+een peer. Niet HOOG: de goedkope variant (één enorme PNG) is begrensd, het resultaat is een
+crash zonder gegevensverlies (de oplog staat op schijf), en wat rest vraagt een peer die het
+bewust doet, of B-05 om zich als peer voor te doen. Dezelfde ernst als B-22, waar dit de
+andere helft van is.
+
+**Oplossing (restant).** Het aantal frames tellen vóór het decoderen: de `gif`-crate kan
+frames doorlopen zonder ze uit te pakken. Boven een grens (bijvoorbeeld 256 frames, of
+frames × breedte × hoogte × 4 boven 256 MiB) een gewone bestandskaart tonen, net als bij
+`MAX_INLINE_SIDE`. Alleen het eerste frame tonen is de goedkopere uitweg.
 
 ---
 
@@ -1254,6 +1351,8 @@ zijn. Beide zijn één refactor verwijderd van een echte injectie.
 - **B-48** `crates/app/capabilities/default.json:13` — de devtools-capability staat zonder
   buildconditie aan. In release inert (de feature wordt niet meegecompileerd), maar het
   capability-bestand is de verkeerde plek om daarop te leunen.
+  *Vervallen met de GPUI-wissel (beslissing 39): er is geen capability-bestand en geen
+  devtools meer.*
 - **B-49** `crates/app/frontend/app.js:162-173` — de `@naam`-vervanging draait ná de
   linkificatie, over een string die al markup bevat, dus een mention binnenin een URL wordt
   in het `href`-attribuut herschreven. Uitgevoerd levert dat een `<a>` op met een afgekapte
@@ -1262,6 +1361,8 @@ zijn. Beide zijn één refactor verwijderd van een echte injectie.
   aanvallersgestuurde `=` in. Gevolg is een link waarvan het doel afwijkt van de zichtbare
   tekst — misleidend, niet uitvoerbaar.
   *Fix:* mentions vóór de linkificatie verwerken, of matches binnen tags overslaan.
+  *Vervallen met de GPUI-wissel (beslissing 39): `ui/view/markup.rs` werkt op tekst en
+  maakt geen HTML, dus er is geen attribuut om in te herschrijven.*
 - **B-50** `crates/video/src/spoor.rs:31-33` — `regels: Vec<String>` groeit één regel per beeld
   en wordt pas bij `klaar()` geleegd. Zit achter `FITCOM_SPOOR`, dus niet van buiten
   bereikbaar; wel juist aan tijdens lange diagnosesessies.
@@ -1273,8 +1374,12 @@ zijn. Beide zijn één refactor verwijderd van een echte injectie.
 - **B-58** `crates/app/frontend/app.js:178-187` — `highlight()` draait over al ge-escapete
   tekst, dus `&#39;` wordt deels als getal en deels als commentaar getokeniseerd. Puur
   cosmetisch; alle ingevoegde markup is vast.
+  *Vervallen met de GPUI-wissel (beslissing 39): de markering draait op de ruwe tekst,
+  er wordt niets meer ge-escapet.*
 - **B-59** `crates/app/src/ui/mod.rs:168` (ook `:85,:100,:173,:179`) — `.lock().unwrap()` in de
   `thumb://`-handler paniekt op een vergiftigde mutex. *Fix:* `unwrap_or_else(|e| e.into_inner())`.
+  *Vervallen met de GPUI-wissel (beslissing 39): de handler is weg; miniaturen gaan als
+  `RenderImage` over een `watch`-kanaal (`ui/bridge.rs`).*
 - **B-60** *(sinds 1.1.0)* `crates/app/src/engine.rs::zoek_updater` — ontbreekt
   `fitcom-updater.exe`, dan telt álles in de map van de app dat met `fitcom-updater`
   begint en op `.exe` eindigt, en de eerste op alfabet wordt gestart. Bedoeld voor
@@ -1294,6 +1399,10 @@ zijn. Beide zijn één refactor verwijderd van een echte injectie.
 
 Op volgorde van "wat haalt de meeste risico weg per uur werk". De eerste twee blokken zijn
 klein, lokaal en goed testbaar; blok 4 is het echte werk.
+
+> **Stand 2026-10-04.** De blokken hieronder zijn op 2026-08-13 uitgevoerd (zie het addendum
+> bovenaan). Met de GPUI-wissel zijn de webview-punten erin (B-52, B-53, en het open
+> gebleven B-54 en B-55) vervallen als aanvalsoppervlak. Nieuw is punt 23 in blok 5 (B-61).
 
 ### Blok 0 — vandaag, zonder code (5 minuten)
 Zolang er nog niets gefixt is, is dit de enige echte maatregel: controleer op alle drie de
@@ -1356,6 +1465,8 @@ Hier zit het verschil tussen "moeilijker te misbruiken" en "niet meer misbruikba
     B-38 in de uitgeleverde build tot een nette paniek in plaats van stille wrap).
 22. **B-35/B-36** — zodra er een Windows-machine met toolchain is: `cargo deny` met een
     `deny.toml` waarin de uitzonderingen mét reden staan.
+23. **B-61** (2026-10-04): het aantal frames van een GIF begrenzen vóór het decoderen, of
+    alleen het eerste frame tonen.
 
 ### Wat ik zou doen als er maar één ding kon
 Blok 0 vandaag, en dan **B-02 en B-03** — dat zijn samen minder dan honderd regels en ze halen
@@ -1371,7 +1482,8 @@ niet zo. Deze dingen zijn nagelopen en correct bevonden.
 
 **Architectuur.**
 - De `Snapshot`/`UiCommand`-grens houdt stand en heeft de hele Tauri-wissel overleefd. Dat is
-  de reden dat de UI-laag zo klein en zo goed te auditen is.
+  de reden dat de UI-laag zo klein en zo goed te auditen is. *(2026-10-04: ook de wissel
+  naar GPUI, beslissing 39; de motor en de vijf andere crates zijn daarbij niet aangeraakt.)*
 - `proto` en `store` zijn vrij van Windows- en hardware-afhankelijkheden, precies zoals
   beloofd. Daardoor is de subtiele logica überhaupt te beoordelen.
 - De pure-beslissing/uitvoering-scheiding (`files.rs`, `updates.rs`, `streams.rs` beslissen,
@@ -1400,7 +1512,22 @@ niet zo. Deze dingen zijn nagelopen en correct bevonden.
   nagelopen; de leesvolgorde oogt door elkaar maar de indices zijn correct en de
   `expect("8 bytes")` is per constructie onbereikbaar.
 
-**Frontend en Tauri — dit is het sterkste deel van de codebase.**
+**De GPUI-weergave (sinds 2026-10-04, beslissing 39).**
+- **Geen script-engine, geen HTML, geen `innerHTML`.** Tekst van een peer is altijd tekst;
+  XSS bestaat als klasse niet meer, en daarmee ook de route van B-52 en B-54.
+- **`Ui::image_path_allowed` is de asset-scope in code:** absoluut, geen `..`, binnen de
+  levende `pictures_dir` of de YouTube-cache. Elke `img()` met een pad gaat erdoorheen.
+- **Views noemen geen paden.** `OpRef` voor openen en downloaden, indices voor gesleepte
+  bestanden en voor de bronkiezer; het pad zoekt deze kant zelf op.
+- **Links:** de markup-laag herkent alleen `http(s)://`, en `open_link` controleert dat
+  opnieuw en geeft de URL als één argument aan de systeembrowser, zonder shell.
+- **Geen protocolhandler meer.** Miniaturen gaan als `RenderImage` over een
+  `watch`-kanaal; er is geen URL die van buiten iets kan opvragen.
+- **Onomkeerbare acties** (`apply_update`, `delete_all_images`) roept alleen de
+  bevestigingsdialoog aan.
+
+**Frontend en Tauri — dit is het sterkste deel van de codebase.** *(Historie: dit beschrijft
+de webview-weergave tot 2026-10-04. De punten over `tags.rs` en de toasts gelden nog.)*
 - **Geen bereikbare XSS.** Alle 17 `innerHTML`-toekenningen zijn afzonderlijk nagelopen;
   `esc()` dekt `& < > " '` en elke attribuutinterpolatie staat tussen aanhalingstekens. Geen
   `eval`, geen `new Function`, geen `document.write`, geen `insertAdjacentHTML`.
@@ -1459,7 +1586,9 @@ Zodat niemand dit document leest als "hier staat alles in".
 - **De C-code van libopus en de bundled SQLite zijn niet doorgelezen.** B-36 gaat over hun
   ouderdom, niet over een concrete bug daarin.
 - **Windows Media Foundation en WebView2 zijn black boxes.** B-19 en B-29 gaan over wat wij
-  eraan voeren, niet over wat er binnenin gebeurt.
+  eraan voeren, niet over wat er binnenin gebeurt. *(2026-10-04: WebView2 is weg. De decoder
+  voor afbeeldingen van een peer is nu de `image`-crate in ons eigen proces (B-61), en ook
+  die is hier niet gefuzzd; GPUI zelf is evenmin doorgelezen.)*
 - **Geen fuzzing.** De msgpack-decoder, de fragment-reassembler en de H.264-invoer zijn
   precies de plekken waar fuzzing dingen vindt die lezen niet vindt. `cargo-fuzz` op
   `ControlMsg::decode` en `Reassembler::push` zou ik als eerste opzetten — beide zijn puur en

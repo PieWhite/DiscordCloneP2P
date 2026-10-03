@@ -414,6 +414,9 @@ dezelfde build, dus een echt versieverschil (twee gebouwde exe's met een andere
 `docs/TESTPLAN.md`, fase 11.
 
 ### Fase 12 — UI-stack naar Tauri v2 en visueel herontwerp ✅ af
+> *Vervangen op 2026-10-04: de weergave is nu GPUI. Zie "UI-stack naar GPUI" onderaan en
+> `docs/OVERDRACHT.md`, beslissing 39. Wat hieronder staat is fase 12 zoals hij was.*
+
 Besloten en uitgevoerd op 2026-08-04. De eerste fase die niet over functionaliteit gaat: er
 kwam niets bij wat de app kan, de weergavelaag is vervangen omdat het ontwerpplafond van
 egui de bindende beperking was geworden.
@@ -584,3 +587,22 @@ de hotkey binnen ~een halve seconde een correcte, buiten de app afspeelbare MP4 
 laatste minuut oplevert — ook als er middenin een segmentgrens viel — en de ring map
 nooit groter groeit dan afgesproken. Audio (stap 3) mag als tweede levering, dezelfde
 klaar-als-regels plus lip-sync over een hele minuut.
+
+### UI-stack naar GPUI (gpui-kit 0.7) ✅ (2026-10-04)
+Net als fase 12 geen nieuwe functionaliteit: de weergavelaag is opnieuw vervangen, nu om de
+prijs van de webview kwijt te raken (geheugen, WebView2 als Windows-component, een tweede
+taal). Op Ricks verzoek. Onderbouwing en kosten: `docs/OVERDRACHT.md`, beslissing 39.
+
+- **Alleen `crates/app/src/ui/`.** `frontend/` (HTML, CSS, JS) werd Rust in `ui/view/`; de
+  motor en de vijf andere crates zijn niet aangeraakt, en `Snapshot`/`UiCommand` staat.
+- **Dezelfde drie feeds**, nu `watch`-kanalen naar GPUI-entities. Een meters-tik hertekent
+  alleen de meterweergaven; kanalen, leden, tijdlijn en instellingen zijn gecachete views.
+- **Miniaturen** gaan rechtstreeks van BGRA naar een GPUI-beeld, zonder PNG en zonder
+  `thumb://`.
+- **Fixturemodus** (debug): het venster zonder motor, gevoed uit JSON, zodat elke toestand
+  zonder tweede machine te screenshotten is.
+
+**Klaar als (op macOS gehaald):** de app doet functioneel wat de Tauri-weergave deed, elke
+referentietoestand van de oude weergave is naast de nieuwe gelegd, en het idle-verbruik is
+gemeten (beslissing 39, "Gemeten"). **Op Windows nog niet:** niemand heeft de GPUI-build
+daar gestart. Zie `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)".

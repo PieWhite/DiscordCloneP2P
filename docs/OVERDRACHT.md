@@ -3,8 +3,15 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-08-20. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
-de UI-stack van egui naar Tauri v2).
+Laatst bijgewerkt: 2026-10-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
+de UI-stack van egui naar Tauri v2), en de weergavelaag is daarna nog één keer gewisseld:
+van Tauri naar GPUI (beslissing 39).
+
+**Wat er op 2026-10-04 bijkwam:** de webview is weg. De weergave is nu GPUI via gpui-kit
+0.7, in Rust, met Metal op macOS en DirectX 11 op Windows; motor en de vijf andere crates
+zijn niet aangeraakt. Lees beslissing 39 vóór je iets in `crates/app/src/ui/` doet: daar
+staat wat het kostte, wat anders werkt dan in de webview, en dat **Windows nog door niemand
+gestart is**.
 
 **Wat er op 2026-08-20 bijkwam:** bestanden openen vanuit de chat en YouTube-previews
 (beslissing 29 en 30), en daarna een **Wordle van de dag** met een scorebord —
@@ -20,13 +27,14 @@ platformlaag doet. De vorige mijlpaal (de
 weergavelaag in Tauri v2, naar de goedgekeurde comp `design/main-window.html`) staat in
 beslissing 19 en 20; er is geen egui meer in de repo behalve in doc-commentaar.
 
-**Waar de UI nu staat:**
+**Waar de UI nu staat** (volledige lijst onder "Hoe de weergavelaag in elkaar zit"):
 
 ```
-crates/app/src/ui/mod.rs       Vensterbootstrap, tray, de drie events, thumb://-protocol
-crates/app/src/ui/state.rs     Snapshot → JSON (de ene plek waar Nederlands Engels wordt)
-crates/app/src/ui/commands.rs  IPC-aanroep → UiCommand
-crates/app/frontend/           index.html + app.css + app.js + fonts/ (in de exe gebakken)
+crates/app/src/ui/mod.rs       GPUI-bootstrap, venster, tray, slepen, image_path_allowed
+crates/app/src/ui/bridge.rs    De drie feeds: state, meters, miniaturen
+crates/app/src/ui/state.rs     Snapshot → UiState (de ene plek waar Nederlands Engels wordt)
+crates/app/src/ui/commands.rs  Eén functie per UiCommand
+crates/app/src/ui/view/        AppView en één bestand per gebied
 ```
 
 ---
@@ -49,6 +57,7 @@ crates/app/frontend/           index.html + app.css + app.js + fonts/ (in de exe
 | 10 — Resoluties, bitrate, gecombineerd delen | ✅ af, **nog niet met echte hardware getest** | bugfix heeft een regressietest (`crates/app/src/streams.rs`); resolutie bleek al parametrisch (audit, geen codewijziging); bitrate is een configwaarde; wasapi-exclude-route + terugval compileert en start schoon in twee lokale instanties, maar het capturen/uitsluiten zelf kan alleen met echte speakers/koptelefoon gecontroleerd worden — zie `docs/TESTPLAN.md`, fase 10 |
 | 11 — Automatische updates tussen peers | ✅ af, **nog niet met een echt versieverschil getest** | volledige testsuite blijft groen (nieuwe tests in `crates/proto`: `Hello`-veld, `is_newer`, `UpdateRequest`/`UpdateResponse`-roundtrip; `crates/app/src/updates.rs`: 12 unit-tests op de pure beslislogica) + `protocol-reviewer`-agent vóór het committen (protocolversie 3→4) + twee lokale instanties starten en verbinden schoon; een echt versieverschil, het bevestigingsvenster en het toepassen door `fitcom-updater.exe` kan alleen met een tweede, oudere build getest worden — zie `docs/TESTPLAN.md`, fase 11 |
 | 12 — UI-stack naar Tauri v2 | ✅ af, **de media- en sleep/plak-paden nog niet met echte hardware getest** | volledige testsuite blijft groen (de vier `hoort_bij_kanaal`-tests zijn meeverhuisd naar `ui/state.rs` als `belongs_to_channel`); app gebouwd, gestart en gescreenshot tegen `design/shots/` op 1440×900; `cargo clippy --all-targets` schoon; idle-CPU gemeten, zie fase 12 in `ROADMAP.md` |
+| UI-stack naar GPUI (2026-10-04) | ✅ af op macOS, **op Windows nog door niemand gestart** | 200 unit-tests plus de integratietests groen, `clippy` schoon; 97 referentietoestanden van de oude frontend naast GPUI-screenshots uit de fixturemodus gelegd; 13+ headless venstertests (toetsenbord, plakken, slepen); Windows alleen vanaf de Mac getypecheckt (gnu en msvc) en voor gnu gelinkt. Zie beslissing 39 en `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)" |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -92,7 +101,7 @@ crates/audio/   Voice: jitterbuffer, mixer, Opus, cpal-sessie.
 crates/video/   Screenshare: fragmentatie, D3D11, WGC-capture, MF-encoder en -decoder,
                 kleuromzetting, weergavevenster, deler- en kijker-thread.
 crates/app/     lib + binary. engine.rs is de motor; streams.rs beslist over
-                screenshare; ui/ is een pure weergave (Tauri v2 + frontend/).
+                screenshare; ui/ is een pure weergave (GPUI via gpui-kit).
 ```
 
 De belangrijkste structurele regel: **`proto` en `store` bevatten geen Windows- of
@@ -326,6 +335,10 @@ de vraag.
 > aanbiedflow terechtkomt als een gesleept of gekozen bestand. Blijft hier staan omdat de
 > onderliggende les — welke laag het OS-klembord bezit, en dat een logbestand dat sneller
 > aanwijst dan raden — nog steeds geldt. Niet terughalen.
+>
+> *Sinds beslissing 39 (2026-10-04) leest de composer het klembord via GPUI: een
+> `ClipboardEntry::Image` gaat als bytes naar `offer_pasted_image`. Ook daar geen
+> `GetAsyncKeyState`-omweg.*
 
 De focus-fix uit beslissing 12 loste Ctrl+V niet op — Rick meldde dat het nog steeds niet
 werkte. Het logbestand (met `FITCOM_LOG=debug`) liet zien dat `egui_winit::clipboard` zelf
@@ -443,6 +456,10 @@ herstart zou alleen extra `Cargo.toml`-boekhouding zijn zonder een echt voordeel
 
 ### 19. UI-stack van egui naar Tauri v2, en visueel opnieuw beginnen (fase 12)
 
+> **Vervangen door beslissing 39 (2026-10-04):** de weergave is nu GPUI. Wat hieronder staat
+> blijft de onderbouwing van fase 12. De prijs die hier benoemd wordt (WebView2, een tweede
+> taal, het geheugen) is precies wat beslissing 39 terugverdient.
+
 **Uitgevoerd op 2026-08-04**, dezelfde dag als het besluit. Wat hieronder staat is de
 onderbouwing; hoe het geworden is staat onder "Hoe de weergavelaag in elkaar zit"
 verderop en in `ROADMAP.md`, fase 12.
@@ -554,6 +571,10 @@ en passant mee te nemen.
 
 ### 21. De macOS-port: cfg-siblingmodules, geen traits (2026-08-05)
 
+> *Sinds beslissing 39 (2026-10-04): `list_sources` is een gewone, nog steeds synchrone
+> functie in `ui/commands.rs`, en de mac-tray is de `tray-icon`-crate op de main thread
+> (`ui/mod.rs::mac_tray`) in plaats van Tauri's tray-API. De rest van deze beslissing geldt.*
+
 De SPEC zei "Windows only". Rick vroeg om een volledige port naar macOS (en iOS; dat
 laatste is na de analyse bewust uitgesteld — op iOS kan een app geen scherm van andere
 apps opnemen, en zonder servers is er geen push, dus een iPhone-client kan alleen iets
@@ -624,45 +645,101 @@ Hoe de port in elkaar zit, en waarom zo:
 
 ## Hoe de weergavelaag in elkaar zit
 
+*Sinds 2026-10-04 GPUI via gpui-kit 0.7 (beslissing 39). Hoe het onder Tauri zat staat als
+korte historie onderaan deze sectie.*
+
 ```
-crates/app/src/ui/mod.rs       Vensterbootstrap (Tauri v2 + WebView2), tray-koppeling,
-                               de drie events, en het thumb://-protocol.
-crates/app/src/ui/state.rs     Snapshot → UiState (JSON). Puur, met eigen tests.
-crates/app/src/ui/commands.rs  Eén #[tauri::command] per UiCommand-variant.
-crates/app/frontend/           index.html, app.css, app.js, fonts/. Door tauri-build in
-                               de exe gebakken; er staat geen dist-map naast fitcom.exe.
+crates/app/src/ui/mod.rs       Bootstrap: GPUI-app en venster (1180×720, minimaal 780×460),
+                               tray (Windows: tray.rs met de HWND; macOS: tray-icon op de
+                               main thread), sluiten-naar-tray, afsluitwachter, focus naar
+                               engine.voorgrond, gesleepte bestanden (Ui::dropped), en
+                               Ui::image_path_allowed.
+crates/app/src/ui/bridge.rs    De drie feeds, plus de entities Meters en Thumbnails.
+crates/app/src/ui/state.rs     Snapshot → UiState. Puur, met eigen tests; ook Deserialize,
+                               voor de fixturemodus. MAX_INLINE_SIDE (B-61).
+crates/app/src/ui/commands.rs  Eén functie per UiCommand-variant, op &Ui. De kiezers en
+                               youtube_preview lopen op de tokio-runtime.
+crates/app/src/ui/theme.rs     De zestien kleuren en elk aliastoken uit de oude app.css,
+                               maten, harde schaduwen, de 2px-dither, de horizonband, fonts.
+crates/app/src/ui/icons.rs     35 iconen plus het merkteken, als SVG uit ui/assets/icons/.
+crates/app/src/ui/assets/      DotGothic16 en JetBrains Mono als TTF (omgezet uit de woff2).
+crates/app/src/ui/fixture.rs   Alleen debug: de fixturemodus.
+crates/app/src/ui/view/        mod.rs (AppView, ViewState = het oude V-object, navigatie),
+                               widgets, format, titlebar, rail, channels (+ spraakpaneel),
+                               members, status, timeline (+ message, attachment), markup
+                               (+ rich_text, selecteerbare tekst), composer, settings (+ één
+                               bestand per tab), dialogs, wordle, strip.
 ```
 
-**Drie soorten verkeer, bewust gescheiden.** Dat is de kern van waarom dit in rust
-goedkoper is dan egui, niet duurder:
+**Drie soorten verkeer, bewust gescheiden**, net als onder Tauri. Elke feed is een
+tokio-taak die op de momentopname (of op zijn eigen tik) wacht, uitrekent wat het venster
+zou zien, en alleen stuurt als dat verschilt. Het venster wacht op een `watch`-ontvanger,
+dus een app in rust kost de vensterthread niets.
 
-| Event | Tempo | Wat |
+| Feed | Tempo | Wat |
 |---|---|---|
-| `state` | alleen bij een echte wijziging | Alles structureels. De motor publiceert zijn `Snapshot` op een vaste tik, maar `ui/mod.rs` serialiseert en **vergelijkt met de vorige**; is hij gelijk, dan gaat er niets de brug over. |
-| `meters` | 4 Hz, en alleen als hij verandert | Spreekniveau en RTT — de twee dingen die bewegen terwijl je er alleen naar kijkt. De frontend werkt hiermee attributen bij; er wordt geen paneel hertekend. |
-| `thumbnail` | 2 Hz per bekeken stream | Alleen een sleutel plus een revisienummer. De PNG zelf komt over `thumb://` als een gewone `<img>`. |
+| `state` | alleen bij een echte wijziging | De hele `UiState`, aan de tokio-kant met `PartialEq` vergeleken met de vorige. Gelijk betekent: het venster wordt niet wakker. |
+| `meters` | 4 Hz, en alleen als hij verandert | Spreekniveau, het spreekoordeel (met 600 ms nahouden) en RTT per peer, in de entity `Meters`. Alleen de kleine `meter_view`s observeren hem, `AppView` en de panelen niet: een tik hertekent de tijdlijn niet. |
+| miniaturen | 2 Hz per bekeken stream | Rechtstreeks van het BGRA-beeld van de decoder naar een `RenderImage`, zonder PNG. Een tegel die niet veranderde kost niets (vergelijking op de `Arc`-pointer); het vorige beeld gaat uit de GPU-atlas (`drop_image`), anders groeit het GPU-geheugen zolang je kijkt. |
 
 RTT en spreekniveau staan daarom **niet** in `UiState`: zaten ze erin, dan zou elke tik
 een verschil opleveren en zou de vergelijking hierboven niets meer tegenhouden. Datzelfde
 geldt voor "laatst gezien", dat alleen meegaat voor een peer die *niet* online is.
 
-**Gemeten in rust op deze machine** (debug-build, één peer geconfigureerd en offline, geen
-gesprek): 31 ms processortijd over 60 seconden voor het hele procesboompje — fitcom plus
-zijn zes WebView2-processen — oftewel 0,05% van één kern. Het geheugen is wél duurder:
-381 MB werkset voor dat hele boompje, tegen de tientallen MB's die egui gebruikte. Dat is
-de eerlijke prijs van een webview en hij was in `PRODUCT.md` niet expliciet benoemd; hij
-is de moeite waard omdat invariant 4 over processortijd naast een game gaat, niet over
-werkgeheugen, en 381 MB is op deze machines geen schaars goed.
+**Gecachte panelen.** `AppView` tekent het skelet en de lichte delen (titelbalk, rail, kop,
+statusbalk) als gewone functies. Kanalen, leden, tijdlijn en instellingen zijn eigen
+entities, getekend met `.cached(..)`: ze hertekenen alleen als hun invoer verandert, dus een
+toetsaanslag in de composer of een meters-tik bouwt de tijdlijn niet opnieuw op. De tijdlijn
+is een gevirtualiseerde `gpui::list`, onderaan uitgelijnd: hij blijft aan het nieuwste
+bericht vastzitten tot je zelf omhoog scrolt.
 
-**De tijdlijn rijdt niet mee in `state`.** Hij is het enige onbegrensde deel van de staat,
-en een hele geschiedenis over de IPC-brug duwen bij elke wijziging zou precies de winst
-hierboven weggooien. In plaats daarvan draagt `state` een `timeline_revision` (opgehoogd
-zodra de oplog een nieuwe `Arc<Timeline>` oplevert) en haalt de frontend het open gesprek
-op met `get_timeline`.
+**De tijdlijn rijdt niet mee in `state`.** Hij is het enige onbegrensde deel van de staat.
+`state` draagt een `timeline_revision` (opgehoogd als de oplog een nieuwe `Arc<Timeline>`
+oplevert of een overdracht van status wisselt); verandert die, of wissel je van gesprek, dan
+haalt `AppView` het open gesprek op met `commands::get_timeline`. Een view vraagt dat nooit
+zelf.
 
-**Beslissing 15 is vervallen.** De `GetAsyncKeyState`-omweg voor Ctrl+V is weg: de webview
-krijgt een echt `paste`-event met de bytes van de afbeelding erin, en die gaan via
-`offer_pasted_image` naar dezelfde aanbiedflow als een gesleept of gekozen bestand.
+**Er loopt niets door.** Het zestienkleurenveld klikt in stappen en fadet niet, dus er is
+geen animatie per beeld. De typindicator knippert op een getrapte timer van 275 ms, en
+alleen terwijl iemand typt. Schuiven en schakelaars zijn uit gpui-base-primitieven getekend,
+omdat die van gpui-kit met veren animeren.
+
+**Plakken en slepen.** De composer leest bij plakken het klembord van GPUI; staat er een
+afbeelding op (`ClipboardEntry::Image`), dan gaan de bytes naar `offer_pasted_image`, anders
+is het gewone tekst. Bestanden die op het venster vallen bewaart de `on_drop` van de wortel
+in `Ui::dropped`, en ze worden per index aangeboden (B-52). Beide komen in `offer_path`
+samen, net als de bestandskiezer.
+
+**Afbeeldingen van schijf** gaan altijd door `Ui::image_path_allowed`: absoluut, geen `..`,
+binnen de levende `pictures_dir` of de YouTube-cache. Zegt de header van een afbeelding dat
+hij groter is dan 8192 px, dan wordt het een gewone bestandskaart (`state::MAX_INLINE_SIDE`,
+B-61).
+
+**Fixturemodus** (alleen debug, `ui/fixture.rs`). `FITCOM_UI_FIXTURE=<map>` start het
+venster zonder mesh, store en motor, gevoed uit JSON: `state.json` (een geserialiseerde
+`UiState`, verplicht), `timeline/<kanaal>.json`, `meters.json`, `recap.json`,
+`sources.json`, `devices.json`, `monitors.json`, afbeeldingen onder `files/`, streambeelden
+als `thumbs/<tegel>.png`, en `meta.json` waarvan `now_ms` de klok bevriest. Commando's
+worden gelogd en gaan nergens heen. `FITCOM_DEBUG_VIEW` zet de beginstand met
+`sleutel=waarde`-paren gescheiden door `;` (rail, kanaal, tab, dialoog, overlay, scroll,
+hover; de volledige lijst staat bij `DebugView`), en `FITCOM_DEBUG_SIZE=980x720` de eerste
+venstermaat. Zo is elke toestand te screenshotten zonder te klikken, en zo is de wissel
+geverifieerd (beslissing 39).
+
+**Beslissing 15 blijft vervallen.** De `GetAsyncKeyState`-omweg voor Ctrl+V verdween in
+fase 12 en komt met GPUI niet terug: GPUI geeft de composer de afbeelding op het klembord
+gewoon door (zie "Plakken en slepen" hierboven).
+
+**Historie: de Tauri-weergave (fase 12 tot 2026-10-04).** `ui/mod.rs` was de bootstrap van
+Tauri v2 op WebView2/WKWebView met een `thumb://`-protocol, `ui/commands.rs` had één
+`#[tauri::command]` per variant, en `crates/app/frontend/` (index.html, app.css, app.js,
+fonts als woff2) werd door tauri-build in de exe gebakken. De drie feeds waren events over
+de IPC-brug, de tijdlijn kwam met `get_timeline` over diezelfde brug, en een miniatuur was
+een PNG die het `thumb://`-protocol aan een `<img>` serveerde. Gemeten in rust op de dev-PC
+(debug-build, één peer geconfigureerd en offline, geen gesprek): 31 ms processortijd over 60
+seconden voor fitcom plus zijn zes WebView2-processen, 0,05% van één kern, en 381 MB
+werkset. Die 381 MB was de eerlijke prijs van de webview; beslissing 39 zet de cijfers van
+GPUI ernaast.
 
 ### 22. De camera is een derde `BronSoort`, niet een tweede pijplijn (2026-08-06)
 
@@ -1135,7 +1212,8 @@ een: het punt is dat één klik in de tijdlijn nooit "start wat een ander mij st
 **Het pad reist niet door de webview.** De frontend geeft dezelfde `OpRef` terug die de
 downloadknop ook gebruikt; `open_file` zoekt het pad opnieuw op in de momentopname van de
 motor. Zelfde patroon als B-52 (`offer_files` met indices in plaats van paden): de webview
-zegt *welk item*, deze kant beslist *welke bytes*.
+zegt *welk item*, deze kant beslist *welke bytes*. *(Sinds beslissing 39 is er geen
+webview; de regel geldt voor elke view.)*
 
 **Onderweg gevonden:** een afbeelding in de tijdlijn had helemaal geen CSS-regel. De comp
 had daar alleen SVG-plaatshouders, dus `.shot svg` bestond en `.shot img` niet — een
@@ -1143,6 +1221,10 @@ had daar alleen SVG-plaatshouders, dus `.shot svg` bestond en `.shot img` niet �
 kaart afgekapt op 420 px. Je zag de linkerbovenhoek en verder niets.
 
 ### 30. YouTube-previews: de motor haalt ze op, de webview blijft dicht (2026-08-20)
+
+> *Sinds beslissing 39 (2026-10-04) is er geen webview en geen CSP meer. De regel blijft: het
+> venster haalt niets van internet, en tekent de miniatuur van schijf via
+> `Ui::image_path_allowed`.*
 
 Rick: een YouTube-link in de chat moet zijn titel en miniatuur laten zien, zonder dat het
 geld kost.
@@ -1184,6 +1266,10 @@ echt met YouTube praat — zelfde patroon als de rooktest op de echte geluidskaa
 `cargo test -p fitcom --lib youtube -- --ignored --nocapture`.
 
 ### 31. Wordle: elke peer haalt het echte woord zelf op, de kaart is geen op (2026-08-20)
+
+> *Sinds beslissing 39 (2026-10-04) is er geen webview en geen CSP meer. Wat hieronder over
+> de webview staat geldt nu voor het venster: het haalt niets van internet, stuurt een gok en
+> krijgt kleuren terug.*
 
 Rick: een Wordle-spelletje in de app, met het **echte** woord van de dag, een scorebord van
 wie er die dag won met de minste pogingen, en elke ochtend om 07:00 vanzelf een kaart in de
@@ -1456,6 +1542,11 @@ tussen "sinds procesbegin" en "sinds opnamebegin" weg.
 
 ### 34. De terugblik op je eigen camera is een tegel, niet een venster (2026-08-25)
 
+> *Sinds beslissing 39 (2026-10-04) bestaan `renderStrip` en `thumb://` niet meer: de tegel
+> `self-<stream_id>` is een sleutel in `bridge::Thumbnails`, en het beeld gaat als
+> `RenderImage` zonder URL naar de strook. De beslissing zelf (een tegel, geen venster) geldt
+> onverkort.*
+
 Rick: "als ik mijn camera aanzet wil ik geen tweede venster, ik wil mezelf in dat kleine
 voorbeeldvakje zien." Dat vakje bestond al — de streamstrook boven de tijdlijn zette voor
 je eigen stream een tegel neer — maar die tegel had nooit een beeld: hij kreeg
@@ -1598,6 +1689,11 @@ uitpakt.
 
 ### 37. De tegels waren op Windows nooit te zien, en een gedeeld scherm krijgt er ook een (2026-09-01)
 
+> *Sinds beslissing 39 (2026-10-04) bestaan `thumb://`, `convertFileSrc` en de CSP niet
+> meer: een tegel is een `RenderImage` uit `ui/bridge.rs`. Oorzaak 1 en 2 hieronder zijn
+> daarmee weg als klasse. Oorzaak 3 (de alfa-byte) geldt nog en staat nu in
+> `bridge::render_image`; de terugblik op een gedeeld scherm blijft.*
+
 Rick: "de camera preview en screenshare preview werken nog niet, je ziet alleen zwart."
 
 **Het zwart was geen zwart beeld maar een `<img>` die niet laadde.** Twee oorzaken, allebei
@@ -1636,6 +1732,123 @@ en is camera-only gebleven.
 dat de deler een eigen miniatuur neerlegt (192 px breed, niet zwart) — geslaagd op het
 hoofdscherm. **Niet geverifieerd, en dat kan hier niet:** de twee Windows-oorzaken zelf. Zie
 `docs/TESTPLAN.md` C.9c.
+
+### 39. UI-stack van Tauri naar GPUI (gpui-kit 0.7) (2026-10-04)
+
+Op Ricks verzoek: de webview eruit, omdat de app minder moet kosten om open te hebben.
+Beslissing 19 had die prijs zelf opgeschreven. Een webview is geheugen (381 MB werkset in
+rust, voor fitcom plus zes WebView2-processen, tegen tientallen MB's met egui), een
+Windows-component die wij niet in de hand hebben, en een tweede taal in de repo. In fase 12
+was dat de moeite waard voor het ontwerpplafond. Het ontwerp hoeft er nu niet voor in te
+leveren: het zestienkleurenveld is in GPUI na te tekenen, met de kleine verschillen die
+hieronder staan.
+
+**Wat het is.** GPUI is het UI-framework van Zed. Het komt van crates.io als `gpui-pre`
+0.3.7 (een momentopname van Zeds GPUI, vastgepind door `gpui-kit = "0.7"`, dat er
+componenten en een iconenset bovenop zet). Het tekent zelf: Metal op macOS, DirectX 11 met
+DirectComposition en DirectWrite op Windows. Geen webview, geen script-engine, geen HTML,
+geen CSP en geen IPC-brug. Weg zijn `tauri`, `tauri-build`, `tauri.conf.json`,
+`tauri.macos.conf.json`, `capabilities/`, `gen/` en `crates/app/frontend/`.
+`tauri-winrt-notification` blijft: dat is een losse toast-crate voor `notify.rs`, geen Tauri.
+
+**Waarom dit opnieuw goedkoop kon.** De grens uit beslissing 3 en 19 hield voor de tweede
+keer. `proto`, `store`, `net`, `audio`, `video` en `engine.rs` zijn niet aangeraakt (in
+`engine.rs` en drie andere motorbestanden alleen commentaar dat de webview noemde).
+`ui/state.rs` is hetzelfde contract gebleven (alleen `Deserialize` erbij, voor de
+fixturemodus), en de bodies in `ui/commands.rs` zijn dezelfde, nu als gewone functies op
+`&Ui` in plaats van `#[tauri::command]`s. Opnieuw geschreven is precies wat de webview was:
+`frontend/` werd `ui/view/`, en `ui/mod.rs` werd een GPUI-bootstrap. Hoe het nu in elkaar
+zit staat onder "Hoe de weergavelaag in elkaar zit".
+
+**Wat bleef, omdat het geen webview-artefacten waren.** Een view noemt nooit een pad
+(`OpRef` bij openen en downloaden, indices bij gesleepte bestanden), een uitvoerbare
+extensie krijgt "Show", het YouTube-id wordt in Rust opnieuw gecontroleerd, `open_link`
+controleert het schema, de Wordle-oplossing staat niet in `UiState` zolang het spel loopt,
+en de drie feeds houden hun tempo. De `asset:`-scope werd `Ui::image_path_allowed`. Zie
+`docs/BEVEILIGING.md`, addendum 2026-10-04: B-52 t/m B-56 en vier kleinere zijn vervallen
+als aanvalsoppervlak, en er is één nieuwe bevinding (B-61).
+
+**Bouwen.** Nog steeds alleen `cargo build`. Op macOS volstaan de Command Line Tools,
+want gpui-kit zet `runtime_shaders` aan. Op Windows compileert een release-build de
+HLSL-shaders met `fxc.exe` uit de Windows SDK, die met de C++-workload van de VS Build
+Tools meekomt; een debug-build compileert ze pas bij het starten, uit de cargo-registry van
+de bouwmachine, en tekent dus alleen daar. Het icoon en het applicatiemanifest (common
+controls v6, PerMonitorV2-DPI), die tauri-build inbakte, komen nu uit `build.rs` met
+`winresource`. WebView2 Evergreen is geen afhankelijkheid meer; "losse exe in een zip"
+blijft.
+
+**Wat het kost, expliciet.**
+
+- **Windows is nog door niemand gestart.** Al het verifiëren hieronder gebeurde op de Mac.
+  De tray, de titelbalk met `WindowControlArea` (inclusief snap layouts), slepen uit
+  Verkenner, plakken, de toast, het tekenen via D3D11 en DPI-schaling zijn op Windows nooit
+  gezien. `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)", is de lijst om af te lopen.
+- **Afbeeldingen worden in ons eigen proces gedecodeerd** in plaats van in de sandbox van
+  WebView2. Begrensd op 8192 px per zijde; het aantal frames van een GIF niet (B-61).
+- **Bekende verschillen met de webview**, allemaal klein:
+  - GPUI kent geen letter-spacing; `tracked()` benadert het voor de kleine kapitaalstroken.
+  - Keuzelijsten tonen DotGothic16 waar Chromium het systeemlettertype gebruikte.
+  - De snelle emojibalk staat in de berichtstroom in plaats van erboven te zweven.
+  - Een tekstselectie kopieert alleen de rijen die op dat moment in beeld zijn, en scrolt
+    niet mee.
+  - Een afbeelding plakken werkt als de composer focus heeft (was overal in het venster).
+  - Tab zonder open @-lijst wordt ingeslikt.
+  - Schuiven en schakelaars zijn uit gpui-base-primitieven getekend: die van gpui-kit
+    animeren met veren (invariant 4) en zijn pilvormig.
+- **Bewuste gedragswijzigingen:** een concept wordt bewaard bij elke gesprekswissel, ook bij
+  een klik in de rail; klikken op een citaat scrolt naar het origineel (was een knop zonder
+  handler); de tooltip van een reactie noemt namen in plaats van peer-id's; je eigen nieuwe
+  bericht scrolt de tijdlijn naar onderen; de monitorkeuze bij clips is aangesloten op
+  `set_clip_monitor` (de oude keuzelijst had geen handler); `ignore_update` heeft geen
+  aanroeper, en de oude frontend riep hem ook nooit aan.
+- **Bugs van de oude frontend die de port repareert:** een string tussen aanhalingstekens in
+  een codeblok werd onzin (`"h264"` werd `0h2641`) en kreeg nooit de stringkleur; een
+  bewerkt bericht in een groep kreeg geen "(edited)"; de antwoordchip liet de tijdlijn
+  wegdrijven van het nieuwste bericht; "fit" in de lightbox begrensde de hoogte niet, dus
+  hoge afbeeldingen werden afgekapt; op 780 px liep de hoofdkolom met drie streamtegels over;
+  en op het Network-tabblad overlapte de probleemtekst van een kapotte peer zijn adres.
+
+**Hoe het geverifieerd is.**
+
+- **Op de Mac:** gebouwd, 200 unit-tests plus de integratietests groen, `clippy` schoon.
+- **Toestand voor toestand tegen de oude weergave.** Dezelfde fixture-JSON voedde de oude
+  frontend (headless Edge, via een harnas) en de GPUI-fixturemodus. 97 referentietoestanden
+  van de oude frontend zijn elk naast een GPUI-screenshot in dezelfde toestand en op dezelfde
+  maat gelegd; wat niet dicht te krijgen was staat hierboven bij de verschillen. De
+  fixturemappen en referentiebeelden staan niet in de repo. Wie opnieuw vergelijkt, maakt een
+  eigen `state.json` (formaat in `ui/fixture.rs`) en legt het resultaat naast `DESIGN.md`,
+  niet naast `design/shots/`: dat is de grijze wereld van 2026-08-04.
+- **Headless venstertests:** 13+ tests in GPUI's testvenster voor toetsenbord, plakken en
+  slepen, in `cargo test -p fitcom`.
+- **Windows, alleen vanaf de Mac.** `cargo check --workspace --all-targets` slaagt voor
+  `x86_64-pc-windows-gnu` en `x86_64-pc-windows-msvc`, en een gnu-releasebuild linkt
+  `fitcom.exe`. Het recept, want het hulpscript stond buiten de repo:
+  - Eenmalig: `rustup target add x86_64-pc-windows-gnu x86_64-pc-windows-msvc`,
+    `brew install mingw-w64 cmake`, en voor msvc ook `brew install llvm`.
+  - gnu: `cargo check --target x86_64-pc-windows-gnu --workspace --all-targets`, zonder
+    verdere instellingen. De gcc van mingw bouwt ring, SQLite, blake3 en libopus.
+  - msvc, alleen `check`: `/opt/homebrew/opt/llvm/bin` op `PATH` (voor `llvm-rc`),
+    `CC_x86_64_pc_windows_msvc=x86_64-w64-mingw32-gcc`,
+    `AR_x86_64_pc_windows_msvc=llvm-lib`, en `OPUS_LIB_DIR` op een map die niet bestaat,
+    zodat `audiopus_sys` cmake overslaat. Zo kom je om het "loopt stuk op `ring`" uit
+    beslissing 22 heen. Exporteer geen `RUSTFLAGS`: dat vervangt de vlaggen uit
+    `.cargo/config.toml`.
+  - Een gnu-*release*build vraagt een gepatchte kopie van `gpui-pre-windows` met een
+    vervangende `build.rs` (`--config 'patch.crates-io.gpui-pre-windows.path="<map>"'`).
+    De originele toetst `cfg(target_os = "windows")` op de host, genereert op een Mac dus
+    niets, en dan mist `shaders_bytes.rs`.
+
+  **Wat dat níét bewijst:** die vervangende `build.rs` schrijft nep-shaders, dus de exe linkt
+  maar tekent geen enkel beeld (nooit uitdelen). Er is geen MSVC-link geweest (daarvoor zijn
+  de CRT- en SDK-bibliotheken van Microsoft nodig), geen echte `fxc`-compilatie en geen
+  enkele start. Wat de typecheck wel vangt is elke API-vormfout, net als bij beslissing 22.
+- **Niet geverifieerd, ook niet op de Mac:** de tray ("Openen", "Afsluiten") en sluiten naar
+  de tray heen en terug, hover-toestanden en echte toetsenbordfocus. Het scherm was tijdens
+  de hele bouw vergrendeld; screenshots maken kon, klikken niet.
+
+#### Gemeten
+
+<<METINGEN>>
 
 ## Bugs die de tests eruit haalden
 
@@ -1753,20 +1966,19 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
 
 - **Een draaiende `fitcom.exe` blokkeert `cargo build`** met "Toegang geweigerd
   (os error 5)". Altijd eerst `.\scripts\run-peers.ps1 -Stop`.
-- **`backgroundColor` in `tauri.conf.json` sloopt het venster op deze machine.** Met
-  `"backgroundColor": "#0E1013"` erin weigert WebView2 te starten:
-  `failed to create webview: WebView2 error: WindowsError(HRESULT(0x80070057))` — "de
-  parameter is onjuist" — en dan draait de app wel maar krijg je nooit een venster te
-  zien. Zonder die sleutel start hij gewoon. De reden om hem te willen (geen witte flits
-  bij het openen) is anders opgelost: het venster staat op `"visible": false` en de
-  frontend roept `ready` aan zodra hij getekend heeft.
-- **De frontend heeft géén bouwstap.** `crates/app/frontend/` is gewone HTML, CSS en JS
-  zonder bundler; `tauri-build` bakt de map in de exe. `cargo build` bouwt dus nog steeds
-  de hele app en er is geen Node nodig — anders dan `PRODUCT.md` bij het besluit
-  verwachtte. Een frontendwijziging vereist wel opnieuw bouwen: de assets zitten in de
-  binary, niet ernaast.
-- **`crates/app/icons/icon.ico` moet bestaan**, anders weigert `tauri-build` met
-  "`icons/icon.ico` not found". Het bestand is het merkteken uit de titelbalk.
+- **Een Windows-releasebuild vraagt `fxc.exe`** (Windows SDK, komt met de C++-workload van
+  de VS Build Tools). `gpui-pre-windows` zoekt hem via `GPUI_FXC_PATH`, `PATH` of het
+  register en paniekt met "Failed to find fxc.exe" als hij er niet is. Een debug-build
+  compileert de shaders pas bij het starten, uit de cargo-registry van de bouwmachine; zo'n
+  exe tekent op een andere pc niets.
+- **`crates/app/icons/icon.ico` en `crates/app/windows-app.manifest` moeten bestaan**, anders
+  faalt `build.rs` (`winresource`) op een Windows-doel. Het icoon is het merkteken uit de
+  titelbalk.
+- **Geen witte flits:** het venster is `Opaque` en de wortel schildert de achtergrondkleur
+  vanaf het eerste beeld. *(Historie: onder Tauri sloopte `backgroundColor` in
+  `tauri.conf.json` het venster op deze machine (WebView2 startte niet, `0x80070057`), en
+  werd de flits omzeild met een onzichtbaar venster tot de frontend `ready` riep. Met de
+  webview is die valkuil verdwenen.)*
 - **`cmake` is nodig om te bouwen** (libopus). Staat portable in
   `%USERPROFILE%\tools\cmake-4.4.0-windows-x86_64\bin`, op het gebruikers-PATH.
   `.cargo/config.toml` zet `CMAKE_POLICY_VERSION_MINIMUM=3.5` omdat de meegeleverde
@@ -2098,7 +2310,15 @@ afgeleid van het net getoonde frame via `D3dContext::lees_bgra_miniatuur` (geric
 GPU→CPU-downscale, geen volledige framekopie). De motor bewaart de laatste per
 `(PeerId, stream_id)` in `Engine::miniaturen` en publiceert hem mee in de `Snapshot`.
 
-**Het transport naar de UI is in fase 12 vervangen.** Waar de egui-UI een
+**Het transport naar de UI is sinds 2026-10-04 (beslissing 39) dit:** `ui/bridge.rs` kijkt
+elke 500 ms per tegel of de `Arc`-pointer van de data veranderd is (een nieuw beeld is een
+nieuwe `Arc`, dus de pointer vergelijken is genoeg en kost niets), en zet alleen dan het
+BGRA-beeld rechtstreeks in
+een `RenderImage`: geen PNG, geen URL. De alfa-byte gaat daarbij op 255 (beslissing 37). Het
+vorige beeld van een tegel gaat uit de GPU-atlas (`drop_image`), anders groeit het
+GPU-geheugen zolang je kijkt, en een stream waar niemand meer naar kijkt laat zijn beeld los.
+
+*Historie, fase 12 tot 2026-10-04:* waar de egui-UI een
 `egui::TextureHandle` per stream cachete, kijkt `ui/mod.rs` nu elke 500 ms of de
 `Arc`-pointer van de data veranderd is (dezelfde vergelijking, dezelfde reden: op de
 pointer en niet op de inhoud), codeert alleen dan een PNG, en stuurt een
@@ -2358,6 +2578,8 @@ elke start weer uit.
 > `(lamport, author)`-sleutel, en de drie invoerwegen komen samen in `offer_path`
 > (`ui/commands.rs`) — de bestandsdialoog via `pick_and_offer_file`, slepen-en-neerzetten
 > via Tauri's `DragDrop`-event, en plakken via het echte `paste`-event van de webview.
+> *Sinds beslissing 39 (2026-10-04):* slepen via de `on_drop` van de wortelview (paden in
+> `Ui::dropped`, aangeboden per index) en plakken via het klembord van GPUI in de composer.
 > De rest van deze sectie — waarom `lamport` op `Message` en `FileEntry` zit, en waarom
 > het pad van een afbeelding uit zijn inhoudshash volgt — geldt onverkort.
 
@@ -2621,6 +2843,9 @@ over wat er live staat — daarvoor is stap 6.
 ---
 
 ## Wat nog nooit met een echte peer getest is
+
+**De GPUI-weergave (beslissing 39) is op Windows door niemand gestart**, en een paar
+dingen ook op de mac niet met de hand. Zie `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)".
 
 **Fase 1 t/m 7, en kanalen (DM's) erna, zijn inmiddels allemaal door Rick met een echte
 tweede (en waar relevant derde) peer bevestigd** — zie `docs/TESTPLAN.md` voor de volledige
