@@ -1752,8 +1752,9 @@ geen CSP en geen IPC-brug. Weg zijn `tauri`, `tauri-build`, `tauri.conf.json`,
 `tauri-winrt-notification` blijft: dat is een losse toast-crate voor `notify.rs`, geen Tauri.
 
 **Waarom dit opnieuw goedkoop kon.** De grens uit beslissing 3 en 19 hield voor de tweede
-keer. `proto`, `store`, `net`, `audio`, `video` en `engine.rs` zijn niet aangeraakt (in
-`engine.rs` en drie andere motorbestanden alleen commentaar dat de webview noemde).
+keer. `proto`, `store`, `net`, `audio`, `video` en `engine.rs` zijn niet aangeraakt, op
+commentaar na dat de webview noemde (`engine.rs`, drie andere motorbestanden en vier plekken
+in `video`).
 `ui/state.rs` is hetzelfde contract gebleven (alleen `Deserialize` erbij, voor de
 fixturemodus), en de bodies in `ui/commands.rs` zijn dezelfde, nu als gewone functies op
 `&Ui` in plaats van `#[tauri::command]`s. Opnieuw geschreven is precies wat de webview was:
@@ -1793,6 +1794,9 @@ blijft.
     niet mee.
   - Een afbeelding plakken werkt als de composer focus heeft (was overal in het venster).
   - Tab zonder open @-lijst wordt ingeslikt.
+  - Tijden staan altijd als `HH:MM` (24 uur) en datums als "3 October"; de webview volgde
+    de landinstelling van het systeem. Op de Nederlandse Windows-machines is dat hetzelfde
+    beeld, op een Engels (VS) systeem niet.
   - Schuiven en schakelaars zijn uit gpui-base-primitieven getekend: die van gpui-kit
     animeren met veren (invariant 4) en zijn pilvormig.
 - **Bewuste gedragswijzigingen:** een concept wordt bewaard bij elke gesprekswissel, ook bij
@@ -1844,11 +1848,55 @@ blijft.
   enkele start. Wat de typecheck wel vangt is elke API-vormfout, net als bij beslissing 22.
 - **Niet geverifieerd, ook niet op de Mac:** de tray ("Openen", "Afsluiten") en sluiten naar
   de tray heen en terug, hover-toestanden en echte toetsenbordfocus. Het scherm was tijdens
-  de hele bouw vergrendeld; screenshots maken kon, klikken niet.
+  het grootste deel van de bouw vergrendeld; screenshots maken kon, klikken niet.
+- **Gevonden bij het meten:** een venster dat inactief opent (achter een ander venster, zoals
+  bij autostart) gold als "op de voorgrond", omdat GPUI alleen een wissel van activering
+  meldt. Binnenkomende berichten werden dan als gelezen gemarkeerd en er kwam geen melding.
+  Nu begint de stand bij de echte activering; een headless test bewaakt het.
 
 #### Gemeten
 
-<<METINGEN>>
+Gemeten op 2026-10-04 op deze Mac (M5 Pro, macOS 26.6), beide release-builds na elkaar
+onder dezelfde omstandigheden: scherm ontgrendeld, beeldscherm aan, geen compilatie ernaast,
+dezelfde zaaidata (45 berichten over twee dagen, een subkanaal, een DM, een afbeelding), op
+de standaardmaat 1180x720. Tauri is `229c175`, GPUI is `dc165ae` (de commits daarna raken
+geen hete paden). Per scenario drie runs na een opwarmstart, de mediaan; per run 15 s
+inlopen en 60 s meten. Geheugen is `phys_footprint` (wat Activiteitenweergave "Geheugen"
+noemt), niet RSS. Bij Tauri tellen de drie WKWebView-hulpprocessen mee (WebContent, GPU,
+Networking): die hangen niet onder fitcom maar onder launchd, en zijn via hun "responsible
+PID" toegerekend.
+
+| | Tauri | GPUI | |
+|---|---|---|---|
+| **Rust, peers offline**: CPU per 60 s | 0,49 s (0,82% van een kern) | 0,12 s (0,20%) | 4x minder |
+| geheugen | 139 MiB | 69 MiB | 2x minder |
+| **Rust, twee peers verbonden**: CPU per 60 s | 0,26 s (0,43%) | 0,12 s (0,20%) | 2x minder |
+| geheugen | 140 MiB | 68 MiB | 2x minder |
+| **Chat, 1 bericht per seconde in #general**: CPU per 60 s | 4,48 s (7,5%) | 0,22 s (0,36%) | 21x minder |
+| geheugen aan het eind | 301 MiB | 69 MiB | 4x minder |
+| instructies per 60 s (chat) | 19,0 G | 0,39 G | 49x minder |
+| levenslange piek van het geheugen (chat) | 349 MiB | 163 MiB | 2x minder |
+| processen / threads | 5 / 42 tot 54 | 1 / 10 | |
+| koude start tot het venster er staat | 330 ms | 205 ms | |
+| binary (macOS, release) | 19,3 MiB | 25,8 MiB | 34% groter |
+| `fitcom.exe` (gnu-cross-build, geen MSVC) | 18 MB, plus de WebView2-runtime van het systeem | 31 MB, verder niets | |
+| crates in `Cargo.lock` (alle platforms) | 582 | 994 | |
+
+De CPU-cijfers zijn voor het hele proces, dus inclusief de motor (netwerk, store), die in
+beide builds dezelfde is. Het verschil komt dus helemaal uit de weergave; in rust is wat
+GPUI nog kost grotendeels de motor zelf. Het grootste verschil zit waar het voor invariant 4
+telt: bij binnenkomende berichten hertekende de webview de hele tijdlijn (`innerHTML`) en
+groeide de WebContent-heap mee met de geschiedenis, waar GPUI alleen de zichtbare rijen
+opnieuw opmaakt. De levenslange piek van GPUI (163 MiB) valt bij het opstarten (fonts,
+atlas) en zakt daarna terug naar 69 MiB.
+
+**Wat dit niet meet.** Een gesprek, scherm delen en de camera: de microfoontoestemming
+stond open op deze Mac, dus voice is niet gestart. Windows is niet gemeten. Daar draaide
+de oude build zes WebView2-processen (de 381 MB uit "Hoe de weergavelaag in elkaar zit"
+van fase 12), dus het geheugenverschil zal daar eerder groter dan kleiner zijn, maar dat is
+een verwachting en geen meting. GPU-geheugen is niet apart gemeten. Het harnas (`measure.sh`,
+een headless bot-peer, de zaaigenerator) staat buiten de repo; de opzet staat hierboven, zodat
+hij na te bouwen is.
 
 ## Bugs die de tests eruit haalden
 
