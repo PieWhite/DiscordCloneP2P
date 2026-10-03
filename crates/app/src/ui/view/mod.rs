@@ -601,26 +601,13 @@ impl AppView {
             thumbs: thumbs.clone(),
         };
 
-        // Every pane re-renders when the root changes; a pane's own entities (a meter
-        // view, an input) re-render it without touching the others.
-        fn pane<P: 'static>(
-            me: &Entity<AppView>,
-            cx: &mut Context<AppView>,
-            build: impl FnOnce(&mut Context<P>) -> P,
-        ) -> Entity<P> {
-            let me = me.clone();
-            cx.new(|cx| {
-                cx.observe(&me, |_, _, cx| cx.notify()).detach();
-                build(cx)
-            })
-        }
         let panes = Panes {
-            channels: pane(&me, cx, |cx| channels::ChannelsPane::new(&init, window, cx)),
-            members: pane(&me, cx, |cx| members::MembersPane::new(&init, window, cx)),
-            strip: pane(&me, cx, |cx| strip::StripPane::new(&init, window, cx)),
-            timeline: pane(&me, cx, |cx| timeline::TimelinePane::new(&init, window, cx)),
-            composer: pane(&me, cx, |cx| composer::ComposerPane::new(&init, window, cx)),
-            settings: pane(&me, cx, |cx| settings::SettingsPane::new(&init, window, cx)),
+            channels: observing_pane(&me, cx, |cx| channels::ChannelsPane::new(&init, window, cx)),
+            members: observing_pane(&me, cx, |cx| members::MembersPane::new(&init, window, cx)),
+            strip: observing_pane(&me, cx, |cx| strip::StripPane::new(&init, window, cx)),
+            timeline: observing_pane(&me, cx, |cx| timeline::TimelinePane::new(&init, window, cx)),
+            composer: observing_pane(&me, cx, |cx| composer::ComposerPane::new(&init, window, cx)),
+            settings: observing_pane(&me, cx, |cx| settings::SettingsPane::new(&init, window, cx)),
         };
 
         let Feeds {
@@ -1121,6 +1108,21 @@ impl AppView {
     }
 }
 
+/// A pane: an entity of its own that re-renders whenever `root` notifies. Built while the
+/// root itself is still being constructed (`root` is the reserved handle), which GPUI
+/// allows; the test below pins that the observation still fires afterwards.
+fn observing_pane<R: 'static, P: 'static>(
+    root: &Entity<R>,
+    cx: &mut Context<R>,
+    build: impl FnOnce(&mut Context<P>) -> P,
+) -> Entity<P> {
+    let root = root.clone();
+    cx.new(|cx| {
+        cx.observe(&root, |_, _, cx| cx.notify()).detach();
+        build(cx)
+    })
+}
+
 /// A pane drawn as a cached view: it re-renders only when it (or something it observes)
 /// notified, never because a sibling did.
 fn cached<V: Render>(pane: &Entity<V>) -> impl IntoElement {
@@ -1209,6 +1211,70 @@ impl Render for AppView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::TestAppContext;
+    use std::cell::Cell;
+
+    struct Root {
+        pane: Entity<Pane>,
+        value: usize,
+    }
+
+    struct Pane {
+        root: WeakEntity<Root>,
+        renders: Rc<Cell<usize>>,
+        seen: Rc<Cell<usize>>,
+    }
+
+    impl Render for Pane {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            self.seen.set(self.root.upgrade().map_or(0, |r| r.read(cx).value));
+            div().size_full()
+        }
+    }
+
+    impl Render for Root {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(cached(&self.pane))
+        }
+    }
+
+    /// The pane model rests on this: a cached pane, observing a root that did not exist
+    /// yet when the observation was made, redraws with the root's new data once the root
+    /// notifies. Dropping the `observe` in `observing_pane` makes it fail.
+    #[gpui_kit::test]
+    fn a_cached_pane_redraws_when_its_root_changes(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let seen = Rc::new(Cell::new(0));
+        let (r, s) = (renders.clone(), seen.clone());
+        let window = cx.add_window(move |_, cx| {
+            let me = cx.entity();
+            let pane = observing_pane(&me, cx, |_| Pane {
+                root: me.downgrade(),
+                renders: r,
+                seen: s,
+            });
+            Root { pane, value: 0 }
+        });
+        let draw = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        };
+        draw(cx);
+        let before = renders.get();
+
+        window
+            .update(cx, |root, _, cx| {
+                root.value = 7;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        draw(cx);
+
+        assert!(renders.get() > before, "the cached pane did not redraw");
+        assert_eq!(seen.get(), 7);
+    }
 
     #[test]
     fn the_active_channel_follows_the_rail() {
