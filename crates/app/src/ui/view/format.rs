@@ -58,7 +58,8 @@ pub fn fmt_size(bytes: u64) -> String {
         i += 1;
     }
     if v < 10.0 {
-        format!("{v:.1} {}", UNITS[i])
+        // `toFixed(1)` rounds a tie up (3.25 MB is "3.3 MB"); `{:.1}` would round it to even.
+        format!("{:.1} {}", (v * 10.0).round() / 10.0, UNITS[i])
     } else {
         format!("{} {}", v.round(), UNITS[i])
     }
@@ -204,6 +205,7 @@ mod tests {
         assert_eq!(fmt_size(1536), "1.5 kB");
         assert_eq!(fmt_size(12 * 1024 * 1024), "12 MB");
         assert_eq!(fmt_size(10 * 1024), "10 kB");
+        assert_eq!(fmt_size(3_407_872), "3.3 MB", "a tie rounds up, like toFixed");
     }
 
     #[test]
