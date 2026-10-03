@@ -6,7 +6,7 @@ use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{PeerState, Presence, UpdateState};
 use super::super::theme::{self, c};
-use super::widgets::{meter_view, tooltip};
+use super::widgets::{focus_ring, meter_view, tooltip};
 use super::{format, AppSnapshot, Dialog};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, InteractiveElement, IntoElement,
@@ -164,6 +164,9 @@ fn update_chip(snap: &AppSnapshot) -> Option<AnyElement> {
         })
         .when_some(click, |d, click| {
             let app = snap.app.clone();
+            let d = d
+                .tab_index(0)
+                .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])));
             let ui = snap.ui.clone();
             d.cursor_pointer()
                 .on_click(move |_: &ClickEvent, window, cx| match &click {

@@ -3,7 +3,7 @@
 
 use super::super::icons::Icon;
 use super::super::theme::{self, c};
-use super::widgets::tooltip;
+use super::widgets::{focus_ring, tooltip};
 use super::{AppSnapshot, View};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Context, Div, InteractiveElement,
@@ -88,6 +88,8 @@ fn rail_btn(
     };
     div()
         .id(id)
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
         .group(group.clone())
         .relative()
         .flex_none()

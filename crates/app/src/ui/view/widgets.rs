@@ -301,13 +301,36 @@ pub fn badge(count: usize, quiet: bool) -> Div {
         .child(count.to_string())
 }
 
-/// `letter-spacing` for the short uppercase labels, which GPUI's text cannot space: one
-/// text element per character, `spacing` px after each, as CSS adds it.
-pub fn tracked(text: &str, spacing: f32) -> Div {
+/// `:focus-visible { outline: 2px solid accent; outline-offset: 2px }`. GPUI has no outline,
+/// so the ring is a 4px accent shadow with a 2px `ground` shadow over it (the gap shows the
+/// ground the element sits on), around the element's own `base` shadows. Use as
+/// `.tab_index(0).focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))`.
+pub fn focus_ring(ground: Rgba, base: Vec<gpui_kit::BoxShadow>) -> Vec<gpui_kit::BoxShadow> {
+    let ring = |colour: Rgba, spread: f32| gpui_kit::BoxShadow {
+        color: colour.into(),
+        offset: gpui_kit::point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(spread),
+        inset: false,
+    };
+    // Later shadows paint over earlier ones; a frame line of the chassis (no offset) goes
+    // back on top so the ring only replaces what the outline covered.
+    let lines: Vec<gpui_kit::BoxShadow> = base.iter().filter(|s| s.offset.x == px(0.)).cloned().collect();
+    let mut all = base;
+    all.extend([ring(theme::ACCENT, 4.), ring(ground, 2.)]);
+    all.extend(lines);
+    all
+}
+
+/// `letter-spacing: <em>em` for the short uppercase labels, which GPUI's text cannot space:
+/// one cell per character, its advance plus the spacing wide. Every ASCII glyph of the UI
+/// face advances half an em, so the cell width is exact (a measured single glyph would be
+/// rounded up a pixel each). ASCII labels in `UI_FONT` at `size` px only.
+pub fn tracked(text: &str, size: f32, em: f32) -> Div {
     div()
         .flex()
         .flex_none()
-        .children(text.chars().map(|ch| div().mr(px(spacing)).child(ch.to_string())))
+        .children(text.chars().map(|ch| div().flex_none().w(px(size * (0.5 + em))).child(ch.to_string())))
 }
 
 const POINTER_SVG: &[u8] =

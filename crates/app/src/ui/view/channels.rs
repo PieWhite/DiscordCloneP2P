@@ -10,7 +10,9 @@ use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{ChannelState, PeerState, UiState};
 use super::super::theme::{self, c, Dither};
-use super::widgets::{avatar, badge, icon_btn, meter_view, pointer, tooltip, tracked, Dot};
+use super::widgets::{
+    avatar, badge, focus_ring, icon_btn, meter_view, pointer, tooltip, tracked, Dot,
+};
 use super::{AppHandle, AppSnapshot, Dialog, PaneInit, View};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, radians, relative, AnyElement, App, ClickEvent, Context, Div,
@@ -91,10 +93,12 @@ fn head(snap: &AppSnapshot, title: &str) -> Div {
         .child(
             div()
                 .text_size(px(13.))
-                .child(tracked(&title.to_uppercase(), 13. * 0.08)),
+                .child(tracked(&title.to_uppercase(), 13., 0.08)),
         )
         .child(
             icon_btn("new-channel", Icon::Plus, false)
+                .tab_index(0)
+                .focus_visible(|s| s.shadow(focus_ring(c::MAGENTA, vec![])))
                 .tooltip(tooltip("New channel"))
                 .on_click(snap.app.listener(|app, _: &ClickEvent, window, cx| {
                     app.open_dialog(Dialog::new_channel(), window, cx)
@@ -113,7 +117,7 @@ fn group_head(label: &str, count: usize, lead: Option<AnyElement>) -> Div {
         .text_size(px(11.))
         .text_color(c::SILVER)
         .children(lead)
-        .child(tracked(&label.to_uppercase(), 11. * 0.08))
+        .child(tracked(&label.to_uppercase(), 11., 0.08))
         .child(div().ml_auto().child(count.to_string()))
 }
 
@@ -130,6 +134,8 @@ fn channel_list(snap: &AppSnapshot) -> Vec<AnyElement> {
     let collapsed = v.collapsed;
     let toggle = div()
         .id("collapse-general")
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
         .flex()
         .items_center()
         .justify_center()
@@ -205,6 +211,8 @@ fn dm_list(snap: &AppSnapshot) -> Vec<AnyElement> {
 fn menu_row(id: ElementId, group: SharedString, current: bool, unread: usize) -> Stateful<Div> {
     div()
         .id(id)
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
         .group(group.clone())
         .relative()
         .w_full()
@@ -412,7 +420,8 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
                         } else {
                             "CALL RUNNING"
                         },
-                        11. * 0.08,
+                        11.,
+                        0.08,
                     ))
                     .child(
                         div()
@@ -562,6 +571,8 @@ fn join_button(snap: &AppSnapshot, id: &'static str, label: &'static str) -> Sta
     let ui = snap.ui.clone();
     div()
         .id(id)
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, theme::chassis_shadow(3.))))
         .group(id)
         .relative()
         .flex()
@@ -601,6 +612,8 @@ fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
     let ui = snap.ui.clone();
     let share = div()
         .id("btn-share")
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
         .flex_1()
         .flex()
         .items_center()
@@ -637,6 +650,8 @@ fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
         }));
     let leave = div()
         .id("btn-leave")
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
         .flex_1()
         .flex()
         .items_center()
@@ -686,6 +701,8 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
     let btn = |id: &'static str, icon: Icon, pressed: bool, live: bool, title: &'static str| {
         div()
             .id(id)
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
             .w(px(if narrow { 24. } else { 26. }))
             .h(px(28.))
             .flex()

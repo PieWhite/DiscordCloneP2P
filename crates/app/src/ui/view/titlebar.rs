@@ -33,7 +33,7 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
             div()
                 .text_size(px(12.))
                 .text_color(c::SILVER)
-                .child(super::widgets::tracked("FITCOMMUNICATION", 12. * 0.04)),
+                .child(super::widgets::tracked("FITCOMMUNICATION", 12., 0.04)),
         );
 
     div()

@@ -8,7 +8,7 @@ use super::super::icons::Icon;
 use super::super::state::{PeerState, Presence};
 use super::super::theme::{self, c, Dither};
 use super::channels::self_dot;
-use super::widgets::{avatar, meter_view, tooltip, tracked, Dot};
+use super::widgets::{avatar, focus_ring, meter_view, tooltip, tracked, Dot};
 use super::{format, AppHandle, AppSnapshot, PaneInit};
 use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::base::{Slider as BaseSlider, SliderIndicator, SliderThumb, SliderTrack};
@@ -39,6 +39,10 @@ struct VolumeSlider {
     /// Between the first change and the release the thumb is the user's: a state that
     /// arrives meanwhile must not pull it back.
     dragging: Rc<Cell<bool>>,
+    /// The engine's value when the thumb was last set from it. The thumb follows the
+    /// engine only when that moves, so a value just let go of is not pulled back to the
+    /// old one for the moment before the engine's next state confirms it.
+    synced: u32,
     _changes: Subscription,
 }
 
@@ -50,7 +54,8 @@ impl MembersPane {
         }
     }
 
-    /// The slider for `key`, showing `value` (whole percents) unless it is being dragged.
+    /// The slider for `key`, following the engine's `value` (whole percents) whenever that
+    /// changes and the thumb is not being dragged.
     /// Every change goes to the engine at once, as the old `input` handler sent it.
     fn slider(
         &mut self,
@@ -89,10 +94,12 @@ impl MembersPane {
             VolumeSlider {
                 state,
                 dragging,
+                synced: value,
                 _changes: changes,
             }
         });
-        if !entry.dragging.get() && entry.state.read(cx).value().end().round() as u32 != value {
+        if !entry.dragging.get() && entry.synced != value {
+            entry.synced = value;
             entry
                 .state
                 .update(cx, |s, cx| s.set_value(value as f32, window, cx));
@@ -133,7 +140,7 @@ impl Render for MembersPane {
                             .pb(px(6.))
                             .text_size(px(11.))
                             .text_color(c::SILVER)
-                            .child(tracked(&group.label.to_uppercase(), 11. * 0.08))
+                            .child(tracked(&group.label.to_uppercase(), 11., 0.08))
                             .child(div().ml_auto().child(group.rows.len().to_string())),
                     )
                     .children(rows)
@@ -164,7 +171,7 @@ impl Render for MembersPane {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .child(tracked("MEMBERS", 13. * 0.08)),
+                            .child(tracked("MEMBERS", 13., 0.08)),
                     )
                     .child(
                         div()
@@ -383,7 +390,9 @@ fn mem_sub(content: impl IntoElement, quiet: Option<SharedString>) -> Div {
         .gap(px(5.))
         .text_size(px(11.5))
         .text_color(c::SILVER)
-        .child(content)
+        // A text flex item may shrink to its longest word in CSS; here it has to be told,
+        // or a peer's problem sentence runs out of the column instead of wrapping.
+        .child(div().flex_1().min_w_0().child(content))
         .when_some(quiet, |d, g| d.child(quiet_screen(g)))
 }
 
@@ -576,6 +585,8 @@ impl MembersPane {
                         .child(
                             div()
                                 .id(ElementId::Name(format!("pmute-{}", p.id).into()))
+                                .tab_index(0)
+                                .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
                                 .size(px(24.))
                                 .flex()
                                 .flex_none()
@@ -632,7 +643,7 @@ impl MembersPane {
                                 .text_size(px(9.5))
                                 .line_height(relative(1.1))
                                 .text_color(c::SILVER)
-                                .child(tracked("SCREEN AUDIO", 9.5 * 0.04)),
+                                .child(tracked("SCREEN AUDIO", 9.5, 0.04)),
                         )
                         .child(
                             div()
@@ -720,7 +731,7 @@ impl MembersPane {
                                         .flex_none()
                                         .text_size(px(10.))
                                         .text_color(c::SILVER)
-                                        .child(tracked("YOU", 10. * 0.05)),
+                                        .child(tracked("YOU", 10., 0.05)),
                                 )
                             }),
                     )
@@ -746,6 +757,8 @@ fn share_chip(
 ) -> gpui_kit::Stateful<Div> {
     div()
         .id(id)
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
         .mt(px(7.))
         .flex()
         .flex_wrap()
