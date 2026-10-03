@@ -204,10 +204,9 @@ impl Fixture {
 /// | `members=0\|1` | member list |
 /// | `collapsed=1` | collapse the channel group |
 /// | `overlay=ac\|drop\|plus` | composer overlay; `ac=<query>` sets the @-query |
-/// | `dialog=wordle\|picker\|update\|wipe\|delete\|new-channel\|rename\|delete-channel\|lightbox:<path>` | open a dialog |
+/// | `dialog=wordle\|picker\|update\|wipe\|delete\|new-channel\|rename\|lightbox:<path>` | open a dialog |
 /// | `wordle=<letters>` | letters typed into the board |
 /// | `reply=last` / `edit=last` / `emoji=last` | reply chip, inline edit, quick-emoji bar on the last message (edit: last own) |
-/// | `menu=<channel-key>` | channel context menu |
 /// | `hotkey=1` | clip hotkey capture waiting |
 /// | `focused=0` | window treated as unfocused |
 /// | `text=<draft>` | composer holding `<draft>` (`\n` is a line break), focused, as if typed |
@@ -228,7 +227,6 @@ pub struct DebugView {
     pub reply_last: bool,
     pub edit_last: bool,
     pub emoji_last: bool,
-    pub menu: Option<String>,
     pub hotkey_wait: bool,
     pub focused: Option<bool>,
     pub composer_text: Option<String>,
@@ -246,7 +244,6 @@ pub enum DebugDialog {
     DeleteLast,
     NewChannel,
     Rename,
-    DeleteChannel,
     Picker,
 }
 
@@ -302,7 +299,6 @@ impl DebugView {
                             "delete" => Some(DebugDialog::DeleteLast),
                             "new-channel" => Some(DebugDialog::NewChannel),
                             "rename" => Some(DebugDialog::Rename),
-                            "delete-channel" => Some(DebugDialog::DeleteChannel),
                             other => {
                                 tracing::warn!(dialog = other, "FITCOM_DEBUG_VIEW: unknown dialog");
                                 None
@@ -314,7 +310,6 @@ impl DebugView {
                 "reply" => d.reply_last = value == "last",
                 "edit" => d.edit_last = value == "last",
                 "emoji" => d.emoji_last = value == "last",
-                "menu" => d.menu = Some(value.to_string()),
                 "hotkey" => d.hotkey_wait = flag,
                 "focused" => d.focused = Some(flag),
                 "text" => d.composer_text = Some(value.replace("\\n", "\n")),

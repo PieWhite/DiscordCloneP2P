@@ -18,7 +18,7 @@ use super::super::state::OpRef;
 use super::super::theme::{self, c};
 use super::widgets::{modal_layer, pointer, BackdropHandler, Btn, BtnKind, WindowFrame};
 use super::wordle::{self, WordleKey};
-use super::{AppHandle, AppSnapshot, ConfirmAction, ContextMenu, Dialog, PromptAction};
+use super::{AppHandle, AppSnapshot, ConfirmAction, Dialog, PromptAction};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{
     div, img, prelude::FluentBuilder, px, relative, size, AnyElement, App, AppContext, ClickEvent,
@@ -58,17 +58,6 @@ pub fn render_dialog(
         } => lightbox(snap, src, name, op.as_ref(), *actual_size, window, cx),
         Dialog::Wordle => wordle_dialog(snap, window, cx),
     }
-}
-
-/// The old frontend had no context menu: a right-click on a sub-channel opens the rename
-/// prompt directly (slice A). Nothing opens this layer, so it draws nothing.
-pub fn render_context_menu(
-    _snap: &AppSnapshot,
-    _menu: &ContextMenu,
-    _window: &mut Window,
-    _cx: &mut App,
-) -> AnyElement {
-    div().into_any_element()
 }
 
 fn close_button(

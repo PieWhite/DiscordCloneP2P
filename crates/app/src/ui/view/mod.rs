@@ -47,8 +47,8 @@ use super::theme;
 use super::Ui;
 use gpui_kit::{
     deferred, div, prelude::FluentBuilder, relative, AnyWindowHandle, App, AppContext, Context, Entity,
-    ExternalPaths, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels,
-    Point, Render, StyleRefinement, Styled, Task, WeakEntity, Window,
+    ExternalPaths, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement,
+    Render, StyleRefinement, Styled, Task, WeakEntity, Window,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -232,9 +232,6 @@ pub enum Dialog {
 pub enum ConfirmAction {
     ApplyUpdate,
     DeleteAllImages,
-    /// Not reachable from the old frontend (it had no way to delete a sub-channel); here
-    /// for the channel context menu.
-    DeleteChannel(String),
     DeleteMessage(OpRef),
 }
 
@@ -243,7 +240,6 @@ impl ConfirmAction {
         match self {
             ConfirmAction::ApplyUpdate => commands::apply_update(ui),
             ConfirmAction::DeleteAllImages => commands::delete_all_images(ui),
-            ConfirmAction::DeleteChannel(key) => commands::delete_channel(ui, key),
             ConfirmAction::DeleteMessage(op) => commands::delete_message(ui, op),
         }
     }
@@ -303,16 +299,6 @@ impl Dialog {
         }
     }
 
-    pub fn delete_channel(channel: &ChannelState) -> Self {
-        Dialog::Confirm {
-            title: format!("Delete {}?", channel.name),
-            text: "The sub-channel disappears for everyone. This cannot be undone.".into(),
-            ok_label: "Delete".into(),
-            danger: true,
-            action: ConfirmAction::DeleteChannel(channel.key.clone()),
-        }
-    }
-
     pub fn new_channel() -> Self {
         Dialog::Prompt {
             title: "New channel".into(),
@@ -332,13 +318,6 @@ impl Dialog {
             action: PromptAction::RenameChannel(channel.key.clone()),
         }
     }
-}
-
-/// Right-click on a removable sub-channel row.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContextMenu {
-    pub channel: String,
-    pub position: Point<Pixels>,
 }
 
 /// What this window is looking at: the `V` object of `app.js`, field for field, plus the
@@ -379,7 +358,6 @@ pub struct ViewState {
     /// The clip hotkey box is listening for a combination.
     pub hotkey_wait: bool,
     pub dialog: Option<Dialog>,
-    pub context_menu: Option<ContextMenu>,
     /// Letters typed into the Wordle row that is not sent yet.
     pub wordle_typed: String,
     /// The number of landed rows when `wordle_typed` was last cleared; a change clears it.
@@ -413,7 +391,6 @@ impl Default for ViewState {
             collapsed: false,
             hotkey_wait: false,
             dialog: None,
-            context_menu: None,
             wordle_typed: String::new(),
             wordle_rows: None,
             devices: None,
@@ -892,7 +869,6 @@ impl AppView {
 
     pub fn open_dialog(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) {
         let v = self.v_mut();
-        v.context_menu = None;
         v.overlay = Overlay::None;
         v.dialog = Some(dialog);
         window.focus(&self.dialog_focus, cx);
@@ -902,19 +878,6 @@ impl AppView {
     pub fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.v_mut().dialog = None;
         window.focus(&self.focus, cx);
-        cx.notify();
-    }
-
-    pub fn open_context_menu(&mut self, channel: &str, position: Point<Pixels>, cx: &mut Context<Self>) {
-        self.v_mut().context_menu = Some(ContextMenu {
-            channel: channel.to_string(),
-            position,
-        });
-        cx.notify();
-    }
-
-    pub fn close_context_menu(&mut self, cx: &mut Context<Self>) {
-        self.v_mut().context_menu = None;
         cx.notify();
     }
 
@@ -933,9 +896,6 @@ impl AppView {
 
     /// Escape closes the topmost thing, in the order of the old keydown handler.
     fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
-        if self.v.context_menu.is_some() {
-            return self.close_context_menu(cx);
-        }
         if self.v.dialog.is_some() {
             return self.close_dialog(window, cx);
         }
@@ -1067,12 +1027,6 @@ impl AppView {
             if let (true, Some((op, ..))) = (d.emoji_last, &last_message) {
                 v.emoji_for = Some(op.clone());
             }
-            if let Some(channel) = &d.menu {
-                v.context_menu = Some(ContextMenu {
-                    channel: channel.clone(),
-                    position: gpui_kit::point(gpui_kit::px(150.), gpui_kit::px(140.)),
-                });
-            }
             v.hotkey_wait |= d.hotkey_wait;
             if let Some(f) = d.focused {
                 v.focused = f;
@@ -1094,7 +1048,6 @@ impl AppView {
             Some(DebugDialog::DeleteLast) => last_message.map(|(op, ..)| Dialog::delete_message(op)),
             Some(DebugDialog::NewChannel) => Some(Dialog::new_channel()),
             Some(DebugDialog::Rename) => removable.as_ref().map(Dialog::rename_channel),
-            Some(DebugDialog::DeleteChannel) => removable.as_ref().map(Dialog::delete_channel),
             Some(DebugDialog::Picker) => {
                 self.open_picker(window, cx);
                 None
@@ -1185,7 +1138,6 @@ impl Render for AppView {
             .when(settings, |d| d.child(div().flex_1().min_w_0().h_full().child(cached(&self.panes.settings))));
 
         let dialog = snap.v.dialog.clone();
-        let menu = snap.v.context_menu.clone();
         div()
             .id("fitcom")
             .key_context(KEY_CONTEXT)
@@ -1207,9 +1159,6 @@ impl Render for AppView {
             .child(status::render(&snap, window, cx))
             .when_some(dialog, |d, dialog| {
                 d.child(deferred(dialogs::render_dialog(&snap, &dialog, window, cx)).with_priority(2))
-            })
-            .when_some(menu, |d, menu| {
-                d.child(deferred(dialogs::render_context_menu(&snap, &menu, window, cx)).with_priority(3))
             })
     }
 }
