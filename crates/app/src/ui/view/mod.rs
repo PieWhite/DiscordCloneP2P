@@ -65,6 +65,7 @@ const KEY_CONTEXT: &str = "FitApp";
 /// their Cmd shortcuts). Called once before the window opens.
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", Escape, Some(KEY_CONTEXT))]);
+    composer::init(cx);
     #[cfg(target_os = "macos")]
     {
         cx.bind_keys([
@@ -713,7 +714,7 @@ impl AppView {
             meters: self.meters.clone(),
             thumbs: self.thumbs.clone(),
             app: self.handle.clone(),
-            drop_active: self.drop_hover,
+            drop_active: self.drop_hover || self.v.overlay == Overlay::Drop,
             dialog_focus: self.dialog_focus.clone(),
         }
     }
@@ -1102,6 +1103,11 @@ impl AppView {
         };
         if let Some(dialog) = dialog {
             self.open_dialog(dialog, window, cx);
+        }
+        if let Some(text) = &d.composer_text {
+            self.panes.composer.update(cx, |c, cx| c.debug_type(text, window, cx));
+            let s = self.s.clone();
+            composer::update_autocomplete(self.v_mut(), &s, text);
         }
         let _ = channel_of;
         cx.notify();
