@@ -1628,7 +1628,7 @@ mod tests {
         println!("{} ({} bytes)", verwacht.display(), bytes.len());
     }
 
-    /// Buiten 0..1 komt uit de webview, niet uit deze code. Vertrouwen is hier niet nodig:
+    /// Buiten 0..1 komt uit het venster, niet uit deze code. Vertrouwen is hier niet nodig:
     /// afkappen kost één regel.
     #[test]
     fn een_onmogelijk_volume_vervormt_niet() {

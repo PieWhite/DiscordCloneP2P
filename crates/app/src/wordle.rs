@@ -16,14 +16,14 @@
 //!   invariant 2 (geen host-peer) aantasten en de dag laten afhangen van wie er online
 //!   was. Het antwoord staat daardoor ook nooit op de draad; over de mesh gaan alleen
 //!   *uitslagen*.
-//! - **Het ophalen zit in de motor**, net als bij `crate::youtube`: de CSP van het venster
-//!   blijft dicht, er komt geen host bij in `connect-src`.
+//! - **Het ophalen zit in de motor**, net als bij `crate::youtube`: het venster legt nooit
+//!   zelf een verbinding naar buiten.
 //! - **Mislukt het, dan is er die dag geen kaart** en werkt de rest van de app door.
 //!   Invariant 7 (offline is normaal) geldt onverkort; dit is een spelletje.
 //!
-//! # Waarom het woord niet naar de webview gaat
+//! # Waarom het woord niet naar de weergave gaat
 //!
-//! Zolang het spel loopt blijft de oplossing in de motor. De webview stuurt een gok en
+//! Zolang het spel loopt blijft de oplossing in de motor. De weergave stuurt een gok en
 //! krijgt vijf kleuren terug — hij weet het antwoord pas als het spel klaar is. Dat is
 //! niet tegen een aanvaller (het is je eigen spel), maar tegen het te makkelijk maken van
 //! iets waar de hele grap in zit.

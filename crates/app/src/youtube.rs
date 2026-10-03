@@ -7,11 +7,11 @@
 //! en een plaatje bij een link kunnen alleen bij YouTube vandaan komen, dus de vraag is
 //! niet *of* er een verbinding buiten het tailnet is maar *wie* hem legt en hoe vaak.
 //!
-//! Hier, in de motor, en niet met een `<img src="https://i.ytimg.com/...">` in de webview:
+//! Hier, in de motor, en niet in het venster:
 //!
-//! - De CSP blijft dicht. Geen `img-src` naar een vreemde host betekent dat een bericht van
-//!   een peer nooit een verbinding uit het venster kan laten vertrekken — de miniatuur komt
-//!   straks over `asset:` van de eigen schijf.
+//! - Het venster haalt nooit iets van internet. Het tekent de miniatuur van de eigen schijf,
+//!   en alleen uit deze cachemap of de afbeeldingenmap (`ui::Ui::image_path_allowed`), dus
+//!   een bericht van een peer kan nooit een verbinding uit het venster laten vertrekken.
 //! - Geen cookies, geen referrer, geen tweede request bij elk hertekenen. Eén keer per
 //!   video, ooit, en daarna van schijf.
 //! - Werkt niets, dan blijft het een gewone link. Invariant 7 (offline is normaal) geldt
@@ -44,8 +44,8 @@ const MAX_OEMBED: u64 = 16 * 1024;
 /// `hqdefault.jpg` is in de praktijk 20-40 kB. Dit is het plafond tegen een host die
 /// blijft sturen, niet een verwachting.
 const MAX_THUMB: u64 = 4 * 1024 * 1024;
-/// Wat er hoogstens in de kaart terechtkomt. De frontend `esc()`t hem, dit is tegen een
-/// titel die de tijdlijn zou vullen.
+/// Wat er hoogstens in de kaart terechtkomt. Het venster tekent hem als platte tekst; dit is
+/// tegen een titel die de tijdlijn zou vullen.
 const MAX_TITEL: usize = 200;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -64,7 +64,7 @@ pub struct Preview {
 
 /// Een video-id zoals YouTube ze uitgeeft: precies elf tekens uit `[A-Za-z0-9_-]`.
 ///
-/// Dit is niet cosmetisch. Het id komt uit een bericht van een peer, via de webview, en
+/// Dit is niet cosmetisch. Het id komt uit een bericht van een peer, via het venster, en
 /// gaat hier twee kanten op die allebei een injectiepad zouden zijn zonder deze controle:
 /// in een URL (queryparameter en padsegment) en in een bestandsnaam in de cachemap
 /// (B-03 is precies deze klasse). Elf tekens uit een vaste verzameling kunnen geen van
@@ -157,7 +157,7 @@ fn haal_op(id: &str, cache_dir: &Path) -> Result<Preview> {
         .read_to_vec()
         .context("miniatuur niet te lezen")?;
     // Geen JPEG betekent: dit is niet wat we vroegen. Twee bytes zijn genoeg om dat te
-    // zien, en het scheelt een plaatje dat de webview toch niet kan tekenen.
+    // zien, en het scheelt een plaatje dat het venster toch niet kan tekenen.
     if bytes.len() < 2 || bytes[0..2] != [0xFF, 0xD8] {
         bail!("miniatuur is geen JPEG");
     }

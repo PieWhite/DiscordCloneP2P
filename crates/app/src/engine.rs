@@ -6,8 +6,8 @@
 //! sync-lus in de weergavelus, dan stopt de synchronisatie zodra je minimaliseert of naar
 //! de tray gaat — precies het moment waarop je een melding zou willen krijgen dat er
 //! iemand iets zegt. Voor een app die naast een game moet kunnen draaien is dat het
-//! verkeerde gedrag. Dat gold voor egui en geldt onverkort voor de webview die het
-//! sinds fase 12 is.
+//! verkeerde gedrag. Dat gold voor egui, gold voor de webview van fase 12, en geldt
+//! onverkort voor GPUI.
 //!
 //! De UI leest daarom alleen nog een momentopname en stuurt commando's terug. Zij mag
 //! stilvallen zonder dat er iets misgaat.
@@ -67,10 +67,10 @@ const EIGEN_VERSIE: &str = env!("CARGO_PKG_VERSION");
 /// volschrijft. Groter blijft gewoon in de lijst staan met een downloadknop — dan is het
 /// een keuze in plaats van iets dat achter je rug gebeurt.
 ///
-/// Dit begrenst het *ophalen*, niet het *decoderen*: de afmetingen van een PNG (een
-/// 30000×30000 "decompression bomb" is een paar honderd kB op de draad en gigabytes in de
-/// renderer) worden door WebView2 afgehandeld, en daar komen wij niet tussen. Dat blijft
-/// een open deel van B-22.
+/// Dit begrenst het *ophalen*, niet het *decoderen*. Een 30000×30000 "decompression bomb"
+/// is een paar honderd kB op de draad en gigabytes gedecodeerd, en dat decoderen gebeurt
+/// sinds de GPUI-wissel in ons eigen proces. De grens daarvoor staat in
+/// `ui::state::MAX_INLINE_SIDE`; wat daar nog openstaat is B-61.
 const MAX_AUTO_AFBEELDING: u64 = 16 * 1024 * 1024;
 
 /// Hoe vaak de release-feed geraadpleegd wordt. Er is niets aan gelegen om er sneller
@@ -640,7 +640,7 @@ enum FileEvent {
         bericht: String,
     },
     /// Het raadsel van vandaag is bij NYT opgehaald (2026-08-20). Zie `crate::wordle` voor
-    /// waarom dat in de motor gebeurt en niet in de webview.
+    /// waarom dat in de motor gebeurt en niet in het venster.
     WordleGeladen(wordle::Raadsel),
     /// Een *handmatige* poging is misgegaan; de reden hoort in het venster. Een
     /// automatische poging meldt niets — zie `wordle_taak`.
@@ -1975,8 +1975,8 @@ impl Engine {
             }
             UiCommand::ZetGeluidInstellingen(geluid) => {
                 // Volume begrenzen op wat het betekent, niet vertrouwen op de schuif: dit
-                // komt uit de webview en 1.4 zou de tonen laten vervormen.
-                // Door dezelfde opschoning als bij het inlezen: de webview kan een NaN of
+                // komt uit het venster en 1.4 zou de tonen laten vervormen.
+                // Door dezelfde opschoning als bij het inlezen: het venster kan een NaN of
                 // een 1.4 doorgeven, en dat zou stilte of vervorming opleveren.
                 let mut veilig = SoundConfig {
                     // Een onbekende naam niet opslaan: dan zou de config iets bevatten dat
@@ -3376,8 +3376,8 @@ fn download_met_voortgang(
 /// - **Staat het er al met de juiste grootte, dan zijn we klaar.** Bij een afbeelding is
 ///   de naam de hash van de inhoud, dus hetzelfde pad bewijst dezelfde bytes — dan is er
 ///   niets te vervangen. Dat scheelt niet alleen werk: op Windows *mislukt* het vervangen
-///   van een bestand dat een ander proces net aan het lezen is (de webview die hem in de
-///   tijdlijn tekent, een virusscanner), en dat leverde een foutmelding op voor een
+///   van een bestand dat net gelezen wordt (door het venster dat hem in de tijdlijn
+///   tekent, of een virusscanner), en dat leverde een foutmelding op voor een
 ///   afbeelding die al gewoon binnen was.
 /// - **Eén keer opnieuw proberen.** Diezelfde scanner pakt een net weggeschreven bestand
 ///   soms een fractie van een seconde vast. Op unix bestaat dat probleem niet; dit is de
