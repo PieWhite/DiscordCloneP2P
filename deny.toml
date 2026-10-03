@@ -47,6 +47,11 @@ allow = [
   "MPL-2.0",
   "CC0-1.0",
   "Unlicense",
+  # Kwamen mee met gpui-kit (beslissing 39, 2026-10-04): `enum-iterator` (0BSD, nog ruimer
+  # dan MIT) en `libbz2-rs-sys` (de BSD-achtige bzip2-licentie). Geen van beide stelt
+  # voorwaarden die MIT niet al stelt.
+  "0BSD",
+  "bzip2-1.0.6",
 ]
 confidence-threshold = 0.9
 
