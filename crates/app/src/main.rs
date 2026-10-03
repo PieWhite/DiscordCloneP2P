@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Debug builds only: the window without mesh, store or engine, fed from JSON. Before
-    // the data directory on purpose — a fixture run must not touch a real install's logs.
+    // the data directory on purpose: a fixture run must not touch a real install's logs.
     #[cfg(debug_assertions)]
     if let Ok(dir) = std::env::var("FITCOM_UI_FIXTURE") {
         tracing_subscriber::fmt()
@@ -136,7 +136,7 @@ fn main() -> Result<()> {
     };
 
     // Het venster: GPUI met gpui-kit. Eigen titelbalk volgens het ontwerp; alles eromheen
-    // — tray, vensterhandle, de drie feeds — zit in `ui::run`.
+    // (tray, vensterhandle, de drie feeds) zit in `ui::run`.
     ui::run(engine, identity.peer_id, &cfg_voor_ui, youtube_dir, runtime)
 }
 

@@ -353,7 +353,7 @@ pub struct ViewState {
     /// open one's text lives in the composer itself.
     pub drafts: HashMap<String, String>,
     /// Muting a peer is volume 0 with the old level remembered here, because that is all
-    /// the engine has — there is no separate per-peer mute on the wire.
+    /// the engine has: there is no separate per-peer mute on the wire.
     pub volume_before_mute: HashMap<String, f32>,
     pub focused: bool,
     /// Unread count of the conversation at the moment it was opened, for the "new" line.
@@ -786,7 +786,7 @@ impl AppView {
         }
         cx.notify();
 
-        // Looking at a conversation is reading it — but only the one actually on screen,
+        // Looking at a conversation is reading it, but only the one actually on screen,
         // so a DM cannot quietly clear the general channel's counter or the other way round.
         if self.v.focused && unread_count(&self.s, &self.v) > 0 {
             commands::mark_read(&self.ui, &active_channel(&self.v));
@@ -934,7 +934,7 @@ impl AppView {
         cx.notify();
     }
 
-    /// Below 1080 the member list is in the way, so it closes — as state, so the toggle
+    /// Below 1080 the member list is in the way, so it closes, and as state, so the toggle
     /// keeps telling the truth and the user can open it again. Only on crossing the line,
     /// like the old `matchMedia` listener. Returns whether it changed anything.
     fn apply_width(&mut self, window: &Window) -> bool {

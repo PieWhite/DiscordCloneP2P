@@ -37,7 +37,7 @@ pub const SPEAKING: f32 = 0.06;
 
 /// How long the speaking state survives a dip under the threshold. Natural speech dips
 /// below any level threshold between words, and the 4 Hz tick samples straight into those
-/// dips — gating the ring on a single sample made it strobe. Light the moment the level is
+/// dips: gating the ring on a single sample made it strobe. Light the moment the level is
 /// up, release only once it has stayed quiet this long (two ticks plus slack).
 pub const SPEAK_HOLD: Duration = Duration::from_millis(600);
 
@@ -47,7 +47,7 @@ pub struct PeerMeter {
     /// `None` while the peer is not online.
     pub rtt: Option<u32>,
     pub level: f32,
-    /// The verdict with the hold applied — what the speaking ring shows.
+    /// The verdict with the hold applied: what the speaking ring shows.
     #[serde(default)]
     pub speaking: bool,
 }
@@ -179,7 +179,7 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
             let snap = rx.borrow_and_update().clone();
             let next = u.build_state(&snap);
             // The engine publishes on a fixed tick, so most of these equal the last one.
-            // Comparing here is what keeps an idle window at zero wake-ups — volatile
+            // Comparing here is what keeps an idle window at zero wake-ups: volatile
             // figures live in the meters feed precisely so they cannot defeat this.
             state_tx.send_if_modified(|current| {
                 if **current == next {
@@ -321,7 +321,7 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
     }
 }
 
-/// The decoder hands us BGRA and a GPUI image is BGRA, so the bytes go across as they are —
+/// The decoder hands us BGRA and a GPUI image is BGRA, so the bytes go across as they are:
 /// no PNG, no channel swap. Only the alpha byte is fixed: it means nothing on the way here
 /// (Media Foundation's RGB32 leaves it at 0), and an image honours it, so a camera tile
 /// came out transparent. A thumbnail is opaque by definition.

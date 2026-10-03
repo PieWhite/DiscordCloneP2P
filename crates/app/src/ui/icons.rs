@@ -4,7 +4,7 @@
 //! The rules of the set still hold: 24×24 grid, stroke 2, no fill, square caps, miter
 //! joins; the size is set by the caller, never by the symbol; the colour is never in the
 //! file. GPUI paints an SVG as a mask in one colour, so an icon takes the text colour of
-//! the element it sits in — presence, danger and accent reach it the same way they did
+//! the element it sits in: presence, danger and accent reach it the same way they did
 //! through `currentColor`.
 //!
 //! ```ignore

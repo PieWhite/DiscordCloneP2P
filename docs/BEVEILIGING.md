@@ -266,11 +266,11 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-17 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Pre-auth geheugenuitputting: 16 MiB per frame × onbegrensd aantal verbindingen | `net/framing.rs:39`, `net/mesh.rs:865` |
 | B-18 | HOOG | Het UDP-mediapad kent geen authenticatie en geen replaybescherming | `net/media.rs:64-156` |
 | B-19 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `UpdateSubresource` met genegeerde bufferlengte en gestript stride-teken | `video/codec.rs:741-765` |
-| B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_files` accepteert willekeurige paden uit de webview — exfiltratieprimitief. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de indexregel blijft | `app/ui/commands.rs:241-246` |
-| B-53 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%`. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de allowlist blijft | `app/ui/commands.rs:255-271` |
+| B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)**: `offer_files` accepteert willekeurige paden uit de webview, een exfiltratieprimitief. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de indexregel blijft | `app/ui/commands.rs:241-246` |
+| B-53 | ~~HOOG~~ | **Opgelost (2026-08-13)**: `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%`. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de allowlist blijft | `app/ui/commands.rs:255-271` |
 | B-20 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — TOCTOU: de update wordt niet opnieuw geverifieerd vlak vóór toepassen | `app/engine.rs:707-736` |
 | B-21 | ~~MIDDEL~~ | **Opgelost (fase 13)** — de eigen exe wordt nergens meer aangeboden | `app/engine.rs` |
-| B-22 | MIDDEL | **Deels (2026-08-13)** — Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens. Het decoderen zit sinds 2026-10-04 in ons eigen proces: zie B-61 | `app/engine.rs:636-658` |
+| B-22 | MIDDEL | **Deels (2026-08-13)**: Afbeeldingen downloaden en renderen zichzelf, zonder groottegrens. Het decoderen zit sinds 2026-10-04 in ons eigen proces: zie B-61 | `app/engine.rs:636-658` |
 | B-23 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen kanaalcontrole bij ontvangst — DM's van derden worden opgeslagen | `store/lib.rs:240`, `app/chat.rs:307` |
 | B-24 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Target-desync laat een peer permanent "online" met een dode verbinding | `net/mesh.rs:658-673` |
 | B-25 | ~~MIDDEL~~ | **Deels (2026-08-13)** — `?msg` weg en rate-limited; het vroeg sluiten van een niet-koppelbare verbinding blijft bewust achterwege (parkeren is by design) | `net/mesh.rs:632-640` |
@@ -287,7 +287,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-36 | MIDDEL | libopus wordt uit een 2021-snapshot meegebouwd | `audio/Cargo.toml:15` |
 | B-54 | ~~MIDDEL~~ | **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** (was open). `apply_update` is een ongeconditioneerd IPC-commando | `app/ui/commands.rs:315-318` |
 | B-55 | ~~MIDDEL~~ | **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** (was grotendeels gedicht). Geen `on_navigation`-beleid; het klikpad gaat sinds 1.0.2 wél naar de systeembrowser | `app/ui/mod.rs`, `app/ui/commands.rs::open_link` |
-| B-56 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Latente XSS: escaping is de verantwoordelijkheid van de aanroeper. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:252-263,531` (weg) |
+| B-56 | ~~MIDDEL~~ | **Opgelost (2026-08-13)**: Latente XSS: escaping is de verantwoordelijkheid van de aanroeper. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:252-263,531` (weg) |
 | B-61 | MIDDEL | **Deels (2026-10-04)**: afbeeldingen worden in ons eigen proces gedecodeerd; begrensd op 8192 px per zijde, het aantal frames van een GIF niet | `app/ui/state.rs::MAX_INLINE_SIDE` |
 | B-37 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `frag_index + 1` overflow-paniek doodt de kijkerthread stil | `video/fragment.rs:262` |
 | B-38 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `volgende + 1` overflow-paniek maakt álle audio permanent stil | `audio/jitter.rs:128-145` |
@@ -300,12 +300,12 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-45 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `data.len() as u32` truncatie vlak vóór een volledige memcpy | `video/codec.rs:593` |
 | B-46 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Release-profiel: geen CFG, geen `overflow-checks`, geen `strip` | `Cargo.toml:18-21` |
 | B-47 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Portable modus zet schrijfbare data naast een zelf-overschrijvende exe | `app/config.rs:230-236` |
-| B-48 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Devtools-capability zonder buildconditie. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/capabilities/default.json:13` (weg) |
-| B-49 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Mention-vervanging loopt ná linkificatie en breekt gegenereerde HTML. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:162-172` (weg) |
+| B-48 | ~~LAAG~~ | **Opgelost (2026-08-13)**: Devtools-capability zonder buildconditie. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/capabilities/default.json:13` (weg) |
+| B-49 | ~~LAAG~~ | **Opgelost (2026-08-13)**: Mention-vervanging loopt ná linkificatie en breekt gegenereerde HTML. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:162-172` (weg) |
 | B-50 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `Spoor` groeit onbegrensd | `video/spoor.rs:31-33` |
 | B-57 | ~~LAAG~~ | **Opgelost (2026-08-13)** — Meldingen schakelen zichzelf permanent uit na één fout | `app/notify.rs:16,38-41` |
-| B-58 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `highlight()` verminkt ge-escapete apostrofs. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:178-187` (weg) |
-| B-59 | ~~LAAG~~ | **Opgelost (2026-08-13)** — `unwrap()` op een mutex in de `thumb://`-handler. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/ui/mod.rs:168` (handler weg) |
+| B-58 | ~~LAAG~~ | **Opgelost (2026-08-13)**: `highlight()` verminkt ge-escapete apostrofs. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:178-187` (weg) |
+| B-59 | ~~LAAG~~ | **Opgelost (2026-08-13)**: `unwrap()` op een mutex in de `thumb://`-handler. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/ui/mod.rs:168` (handler weg) |
 | B-60 | LAAG | Elk `fitcom-updater*.exe` naast de app telt als de updater | `app/engine.rs::zoek_updater` |
 | B-51 | ~~INFO~~ | **Opgelost (2026-08-13)** — `LamportClock` is dode code; de echte klok is `max_lamport()` | `proto/op.rs:150-172` |
 
@@ -1526,7 +1526,7 @@ niet zo. Deze dingen zijn nagelopen en correct bevonden.
 - **Onomkeerbare acties** (`apply_update`, `delete_all_images`) roept alleen de
   bevestigingsdialoog aan.
 
-**Frontend en Tauri — dit is het sterkste deel van de codebase.** *(Historie: dit beschrijft
+**Frontend en Tauri: dit is het sterkste deel van de codebase.** *(Historie: dit beschrijft
 de webview-weergave tot 2026-10-04. De punten over `tags.rs` en de toasts gelden nog.)*
 - **Geen bereikbare XSS.** Alle 17 `innerHTML`-toekenningen zijn afzonderlijk nagelopen;
   `esc()` dekt `& < > " '` en elke attribuutinterpolatie staat tussen aanhalingstekens. Geen

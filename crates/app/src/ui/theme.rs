@@ -1,6 +1,6 @@
 //! The sixteen-colour world, as Rust: every token from `frontend/app.css` `:root`, the
 //! layout sizes, the hard shadows, the two fonts, and the three things CSS drew that GPUI
-//! has no primitive for — the ordered 2px dither, the hard-stop horizon band, and fonts
+//! has no primitive for: the ordered 2px dither, the hard-stop horizon band, and fonts
 //! that ship inside the binary.
 //!
 //! A colour that is not one of the sixteen [`c`] values (or a [`dither`] of two of them)
@@ -38,13 +38,13 @@ pub mod c {
     pub const SPACE: Rgba = hex(0x070810);
     /// 01 window frames, sidebars, cards.
     pub const INK: Rgba = hex(0x10122A);
-    /// 02 the canvas — the largest field.
+    /// 02 the canvas: the largest field.
     pub const INDIGO: Rgba = hex(0x191D3A);
     /// 03 structure: hairlines, hover half-step.
     pub const VIOLET: Rgba = hex(0x2E3464);
     /// 04 interactive edges, disabled glyphs.
     pub const STEEL: Rgba = hex(0x4A5490);
-    /// 05 secondary text — the only quiet tier.
+    /// 05 secondary text: the only quiet tier.
     pub const SILVER: Rgba = hex(0xA7AECC);
     /// 06 primary text, and the ground of an inverted cell.
     pub const PAPER: Rgba = hex(0xEFE9D5);
@@ -101,7 +101,7 @@ pub const ACCENT_HOVER: Rgba = c::CYAN;
 pub const ACCENT_TEXT: Rgba = c::CYAN;
 pub const ON_ACCENT: Rgba = c::SPACE;
 
-/// Magenta with a paper frame — the one saturated fill in the resting window.
+/// Magenta with a paper frame: the one saturated fill in the resting window.
 pub const PRIMARY: Rgba = c::MAGENTA;
 pub const ON_PRIMARY: Rgba = c::SPACE;
 
@@ -181,7 +181,7 @@ const FONT_MONO: &[u8] = include_bytes!("assets/fonts/JetBrainsMono-Regular.ttf"
 
 // ------------------------------------------------------------------ shadows
 
-/// A hard offset in the void — no blur, no glow. `--shadow-thumb` is 1, `--shadow-bar` 3,
+/// A hard offset in the void: no blur, no glow. `--shadow-thumb` is 1, `--shadow-bar` 3,
 /// `--shadow-popover` 4, `--shadow-modal` 8.
 pub fn hard_shadow(offset: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
@@ -206,7 +206,7 @@ pub fn shadow_modal() -> Vec<BoxShadow> {
     hard_shadow(8.)
 }
 
-/// The button chassis: `box-shadow: 0 0 0 1px space, <offset>px <offset>px 0 space` — a dark
+/// The button chassis: `box-shadow: 0 0 0 1px space, <offset>px <offset>px 0 space`, a dark
 /// outer line plus a hard drop. Used by `.join`, the dialog buttons and the composer frame.
 pub fn chassis_shadow(offset: f32) -> Vec<BoxShadow> {
     vec![
@@ -260,10 +260,10 @@ pub fn band(height: Pixels) -> Div {
 /// Which cells of each 2×2 block are lit, after the two conic gradients in the stylesheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dither {
-    /// `--dither-half` / `--backdrop`: top-right and bottom-left lit — a checkerboard. What
+    /// `--dither-half` / `--backdrop`: top-right and bottom-left lit, a checkerboard. What
     /// "unavailable", the modal dim and the drop overlay look like.
     Half,
-    /// The 4px paper hover on `.join` and `.btn--accent`: only the top-right cell — a quarter
+    /// The 4px paper hover on `.join` and `.btn--accent`: only the top-right cell, a quarter
     /// of the cells flip.
     Quarter,
 }

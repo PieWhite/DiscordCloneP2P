@@ -35,7 +35,7 @@ pub fn bevat_tag(body: &str, naam: &str) -> bool {
 
 /// De cursor-parsing en het filteren van suggesties stonden hier ook. Die zijn met de
 /// Tauri-migratie vervallen: de autocomplete in de invoerbalk is presentatie en zit nu
-/// in `ui::view::composer::update_autocomplete`. Wat *wel* hier moet blijven is `bevat_tag` — dat is
+/// in `ui::view::composer::update_autocomplete`. Wat *wel* hier moet blijven is `bevat_tag`: dat is
 /// de regel waarop de meldingslaag beslist, en die mag maar op één plek staan.
 fn is_tag_teken(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '-'

@@ -9,7 +9,7 @@
 //! | [`pointer`] | the ▶ on menu-row hover | channel rows, settings tabs, picker rows |
 //! | [`WindowFrame`] | `dialog.confirm` | every dialog's chassis: paper frame, blue strip, foot |
 //! | [`modal_layer`] | `::backdrop` | the dithered dim plus the centred window |
-//! | [`meter_view`] | — | a tiny view that re-renders on a meters tick and nothing else |
+//! | [`meter_view`] | - | a tiny view that re-renders on a meters tick and nothing else |
 //! | [`tooltip`] | `title=""` | hover text |
 //!
 //! Hover is a flat colour change and snaps; nothing here animates.

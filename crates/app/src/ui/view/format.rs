@@ -17,7 +17,7 @@ pub fn freeze_clock(ms: i64) {
     let _ = FROZEN_NOW.set(ms);
 }
 
-/// The current time in millis since the epoch — use this rather than the system clock in
+/// The current time in millis since the epoch: use this rather than the system clock in
 /// a view, so the fixture mode can freeze it.
 pub fn now_ms() -> i64 {
     FROZEN_NOW

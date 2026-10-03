@@ -3,7 +3,7 @@
 //! Pure display, exactly as the egui and the Tauri versions were. It reads a snapshot from
 //! the engine and sends commands back; no decision about the network or the store is taken
 //! here, and no state lives here that would be lost if the window stopped drawing. That
-//! boundary — `Snapshot` in, `UiCommand` out — is what made two swaps of the whole UI stack
+//! boundary (`Snapshot` in, `UiCommand` out) is what made two swaps of the whole UI stack
 //! affordable, so it survived both on purpose. See `docs/OVERDRACHT.md`, decision 19.
 //!
 //! # Three kinds of traffic, deliberately separated
@@ -11,7 +11,7 @@
 //! The engine publishes on a fixed tick. Three tokio tasks in [`bridge`] turn that into
 //! three feeds the window waits on, and each one only moves when what it carries changed:
 //!
-//! - the `UiState`, compared with `PartialEq` on the tokio side — an idle app wakes the
+//! - the `UiState`, compared with `PartialEq` on the tokio side: an idle app wakes the
 //!   window zero times a second;
 //! - speaking level and RTT at 4 Hz, into the `Meters` entity that only the small views
 //!   showing them observe, so a meter tick does not re-render the timeline;
@@ -73,8 +73,8 @@ pub struct Ui {
     ///
     /// They used to travel to the webview and straight back into `offer_files`, which made
     /// "offer this file to every peer" reachable for any script running in it. The views
-    /// now only ever see indices into this list — the same pattern `sources`/`share_source`
-    /// uses — so no view code can name a file of its own. Replaced wholesale on every drop,
+    /// now only ever see indices into this list (the same pattern `sources`/`share_source`
+    /// uses), so no view code can name a file of its own. Replaced wholesale on every drop,
     /// so a stale index resolves to nothing instead of to an older file.
     pub dropped: Mutex<Vec<PathBuf>>,
     /// Bumped when the op log or a transfer status changes. The window refetches the open
@@ -113,8 +113,8 @@ impl Ui {
     /// view that hands a path to `img()` asks this first.
     ///
     /// The picture folder is read from the live snapshot, because it moves along with the
-    /// download folder (`config::resolve_pictures_dir`). The check is lexical — absolute,
-    /// no `..`, under one of the roots — which is enough for paths `state.rs` built itself
+    /// download folder (`config::resolve_pictures_dir`). The check is lexical (absolute,
+    /// no `..`, under one of the roots), which is enough for paths `state.rs` built itself
     /// and cheap enough to run on every render.
     pub fn image_path_allowed(&self, path: &Path) -> bool {
         if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
@@ -151,7 +151,7 @@ impl Ui {
     ///
     /// Transfer status is rendered in the timeline too but lives *outside* the `Arc`
     /// (`Snapshot::files`), so it has to be folded in here as well. Without it a download
-    /// that really ran left its card on "Download" for ever — the window refetches the
+    /// that really ran left its card on "Download" for ever: the window refetches the
     /// conversation only when this number changes, so progress, "Downloaded" and a failure
     /// all stayed invisible and the button looked dead.
     fn revision(&self, snap: &Snapshot) -> u64 {
@@ -166,7 +166,7 @@ impl Ui {
             }
         }
         // Same reason for the Wordle card: it rides in the timeline but its state lives
-        // outside the `Arc` — the day, and how far this machine got today. Without this,
+        // outside the `Arc`: the day, and how far this machine got today. Without this,
         // your own guess would not update the card until the game ended and the result op
         // moved the log.
         snap.wordle.dag.hash(&mut hasher);
@@ -415,7 +415,7 @@ fn debug_size() -> Option<(f32, f32)> {
     None
 }
 
-/// The OS close request — the traffic light, Alt+F4, the Windows caption button — goes
+/// The OS close request (the traffic light, Alt+F4, the Windows caption button) goes
 /// through the same rule as our own close button.
 fn hook_close(handle: &AnyWindowHandle, ui: Arc<Ui>, cx: &mut App) {
     let _ = handle.update(cx, |_, window, cx| {
@@ -506,7 +506,7 @@ fn mac_tray(target: Arc<Mutex<Option<AnyWindowHandle>>>, cx: &mut App) -> anyhow
 /// properly rather than be killed, so the connections close cleanly.
 ///
 /// The flags are plain atomics set from other threads, so a thread of its own looks at
-/// them — as before — and wakes the window thread only when one is set.
+/// them (as before) and wakes the window thread only when one is set.
 fn spawn_quit_watcher(quit_for_update: Arc<std::sync::atomic::AtomicBool>, cx: &mut App) {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let started = std::thread::Builder::new()

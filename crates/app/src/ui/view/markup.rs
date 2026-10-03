@@ -1,5 +1,5 @@
-//! Slice B: message bodies — fenced code blocks with highlighting, links (opened through
-//! `commands::open_link`), `@name` mentions — as styled, selectable text. Ported from
+//! Slice B: message bodies, meaning fenced code blocks with highlighting, links (opened
+//! through `commands::open_link`) and `@name` mentions, as styled, selectable text. Ported from
 //! `renderBody`, `inline`, `codeBlock`, `highlight` and `ytIds` in `app.js`.
 //!
 //! The parsing is plain Rust over the raw body (there is no HTML to escape any more, so the

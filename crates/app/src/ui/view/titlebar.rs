@@ -20,7 +20,7 @@ use gpui_kit::{
 
 pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElement {
     let mac = cfg!(target_os = "macos");
-    // "The mouse went down on the strip and has not moved yet" — the gpui-kit TitleBar
+    // "The mouse went down on the strip and has not moved yet": the gpui-kit TitleBar
     // recipe: moving with the button held hands the drag to the window manager.
     let pressed = window.use_keyed_state("titlebar-pressed", cx, |_, _| false);
 
@@ -96,7 +96,7 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
 }
 
 /// `.win-btn`: 46×29, silver glyphs; hover inverts to paper, the close button to coral.
-/// No click handlers on purpose — the OS acts on the hit-test area.
+/// No click handlers on purpose: the OS acts on the hit-test area.
 fn window_buttons() -> impl IntoElement {
     use gpui_kit::WindowControlArea as Area;
     let button = |id: &'static str, icon: Icon, area: Area, close: bool| {

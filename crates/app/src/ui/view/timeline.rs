@@ -1,4 +1,4 @@
-//! Slice B: the timeline window — its blue head (icon, title, topic, member-list toggle)
+//! Slice B: the timeline window: its blue head (icon, title, topic, member-list toggle)
 //! and the message log: grouping (7 minutes), day lines, the unread "new" line
 //! (`v.unread_at_open`), mention frames, replies, reactions and the quick emoji bar
 //! (`v.emoji_for`), hover actions (reply sets `v.reply_to`, edit sets `v.editing`, delete

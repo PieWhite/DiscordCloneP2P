@@ -61,7 +61,7 @@ const AFSLUITEN_ID: &str = "fitcom-afsluiten";
 /// thread die het menu toont, ook als het venster niet tekent. muda stuurt een gebeurtenis
 /// naar de handler *of* naar `MenuEvent::receiver()`, nooit naar allebei.
 ///
-/// `set_event_handler` schrijft in een `OnceCell` — wie eerst is, wint. Onder Tauri was dat
+/// `set_event_handler` schrijft in een `OnceCell`: wie eerst is, wint. Onder Tauri was dat
 /// een race met Tauri's eigen event-loop; GPUI gebruikt muda niet, maar de regel blijft:
 /// aanroepen vóór de event-loop start (`ui::open`). De app heeft geen andere menu's, dus
 /// alle menu-gebeurtenissen zijn van ons.

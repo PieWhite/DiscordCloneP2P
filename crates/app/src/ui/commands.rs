@@ -2,7 +2,7 @@
 //!
 //! One function per `UiCommand` variant, plus the handful of things that are genuinely
 //! the display layer's job (a file picker, the device list, the window buttons). Nothing
-//! here decides anything — it translates a call from a view into a message on the
+//! here decides anything: it translates a call from a view into a message on the
 //! engine's channel and returns. Views call these and nothing else: no view touches
 //! `engine.commands` itself.
 //!
@@ -339,14 +339,14 @@ pub fn pick_and_offer_file(ui: &Arc<Ui>, channel: &str) {
     });
 }
 
-/// Files dropped onto the window from Explorer or Finder. Same flow as the picker — a new
+/// Files dropped onto the window from Explorer or Finder. Same flow as the picker: a new
 /// way in, not new logic.
 ///
 /// B-52: takes **indices** into the paths the drop handler kept in `Ui::dropped`, never
 /// paths from a view. There is no webview script any more to abuse a path parameter, but
 /// the rule stays: an index can only ever name a file the user physically dropped on the
 /// window, so no view code can be talked into offering an arbitrary file to every peer.
-/// Out-of-range indices are dropped silently — a stale index is a race with the next
+/// Out-of-range indices are dropped silently: a stale index is a race with the next
 /// drop, not something to report.
 pub fn offer_files(ui: &Ui, indices: &[usize], channel: &str) {
     let paden: Vec<PathBuf> = {
@@ -453,7 +453,7 @@ pub fn open_file(ui: &Ui, op: &OpRef) {
 }
 
 /// Hands a path to whatever the OS opens it with. Never used on a path that came from a
-/// view — see [`open_file`].
+/// view: see [`open_file`].
 fn open_with_shell(path: &Path) {
     #[cfg(windows)]
     {
@@ -531,7 +531,7 @@ pub fn clip_now(ui: &Ui) {
 }
 
 /// Opent de clipmap in de verkenner. Het pad komt uit de snapshot, nooit uit een
-/// view — zelfde regel als `open_file`.
+/// view: zelfde regel als `open_file`.
 pub fn open_clips_folder(ui: &Ui) {
     let snap = ui.engine.snapshot.borrow().clone();
     let Some(clips) = &snap.clips else { return };
@@ -695,7 +695,7 @@ pub fn youtube_preview(ui: &Ui, id: &str) -> impl Future<Output = Option<Youtube
 }
 
 /// One guess at today's Wordle. Only the word travels; the answer stays in the engine and
-/// the marked board comes back in the next state update — see `crate::wordle`.
+/// the marked board comes back in the next state update: see `crate::wordle`.
 ///
 /// Nothing is returned here on purpose: whether a guess was accepted, and why not, is part
 /// of the state the window draws, exactly like a download's progress. That keeps the
@@ -712,7 +712,7 @@ pub fn post_wordle_card(ui: &Ui) {
 }
 
 /// The close button, and the OS close request (the traffic light, Alt+F4, the Windows
-/// caption button) all land here. With `minimize_to_tray` on — the default — it hides the
+/// caption button) all land here. With `minimize_to_tray` on (the default) it hides the
 /// window and leaves the engine running, because the state this app has to be good at is
 /// "away in the tray while a game is running". Returns whether the app should really quit.
 pub fn close_window(ui: &Ui, cx: &mut gpui_kit::App) -> bool {
