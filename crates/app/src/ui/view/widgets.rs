@@ -326,6 +326,8 @@ pub fn focus_ring(ground: Rgba, base: Vec<gpui_kit::BoxShadow>) -> Vec<gpui_kit:
 /// one cell per character, its advance plus the spacing wide. Every ASCII glyph of the UI
 /// face advances half an em, so the cell width is exact (a measured single glyph would be
 /// rounded up a pixel each). ASCII labels in `UI_FONT` at `size` px only.
+// ponytail: one element per character and the half-em advance hardcoded; replace with a
+// letter-spacing run style once GPUI's text layout grows one.
 pub fn tracked(text: &str, size: f32, em: f32) -> Div {
     div()
         .flex()
