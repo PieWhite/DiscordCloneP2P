@@ -8,7 +8,8 @@ use super::super::widgets::{avatar, tooltip};
 use super::super::{commands, format, markup, wordle, Dialog, ReplyTo};
 use super::{attachment, Row, RowCtx};
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, ClipboardItem, Div, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
+    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, ClipboardItem, Div,
+    ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window,
 };
 
@@ -74,7 +75,13 @@ fn day_line(day: String) -> Div {
 
 /// `.newline`: "New" in magenta between two dithered 2px rules, the right one 24px.
 fn new_line() -> Div {
-    let rule = || div().relative().h(px(2.)).bg(c::MAGENTA).child(theme::dither(Dither::Half, c::SPACE, 2.));
+    let rule = || {
+        div()
+            .relative()
+            .h(px(2.))
+            .bg(c::MAGENTA)
+            .child(theme::dither(Dither::Half, c::SPACE, 2.))
+    };
     div()
         .flex()
         .items_center()
@@ -115,7 +122,14 @@ fn who(ctx: &RowCtx, author: &str, author_name: &str, avatar_no: u8, mine: bool)
     }
 }
 
-fn render_message(ctx: &RowCtx, ix: usize, item: &TimelineItem, row: &Row, window: &mut Window, cx: &mut App) -> AnyElement {
+fn render_message(
+    ctx: &RowCtx,
+    ix: usize,
+    item: &TimelineItem,
+    row: &Row,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let (id, author, author_name, avatar_no, mine, mentions_you, edited) = match item {
         TimelineItem::Message {
             id,
@@ -126,7 +140,15 @@ fn render_message(ctx: &RowCtx, ix: usize, item: &TimelineItem, row: &Row, windo
             mentions_you,
             edited,
             ..
-        } => (id, author, author_name, *avatar, *mine, *mentions_you, *edited),
+        } => (
+            id,
+            author,
+            author_name,
+            *avatar,
+            *mine,
+            *mentions_you,
+            *edited,
+        ),
         TimelineItem::File {
             id,
             author,
@@ -141,23 +163,36 @@ fn render_message(ctx: &RowCtx, ix: usize, item: &TimelineItem, row: &Row, windo
     let who = who(ctx, author, author_name, avatar_no, mine);
     let grouped = row.grouped;
     let hovered = ctx.hover == Some(ix);
-    let time = if row.at != 0 { format::fmt_time(row.at) } else { String::new() };
+    let time = if row.at != 0 {
+        format::fmt_time(row.at)
+    } else {
+        String::new()
+    };
     let pane = ctx.pane.clone();
 
-    let gutter = div().w(px(40.)).flex_none().flex().flex_col().items_center().map(|d| {
-        if grouped {
-            d.pt(px(4.))
-                .text_size(px(10.))
-                .text_color(c::SILVER)
-                .when(!hovered, |d| d.invisible())
-                .child(time.clone())
-        } else {
-            d.child(avatar(&who.name, who.avatar, 40., None, false))
-        }
-    });
+    let gutter = div()
+        .w(px(40.))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .map(|d| {
+            if grouped {
+                d.pt(px(4.))
+                    .text_size(px(10.))
+                    .text_color(c::SILVER)
+                    .when(!hovered, |d| d.invisible())
+                    .child(time.clone())
+            } else {
+                d.child(avatar(&who.name, who.avatar, 40., None, false))
+            }
+        });
 
     let mut body = div().flex_1().min_w_0().relative().flex().flex_col();
-    if let TimelineItem::Message { reply_to: Some(_), .. } = item {
+    if let TimelineItem::Message {
+        reply_to: Some(_), ..
+    } = item
+    {
         body = body.pt(px(2.));
     }
     if !grouped {
@@ -167,12 +202,27 @@ fn render_message(ctx: &RowCtx, ix: usize, item: &TimelineItem, row: &Row, windo
                 .items_baseline()
                 .gap(px(8.))
                 .mb(px(1.))
-                .child(div().text_size(px(14.)).text_color(theme::avatar_hue(who.avatar)).child(author_name.clone()))
-                .child(div().text_size(px(11.)).text_color(c::SILVER).child(time.clone()))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .text_color(theme::avatar_hue(who.avatar))
+                        .child(author_name.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(c::SILVER)
+                        .child(time.clone()),
+                )
                 .when(edited, |d| d.child(edited_mark())),
         );
     }
-    if let TimelineItem::Message { reply_to: Some(parent), reply_snippet, .. } = item {
+    if let TimelineItem::Message {
+        reply_to: Some(parent),
+        reply_snippet,
+        ..
+    } = item
+    {
         body = body.child(quote(ctx, &key, parent.clone(), reply_snippet.as_ref()));
     }
     body = body.children(content(ctx, item, &key, window, cx));
@@ -223,12 +273,20 @@ fn render_message(ctx: &RowCtx, ix: usize, item: &TimelineItem, row: &Row, windo
 }
 
 fn edited_mark() -> Div {
-    div().text_size(px(10.)).text_color(c::SILVER).child("(edited)")
+    div()
+        .text_size(px(10.))
+        .text_color(c::SILVER)
+        .child("(edited)")
 }
 
 /// `.msg-quote`: who wrote the parent and how it opens, or that it is gone. A click brings
 /// the parent into view (the webview drew it as a button without a handler).
-fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super::super::super::state::ReplySnippet>) -> AnyElement {
+fn quote(
+    ctx: &RowCtx,
+    key: &SharedString,
+    parent: OpRef,
+    snippet: Option<&super::super::super::state::ReplySnippet>,
+) -> AnyElement {
     let pane = ctx.pane.clone();
     div()
         .id(ElementId::Name(format!("{key}-quote").into()))
@@ -256,9 +314,16 @@ fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super
         })
         .map(|d| match snippet {
             Some(s) => d
-                .child(div().flex_none().text_color(c::PAPER).child(s.author_name.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(c::PAPER)
+                        .child(s.author_name.clone()),
+                )
                 // `white-space: nowrap` folded the parent's line breaks into spaces.
-                .child(ellipsis_line(s.body.split_whitespace().collect::<Vec<_>>().join(" "))),
+                .child(ellipsis_line(
+                    s.body.split_whitespace().collect::<Vec<_>>().join(" "),
+                )),
             None => d.child(ellipsis_line("Original message unavailable".into())),
         })
         .into_any_element()
@@ -267,15 +332,34 @@ fn quote(ctx: &RowCtx, key: &SharedString, parent: OpRef, snippet: Option<&super
 /// One line cut off with an ellipsis. GPUI truncates only text whose width the layout
 /// hands it, so the box grows from zero (`flex_1`) instead of from its content.
 fn ellipsis_line(text: String) -> Div {
-    div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text)
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .child(text)
 }
 
 /// `itemContent`: the edit field, the body plus its YouTube cards, or the file.
-fn content(ctx: &RowCtx, item: &TimelineItem, key: &SharedString, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+fn content(
+    ctx: &RowCtx,
+    item: &TimelineItem,
+    key: &SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
     match item {
-        TimelineItem::Message { id, body, mentions_you, .. } => {
+        TimelineItem::Message {
+            id,
+            body,
+            mentions_you,
+            ..
+        } => {
             if ctx.snap.v.editing.as_ref() == Some(id) {
-                return vec![super::super::composer::render_edit_box(&ctx.snap, id, body, window, cx)];
+                return vec![super::super::composer::render_edit_box(
+                    &ctx.snap, id, body, window, cx,
+                )];
             }
             let mut out = markup::render_body(&ctx.snap, key, body, *mentions_you);
             out.extend(
@@ -299,7 +383,9 @@ fn reaction_names(ctx: &RowCtx, r: &ReactionState) -> String {
             if *id == ctx.snap.s.me.id {
                 ctx.snap.s.me.name.clone()
             } else {
-                ctx.snap.peer(id).map_or_else(|| id.clone(), |p| p.name.clone())
+                ctx.snap
+                    .peer(id)
+                    .map_or_else(|| id.clone(), |p| p.name.clone())
             }
         })
         .collect::<Vec<_>>()
@@ -326,7 +412,12 @@ fn pill(id: ElementId, mine: bool) -> gpui_kit::Stateful<Div> {
         .hover(|s| s.bg(theme::BG_HOVER))
 }
 
-fn reaction_row(ctx: &RowCtx, key: &SharedString, op: &OpRef, reactions: &[ReactionState]) -> AnyElement {
+fn reaction_row(
+    ctx: &RowCtx,
+    key: &SharedString,
+    op: &OpRef,
+    reactions: &[ReactionState],
+) -> AnyElement {
     let ui = ctx.snap.ui.clone();
     div()
         .flex()
@@ -337,12 +428,20 @@ fn reaction_row(ctx: &RowCtx, key: &SharedString, op: &OpRef, reactions: &[React
             let ui = ui.clone();
             let op = op.clone();
             let emoji = r.emoji.clone();
-            pill(ElementId::NamedInteger(format!("{key}-pill").into(), k as u64), r.mine)
-                .tooltip(tooltip(reaction_names(ctx, r)))
-                // Toggling is decided on the engine side, which knows whether we reacted.
-                .on_click(move |_, _, _| commands::react_message(&ui, &op, &emoji))
-                .child(div().text_size(px(14.)).line_height(relative(1.)).child(r.emoji.clone()))
-                .child(r.count.to_string())
+            pill(
+                ElementId::NamedInteger(format!("{key}-pill").into(), k as u64),
+                r.mine,
+            )
+            .tooltip(tooltip(reaction_names(ctx, r)))
+            // Toggling is decided on the engine side, which knows whether we reacted.
+            .on_click(move |_, _, _| commands::react_message(&ui, &op, &emoji))
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(relative(1.))
+                    .child(r.emoji.clone()),
+            )
+            .child(r.count.to_string())
         }))
         .child(
             pill(ElementId::Name(format!("{key}-pill-add").into()), false)
@@ -369,7 +468,11 @@ fn react_open(ctx: &RowCtx, op: &OpRef) -> impl Fn(&ClickEvent, &mut Window, &mu
         let op = op.clone();
         app.update(cx, move |app, cx| {
             let v = app.v_mut();
-            v.emoji_for = if closed_now || v.emoji_for.as_ref() == Some(&op) { None } else { Some(op) };
+            v.emoji_for = if closed_now || v.emoji_for.as_ref() == Some(&op) {
+                None
+            } else {
+                Some(op)
+            };
             cx.notify();
         });
     }
@@ -392,7 +495,9 @@ fn emoji_bar(ctx: &RowCtx, key: &SharedString, op: &OpRef) -> AnyElement {
         .border_color(theme::BORDER_STRONG)
         .shadow(theme::shadow_popover())
         .on_mouse_down_out(move |ev, _, cx| {
-            let _ = pane.update(cx, |p, _| p.emoji_closed_by = Some((closing.clone(), ev.position)));
+            let _ = pane.update(cx, |p, _| {
+                p.emoji_closed_by = Some((closing.clone(), ev.position))
+            });
             app.update(cx, |app, cx| {
                 app.v_mut().emoji_for = None;
                 cx.notify();
@@ -425,8 +530,19 @@ fn emoji_bar(ctx: &RowCtx, key: &SharedString, op: &OpRef) -> AnyElement {
 /// `.msg-actions`: the strip on the row's top edge, half over the row above.
 fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> AnyElement {
     let (id, mine, message_body, author_name) = match item {
-        TimelineItem::Message { id, mine, body, author_name, .. } => (id, *mine, Some(body.clone()), author_name.clone()),
-        TimelineItem::File { id, mine, author_name, .. } => (id, *mine, None, author_name.clone()),
+        TimelineItem::Message {
+            id,
+            mine,
+            body,
+            author_name,
+            ..
+        } => (id, *mine, Some(body.clone()), author_name.clone()),
+        TimelineItem::File {
+            id,
+            mine,
+            author_name,
+            ..
+        } => (id, *mine, None, author_name.clone()),
         TimelineItem::Wordle { .. } => return div().into_any_element(),
     };
     let button = |name: &str| {
@@ -440,7 +556,8 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
             .text_color(c::SILVER)
             .cursor_pointer()
     };
-    let plain = |d: gpui_kit::Stateful<Div>| d.hover(|s| s.bg(c::PAPER).text_color(theme::ON_INVERT));
+    let plain =
+        |d: gpui_kit::Stateful<Div>| d.hover(|s| s.bg(c::PAPER).text_color(theme::ON_INVERT));
     let pane = ctx.pane.clone();
     let mut strip = div()
         .id(ElementId::Name(format!("{key}-actions").into()))
@@ -484,9 +601,11 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
                 .tooltip(tooltip("Add reaction"))
                 .on_click(react_open(ctx, id))
                 .child(
-                    div()
-                        .group_hover(group.clone(), |s| s.invisible())
-                        .child(gpui_kit::component::Icon::default().data(SMILEY_SVG).size(px(13.))),
+                    div().group_hover(group.clone(), |s| s.invisible()).child(
+                        gpui_kit::component::Icon::default()
+                            .data(SMILEY_SVG)
+                            .size(px(13.)),
+                    ),
                 )
                 .child(
                     div()
@@ -537,7 +656,9 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
         strip = strip.child(
             plain(button("copy"))
                 .tooltip(tooltip("Copy text"))
-                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(body.clone())))
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(body.clone()))
+                })
                 .child(Icon::File.size(15.)),
         );
     }
@@ -586,7 +707,10 @@ pub(super) fn render_dm_empty(peer: &PeerState) -> Div {
                 .mx(px(16.))
                 .text_size(px(13.))
                 .text_color(c::SILVER)
-                .child(format!("No messages yet. Anything you send reaches {} {when}.", peer.name)),
+                .child(format!(
+                    "No messages yet. Anything you send reaches {} {when}.",
+                    peer.name
+                )),
         )
 }
 

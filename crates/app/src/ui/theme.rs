@@ -14,8 +14,8 @@
 
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{
-    canvas, div, point, px, size, App, BoxShadow, Bounds, Corners, Div, IntoElement,
-    ParentElement, Pixels, RenderImage, Rgba, Styled, Window,
+    canvas, div, point, px, size, App, Bounds, BoxShadow, Corners, Div, IntoElement, ParentElement,
+    Pixels, RenderImage, Rgba, Styled, Window,
 };
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -247,11 +247,12 @@ pub fn band(height: Pixels) -> Div {
         .w_full()
         .h(height)
         .flex_none()
-        .children(
-            SEGMENTS
-                .iter()
-                .map(|(colour, share)| div().h_full().flex_basis(gpui_kit::relative(*share)).bg(*colour)),
-        )
+        .children(SEGMENTS.iter().map(|(colour, share)| {
+            div()
+                .h_full()
+                .flex_basis(gpui_kit::relative(*share))
+                .bg(*colour)
+        }))
 }
 
 // ------------------------------------------------------------------ the dither
@@ -344,7 +345,13 @@ pub fn dither(pattern: Dither, colour: Rgba, cell: f32) -> impl IntoElement {
     .size_full()
 }
 
-fn paint_dither(bounds: Bounds<Pixels>, pattern: Dither, colour: Rgba, cell: f32, window: &mut Window) {
+fn paint_dither(
+    bounds: Bounds<Pixels>,
+    pattern: Dither,
+    colour: Rgba,
+    cell: f32,
+    window: &mut Window,
+) {
     let (image, edge) = tile(pattern, colour, cell, window.scale_factor());
     let edge = px(edge);
     let mut y = bounds.origin.y;
@@ -353,7 +360,14 @@ fn paint_dither(bounds: Bounds<Pixels>, pattern: Dither, colour: Rgba, cell: f32
         while x < bounds.right() {
             let tile_bounds = Bounds::new(point(x, y), size(edge, edge));
             // `paint_image` draws the intersection with `bounds`, so edge tiles clip.
-            let _ = window.paint_image(bounds, tile_bounds, Corners::default(), image.clone(), 0, false);
+            let _ = window.paint_image(
+                bounds,
+                tile_bounds,
+                Corners::default(),
+                image.clone(),
+                0,
+                false,
+            );
             x += edge;
         }
         y += edge;

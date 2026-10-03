@@ -44,24 +44,32 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
         .flex()
         .items_center()
         .bg(c::INK)
-        .pl(if mac { theme::MAC_TITLEBAR_INSET } else { px(10.) })
+        .pl(if mac {
+            theme::MAC_TITLEBAR_INSET
+        } else {
+            px(10.)
+        })
         .when(mac, |d| {
             let down = pressed.clone();
             let up = pressed.clone();
             let moved = pressed.clone();
-            d.on_mouse_down(MouseButton::Left, move |_, _, cx| down.update(cx, |p, _| *p = true))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| up.update(cx, |p, _| *p = false))
-                .on_mouse_move(move |_, window, cx| {
-                    if moved.read(cx).to_owned() {
-                        moved.update(cx, |p, _| *p = false);
-                        window.start_window_move();
-                    }
-                })
-                .on_click(|ev, window, _| {
-                    if ev.click_count() == 2 {
-                        window.titlebar_double_click();
-                    }
-                })
+            d.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                down.update(cx, |p, _| *p = true)
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                up.update(cx, |p, _| *p = false)
+            })
+            .on_mouse_move(move |_, window, cx| {
+                if moved.read(cx).to_owned() {
+                    moved.update(cx, |p, _| *p = false);
+                    window.start_window_move();
+                }
+            })
+            .on_click(|ev, window, _| {
+                if ev.click_count() == 2 {
+                    window.titlebar_double_click();
+                }
+            })
         })
         .child(
             div()
@@ -70,7 +78,9 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
                 .flex_1()
                 .h_full()
                 .items_center()
-                .when(!mac, |d| d.window_control_area(gpui_kit::WindowControlArea::Drag))
+                .when(!mac, |d| {
+                    d.window_control_area(gpui_kit::WindowControlArea::Drag)
+                })
                 .child(brand),
         )
         .when(!mac, |d| d.child(window_buttons()))

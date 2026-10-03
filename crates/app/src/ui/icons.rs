@@ -126,7 +126,10 @@ mod tests {
         for icon in Icon::ALL {
             let bytes = Assets.load(icon.path()).unwrap().expect("served");
             let text = std::str::from_utf8(&bytes).unwrap();
-            assert!(text.starts_with("<svg") && text.trim_end().ends_with("</svg>"), "{icon:?}");
+            assert!(
+                text.starts_with("<svg") && text.trim_end().ends_with("</svg>"),
+                "{icon:?}"
+            );
         }
     }
 }

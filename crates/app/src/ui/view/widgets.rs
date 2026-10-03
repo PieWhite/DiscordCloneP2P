@@ -21,8 +21,8 @@ use super::super::theme::{self, c, Dither};
 use super::format;
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Context, Div, ElementId, Entity,
-    FocusHandle, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    Refineable, RenderOnce, Rgba, SharedString, Stateful, StatefulInteractiveElement, StyleRefinement,
+    FocusHandle, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Refineable,
+    Render, RenderOnce, Rgba, SharedString, Stateful, StatefulInteractiveElement, StyleRefinement,
     Styled, Window,
 };
 use std::rc::Rc;
@@ -245,10 +245,14 @@ impl RenderOnce for Btn {
             .when(self.disabled, |d| d.opacity(0.45))
             .when(enabled, |d| {
                 d.cursor_pointer().hover(move |s| match kind {
-                    BtnKind::Plain | BtnKind::Ghost => {
-                        s.bg(c::PAPER).border_color(c::PAPER).text_color(theme::ON_INVERT)
-                    }
-                    BtnKind::Danger => s.bg(c::CORAL).border_color(c::CORAL).text_color(theme::ON_SIGNAL),
+                    BtnKind::Plain | BtnKind::Ghost => s
+                        .bg(c::PAPER)
+                        .border_color(c::PAPER)
+                        .text_color(theme::ON_INVERT),
+                    BtnKind::Danger => s
+                        .bg(c::CORAL)
+                        .border_color(c::CORAL)
+                        .text_color(theme::ON_SIGNAL),
                     BtnKind::Accent => s,
                 })
             })
@@ -319,7 +323,11 @@ pub fn focus_ring(ground: Rgba, base: Vec<gpui_kit::BoxShadow>) -> Vec<gpui_kit:
     };
     // Later shadows paint over earlier ones; a frame line of the chassis (no offset) goes
     // back on top so the ring only replaces what the outline covered.
-    let lines: Vec<gpui_kit::BoxShadow> = base.iter().filter(|s| s.offset.x == px(0.)).cloned().collect();
+    let lines: Vec<gpui_kit::BoxShadow> = base
+        .iter()
+        .filter(|s| s.offset.x == px(0.))
+        .cloned()
+        .collect();
     let mut all = base;
     all.extend([ring(theme::ACCENT, 4.), ring(ground, 2.)]);
     all.extend(lines);
@@ -333,10 +341,12 @@ pub fn focus_ring(ground: Rgba, base: Vec<gpui_kit::BoxShadow>) -> Vec<gpui_kit:
 // ponytail: one element per character and the half-em advance hardcoded; replace with a
 // letter-spacing run style once GPUI's text layout grows one.
 pub fn tracked(text: &str, size: f32, em: f32) -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .children(text.chars().map(|ch| div().flex_none().w(px(size * (0.5 + em))).child(ch.to_string())))
+    div().flex().flex_none().children(text.chars().map(|ch| {
+        div()
+            .flex_none()
+            .w(px(size * (0.5 + em)))
+            .child(ch.to_string())
+    }))
 }
 
 const POINTER_SVG: &[u8] =
@@ -363,7 +373,9 @@ pub fn pointer() -> Div {
 
 /// Hover text, the way `title=""` worked: `.tooltip(tooltip("Close to tray"))` on an
 /// element with an id.
-pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView {
+pub fn tooltip(
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView {
     let text: SharedString = text.into();
     move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx)
 }

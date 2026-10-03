@@ -820,8 +820,7 @@ const MAX_INLINE_SIDE: u32 = 8192;
 
 /// Reads only the header, so a decompression bomb costs a few bytes here.
 fn drawable_inline(path: &Path) -> bool {
-    image::image_dimensions(path)
-        .is_ok_and(|(w, h)| w <= MAX_INLINE_SIDE && h <= MAX_INLINE_SIDE)
+    image::image_dimensions(path).is_ok_and(|(w, h)| w <= MAX_INLINE_SIDE && h <= MAX_INLINE_SIDE)
 }
 
 pub fn timeline_of(
@@ -1172,8 +1171,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let fits = dir.join("fits.png");
         let wide = dir.join("wide.png");
-        image::RgbaImage::new(MAX_INLINE_SIDE, 1).save(&fits).unwrap();
-        image::RgbaImage::new(MAX_INLINE_SIDE + 1, 1).save(&wide).unwrap();
+        image::RgbaImage::new(MAX_INLINE_SIDE, 1)
+            .save(&fits)
+            .unwrap();
+        image::RgbaImage::new(MAX_INLINE_SIDE + 1, 1)
+            .save(&wide)
+            .unwrap();
         let drawn = (drawable_inline(&fits), drawable_inline(&wide));
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(drawn, (true, false));
@@ -1410,13 +1413,17 @@ mod tests {
                 size: 9,
                 at: 0,
                 mine: false,
-                transfer: TransferState::Running { received: 1, total: 9 },
+                transfer: TransferState::Running {
+                    received: 1,
+                    total: 9,
+                },
                 image_path: None,
                 local_path: None,
                 opens_folder: false,
             },
         ];
-        let back: Vec<TimelineItem> = serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+        let back: Vec<TimelineItem> =
+            serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
         assert_eq!(back, items);
     }
 

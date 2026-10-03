@@ -16,7 +16,8 @@ use super::super::{format, Dialog};
 use super::RowCtx;
 use gpui_kit::{
     div, img, px, relative, AnyElement, Div, ElementId, ImageSource, InteractiveElement,
-    IntoElement, ObjectFit, ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledImage,
+    IntoElement, ObjectFit, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    StyledImage,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,9 +31,11 @@ thread_local! {
 
 fn picture_size(path: &Path) -> Option<(u32, u32)> {
     SIZES.with(|s| {
-        *s.borrow_mut()
-            .entry(path.to_path_buf())
-            .or_insert_with(|| image::image_dimensions(path).ok().filter(|(w, h)| *w > 0 && *h > 0))
+        *s.borrow_mut().entry(path.to_path_buf()).or_insert_with(|| {
+            image::image_dimensions(path)
+                .ok()
+                .filter(|(w, h)| *w > 0 && *h > 0)
+        })
     })
 }
 
@@ -154,18 +157,29 @@ fn bar(pct: f64, paused: bool) -> AnyElement {
 /// `openButton`: once the bytes are here the card opens them, or shows their folder for
 /// something the system would run.
 fn open_button(ctx: &RowCtx, key: &SharedString, item: &TimelineItem) -> Option<AnyElement> {
-    let TimelineItem::File { id, local_path: Some(_), opens_folder, .. } = item else {
+    let TimelineItem::File {
+        id,
+        local_path: Some(_),
+        opens_folder,
+        ..
+    } = item
+    else {
         return None;
     };
     let ui = ctx.snap.ui.clone();
     let op = id.clone();
-    let btn = Btn::new(ElementId::Name(format!("{key}-open").into()), if *opens_folder { "Show" } else { "Open" })
-        .icon(Icon::Open)
-        .on_click(move |_, _, _| commands::open_file(&ui, &op));
+    let btn = Btn::new(
+        ElementId::Name(format!("{key}-open").into()),
+        if *opens_folder { "Show" } else { "Open" },
+    )
+    .icon(Icon::Open)
+    .on_click(move |_, _, _| commands::open_file(&ui, &op));
     Some(if *opens_folder {
         div()
             .id(ElementId::Name(format!("{key}-open-tip").into()))
-            .tooltip(tooltip("Show it in its folder. A file the system would run is never started from here."))
+            .tooltip(tooltip(
+                "Show it in its folder. A file the system would run is never started from here.",
+            ))
             .child(btn)
             .into_any_element()
     } else {
@@ -173,7 +187,13 @@ fn open_button(ctx: &RowCtx, key: &SharedString, item: &TimelineItem) -> Option<
     })
 }
 
-fn download_button(ctx: &RowCtx, key: &SharedString, item: &TimelineItem, label: &'static str, icon: Icon) -> AnyElement {
+fn download_button(
+    ctx: &RowCtx,
+    key: &SharedString,
+    item: &TimelineItem,
+    label: &'static str,
+    icon: Icon,
+) -> AnyElement {
     let TimelineItem::File { id, .. } = item else {
         return div().into_any_element();
     };
@@ -187,7 +207,16 @@ fn download_button(ctx: &RowCtx, key: &SharedString, item: &TimelineItem, label:
 
 /// `attachmentCard`, or the picture when its bytes are here.
 pub(super) fn render_file(ctx: &RowCtx, item: &TimelineItem, key: &SharedString) -> AnyElement {
-    let TimelineItem::File { id, author, name, size, transfer, image_path, .. } = item else {
+    let TimelineItem::File {
+        id,
+        author,
+        name,
+        size,
+        transfer,
+        image_path,
+        ..
+    } = item
+    else {
         return div().into_any_element();
     };
     if let Some(path) = image_path.as_deref().map(Path::new) {
@@ -200,19 +229,31 @@ pub(super) fn render_file(ctx: &RowCtx, item: &TimelineItem, key: &SharedString)
         TransferState::Mine => card(
             glyph(Icon::File, false),
             name,
-            vec![sub(format!("{} \u{00b7} offered by you", format::fmt_size(*size)), false)],
+            vec![sub(
+                format!("{} \u{00b7} offered by you", format::fmt_size(*size)),
+                false,
+            )],
             open_button(ctx, key, item),
         ),
         TransferState::Done => card(
             glyph(Icon::File, false),
             name,
-            vec![sub(format!("{} \u{00b7} in your download folder", format::fmt_size(*size)), false)],
+            vec![sub(
+                format!(
+                    "{} \u{00b7} in your download folder",
+                    format::fmt_size(*size)
+                ),
+                false,
+            )],
             Some(open_button(ctx, key, item).unwrap_or_else(|| {
-                Btn::new(ElementId::Name(format!("{key}-downloaded").into()), "Downloaded")
-                    .icon(Icon::Check)
-                    .kind(BtnKind::Ghost)
-                    .disabled(true)
-                    .into_any_element()
+                Btn::new(
+                    ElementId::Name(format!("{key}-downloaded").into()),
+                    "Downloaded",
+                )
+                .icon(Icon::Check)
+                .kind(BtnKind::Ghost)
+                .disabled(true)
+                .into_any_element()
             })),
         ),
         TransferState::Failed { error } => card(
@@ -224,7 +265,11 @@ pub(super) fn render_file(ctx: &RowCtx, item: &TimelineItem, key: &SharedString)
         TransferState::Running { received, total } => {
             // "Paused" is no engine state: a running transfer whose offerer went away.
             let stalled = author_peer.filter(|p| p.presence != Presence::Online);
-            let pct = if *total > 0 { *received as f64 / *total as f64 } else { 0. };
+            let pct = if *total > 0 {
+                *received as f64 / *total as f64
+            } else {
+                0.
+            };
             let mut lines = vec![
                 sub(
                     match stalled {
@@ -259,9 +304,16 @@ pub(super) fn render_file(ctx: &RowCtx, item: &TimelineItem, key: &SharedString)
                 name,
                 lines,
                 Some(
-                    Btn::new(ElementId::Name(format!("{key}-busy").into()), if stalled.is_some() { "Waiting" } else { "Downloading" })
-                        .disabled(true)
-                        .into_any_element(),
+                    Btn::new(
+                        ElementId::Name(format!("{key}-busy").into()),
+                        if stalled.is_some() {
+                            "Waiting"
+                        } else {
+                            "Downloading"
+                        },
+                    )
+                    .disabled(true)
+                    .into_any_element(),
                 ),
             )
         }
@@ -319,15 +371,19 @@ fn render_shot(
                     // fills it. On the image itself a relative width makes GPUI fall back
                     // to the picture's own pixel height.
                     .child(
-                        div().relative().w_full().aspect_ratio(w as f32 / h as f32).child(
-                            img(source)
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full()
-                                .aspect_ratio(w as f32 / h as f32)
-                                .object_fit(ObjectFit::Fill),
-                        ),
+                        div()
+                            .relative()
+                            .w_full()
+                            .aspect_ratio(w as f32 / h as f32)
+                            .child(
+                                img(source)
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                    .aspect_ratio(w as f32 / h as f32)
+                                    .object_fit(ObjectFit::Fill),
+                            ),
                     ),
             )
             .child(
@@ -345,7 +401,12 @@ fn render_shot(
 
 /// `ytCard`: thumbnail with the play plate, title (two lines at most) and channel. The
 /// whole card is the link.
-pub(super) fn youtube_card(ctx: &RowCtx, key: &SharedString, id: &str, p: &YoutubePreview) -> Option<AnyElement> {
+pub(super) fn youtube_card(
+    ctx: &RowCtx,
+    key: &SharedString,
+    id: &str,
+    p: &YoutubePreview,
+) -> Option<AnyElement> {
     let thumb = picture(&ctx.snap.ui, &p.thumbnail)?;
     let url = format!("https://www.youtube.com/watch?v={id}");
     Some(
@@ -371,7 +432,13 @@ pub(super) fn youtube_card(ctx: &RowCtx, key: &SharedString, id: &str, p: &Youtu
                     .overflow_hidden()
                     .bg(c::SPACE)
                     // An explicit ratio, or the image's own 4:3 overrides the 90px height.
-                    .child(img(thumb).w(px(160.)).h(px(90.)).aspect_ratio(160. / 90.).object_fit(ObjectFit::Cover))
+                    .child(
+                        img(thumb)
+                            .w(px(160.))
+                            .h(px(90.))
+                            .aspect_ratio(160. / 90.)
+                            .object_fit(ObjectFit::Cover),
+                    )
                     .child(
                         div()
                             .absolute()
@@ -405,14 +472,20 @@ pub(super) fn youtube_card(ctx: &RowCtx, key: &SharedString, id: &str, p: &Youtu
                     .gap(px(4.))
                     .px(px(11.))
                     .py(px(8.))
-                    .child(div().text_size(px(13.)).line_height(relative(1.35)).line_clamp(2).child(p.title.clone()))
                     .child(
-                        div().text_size(px(11.5)).text_color(c::SILVER).child(if p.author.is_empty() {
+                        div()
+                            .text_size(px(13.))
+                            .line_height(relative(1.35))
+                            .line_clamp(2)
+                            .child(p.title.clone()),
+                    )
+                    .child(div().text_size(px(11.5)).text_color(c::SILVER).child(
+                        if p.author.is_empty() {
                             "YouTube".to_string()
                         } else {
                             format!("YouTube \u{00b7} {}", p.author)
-                        }),
-                    ),
+                        },
+                    )),
             )
             .into_any_element(),
     )

@@ -53,14 +53,20 @@ pub struct Row {
 
 fn item_at(item: &TimelineItem) -> i64 {
     match item {
-        TimelineItem::Message { at, .. } | TimelineItem::File { at, .. } | TimelineItem::Wordle { at, .. } => *at,
+        TimelineItem::Message { at, .. }
+        | TimelineItem::File { at, .. }
+        | TimelineItem::Wordle { at, .. } => *at,
     }
 }
 
 /// The loop of `renderTimeline`, without the drawing: day lines, the New line at
 /// `len - unread_at_open`, and grouping (same author, both times known, under seven
 /// minutes, not a mention of me, not a reply; a Wordle card or a separator breaks it).
-pub fn build_rows(tl: &[TimelineItem], unread_at_open: usize, day_of: impl Fn(i64) -> String) -> Vec<Row> {
+pub fn build_rows(
+    tl: &[TimelineItem],
+    unread_at_open: usize,
+    day_of: impl Fn(i64) -> String,
+) -> Vec<Row> {
     let mut rows = Vec::with_capacity(tl.len());
     let mut last_day: Option<String> = None;
     let mut last_author: Option<&str> = None;
@@ -98,7 +104,12 @@ pub fn build_rows(tl: &[TimelineItem], unread_at_open: usize, day_of: impl Fn(i6
                 rows.push(row);
                 continue;
             }
-            TimelineItem::Message { author, mentions_you, reply_to, .. } => (author.as_str(), *mentions_you, reply_to.is_some()),
+            TimelineItem::Message {
+                author,
+                mentions_you,
+                reply_to,
+                ..
+            } => (author.as_str(), *mentions_you, reply_to.is_some()),
             TimelineItem::File { author, .. } => (author.as_str(), false, false),
         };
         row.grouped = last_author == Some(author)
@@ -123,7 +134,10 @@ fn item_op(item: &TimelineItem) -> Option<&OpRef> {
 }
 
 fn item_mine(item: &TimelineItem) -> bool {
-    matches!(item, TimelineItem::Message { mine: true, .. } | TimelineItem::File { mine: true, .. })
+    matches!(
+        item,
+        TimelineItem::Message { mine: true, .. } | TimelineItem::File { mine: true, .. }
+    )
 }
 
 // ------------------------------------------------------------------ the pane
@@ -182,7 +196,8 @@ impl TimelinePane {
     }
 
     fn is_pinned(&self) -> bool {
-        self.list.max_offset_for_scrollbar().y + self.list.scroll_px_offset_for_scrollbar().y <= PIN_SLACK
+        self.list.max_offset_for_scrollbar().y + self.list.scroll_px_offset_for_scrollbar().y
+            <= PIN_SLACK
     }
 
     /// Brings the list in line with the timeline it is drawing. Runs every render; does
@@ -191,7 +206,10 @@ impl TimelinePane {
         let key = snap.active_channel();
         let unread = snap.v.unread_at_open;
         let same = self.shown.as_ref().is_some_and(|s| {
-            s.key == key && Arc::ptr_eq(&s.tl, &snap.tl) && s.unread_at_open == unread && s.intro == intro
+            s.key == key
+                && Arc::ptr_eq(&s.tl, &snap.tl)
+                && s.unread_at_open == unread
+                && s.intro == intro
         });
         if same {
             return;
@@ -200,12 +218,15 @@ impl TimelinePane {
         let offset = usize::from(intro);
         let count = rows.len() + offset;
         match self.shown.as_ref() {
-            Some(s) if s.key == key && s.intro == intro && !s.tl.is_empty() && !snap.tl.is_empty() => {
+            Some(s)
+                if s.key == key && s.intro == intro && !s.tl.is_empty() && !snap.tl.is_empty() =>
+            {
                 // The same conversation moved on: replace only what changed, so the rows
                 // around keep their measured height and the reader keeps their place.
                 let pinned = self.is_pinned();
                 let (old_tl, new_tl) = (&s.tl, &snap.tl);
-                let same_at = |i: usize, j: usize| old_tl[i] == new_tl[j] && self.rows[i] == rows[j];
+                let same_at =
+                    |i: usize, j: usize| old_tl[i] == new_tl[j] && self.rows[i] == rows[j];
                 let max = old_tl.len().min(new_tl.len());
                 let prefix = (0..max).take_while(|&i| same_at(i, i)).count();
                 let suffix = (0..max - prefix)
@@ -218,8 +239,10 @@ impl TimelinePane {
                     .filter(|i| item_mine(i))
                     .and_then(item_op)
                     .is_some_and(|op| !old_tl.iter().rev().any(|o| item_op(o) == Some(op)));
-                self.list
-                    .splice(offset + prefix..offset + old_tl.len() - suffix, new_tl.len() - prefix - suffix);
+                self.list.splice(
+                    offset + prefix..offset + old_tl.len() - suffix,
+                    new_tl.len() - prefix - suffix,
+                );
                 if pinned || sent {
                     self.list.scroll_to_end();
                 }
@@ -298,7 +321,11 @@ impl TimelinePane {
         let Some(d) = self.debug.take() else { return };
         if let Some(scroll) = d.scroll.as_deref() {
             let (ix, px_in) = scroll.split_once('+').unwrap_or((scroll, "0"));
-            let item_ix = if ix == "top" { 0 } else { ix.parse::<usize>().map_or(0, |i| i + offset) };
+            let item_ix = if ix == "top" {
+                0
+            } else {
+                ix.parse::<usize>().map_or(0, |i| i + offset)
+            };
             self.list.scroll_to(gpui_kit::ListOffset {
                 item_ix,
                 offset_in_item: px(px_in.parse().unwrap_or(0.)),
@@ -306,7 +333,9 @@ impl TimelinePane {
         }
         if let Some(hover) = d.hover.as_deref() {
             let ix = if hover == "last" {
-                snap.tl.iter().rposition(|i| matches!(i, TimelineItem::Message { .. }))
+                snap.tl
+                    .iter()
+                    .rposition(|i| matches!(i, TimelineItem::Message { .. }))
             } else {
                 hover.parse().ok()
             };
@@ -400,10 +429,12 @@ impl Render for TimelinePane {
             .relative()
             .size_full()
             .child(
-                list(self.list.clone(), move |ix, window, cx| message::render_row(&ctx, ix, window, cx))
-                    .size_full()
-                    .pt(px(18.))
-                    .pb(px(12.)),
+                list(self.list.clone(), move |ix, window, cx| {
+                    message::render_row(&ctx, ix, window, cx)
+                })
+                .size_full()
+                .pt(px(18.))
+                .pb(px(12.)),
             )
             .child(
                 div()
@@ -422,12 +453,18 @@ impl Render for TimelinePane {
 /// pointer. Same width in every state, so the kit has no width animation to run.
 fn timeline_scrollbar(list: &ListState) -> Scrollbar {
     let thumb = |colour: gpui_kit::Rgba| {
-        move |t: gpui_kit::base::ScrollbarThumbStyle| t.bg(colour).width(px(4.)).inset(px(3.)).radius(px(0.))
+        move |t: gpui_kit::base::ScrollbarThumbStyle| {
+            t.bg(colour).width(px(4.)).inset(px(3.)).radius(px(0.))
+        }
     };
     Scrollbar::vertical(list)
         .id("timeline-scrollbar")
         .mode(ScrollbarMode::Always)
-        .styles(|s| s.thumb(thumb(c::STEEL)).thumb_hover(thumb(c::SILVER)).thumb_active(thumb(c::SILVER)))
+        .styles(|s| {
+            s.thumb(thumb(c::STEEL))
+                .thumb_hover(thumb(c::SILVER))
+                .thumb_active(thumb(c::SILVER))
+        })
 }
 
 // ------------------------------------------------------------------ head
@@ -449,7 +486,9 @@ fn head_btn(id: &'static str, icon: Icon, pressed: bool) -> gpui_kit::Stateful<g
 
 /// `renderHead`: the 44px blue strip on top of the timeline window.
 pub fn render_head(snap: &AppSnapshot, window: &mut Window, _cx: &mut App) -> AnyElement {
-    let dm = (snap.v.view == View::Dms).then_some(()).and(snap.v.dm.as_ref());
+    let dm = (snap.v.view == View::Dms)
+        .then_some(())
+        .and(snap.v.dm.as_ref());
     let (icon, title, topic) = match dm {
         Some(id) => (
             Icon::At,
@@ -463,7 +502,11 @@ pub fn render_head(snap: &AppSnapshot, window: &mut Window, _cx: &mut App) -> An
             } else {
                 "Sub-channel \u{00b7} everyone sees this too"
             };
-            (Icon::Hash, channel.map_or_else(|| "general".to_string(), |c| c.name.clone()), topic)
+            (
+                Icon::Hash,
+                channel.map_or_else(|| "general".to_string(), |c| c.name.clone()),
+                topic,
+            )
         }
     };
     let narrow = window.viewport_size().width <= theme::NARROW_CHANNELS;
@@ -481,7 +524,13 @@ pub fn render_head(snap: &AppSnapshot, window: &mut Window, _cx: &mut App) -> An
         .border_color(c::SPACE)
         .text_color(c::PAPER)
         .child(icon.size(18.))
-        .child(div().flex_none().text_size(px(15.)).whitespace_nowrap().child(title))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(15.))
+                .whitespace_nowrap()
+                .child(title),
+        )
         .when(!narrow, |d| {
             d.child(
                 div()
@@ -576,24 +625,38 @@ mod tests {
     /// stops grouping.
     #[test]
     fn rows_follow_render_timeline() {
-        let day = |ms: i64| if ms < 1000 * MIN { "Yesterday".to_string() } else { "Today".to_string() };
+        let day = |ms: i64| {
+            if ms < 1000 * MIN {
+                "Yesterday".to_string()
+            } else {
+                "Today".to_string()
+            }
+        };
         let tl = vec![
             msg("a", 10 * MIN, false, false),
-            msg("a", 16 * MIN, false, false),   // within 7 minutes: grouped
-            msg("a", 30 * MIN, false, false),   // too late
-            msg("a", 31 * MIN, true, false),    // mentions me
-            msg("a", 32 * MIN, false, true),    // a reply
-            file("a"),                          // no time: takes the last, groups
+            msg("a", 16 * MIN, false, false), // within 7 minutes: grouped
+            msg("a", 30 * MIN, false, false), // too late
+            msg("a", 31 * MIN, true, false),  // mentions me
+            msg("a", 32 * MIN, false, true),  // a reply
+            file("a"),                        // no time: takes the last, groups
             msg("a", 1001 * MIN, false, false), // new day
             msg("a", 1002 * MIN, false, false), // New line breaks the group
         ];
         let rows = build_rows(&tl, 1, day);
         let grouped: Vec<bool> = rows.iter().map(|r| r.grouped).collect();
-        assert_eq!(grouped, [false, true, false, false, false, true, false, false]);
+        assert_eq!(
+            grouped,
+            [false, true, false, false, false, true, false, false]
+        );
         assert_eq!(rows[0].day.as_deref(), Some("Yesterday"));
         assert_eq!(rows[6].day.as_deref(), Some("Today"));
         assert_eq!(rows[5].at, 32 * MIN);
-        let new: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| r.new_line).map(|(i, _)| i).collect();
+        let new: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.new_line)
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(new, [7]);
         assert!(build_rows(&tl, 0, day).iter().all(|r| !r.new_line));
     }

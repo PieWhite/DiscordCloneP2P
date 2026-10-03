@@ -441,10 +441,14 @@ fn show_window(target: &Arc<Mutex<Option<AnyWindowHandle>>>, cx: &mut App) {
 #[cfg(windows)]
 fn start_windows_tray(handle: &AnyWindowHandle, cx: &mut App) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let _ = handle.update(cx, |_, window, _| match window.window_handle().map(|h| h.as_raw()) {
-        Ok(RawWindowHandle::Win32(h)) => tray::onthoud_venster(h.hwnd.get()),
-        Ok(_) => tracing::warn!("no Win32 window handle; the tray cannot show the window"),
-        Err(e) => tracing::warn!(error = %e, "no window handle; the tray cannot show the window"),
+    let _ = handle.update(cx, |_, window, _| {
+        match window.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => tray::onthoud_venster(h.hwnd.get()),
+            Ok(_) => tracing::warn!("no Win32 window handle; the tray cannot show the window"),
+            Err(e) => {
+                tracing::warn!(error = %e, "no window handle; the tray cannot show the window")
+            }
+        }
     });
     // The icon has to stay alive or it drops straight out of the tray.
     match tray::start() {

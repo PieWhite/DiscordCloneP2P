@@ -106,7 +106,9 @@ fn local(ms: i64) -> Option<DateTime<Local>> {
 
 /// `fmtTime`: `22:14`, local time.
 pub fn fmt_time(ms: i64) -> String {
-    local(ms).map(|d| d.format("%H:%M").to_string()).unwrap_or_default()
+    local(ms)
+        .map(|d| d.format("%H:%M").to_string())
+        .unwrap_or_default()
 }
 
 fn day_month(d: &DateTime<Local>) -> String {
@@ -205,7 +207,11 @@ mod tests {
         assert_eq!(fmt_size(1536), "1.5 kB");
         assert_eq!(fmt_size(12 * 1024 * 1024), "12 MB");
         assert_eq!(fmt_size(10 * 1024), "10 kB");
-        assert_eq!(fmt_size(3_407_872), "3.3 MB", "a tie rounds up, like toFixed");
+        assert_eq!(
+            fmt_size(3_407_872),
+            "3.3 MB",
+            "a tie rounds up, like toFixed"
+        );
     }
 
     #[test]
@@ -219,14 +225,26 @@ mod tests {
     #[test]
     fn days_and_last_seen() {
         let now = Local.with_ymd_and_hms(2026, 8, 3, 23, 0, 0).unwrap();
-        let today = Local.with_ymd_and_hms(2026, 8, 3, 22, 14, 0).unwrap().timestamp_millis();
-        let yesterday = Local.with_ymd_and_hms(2026, 8, 2, 9, 5, 0).unwrap().timestamp_millis();
-        let older = Local.with_ymd_and_hms(2026, 7, 28, 9, 5, 0).unwrap().timestamp_millis();
+        let today = Local
+            .with_ymd_and_hms(2026, 8, 3, 22, 14, 0)
+            .unwrap()
+            .timestamp_millis();
+        let yesterday = Local
+            .with_ymd_and_hms(2026, 8, 2, 9, 5, 0)
+            .unwrap()
+            .timestamp_millis();
+        let older = Local
+            .with_ymd_and_hms(2026, 7, 28, 9, 5, 0)
+            .unwrap()
+            .timestamp_millis();
         assert_eq!(fmt_day_at(today, now), "Today");
         assert_eq!(fmt_day_at(yesterday, now), "Yesterday");
         assert_eq!(fmt_day_at(older, now), "28 July");
         assert_eq!(last_seen_line_at(Some(today), now), "Last seen 22:14");
-        assert_eq!(last_seen_line_at(Some(older), now), "Last seen 09:05, 28 July");
+        assert_eq!(
+            last_seen_line_at(Some(older), now),
+            "Last seen 09:05, 28 July"
+        );
         assert_eq!(last_seen_line_at(None, now), "Offline");
         assert_eq!(fmt_day_num(20_260_803), "3 August");
         assert_eq!(fmt_day_num(0), "");

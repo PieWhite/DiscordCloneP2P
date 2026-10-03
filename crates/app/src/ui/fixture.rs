@@ -44,7 +44,10 @@ pub struct Fixture {
 #[serde(untagged)]
 enum Devices {
     Pair(Vec<String>, Vec<String>),
-    Named { input: Vec<String>, output: Vec<String> },
+    Named {
+        input: Vec<String>,
+        output: Vec<String>,
+    },
 }
 
 /// `meta.json`: the frozen clock the reference screenshots were taken with.
@@ -71,8 +74,10 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let value = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let value =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     Ok(Some(value))
 }
 
@@ -93,7 +98,8 @@ impl Fixture {
         if let Some(now) = read::<Meta>(&dir.join("meta.json"))?.and_then(|m| m.now_ms) {
             super::view::format::freeze_clock(now);
         }
-        let mut state: UiState = read(&dir.join("state.json"))?.context("state.json is required")?;
+        let mut state: UiState =
+            read(&dir.join("state.json"))?.context("state.json is required")?;
         state.pictures_dir = absolute(&dir, &state.pictures_dir);
         state.download_dir = absolute(&dir, &state.download_dir);
 
@@ -117,7 +123,12 @@ impl Fixture {
                     .unwrap_or_else(|| stem.to_string());
                 let mut items: Vec<TimelineItem> = read(&path)?.unwrap_or_default();
                 for item in &mut items {
-                    if let TimelineItem::File { image_path, local_path, .. } = item {
+                    if let TimelineItem::File {
+                        image_path,
+                        local_path,
+                        ..
+                    } = item
+                    {
                         for p in [image_path, local_path].into_iter().flatten() {
                             *p = absolute(&dir, p);
                         }
@@ -128,7 +139,11 @@ impl Fixture {
         }
 
         let devices = match read::<Devices>(&dir.join("devices.json"))? {
-            Some(Devices::Pair(i, o)) | Some(Devices::Named { input: i, output: o }) => (i, o),
+            Some(Devices::Pair(i, o))
+            | Some(Devices::Named {
+                input: i,
+                output: o,
+            }) => (i, o),
             None => (Vec::new(), Vec::new()),
         };
 
@@ -145,14 +160,20 @@ impl Fixture {
                 })
                 .collect(),
             self_level: meters_file.me.level,
-            self_speaking: state.voice.joined && !state.voice.muted && meters_file.me.level > SPEAKING,
+            self_speaking: state.voice.joined
+                && !state.voice.muted
+                && meters_file.me.level > SPEAKING,
         };
 
         let mut thumbs = ThumbMap::new();
         if let Ok(entries) = std::fs::read_dir(dir.join("thumbs")) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                let Some(key) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+                let Some(key) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                else {
                     continue;
                 };
                 match image::open(&path) {
@@ -162,9 +183,14 @@ impl Fixture {
                         for px in rgba.chunks_exact_mut(4) {
                             px.swap(0, 2);
                         }
-                        thumbs.insert(key, Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])));
+                        thumbs.insert(
+                            key,
+                            Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])),
+                        );
                     }
-                    Err(e) => tracing::warn!(error = %e, path = %path.display(), "fixture thumbnail unreadable"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %path.display(), "fixture thumbnail unreadable")
+                    }
                 }
             }
         }
@@ -249,7 +275,9 @@ pub enum DebugDialog {
 
 impl DebugView {
     pub fn from_env() -> Option<Self> {
-        std::env::var("FITCOM_DEBUG_VIEW").ok().map(|s| Self::parse(&s))
+        std::env::var("FITCOM_DEBUG_VIEW")
+            .ok()
+            .map(|s| Self::parse(&s))
     }
 
     pub fn parse(script: &str) -> Self {
@@ -328,7 +356,8 @@ mod tests {
 
     #[test]
     fn a_script_sets_what_it_names() {
-        let d = DebugView::parse("tab=audio; members=0;overlay=ac;ac=ri;dialog=lightbox:files/a.png");
+        let d =
+            DebugView::parse("tab=audio; members=0;overlay=ac;ac=ri;dialog=lightbox:files/a.png");
         assert_eq!(d.tab, Some(SettingsTab::Audio));
         assert_eq!(d.members, Some(false));
         assert_eq!(d.overlay, Some(Overlay::Autocomplete));

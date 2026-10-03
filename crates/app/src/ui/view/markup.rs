@@ -14,9 +14,8 @@ pub use rich_text::RichText;
 use super::super::theme::{self, c};
 use super::AppSnapshot;
 use gpui_kit::{
-    div, px, relative, AnyElement, ClipboardItem, ElementId,
-    HighlightStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled,
+    div, px, relative, AnyElement, ClipboardItem, ElementId, HighlightStyle, InteractiveElement,
+    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
 };
 use std::ops::Range;
 
@@ -32,8 +31,15 @@ const CODE_MEASURE: f32 = 540.;
 /// One piece of a message body: running text, or a fenced code block.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
-    Text { text: String, spans: Vec<Span> },
-    Code { info: String, code: String, tokens: Vec<(Range<usize>, Tok)> },
+    Text {
+        text: String,
+        spans: Vec<Span>,
+    },
+    Code {
+        info: String,
+        code: String,
+        tokens: Vec<(Range<usize>, Tok)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,7 +91,12 @@ fn collapse_whitespace(part: &str) -> String {
     let part = part.strip_suffix('\n').unwrap_or(part);
     let lines: Vec<String> = part
         .split('\n')
-        .map(|line| line.split([' ', '\t']).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" "))
+        .map(|line| {
+            line.split([' ', '\t'])
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .collect();
     lines.join("\n")
 }
@@ -93,7 +104,10 @@ fn collapse_whitespace(part: &str) -> String {
 /// `codeBlock`: whatever follows the opening fence is the header ("code" when empty).
 fn code_block(part: &str) -> Block {
     let (info, code) = match part.find('\n') {
-        Some(nl) => (part[..nl].trim().to_string(), part[nl + 1..].strip_suffix('\n').unwrap_or(&part[nl + 1..])),
+        Some(nl) => (
+            part[..nl].trim().to_string(),
+            part[nl + 1..].strip_suffix('\n').unwrap_or(&part[nl + 1..]),
+        ),
         None => (String::new(), part),
     };
     let code = code.to_string();
@@ -122,12 +136,25 @@ pub fn inline_spans(text: &str, names: &[&str], me: &str, mentions_you: bool) ->
         let mut from = 0;
         while let Some(at) = text[from..].find('@').map(|i| from + i) {
             from = at + 1;
-            let Some(end) = match_name(text, at + 1, name) else { continue };
-            if !boundary(text, end) || spans.iter().any(|s| s.range.start < end && at < s.range.end) {
+            let Some(end) = match_name(text, at + 1, name) else {
+                continue;
+            };
+            if !boundary(text, end)
+                || spans
+                    .iter()
+                    .any(|s| s.range.start < end && at < s.range.end)
+            {
                 continue;
             }
-            let kind = if mine && mentions_you { SpanKind::MentionSelf } else { SpanKind::Mention };
-            spans.push(Span { range: at..end, kind });
+            let kind = if mine && mentions_you {
+                SpanKind::MentionSelf
+            } else {
+                SpanKind::Mention
+            };
+            spans.push(Span {
+                range: at..end,
+                kind,
+            });
             from = end;
         }
     }
@@ -147,8 +174,15 @@ pub fn inline_spans(text: &str, names: &[&str], me: &str, mentions_you: bool) ->
             from = inside.range.end;
             continue;
         }
-        let stop = spans.iter().map(|s| s.range.start).filter(|&s| s > at).min().unwrap_or(text.len());
-        let end = text[at..stop].find(char::is_whitespace).map_or(stop, |i| at + i);
+        let stop = spans
+            .iter()
+            .map(|s| s.range.start)
+            .filter(|&s| s > at)
+            .min()
+            .unwrap_or(text.len());
+        let end = text[at..stop]
+            .find(char::is_whitespace)
+            .map_or(stop, |i| at + i);
         links.push(Span {
             range: at..end,
             kind: SpanKind::Link(text[at..end].to_string()),
@@ -194,7 +228,13 @@ fn highlight_line(line: &str, base: usize, out: &mut Vec<(Range<usize>, Tok)>) {
     let lead = line.len() - line.trim_start().len();
     let ident_end = line[lead..]
         .char_indices()
-        .take_while(|(k, ch)| if *k == 0 { ch.is_ascii_alphabetic() || *ch == '_' } else { is_word(*ch) || *ch == '.' || *ch == '-' })
+        .take_while(|(k, ch)| {
+            if *k == 0 {
+                ch.is_ascii_alphabetic() || *ch == '_'
+            } else {
+                is_word(*ch) || *ch == '.' || *ch == '-'
+            }
+        })
         .last()
         .map(|(k, ch)| lead + k + ch.len_utf8());
     if let Some(end) = ident_end {
@@ -219,7 +259,13 @@ fn highlight_line(line: &str, base: usize, out: &mut Vec<(Range<usize>, Tok)>) {
             // `\b(\d[\d_.]*)\b`, with the regex's backtracking to the last boundary.
             let greedy = line[i..]
                 .char_indices()
-                .take_while(|(k, c)| if *k == 0 { true } else { c.is_ascii_digit() || *c == '_' || *c == '.' })
+                .take_while(|(k, c)| {
+                    if *k == 0 {
+                        true
+                    } else {
+                        c.is_ascii_digit() || *c == '_' || *c == '.'
+                    }
+                })
                 .last()
                 .map_or(i + 1, |(k, _)| i + k + 1);
             if let Some(end) = (i + 1..=greedy).rev().find(|&e| boundary(line, e)) {
@@ -263,7 +309,9 @@ pub fn yt_ids(text: &str) -> Vec<String> {
             if let Some(q) = r.strip_prefix("watch?") {
                 watch_v(q)
             } else {
-                ["shorts/", "live/", "embed/", "v/"].iter().find_map(|p| r.strip_prefix(p))
+                ["shorts/", "live/", "embed/", "v/"]
+                    .iter()
+                    .find_map(|p| r.strip_prefix(p))
             }
         } else {
             rest.strip_prefix("youtu.be/")
@@ -333,7 +381,12 @@ pub fn mention_names(snap: &AppSnapshot) -> Vec<String> {
 
 /// The blocks of one body, drawn: `.msg-text` paragraphs and `.code` windows. `key` makes
 /// the selectable runs' ids stable across renders (the message's op).
-pub fn render_body(snap: &AppSnapshot, key: &SharedString, text: &str, mentions_you: bool) -> Vec<AnyElement> {
+pub fn render_body(
+    snap: &AppSnapshot,
+    key: &SharedString,
+    text: &str,
+    mentions_you: bool,
+) -> Vec<AnyElement> {
     let names = mention_names(snap);
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     parse_body(text, &names, &snap.s.me.name, mentions_you)
@@ -351,7 +404,10 @@ pub fn render_body(snap: &AppSnapshot, key: &SharedString, text: &str, mentions_
 /// bitmap face has neither), drawn on the plate and left out of a copy. Returns the text
 /// to draw, the spans moved along, the plate ranges (padding included) and the byte
 /// offsets of the inserted characters.
-pub fn pad_mentions(text: &str, spans: Vec<Span>) -> (String, Vec<Span>, Vec<Range<usize>>, Vec<usize>) {
+pub fn pad_mentions(
+    text: &str,
+    spans: Vec<Span>,
+) -> (String, Vec<Span>, Vec<Range<usize>>, Vec<usize>) {
     const PAD: [char; 2] = ['\u{2009}', '\u{200A}'];
     let mut out = String::with_capacity(text.len() + spans.len() * 12);
     let mut moved = Vec::with_capacity(spans.len());
@@ -390,7 +446,10 @@ pub fn pad_mentions(text: &str, spans: Vec<Span>) -> (String, Vec<Span>, Vec<Ran
 
 fn render_text(key: &SharedString, i: usize, text: String, spans: Vec<Span>) -> AnyElement {
     let (text, spans, plates, pads) = pad_mentions(&text, spans);
-    let highlights: Vec<(Range<usize>, HighlightStyle)> = spans.iter().map(|s| (s.range.clone(), span_style(&s.kind))).collect();
+    let highlights: Vec<(Range<usize>, HighlightStyle)> = spans
+        .iter()
+        .map(|s| (s.range.clone(), span_style(&s.kind)))
+        .collect();
     let links = spans
         .iter()
         .filter_map(|s| match &s.kind {
@@ -414,9 +473,16 @@ fn render_text(key: &SharedString, i: usize, text: String, spans: Vec<Span>) -> 
 }
 
 /// `.code`: header with the info string and Copy, then the `<pre>` that scrolls sideways.
-fn render_code(key: &SharedString, i: usize, info: String, code: String, tokens: Vec<(Range<usize>, Tok)>) -> AnyElement {
+fn render_code(
+    key: &SharedString,
+    i: usize,
+    info: String,
+    code: String,
+    tokens: Vec<(Range<usize>, Tok)>,
+) -> AnyElement {
     let copy = code.clone();
-    let highlights: Vec<(Range<usize>, HighlightStyle)> = tokens.into_iter().map(|(r, t)| (r, tok_style(t))).collect();
+    let highlights: Vec<(Range<usize>, HighlightStyle)> =
+        tokens.into_iter().map(|(r, t)| (r, tok_style(t))).collect();
     div()
         .mt(px(6.))
         .mb(px(2.))
@@ -436,22 +502,34 @@ fn render_code(key: &SharedString, i: usize, info: String, code: String, tokens:
                 .bg(c::INK)
                 .text_size(px(11.))
                 .text_color(c::SILVER)
-                .child(if info.is_empty() { "code".to_string() } else { info })
+                .child(if info.is_empty() {
+                    "code".to_string()
+                } else {
+                    info
+                })
                 .child(
                     div()
-                        .id(ElementId::NamedInteger(SharedString::from(format!("{key}-copy")), i as u64))
+                        .id(ElementId::NamedInteger(
+                            SharedString::from(format!("{key}-copy")),
+                            i as u64,
+                        ))
                         .ml_auto()
                         .cursor_pointer()
                         .text_size(px(11.))
                         .text_color(c::SILVER)
                         .hover(|s| s.text_color(theme::TEXT))
-                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                        })
                         .child("Copy"),
                 ),
         )
         .child(
             div()
-                .id(ElementId::NamedInteger(SharedString::from(format!("{key}-pre")), i as u64))
+                .id(ElementId::NamedInteger(
+                    SharedString::from(format!("{key}-pre")),
+                    i as u64,
+                ))
                 .overflow_x_scroll()
                 .px(px(12.))
                 .py(px(10.))
@@ -460,7 +538,10 @@ fn render_code(key: &SharedString, i: usize, info: String, code: String, tokens:
                 .line_height(relative(1.6))
                 .text_color(c::PAPER)
                 .whitespace_nowrap()
-                .child(RichText::new(ElementId::NamedInteger(key.clone(), i as u64), code).highlights(highlights)),
+                .child(
+                    RichText::new(ElementId::NamedInteger(key.clone(), i as u64), code)
+                        .highlights(highlights),
+                ),
         )
         .into_any_element()
 }
@@ -483,7 +564,12 @@ mod tests {
     /// and this fails.
     #[test]
     fn fences_split_into_text_and_code() {
-        let b = parse_body("kijk:\n```config.toml\na = 1\n```\nklaar", &[], "Rick", false);
+        let b = parse_body(
+            "kijk:\n```config.toml\na = 1\n```\nklaar",
+            &[],
+            "Rick",
+            false,
+        );
         assert_eq!(text_of(&b), ["T:kijk:", "C:config.toml|a = 1", "T:\nklaar"]);
         let b = parse_body("```\nx\n```", &[], "Rick", false);
         assert_eq!(text_of(&b), ["C:|x"]);
@@ -501,10 +587,20 @@ mod tests {
     #[test]
     fn mentions_and_links() {
         let names = ["Rick", "Sander", "Joost"];
-        let s = inline_spans("@Sander @joost hoi @Sanders https://a.nl/x@Rick y", &names, "Rick", false);
+        let s = inline_spans(
+            "@Sander @joost hoi @Sanders https://a.nl/x@Rick y",
+            &names,
+            "Rick",
+            false,
+        );
         let got: Vec<(&str, &SpanKind)> = s
             .iter()
-            .map(|s| (&"@Sander @joost hoi @Sanders https://a.nl/x@Rick y"[s.range.clone()], &s.kind))
+            .map(|s| {
+                (
+                    &"@Sander @joost hoi @Sanders https://a.nl/x@Rick y"[s.range.clone()],
+                    &s.kind,
+                )
+            })
             .collect();
         assert_eq!(
             got,
@@ -525,7 +621,10 @@ mod tests {
     #[test]
     fn highlight_keeps_strings_whole() {
         let code = "# hoger 12\nbitrate_kbps = 12000\ncodec = \"h264\" # x1\nv = 1.5.\nid12 = a12b";
-        let toks: Vec<(&str, Tok)> = highlight(code).into_iter().map(|(r, t)| (&code[r], t)).collect();
+        let toks: Vec<(&str, Tok)> = highlight(code)
+            .into_iter()
+            .map(|(r, t)| (&code[r], t))
+            .collect();
         assert_eq!(
             toks,
             [
@@ -559,7 +658,10 @@ mod tests {
 
     #[test]
     fn youtube_ids_follow_the_old_regex() {
-        assert_eq!(yt_ids("kijk https://www.youtube.com/watch?v=M7lc1UVf-VE nu"), ["M7lc1UVf-VE"]);
+        assert_eq!(
+            yt_ids("kijk https://www.youtube.com/watch?v=M7lc1UVf-VE nu"),
+            ["M7lc1UVf-VE"]
+        );
         assert_eq!(
             yt_ids("https://youtu.be/aaaaaaaaaaa https://youtube.com/watch?t=1&v=bbbbbbbbbbb https://youtu.be/aaaaaaaaaaa https://m.youtube.com/shorts/ccccccccccc"),
             ["aaaaaaaaaaa", "bbbbbbbbbbb"]

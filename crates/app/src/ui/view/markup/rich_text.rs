@@ -10,17 +10,19 @@
 
 use super::super::super::commands;
 use super::super::super::theme::{self, c};
-use gpui_kit::base::{TextSelection, TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
+use gpui_kit::base::{
+    TextSelection, TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration,
+    TextSelectionRun,
+};
 use gpui_kit::{
-    point, px, size, App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId, EntityId,
-    GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, SharedString,
-    StyledText, Subscription, TextLayout, Window,
+    point, px, size, App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId,
+    EntityId, GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    Pixels, SharedString, StyledText, Subscription, TextLayout, Window,
 };
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
-
 
 pub struct RichText {
     id: ElementId,
@@ -108,10 +110,16 @@ fn line_rects(layout: &TextLayout, text: &str, range: Range<usize>) -> Vec<Bound
     let line_height = layout.line_height();
     let mut rects: Vec<Bounds<Pixels>> = Vec::new();
     let mut last_width = px(0.);
-    let mut indices: Vec<usize> = text[range.clone()].char_indices().map(|(i, _)| range.start + i).collect();
+    let mut indices: Vec<usize> = text[range.clone()]
+        .char_indices()
+        .map(|(i, _)| range.start + i)
+        .collect();
     indices.push(range.end);
     for pair in indices.windows(2) {
-        let (Some(a), Some(b)) = (layout.position_for_index(pair[0]), layout.position_for_index(pair[1])) else {
+        let (Some(a), Some(b)) = (
+            layout.position_for_index(pair[0]),
+            layout.position_for_index(pair[1]),
+        ) else {
             continue;
         };
         // A char that ends a wrapped line has no right neighbour on its line: give it the
@@ -142,19 +150,35 @@ fn quad(bounds: Bounds<Pixels>, color: Hsla) -> PaintQuad {
 }
 
 /// The selection quads of one range, the way `SelectableText` lays them out.
-fn selection_quads(layout: &TextLayout, range: Range<usize>, bounds: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
-    let (Some(start), Some(end)) = (layout.position_for_index(range.start), layout.position_for_index(range.end)) else {
+fn selection_quads(
+    layout: &TextLayout,
+    range: Range<usize>,
+    bounds: Bounds<Pixels>,
+) -> Vec<Bounds<Pixels>> {
+    let (Some(start), Some(end)) = (
+        layout.position_for_index(range.start),
+        layout.position_for_index(range.end),
+    ) else {
         return Vec::new();
     };
     let lh = layout.line_height();
     if start.y == end.y {
         return vec![Bounds::from_corners(start, point(end.x, end.y + lh))];
     }
-    let mut quads = vec![Bounds::from_corners(start, point(bounds.right(), start.y + lh))];
+    let mut quads = vec![Bounds::from_corners(
+        start,
+        point(bounds.right(), start.y + lh),
+    )];
     if end.y > start.y + lh {
-        quads.push(Bounds::from_corners(point(bounds.left(), start.y + lh), point(bounds.right(), end.y)));
+        quads.push(Bounds::from_corners(
+            point(bounds.left(), start.y + lh),
+            point(bounds.right(), end.y),
+        ));
     }
-    quads.push(Bounds::from_corners(point(bounds.left(), end.y), point(end.x, end.y + lh)));
+    quads.push(Bounds::from_corners(
+        point(bounds.left(), end.y),
+        point(end.x, end.y + lh),
+    ));
     quads
 }
 
@@ -213,7 +237,9 @@ impl Element for RichText {
                 (state, retained)
             },
         );
-        let (layout_id, ()) = self.styled.request_layout(global_id, inspector_id, window, cx);
+        let (layout_id, ()) = self
+            .styled
+            .request_layout(global_id, inspector_id, window, cx);
         (layout_id, layout_state)
     }
 
@@ -226,7 +252,8 @@ impl Element for RichText {
         window: &mut Window,
         cx: &mut App,
     ) -> Prepaint {
-        self.styled.prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
+        self.styled
+            .prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let layout = self.styled.layout().clone();
         let links = self
@@ -271,9 +298,14 @@ impl Element for RichText {
     ) {
         let layout = self.styled.layout().clone();
         let before = TextSelection::selected_text(window, cx);
-        let projection = state
-            .handle
-            .update_runs(&[TextSelectionRun::new(self.text.clone(), layout.clone(), bounds)], cx);
+        let projection = state.handle.update_runs(
+            &[TextSelectionRun::new(
+                self.text.clone(),
+                layout.clone(),
+                bounds,
+            )],
+            cx,
+        );
         if before != TextSelection::selected_text(window, cx) {
             window.refresh();
         }
@@ -281,7 +313,11 @@ impl Element for RichText {
             .ranges()
             .iter()
             .flatten()
-            .flat_map(|r| self.text[r.clone()].char_indices().map(move |(i, ch)| (r.start + i, ch)))
+            .flat_map(|r| {
+                self.text[r.clone()]
+                    .char_indices()
+                    .map(move |(i, ch)| (r.start + i, ch))
+            })
             .filter(|(i, _)| !self.no_copy.contains(i))
             .map(|(_, ch)| ch)
             .collect();
@@ -298,7 +334,15 @@ impl Element for RichText {
                 window.paint_quad(quad(b, wash));
             }
         }
-        self.styled.paint(global_id, inspector_id, bounds, &mut (), &mut (), window, cx);
+        self.styled.paint(
+            global_id,
+            inspector_id,
+            bounds,
+            &mut (),
+            &mut (),
+            window,
+            cx,
+        );
 
         window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
         if prepaint.links.is_empty() {
@@ -318,7 +362,10 @@ impl Element for RichText {
             painted.push(hovered);
             let y = (rect.origin.y + drop).floor();
             if hovered {
-                window.paint_quad(quad(Bounds::new(point(rect.origin.x, y), size(rect.size.width, px(1.))), accent));
+                window.paint_quad(quad(
+                    Bounds::new(point(rect.origin.x, y), size(rect.size.width, px(1.))),
+                    accent,
+                ));
             } else {
                 let mut x = rect.origin.x;
                 while x < rect.right() {
@@ -331,7 +378,12 @@ impl Element for RichText {
         let view = prepaint.view;
         let boxes = prepaint.links.clone();
         window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-            if phase.bubble() && boxes.iter().zip(painted.iter()).any(|((_, hb, _), was)| hb.is_hovered(window) != *was) {
+            if phase.bubble()
+                && boxes
+                    .iter()
+                    .zip(painted.iter())
+                    .any(|((_, hb, _), was)| hb.is_hovered(window) != *was)
+            {
                 cx.notify(view);
             }
         });
@@ -339,7 +391,12 @@ impl Element for RichText {
         let pressed = state.pressed.clone();
         window.on_mouse_event(move |e: &MouseDownEvent, phase, window, _| {
             if phase.bubble() && e.button == MouseButton::Left {
-                pressed.set(boxes.iter().find(|(_, hb, _)| hb.is_hovered(window)).map(|(ix, _, _)| *ix));
+                pressed.set(
+                    boxes
+                        .iter()
+                        .find(|(_, hb, _)| hb.is_hovered(window))
+                        .map(|(ix, _, _)| *ix),
+                );
             }
         });
         let boxes = prepaint.links.clone();
@@ -350,7 +407,9 @@ impl Element for RichText {
                 return;
             }
             let Some(ix) = pressed.take() else { return };
-            let still_on_it = boxes.iter().any(|(i, hb, _)| *i == ix && hb.is_hovered(window));
+            let still_on_it = boxes
+                .iter()
+                .any(|(i, hb, _)| *i == ix && hb.is_hovered(window));
             // The end of a drag that selected text is not a click on the link.
             if still_on_it && !TextSelection::has_selection(window, cx) {
                 if let Some((_, url)) = links.get(ix) {
@@ -366,7 +425,8 @@ mod tests {
     use super::RichText;
     use gpui_kit::base::{TextSelection, TextSelectionLayer};
     use gpui_kit::{
-        div, px, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, Window,
+        div, px, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled,
+        TestAppContext, Window,
     };
 
     struct View;
@@ -393,9 +453,21 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        cx.simulate_mouse_down(gpui_kit::point(px(0.), px(10.)), MouseButton::Left, Modifiers::default());
-        cx.simulate_mouse_move(gpui_kit::point(px(590.), px(10.)), Some(MouseButton::Left), Modifiers::default());
-        cx.simulate_mouse_up(gpui_kit::point(px(590.), px(10.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_down(
+            gpui_kit::point(px(0.), px(10.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            gpui_kit::point(px(590.), px(10.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            gpui_kit::point(px(590.), px(10.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
         cx.update(|window, cx| {
             let _ = window.draw(cx);
             assert_eq!(TextSelection::selected_text(window, cx), "@Sander hoi");

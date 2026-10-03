@@ -271,12 +271,16 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
                 .iter()
                 .filter(|s| !s.is_geluid)
                 .map(|s| (Thumbnails::own_key(s.stream_id), s.miniatuur.as_ref()));
-            let vreemd = snap.streams.iter().filter(|s| !s.is_geluid && s.kijken).map(|s| {
-                (
-                    Thumbnails::peer_key(&s.eigenaar.to_string(), s.stream_id),
-                    s.miniatuur.as_ref(),
-                )
-            });
+            let vreemd = snap
+                .streams
+                .iter()
+                .filter(|s| !s.is_geluid && s.kijken)
+                .map(|s| {
+                    (
+                        Thumbnails::peer_key(&s.eigenaar.to_string(), s.stream_id),
+                        s.miniatuur.as_ref(),
+                    )
+                });
 
             let mut next: Option<ThumbMap> = None;
             let mut alive: Vec<String> = Vec::new();
@@ -348,7 +352,10 @@ mod tests {
             data: Arc::from(vec![10u8, 20, 30, 0, 40, 50, 60, 0]),
         };
         let image = render_image(&thumb).expect("image");
-        assert_eq!(image.as_bytes(0).unwrap(), &[10, 20, 30, 255, 40, 50, 60, 255]);
+        assert_eq!(
+            image.as_bytes(0).unwrap(),
+            &[10, 20, 30, 255, 40, 50, 60, 255]
+        );
     }
 
     #[test]

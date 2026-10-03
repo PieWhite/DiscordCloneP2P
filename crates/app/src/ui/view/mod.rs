@@ -42,12 +42,15 @@ pub mod wordle;
 use super::bridge::{Feeds, MeterReadings, Meters, ThumbMap, Thumbnails};
 use super::commands::{self, SourceOption};
 use super::icons::Icon;
-use super::state::{ChannelState, OpRef, OwnStreamState, PeerState, Presence, Recap, StreamState, TimelineItem, UiState};
+use super::state::{
+    ChannelState, OpRef, OwnStreamState, PeerState, Presence, Recap, StreamState, TimelineItem,
+    UiState,
+};
 use super::theme;
 use super::Ui;
 use gpui_kit::{
-    deferred, div, prelude::FluentBuilder, relative, AnyWindowHandle, App, AppContext, Context, Entity,
-    ExternalPaths, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement,
+    deferred, div, prelude::FluentBuilder, relative, AnyWindowHandle, App, AppContext, Context,
+    Entity, ExternalPaths, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement,
     Render, StyleRefinement, Styled, Task, WeakEntity, Window,
 };
 use std::collections::HashMap;
@@ -216,7 +219,9 @@ pub enum Dialog {
     },
     /// Share a screen or window. Cameras are already filtered out (they have their own
     /// button).
-    Picker { sources: Vec<SourceOption> },
+    Picker {
+        sources: Vec<SourceOption>,
+    },
     /// A picture at full size. `src` must pass `Ui::image_path_allowed` before it is drawn.
     Lightbox {
         src: PathBuf,
@@ -413,7 +418,11 @@ impl AppHandle {
     }
 
     /// Run `f` on the root. Call `cx.notify()` inside when it changed something.
-    pub fn update<R>(&self, cx: &mut App, f: impl FnOnce(&mut AppView, &mut Context<AppView>) -> R) -> Option<R> {
+    pub fn update<R>(
+        &self,
+        cx: &mut App,
+        f: impl FnOnce(&mut AppView, &mut Context<AppView>) -> R,
+    ) -> Option<R> {
         self.0.update(cx, f).ok()
     }
 
@@ -464,7 +473,8 @@ impl AppSnapshot {
         self.s.peers.iter().filter(|p| !p.id.is_empty())
     }
     pub fn online_peers(&self) -> impl Iterator<Item = &PeerState> {
-        self.known_peers().filter(|p| p.presence == Presence::Online)
+        self.known_peers()
+            .filter(|p| p.presence == Presence::Online)
     }
     pub fn call_peers(&self) -> impl Iterator<Item = &PeerState> {
         self.known_peers().filter(|p| p.in_call)
@@ -477,7 +487,10 @@ impl AppSnapshot {
     }
     /// A screen or window of ours is shared (not the camera, not desktop audio).
     pub fn sharing_self(&self) -> bool {
-        self.s.own_streams.iter().any(|s| !s.is_audio && !s.is_camera)
+        self.s
+            .own_streams
+            .iter()
+            .any(|s| !s.is_audio && !s.is_camera)
     }
     pub fn own_camera(&self) -> Option<&OwnStreamState> {
         self.s.own_streams.iter().find(|s| s.is_camera)
@@ -505,7 +518,11 @@ impl AppSnapshot {
         self.s
             .typing
             .get(&self.active_channel())
-            .map(|ids| ids.iter().filter_map(|id| self.peer(id).map(|p| p.name.clone())).collect())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.peer(id).map(|p| p.name.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -521,7 +538,11 @@ fn unread_count(s: &UiState, v: &ViewState) -> usize {
     let key = active_channel(v);
     match key.strip_prefix("dm:") {
         Some(id) => s.peers.iter().find(|p| p.id == id).map_or(0, |p| p.unread),
-        None => s.channels.iter().find(|c| c.key == key).map_or(0, |c| c.unread),
+        None => s
+            .channels
+            .iter()
+            .find(|c| c.key == key)
+            .map_or(0, |c| c.unread),
     }
 }
 
@@ -603,7 +624,10 @@ impl AppView {
         tasks.push(cx.spawn_in(window, async move |this, cx| {
             while state_rx.changed().await.is_ok() {
                 let next = state_rx.borrow_and_update().clone();
-                if this.update_in(cx, |this, window, cx| this.apply_state(next, window, cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| this.apply_state(next, window, cx))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -611,7 +635,12 @@ impl AppView {
         tasks.push(cx.spawn_in(window, async move |this, cx| {
             while meters_rx.changed().await.is_ok() {
                 let next = meters_rx.borrow_and_update().clone();
-                if this.update(cx, |this, cx| this.meters.update(cx, |m, cx| m.set(next, cx))).is_err() {
+                if this
+                    .update(cx, |this, cx| {
+                        this.meters.update(cx, |m, cx| m.set(next, cx))
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -720,14 +749,24 @@ impl AppView {
 
         // A conversation that disappeared (a sub-channel someone removed) must not leave
         // the window pointing at nothing.
-        let channel_gone = self.v.view == View::Channels && !self.s.channels.iter().any(|c| c.key == self.v.channel);
+        let channel_gone = self.v.view == View::Channels
+            && !self.s.channels.iter().any(|c| c.key == self.v.channel);
         if channel_gone {
             self.v_mut().channel = "general".into();
         }
         let dm_gone = self.v.view == View::Dms
-            && self.v.dm.as_ref().is_some_and(|dm| !self.s.peers.iter().any(|p| &p.id == dm));
+            && self
+                .v
+                .dm
+                .as_ref()
+                .is_some_and(|dm| !self.s.peers.iter().any(|p| &p.id == dm));
         if dm_gone {
-            let first = self.s.peers.iter().find(|p| !p.id.is_empty()).map(|p| p.id.clone());
+            let first = self
+                .s
+                .peers
+                .iter()
+                .find(|p| !p.id.is_empty())
+                .map(|p| p.id.clone());
             self.v_mut().dm = first;
         }
 
@@ -805,7 +844,12 @@ impl AppView {
 
     /// The rail's DM button: the last DM, or the first known peer.
     pub fn show_dms(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let first = self.s.peers.iter().find(|p| !p.id.is_empty()).map(|p| p.id.clone());
+        let first = self
+            .s
+            .peers
+            .iter()
+            .find(|p| !p.id.is_empty())
+            .map(|p| p.id.clone());
         let v = self.v_mut();
         v.view = View::Dms;
         if v.dm.is_none() {
@@ -941,7 +985,12 @@ impl AppView {
     }
 
     #[cfg(debug_assertions)]
-    fn apply_debug_view(&mut self, d: super::fixture::DebugView, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_debug_view(
+        &mut self,
+        d: super::fixture::DebugView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use super::fixture::DebugDialog;
         if let Some(view) = d.view {
             match view {
@@ -955,7 +1004,11 @@ impl AppView {
         }
         if let Some(dm) = &d.dm {
             let id = if dm == "first" {
-                self.s.peers.iter().find(|p| !p.id.is_empty()).map(|p| p.id.clone())
+                self.s
+                    .peers
+                    .iter()
+                    .find(|p| !p.id.is_empty())
+                    .map(|p| p.id.clone())
             } else {
                 Some(dm.clone())
             };
@@ -968,9 +1021,13 @@ impl AppView {
             self.set_settings_tab(tab, cx);
         }
         let last_message = self.tl.iter().rev().find_map(|i| match i {
-            TimelineItem::Message { id, author_name, body, mine, .. } => {
-                Some((id.clone(), author_name.clone(), body.clone(), *mine))
-            }
+            TimelineItem::Message {
+                id,
+                author_name,
+                body,
+                mine,
+                ..
+            } => Some((id.clone(), author_name.clone(), body.clone(), *mine)),
             _ => None,
         });
         let last_own = self.tl.iter().rev().find_map(|i| match i {
@@ -1012,7 +1069,11 @@ impl AppView {
                 v.overlay = Overlay::Autocomplete;
             }
             if let Some(w) = &d.wordle_typed {
-                v.wordle_typed = w.chars().filter(|c| c.is_ascii_lowercase()).take(5).collect();
+                v.wordle_typed = w
+                    .chars()
+                    .filter(|c| c.is_ascii_lowercase())
+                    .take(5)
+                    .collect();
             }
             if let (true, Some((op, name, body, _))) = (d.reply_last, &last_message) {
                 v.reply_to = Some(ReplyTo {
@@ -1034,18 +1095,34 @@ impl AppView {
         }
 
         let dialog = match d.dialog {
-            Some(DebugDialog::Ready(Dialog::Lightbox { src, name, op, actual_size })) => {
+            Some(DebugDialog::Ready(Dialog::Lightbox {
+                src,
+                name,
+                op,
+                actual_size,
+            })) => {
                 let src = if src.is_relative() {
-                    self.ui.fixture.as_ref().map(|f| f.dir.join(&src)).unwrap_or(src)
+                    self.ui
+                        .fixture
+                        .as_ref()
+                        .map(|f| f.dir.join(&src))
+                        .unwrap_or(src)
                 } else {
                     src
                 };
-                Some(Dialog::Lightbox { src, name, op, actual_size })
+                Some(Dialog::Lightbox {
+                    src,
+                    name,
+                    op,
+                    actual_size,
+                })
             }
             Some(DebugDialog::Ready(dialog)) => Some(dialog),
             Some(DebugDialog::Update) => Some(Dialog::apply_update(&update_version)),
             Some(DebugDialog::Wipe) => Some(Dialog::delete_all_images()),
-            Some(DebugDialog::DeleteLast) => last_message.map(|(op, ..)| Dialog::delete_message(op)),
+            Some(DebugDialog::DeleteLast) => {
+                last_message.map(|(op, ..)| Dialog::delete_message(op))
+            }
             Some(DebugDialog::NewChannel) => Some(Dialog::new_channel()),
             Some(DebugDialog::Rename) => removable.as_ref().map(Dialog::rename_channel),
             Some(DebugDialog::Picker) => {
@@ -1058,7 +1135,9 @@ impl AppView {
             self.open_dialog(dialog, window, cx);
         }
         if let Some(text) = &d.composer_text {
-            self.panes.composer.update(cx, |c, cx| c.debug_type(text, window, cx));
+            self.panes
+                .composer
+                .update(cx, |c, cx| c.debug_type(text, window, cx));
             let s = self.s.clone();
             composer::update_autocomplete(self.v_mut(), &s, text);
         }
@@ -1120,7 +1199,9 @@ impl Render for AppView {
             .child(self.panes.strip.clone())
             .child(div().flex_1().min_h_0().child(cached(&self.panes.timeline)))
             .child(self.panes.composer.clone())
-            .when(snap.drop_active, |d| d.child(composer::render_drop_overlay(&snap, window, cx)));
+            .when(snap.drop_active, |d| {
+                d.child(composer::render_drop_overlay(&snap, window, cx))
+            });
 
         let body = div()
             .flex_1()
@@ -1129,13 +1210,33 @@ impl Render for AppView {
             .flex_row()
             .child(rail::render(&snap, window, cx))
             .when(!settings, |d| {
-                d.child(div().w(chan_w).flex_none().h_full().child(cached(&self.panes.channels)))
-                    .child(main)
-                    .when(snap.v.members, |d| {
-                        d.child(div().w(theme::MEMBER_W).flex_none().h_full().child(cached(&self.panes.members)))
-                    })
+                d.child(
+                    div()
+                        .w(chan_w)
+                        .flex_none()
+                        .h_full()
+                        .child(cached(&self.panes.channels)),
+                )
+                .child(main)
+                .when(snap.v.members, |d| {
+                    d.child(
+                        div()
+                            .w(theme::MEMBER_W)
+                            .flex_none()
+                            .h_full()
+                            .child(cached(&self.panes.members)),
+                    )
+                })
             })
-            .when(settings, |d| d.child(div().flex_1().min_w_0().h_full().child(cached(&self.panes.settings))));
+            .when(settings, |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(cached(&self.panes.settings)),
+                )
+            });
 
         let dialog = snap.v.dialog.clone();
         div()
@@ -1158,7 +1259,9 @@ impl Render for AppView {
             .child(body)
             .child(status::render(&snap, window, cx))
             .when_some(dialog, |d, dialog| {
-                d.child(deferred(dialogs::render_dialog(&snap, &dialog, window, cx)).with_priority(2))
+                d.child(
+                    deferred(dialogs::render_dialog(&snap, &dialog, window, cx)).with_priority(2),
+                )
             })
     }
 }
@@ -1183,7 +1286,8 @@ mod tests {
     impl Render for Pane {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.renders.set(self.renders.get() + 1);
-            self.seen.set(self.root.upgrade().map_or(0, |r| r.read(cx).value));
+            self.seen
+                .set(self.root.upgrade().map_or(0, |r| r.read(cx).value));
             div().size_full()
         }
     }
@@ -1236,7 +1340,11 @@ mod tests {
         let mut v = ViewState::default();
         assert_eq!(active_channel(&v), "general");
         v.view = View::Dms;
-        assert_eq!(active_channel(&v), "general", "a DM view without a peer keeps the channel");
+        assert_eq!(
+            active_channel(&v),
+            "general",
+            "a DM view without a peer keeps the channel"
+        );
         v.dm = Some("abc".into());
         assert_eq!(active_channel(&v), "dm:abc");
         v.view = View::Settings;
