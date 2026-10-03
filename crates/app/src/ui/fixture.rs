@@ -210,6 +210,8 @@ impl Fixture {
 /// | `menu=<channel-key>` | channel context menu |
 /// | `hotkey=1` | clip hotkey capture waiting |
 /// | `focused=0` | window treated as unfocused |
+/// | `scroll=top\|<item>[+<px>]` | timeline scrolled to that timeline item (plus pixels into it) |
+/// | `hover=<item>\|last` | timeline row drawn hovered (the last message for `last`) |
 #[derive(Debug, Default, Clone)]
 pub struct DebugView {
     pub view: Option<View>,
@@ -228,6 +230,8 @@ pub struct DebugView {
     pub menu: Option<String>,
     pub hotkey_wait: bool,
     pub focused: Option<bool>,
+    pub scroll: Option<String>,
+    pub hover: Option<String>,
 }
 
 /// A dialog named in the script. Resolved against the state when it is applied, because
@@ -311,6 +315,8 @@ impl DebugView {
                 "menu" => d.menu = Some(value.to_string()),
                 "hotkey" => d.hotkey_wait = flag,
                 "focused" => d.focused = Some(flag),
+                "scroll" => d.scroll = Some(value.to_string()),
+                "hover" => d.hover = Some(value.to_string()),
                 other => tracing::warn!(item = other, "FITCOM_DEBUG_VIEW: unknown item"),
             }
         }
