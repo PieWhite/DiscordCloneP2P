@@ -1558,6 +1558,74 @@ mod window_tests {
         assert!(dots.read_with(cx, |d, _| d.step) <= stepped + 1);
     }
 
+    /// A left click at a window position, for elements the test registry does not observe.
+    fn click_point(window: &mut Window, position: gpui_kit::Point<Pixels>, cx: &mut App) {
+        use gpui_kit::{
+            InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+        };
+        window.render_frame(cx);
+        window.dispatch_event(
+            MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+    }
+
+    /// The `+` button toggles its menu, and a press anywhere else closes it.
+    /// Revert to see it fail: drop the `plus_bounds` check in `render_plus_menu` (the button
+    /// can then never close it), or the `on_mouse_down_out`.
+    #[gpui_kit::test]
+    fn the_plus_menu_toggles_and_closes_on_an_outside_press(cx: &mut TestAppContext) {
+        let h = Harness::new(cx);
+        let overlay = |cx: &mut TestAppContext| h.app.read_with(cx, |app, _| app.v.overlay);
+        // The `+` cell (30px) ends 2px left of the text field, centred on its one row.
+        let input = h.app.read_with(cx, |app, cx| {
+            app.panes.composer.read(cx).input.entity_id().as_u64()
+        });
+        let plus = h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::NamedInteger("input".into(), input);
+            let field = window.within("composer").find(id).bounds();
+            gpui_kit::point(field.left() - px(17.), field.center().y)
+        });
+        let outside = gpui_kit::point(px(600.), px(200.));
+
+        h.with_window(cx, |window, cx| click_point(window, plus, cx));
+        assert_eq!(overlay(cx), Overlay::Plus);
+        h.with_window(cx, |window, cx| click_point(window, plus, cx));
+        assert_eq!(overlay(cx), Overlay::None);
+        h.with_window(cx, |window, cx| click_point(window, plus, cx));
+        assert_eq!(overlay(cx), Overlay::Plus);
+        h.with_window(cx, |window, cx| click_point(window, outside, cx));
+        assert_eq!(overlay(cx), Overlay::None);
+    }
+
     /// Revert to see it fail: return `false` from `paste_image` for images.
     #[gpui_kit::test]
     fn a_pasted_image_is_offered_and_text_still_pastes(cx: &mut TestAppContext) {
@@ -1578,7 +1646,9 @@ mod window_tests {
         assert_eq!(h.text(cx), "tekst", "an image does not land in the text");
         let offered = h.drain().into_iter().any(|c| match c {
             UiCommand::BiedBestandAan(p, channel) => {
-                channel == Channel::GENERAL && std::fs::read(&p).ok() == Some(png.clone())
+                let same = std::fs::read(&p).ok() == Some(png.clone());
+                let _ = std::fs::remove_file(&p);
+                channel == Channel::GENERAL && same
             }
             _ => false,
         });
