@@ -1,50 +1,61 @@
-//! The display layer: a Tauri v2 window on WebView2.
+//! The display layer: one GPUI window, drawn with gpui-kit.
 //!
-//! Pure display, exactly as the egui version was. It reads a snapshot from the engine
-//! and sends commands back; no decision about the network or the store is taken here,
-//! and no state lives here that would be lost if the window stopped drawing. That
-//! boundary — `Snapshot` in, `UiCommand` out — is what made swapping the whole UI stack
-//! affordable, so it survived the swap on purpose. See `docs/OVERDRACHT.md`, decision 19.
+//! Pure display, exactly as the egui and the Tauri versions were. It reads a snapshot from
+//! the engine and sends commands back; no decision about the network or the store is taken
+//! here, and no state lives here that would be lost if the window stopped drawing. That
+//! boundary — `Snapshot` in, `UiCommand` out — is what made two swaps of the whole UI stack
+//! affordable, so it survived both on purpose. See `docs/OVERDRACHT.md`, decision 19.
 //!
 //! # Three kinds of traffic, deliberately separated
 //!
-//! - `state` carries everything structural and is emitted **only when the serialized
-//!   state actually differs**. With nothing happening it fires zero times a second,
-//!   where egui repainted four times a second because immediate mode cannot do
-//!   otherwise. That was one of the arguments for the move, so it is measured rather
-//!   than assumed.
-//! - `meters` carries the two things that change while you merely look at them — speaking
-//!   level and RTT — at 4 Hz, and only while a call is running or a peer is online. The
-//!   frontend patches attributes with it instead of re-rendering panels.
-//! - `thumbnail` carries the stream strip at 2 Hz. In egui this was an
-//!   `egui::TextureHandle` per stream; here the bytes are served over a `thumb://`
-//!   protocol and the event only says which tile changed.
+//! The engine publishes on a fixed tick. Three tokio tasks in [`bridge`] turn that into
+//! three feeds the window waits on, and each one only moves when what it carries changed:
+//!
+//! - the `UiState`, compared with `PartialEq` on the tokio side — an idle app wakes the
+//!   window zero times a second;
+//! - speaking level and RTT at 4 Hz, into the `Meters` entity that only the small views
+//!   showing them observe, so a meter tick does not re-render the timeline;
+//! - stream thumbnails at 2 Hz, straight from the decoder's BGRA frames into GPUI images.
+//!
+//! Everything else here is the window around them: the tray, close-to-tray, focus, the
+//! quit paths, and the debug fixture mode.
 
+pub mod bridge;
 pub mod commands;
+#[cfg(debug_assertions)]
+pub mod fixture;
+pub mod icons;
 pub mod state;
+pub mod theme;
+pub mod view;
 
 use crate::config::Config;
 use crate::engine::{EngineHandle, Snapshot};
 use crate::files::DownloadStatus;
 use crate::tray;
 use fitcom_proto::PeerId;
+use gpui_kit::{
+    point, px, size, AnyWindowHandle, App, AsyncApp, Bounds, QuitMode, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions,
+};
 use state::{Constants, UiState};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, Manager};
 
-/// Speaking level and RTT are the only things that move while the window is idle-ish.
-/// 4 Hz is the rate the old build repainted *everything* at; here it moves two numbers.
-const METER_INTERVAL: Duration = Duration::from_millis(250);
+/// How often the quit watcher looks at the two "quit now" flags. It is its own thread, as
+/// before; the window is woken only when one of them is set.
+const QUIT_POLL: Duration = Duration::from_millis(200);
 
-/// The stream strip. `docs/OVERDRACHT.md` sets the budget at 2 fps and a small size.
-const THUMBNAIL_INTERVAL: Duration = Duration::from_millis(500);
+/// The window's first size and the smallest it may be dragged to.
+const WINDOW_SIZE: (f32, f32) = (1180., 720.);
+const WINDOW_MIN: (f32, f32) = (780., 460.);
 
-/// Everything the commands need. Managed by Tauri, so one instance for the process.
+/// Everything the commands need. One instance for the process, shared as `Arc<Ui>` between
+/// the window thread and the tokio tasks.
 pub struct Ui {
     pub engine: EngineHandle,
     pub me: PeerId,
@@ -58,34 +69,36 @@ pub struct Ui {
     /// The source list handed to the picker, so "share the third one" resolves to the
     /// same source the user saw. Replaced wholesale every time the picker opens.
     sources: Mutex<Vec<fitcom_video::Bron>>,
-    /// B-52: the paths from the last OS drop, kept on this side of the IPC boundary.
+    /// B-52: the paths from the last OS drop, kept on this side and never handed to a view.
     ///
     /// They used to travel to the webview and straight back into `offer_files`, which made
-    /// "offer this file to every peer" reachable for *any* script running in the webview —
-    /// one line would have been enough to hash and hand out `identity.toml` or an SSH key.
-    /// There is no known XSS to deliver such a script (see `docs/BEVEILIGING.md`, "Wat er
-    /// goed zit"), and that is exactly why this is worth closing: it is the difference
-    /// between one XSS meaning screen damage and one XSS meaning data theft.
-    ///
-    /// The frontend now only ever sees indices into this list — the same pattern
-    /// `sources`/`share_source` already uses. Replaced wholesale on every drop, so a stale
-    /// index resolves to nothing instead of to an older file.
+    /// "offer this file to every peer" reachable for any script running in it. The views
+    /// now only ever see indices into this list — the same pattern `sources`/`share_source`
+    /// uses — so no view code can name a file of its own. Replaced wholesale on every drop,
+    /// so a stale index resolves to nothing instead of to an older file.
     pub dropped: Mutex<Vec<PathBuf>>,
-    /// Bumped when the op log or a transfer status changes. The frontend refetches the
-    /// open conversation on a change instead of the whole history riding on every state
-    /// event.
+    /// Bumped when the op log or a transfer status changes. The window refetches the open
+    /// conversation on a change instead of the whole history riding on every state update.
     timeline_revision: AtomicU64,
     last_fingerprint: Mutex<u64>,
-    /// PNG bytes per stream key, served over `thumb://`.
-    thumbnails: Mutex<HashMap<String, Arc<Vec<u8>>>>,
     /// When each peer was last seen online, observed while this process ran.
     last_seen: Mutex<HashMap<PeerId, i64>>,
-    /// Must outlive everything below it: dropping the runtime stops the engine.
-    _runtime: tokio::runtime::Runtime,
+    /// Debug builds only: the window is fed from JSON files instead of an engine.
+    #[cfg(debug_assertions)]
+    pub(crate) fixture: Option<fixture::Fixture>,
+    /// The runtime itself lives in `run`, not here: the last `Arc<Ui>` may be dropped by a
+    /// tokio task, and a runtime dropped inside its own worker panics.
+    pub(crate) runtime: tokio::runtime::Handle,
 }
 
 impl Ui {
-    fn state(&self) -> UiState {
+    /// The state as it is right now. The bridge builds the same thing on every snapshot;
+    /// this is for the first frame.
+    pub fn state(&self) -> UiState {
+        #[cfg(debug_assertions)]
+        if let Some(f) = &self.fixture {
+            return f.state.clone();
+        }
         let snap = self.engine.snapshot.borrow().clone();
         self.build_state(&snap)
     }
@@ -93,6 +106,27 @@ impl Ui {
     fn build_state(&self, snap: &Snapshot) -> UiState {
         let seen = self.note_last_seen(snap);
         UiState::build(snap, &self.constants, self.revision(snap), &seen)
+    }
+
+    /// The `asset:` scope of the webview, as a rule in code: the window draws an image from
+    /// disk only when the path lies inside the picture folder or the YouTube cache. Every
+    /// view that hands a path to `img()` asks this first.
+    ///
+    /// The picture folder is read from the live snapshot, because it moves along with the
+    /// download folder (`config::resolve_pictures_dir`). The check is lexical — absolute,
+    /// no `..`, under one of the roots — which is enough for paths `state.rs` built itself
+    /// and cheap enough to run on every render.
+    pub fn image_path_allowed(&self, path: &Path) -> bool {
+        if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+            return false;
+        }
+        #[cfg(debug_assertions)]
+        if let Some(f) = &self.fixture {
+            return path.starts_with(&f.dir);
+        }
+        let pictures = self.engine.snapshot.borrow().pictures_dir.clone();
+        (!pictures.as_os_str().is_empty() && path.starts_with(&pictures))
+            || path.starts_with(&self.youtube_dir)
     }
 
     /// "Last seen 22:14, 3 August" is the roster's line for a peer who is away, and the
@@ -115,9 +149,9 @@ impl Ui {
     /// comparing the allocation is enough — and the previous `Arc` is kept alive by the
     /// snapshot we are holding, so the address cannot be recycled underneath us.
     ///
-    /// Transfer status is rendered in that same payload but lives *outside* the `Arc`
+    /// Transfer status is rendered in the timeline too but lives *outside* the `Arc`
     /// (`Snapshot::files`), so it has to be folded in here as well. Without it a download
-    /// that really ran left its card on "Download" for ever — the frontend refetches the
+    /// that really ran left its card on "Download" for ever — the window refetches the
     /// conversation only when this number changes, so progress, "Downloaded" and a failure
     /// all stayed invisible and the button looked dead.
     fn revision(&self, snap: &Snapshot) -> u64 {
@@ -131,10 +165,10 @@ impl Ui {
                 Some(DownloadStatus::Mislukt(e)) => (3u8, e).hash(&mut hasher),
             }
         }
-        // Same reason for the Wordle card: it rides in the timeline payload but its state
-        // lives outside the `Arc` — the day, and how far this machine got today. Without
-        // this, your own guess would not update the card until the game ended and the
-        // result op moved the log.
+        // Same reason for the Wordle card: it rides in the timeline but its state lives
+        // outside the `Arc` — the day, and how far this machine got today. Without this,
+        // your own guess would not update the card until the game ended and the result op
+        // moved the log.
         snap.wordle.dag.hash(&mut hasher);
         if let Some(bord) = &snap.wordle.bord {
             (bord.rijen.len(), bord.klaar).hash(&mut hasher);
@@ -166,456 +200,328 @@ fn parse_peer(id: &str) -> Option<PeerId> {
     id.parse::<uuid::Uuid>().ok().map(PeerId)
 }
 
+fn constants(me: PeerId, cfg: &Config) -> Constants {
+    Constants {
+        me,
+        fallback_name: cfg.display_name.clone(),
+        // Built from the engine's own list, so adding a tone set is one edit in
+        // `geluid.rs` rather than one there and one in the window.
+        sound_sets: crate::geluid::Geluidset::ALLE
+            .iter()
+            .map(|s| state::SoundSetInfo {
+                id: s.naam().to_string(),
+                name: s.label().to_string(),
+                description: s.beschrijving().to_string(),
+            })
+            .collect(),
+        sound_events: crate::geluid::Geluid::ALLE
+            .iter()
+            .map(|g| state::SoundEventInfo {
+                id: g.naam().to_string(),
+                name: g.label().to_string(),
+            })
+            .collect(),
+        control_port: cfg.control_port,
+        media_port: cfg.media_port,
+        autostart: cfg.autostart,
+        minimize_to_tray: cfg.minimize_to_tray,
+    }
+}
+
 /// Starts the window. Returns when the user really quits — closing to the tray does not
-/// come back here.
+/// come back here. (On macOS it does not return at all: AppKit ends the process.)
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     engine: EngineHandle,
     me: PeerId,
     cfg: &Config,
-    pictures_dir: PathBuf,
     youtube_dir: PathBuf,
     runtime: tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
-    let ui = Ui {
+    let ui = Arc::new(Ui {
         me,
         fallback_name: cfg.display_name.clone(),
-        youtube_dir: youtube_dir.clone(),
+        youtube_dir,
         minimize_to_tray: cfg.minimize_to_tray,
-        constants: Constants {
-            me,
-            fallback_name: cfg.display_name.clone(),
-            // Built from the engine's own list, so adding a tone set is one edit in
-            // `geluid.rs` rather than one there and one in the frontend.
-            sound_sets: crate::geluid::Geluidset::ALLE
-                .iter()
-                .map(|s| state::SoundSetInfo {
-                    id: s.naam().to_string(),
-                    name: s.label().to_string(),
-                    description: s.beschrijving().to_string(),
-                })
-                .collect(),
-            sound_events: crate::geluid::Geluid::ALLE
-                .iter()
-                .map(|g| state::SoundEventInfo {
-                    id: g.naam().to_string(),
-                    name: g.label().to_string(),
-                })
-                .collect(),
-            control_port: cfg.control_port,
-            media_port: cfg.media_port,
-            autostart: cfg.autostart,
-            minimize_to_tray: cfg.minimize_to_tray,
-        },
+        constants: constants(me, cfg),
         sources: Mutex::new(Vec::new()),
         dropped: Mutex::new(Vec::new()),
         timeline_revision: AtomicU64::new(0),
         last_fingerprint: Mutex::new(0),
-        thumbnails: Mutex::new(HashMap::new()),
         last_seen: Mutex::new(HashMap::new()),
         engine,
-        _runtime: runtime,
+        #[cfg(debug_assertions)]
+        fixture: None,
+        runtime: runtime.handle().clone(),
+    });
+    let feeds = bridge::spawn_live(&ui);
+    open(ui, feeds);
+    // Kept alive until the window loop has ended; see `Ui::runtime`.
+    drop(runtime);
+    Ok(())
+}
+
+/// Debug builds only: the window with no mesh, store or engine behind it, fed from the
+/// JSON files in `dir` (see `fixture`). Commands are logged and go nowhere.
+#[cfg(debug_assertions)]
+pub fn run_fixture(dir: PathBuf) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let fixture = fixture::Fixture::load(&dir)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .thread_name("fitcom-fixture")
+        .build()
+        .context("tokio-runtime opzetten")?;
+
+    // A real handle with nothing behind it: the snapshot never moves, and every command is
+    // logged so a click in the fixture window shows what it would have asked for.
+    let (snapshot_tx, snapshot_rx) = tokio::sync::watch::channel(Arc::new(Snapshot::default()));
+    let (commands_tx, mut commands_rx) = tokio::sync::mpsc::channel(64);
+    runtime.spawn(async move {
+        let _keep = snapshot_tx;
+        while let Some(cmd) = commands_rx.recv().await {
+            tracing::info!(?cmd, "fixture: command");
+        }
+    });
+    let engine = EngineHandle {
+        snapshot: snapshot_rx,
+        commands: commands_tx,
+        voorgrond: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        afsluiten_voor_update: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
+    let s = &fixture.state;
+    let me = parse_peer(&s.me.id).unwrap_or(PeerId(uuid::Uuid::nil()));
+    // Only `build_state` reads these, and a fixture never builds a state; they mirror the
+    // file so nothing disagrees with it.
+    let constants = Constants {
+        me,
+        fallback_name: s.me.name.clone(),
+        sound_sets: s.sound_sets.clone(),
+        sound_events: s.sound_events.clone(),
+        control_port: s.control_port,
+        media_port: s.media_port,
+        autostart: s.autostart,
+        minimize_to_tray: false,
+    };
+    let feeds = bridge::Feeds::fixed(s.clone(), fixture.meters.clone(), fixture.thumbs.clone());
+    let ui = Arc::new(Ui {
+        me,
+        fallback_name: s.me.name.clone(),
+        youtube_dir: dir.join("youtube"),
+        minimize_to_tray: false,
+        constants,
+        sources: Mutex::new(Vec::new()),
+        dropped: Mutex::new(Vec::new()),
+        timeline_revision: AtomicU64::new(0),
+        last_fingerprint: Mutex::new(0),
+        last_seen: Mutex::new(HashMap::new()),
+        engine,
+        fixture: Some(fixture),
+        runtime: runtime.handle().clone(),
+    });
+    open(ui, feeds);
+    drop(runtime);
+    Ok(())
+}
 
-    let foreground = ui.engine.voorgrond.clone();
+/// The window: opens it, hooks up tray, close, focus and quit, and runs the event loop.
+fn open(ui: Arc<Ui>, feeds: bridge::Feeds) {
     let quit_for_update = ui.engine.afsluiten_voor_update.clone();
-    let snapshot_rx = ui.engine.snapshot.clone();
-    let to_tray = cfg.minimize_to_tray;
+    let reopen_target: Arc<Mutex<Option<AnyWindowHandle>>> = Arc::new(Mutex::new(None));
 
-    // Vóór het bouwen van de Tauri-app, anders claimt Tauri de menu-gebeurtenissen van de
-    // tray en doet het tray-menu niets meer. Zie `tray::claim_menu_events`. Alleen op
-    // Windows: de mac-tray gebruikt Tauri's eigen tray-API, geen losse muda-events.
+    // Before the event loop: the muda handler is first-come, and the Windows tray thread
+    // depends on it for "Openen" and "Afsluiten". See `tray::claim_menu_events`.
     #[cfg(windows)]
     tray::claim_menu_events();
 
-    tauri::Builder::default()
-        .manage(ui)
-        .register_uri_scheme_protocol("thumb", move |ctx, request| {
-            let app = ctx.app_handle();
-            let ui: tauri::State<'_, Ui> = app.state();
-            let key = request.uri().path().trim_start_matches('/').to_string();
-            let png = ui.thumbnails.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
-            match png {
-                Some(png) => tauri::http::Response::builder()
-                    .header("Content-Type", "image/png")
-                    // The URL carries a revision, so a stale frame is never requested;
-                    // caching it is what keeps a re-render from re-fetching.
-                    .header("Cache-Control", "max-age=31536000, immutable")
-                    .body(png.to_vec())
-                    .unwrap_or_default(),
-                None => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap_or_default(),
-            }
-        })
-        .invoke_handler(tauri::generate_handler![
-            commands::get_state,
-            commands::get_timeline,
-            commands::get_recap,
-            commands::send_message,
-            commands::edit_message,
-            commands::delete_message,
-            commands::react_message,
-            commands::notify_typing,
-            commands::set_user_status,
-            commands::mark_read,
-            commands::dismiss_error,
-            commands::set_joined,
-            commands::set_muted,
-            commands::set_deafened,
-            commands::set_do_not_disturb,
-            commands::set_peer_volume,
-            commands::set_stream_volume,
-            commands::set_watching,
-            commands::list_sources,
-            commands::share_source,
-            commands::stop_sharing,
-            commands::set_camera,
-            commands::set_video_settings,
-            commands::list_audio_devices,
-            commands::set_audio_devices,
-            commands::set_sound_settings,
-            commands::preview_sound,
-            commands::pick_download_dir,
-            commands::set_display_name,
-            commands::pick_and_offer_file,
-            commands::offer_files,
-            commands::offer_pasted_image,
-            commands::download_file,
-            commands::open_file,
-            commands::delete_all_images,
-            commands::set_clips,
-            commands::clip_now,
-            commands::open_clips_folder,
-            commands::pick_clips_dir,
-            commands::clip_monitors,
-            commands::set_clip_monitor,
-            commands::set_clip_hotkey,
-            commands::create_channel,
-            commands::rename_channel,
-            commands::delete_channel,
-            commands::check_update,
-            commands::apply_update,
-            commands::ignore_update,
-            commands::dismiss_update,
-            commands::open_link,
-            commands::youtube_preview,
-            commands::wordle_guess,
-            commands::post_wordle_card,
-            commands::close_window,
-            ready,
-        ])
-        .setup(move |app| {
-            let handle = app.handle().clone();
-
-            // Images are read straight off disk by the webview through `asset:`, so the
-            // one folder they can live in is opened and nothing else is. The YouTube cache
-            // is the second: those thumbnails are fetched by the engine and then read from
-            // disk exactly like a shared picture, which is what keeps the CSP closed to
-            // every host on the internet (see `crate::youtube`).
-            //
-            // The picture folder sits inside the download folder, so picking another one
-            // moves it — `commands::pick_download_dir` opens the new place there and then.
-            app.asset_protocol_scope().allow_directory(&pictures_dir, false)?;
-            app.asset_protocol_scope().allow_directory(&youtube_dir, false)?;
-
-            #[cfg(windows)]
-            {
-                if let Some(window) = app.get_webview_window("main") {
-                    // The tray thread talks to the window over Win32 so it can show it
-                    // again even when nothing is drawing — hidden windows do not run
-                    // event loops.
-                    match window.hwnd() {
-                        Ok(hwnd) => tray::onthoud_venster(hwnd.0 as isize),
-                        Err(e) => tracing::warn!(error = %e, "no window handle; the tray cannot show the window"),
-                    }
-                }
-
-                // The icon has to stay alive or it drops straight out of the tray.
-                match tray::start() {
-                    Ok(t) => std::mem::forget(t),
-                    Err(e) => tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed"),
-                }
-            }
-
-            // On macOS the NSApplication run loop keeps pumping while the window is
-            // hidden, so Tauri's own tray — on the main thread — is all that is needed;
-            // the Win32 detour above exists precisely because that is not true there.
-            #[cfg(target_os = "macos")]
-            if let Err(e) = mac_tray(app.handle()) {
-                tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed");
-            }
-
-            spawn_state_pusher(handle.clone(), snapshot_rx.clone());
-            spawn_meters(handle.clone(), snapshot_rx.clone());
-            spawn_thumbnails(handle.clone(), snapshot_rx.clone());
-            spawn_quit_watcher(handle, quit_for_update.clone());
-            Ok(())
-        })
-        .on_window_event(move |window, event| match event {
-            // The engine reads this to decide whether a message deserves a Windows
-            // notification. Unfocused is not the same as hidden, and both count.
-            tauri::WindowEvent::Focused(focused) => {
-                foreground.store(*focused, Ordering::Relaxed);
-                let _ = window.emit("focus", *focused);
-            }
-            tauri::WindowEvent::CloseRequested { api, .. } => {
-                if to_tray {
-                    api.prevent_close();
-                    foreground.store(false, Ordering::Relaxed);
-                    #[cfg(windows)]
-                    tray::verberg_venster();
-                    #[cfg(not(windows))]
-                    let _ = window.hide();
-                }
-            }
-            tauri::WindowEvent::DragDrop(drop) => match drop {
-                tauri::DragDropEvent::Enter { .. } | tauri::DragDropEvent::Over { .. } => {
-                    let _ = window.emit("drag", true);
-                }
-                tauri::DragDropEvent::Drop { paths, .. } => {
-                    let _ = window.emit("drag", false);
-                    // B-52: the paths stay here; the webview gets indices into them and
-                    // nothing else. See `Ui::dropped`.
-                    let indices: Vec<usize> = {
-                        let ui = window.state::<Ui>();
-                        let mut bewaard = ui
-                            .dropped
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        *bewaard = paths.clone();
-                        (0..bewaard.len()).collect()
-                    };
-                    let _ = window.emit("dropped", indices);
-                }
-                _ => {
-                    let _ = window.emit("drag", false);
-                }
-            },
-            _ => {}
-        })
-        .run(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("starting the window: {e}"))?;
-
-    Ok(())
-}
-
-/// The macOS tray: Tauri's own `TrayIconBuilder` on the main thread, same two items as
-/// the Windows menu. "Afsluiten" flips the shared flag so `spawn_quit_watcher` performs
-/// the same clean shutdown on both platforms.
-#[cfg(target_os = "macos")]
-fn mac_tray(app: &tauri::AppHandle) -> anyhow::Result<()> {
-    use tauri::menu::{MenuBuilder, MenuItemBuilder};
-    use tauri::tray::TrayIconBuilder;
-
-    let openen = MenuItemBuilder::with_id("openen", "Openen").build(app)?;
-    let afsluiten = MenuItemBuilder::with_id("afsluiten", "Afsluiten").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .item(&openen)
-        .separator()
-        .item(&afsluiten)
-        .build()?;
-
-    let (rgba, n) = tray::icoon_rgba();
-    let tray = TrayIconBuilder::new()
-        .icon(tauri::image::Image::new_owned(rgba, n, n))
-        .tooltip("FitCommunication")
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "openen" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            "afsluiten" => tray::markeer_afsluiten(),
-            _ => {}
-        })
-        .build(app)?;
-    // Same rule as on Windows: the icon has to stay alive or it drops out of the bar.
-    std::mem::forget(tray);
-    Ok(())
-}
-
-/// Called once the frontend has painted. The window starts hidden so the first thing on
-/// screen is the finished dark shell, never a white rectangle — the app is used in a
-/// dark room and a flash of white is the one thing the theme exists to avoid.
-#[tauri::command]
-fn ready(app: tauri::AppHandle, ui: tauri::State<'_, Ui>) -> UiState {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
+    let app = gpui_kit::application().with_assets(icons::Assets);
+    {
+        // The Dock icon brings the window back after close-to-tray, like "Openen" does.
+        let target = reopen_target.clone();
+        app.on_reopen(move |cx| show_window(&target, cx));
     }
-    ui.state()
-}
 
-fn spawn_state_pusher(app: tauri::AppHandle, mut rx: tokio::sync::watch::Receiver<Arc<Snapshot>>) {
-    tauri::async_runtime::spawn(async move {
-        let mut previous = String::new();
-        loop {
-            if rx.changed().await.is_err() {
+    app.run(move |cx: &mut App| {
+        gpui_kit::init(cx);
+        theme::install(cx);
+        view::init(cx);
+        // Closing the window is not quitting (minimize-to-tray); quitting is explicit,
+        // through `close_window`, the tray or the updater.
+        cx.set_quit_mode(QuitMode::Explicit);
+
+        let handle = match view::open_window(cx, window_options(cx), ui.clone(), feeds) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), "opening the window failed");
+                cx.quit();
                 return;
             }
-            let snap = rx.borrow_and_update().clone();
-            let ui: tauri::State<'_, Ui> = app.state();
-            let json = match serde_json::to_string(&ui.build_state(&snap)) {
-                Ok(j) => j,
-                Err(e) => {
-                    tracing::error!(error = %e, "serializing the state failed");
-                    continue;
-                }
-            };
-            // The engine publishes on a fixed tick, so most of these are identical to the
-            // last one. Comparing here is what keeps an idle window at zero events —
-            // volatile figures live in `meters` precisely so they cannot defeat this.
-            if json == previous {
-                continue;
-            }
-            previous = json.clone();
-            let _ = app.emit("state", json);
+        };
+        *reopen_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+
+        hook_close(&handle, ui.clone(), cx);
+
+        #[cfg(windows)]
+        start_windows_tray(&handle, cx);
+
+        #[cfg(target_os = "macos")]
+        if let Err(e) = mac_tray(reopen_target.clone(), cx) {
+            tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed");
         }
+
+        spawn_quit_watcher(quit_for_update.clone(), cx);
     });
 }
 
-fn spawn_meters(app: tauri::AppHandle, rx: tokio::sync::watch::Receiver<Arc<Snapshot>>) {
-    tauri::async_runtime::spawn(async move {
-        let mut previous = String::new();
-        let mut ticker = tokio::time::interval(METER_INTERVAL);
-        loop {
-            ticker.tick().await;
-            let snap = rx.borrow().clone();
-
-            let mut peers = serde_json::Map::new();
-            for p in &snap.peers {
-                let Some(id) = p.peer_id else { continue };
-                let rtt = match &p.status {
-                    fitcom_net::PeerStatus::Online { rtt_ms, .. } => Some(*rtt_ms),
-                    _ => None,
-                };
-                peers.insert(
-                    id.to_string(),
-                    serde_json::json!({ "rtt": rtt, "level": p.niveau }),
-                );
-            }
-            let payload = serde_json::json!({
-                "peers": peers,
-                "self": { "level": snap.voice.eigen_niveau },
-            })
-            .to_string();
-
-            // With everyone offline and no call running this settles into one constant
-            // string, so a truly idle app emits nothing at all after the first tick.
-            if payload == previous {
-                continue;
-            }
-            previous = payload.clone();
-            let _ = app.emit("meters", payload);
-        }
-    });
-}
-
-fn spawn_thumbnails(app: tauri::AppHandle, rx: tokio::sync::watch::Receiver<Arc<Snapshot>>) {
-    tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(THUMBNAIL_INTERVAL);
-        // Which frame we last encoded per stream, so an unchanged tile costs nothing.
-        let mut last: HashMap<String, usize> = HashMap::new();
-        let mut revision: u64 = 0;
-        loop {
-            ticker.tick().await;
-            let snap = rx.borrow().clone();
-            let ui: tauri::State<'_, Ui> = app.state();
-
-            // Wat wij zelf uitsturen hoort in dezelfde strook als wat we van een ander
-            // bekijken, dus het loopt door dezelfde pomp. Alleen de sleutel verschilt: een
-            // eigen stream heeft geen eigenaar, dus `self-` in plaats van een peer-id.
-            let eigen = snap
-                .eigen_streams
-                .iter()
-                .filter(|s| !s.is_geluid)
-                .map(|s| (format!("self-{}", s.stream_id), s.miniatuur.as_ref()));
-            let vreemd = snap
-                .streams
-                .iter()
-                .filter(|s| !s.is_geluid && s.kijken)
-                .map(|s| {
-                    (
-                        format!("{}-{}", s.eigenaar, s.stream_id),
-                        s.miniatuur.as_ref(),
-                    )
-                });
-
-            let mut alive: Vec<String> = Vec::new();
-            for (key, thumb) in eigen.chain(vreemd) {
-                alive.push(key.clone());
-                let Some(thumb) = thumb else { continue };
-                let frame = Arc::as_ptr(&thumb.data) as *const u8 as usize;
-                if last.get(&key) == Some(&frame) {
-                    continue;
-                }
-                let Some(png) = encode_thumbnail(thumb) else {
-                    continue;
-                };
-                last.insert(key.clone(), frame);
-                revision += 1;
-                ui.thumbnails
-                    .lock()
-                    .unwrap()
-                    .insert(key.clone(), Arc::new(png));
-                let _ = app.emit(
-                    "thumbnail",
-                    serde_json::json!({ "key": key, "revision": revision }),
-                );
-            }
-
-            // A stream nobody watches any more must not keep its bytes alive; the strip
-            // is the only thing that ever asks for them.
-            if alive.len() != last.len() {
-                last.retain(|k, _| alive.contains(k));
-                ui.thumbnails
-                    .lock()
-                    .unwrap()
-                    .retain(|k, _| alive.contains(k));
-            }
-        }
-    });
-}
-
-/// The decoder hands us BGRA; PNG wants RGBA. At 2 fps and a strip-sized image this is
-/// cheaper than any of the alternatives that keep the bytes raw, and it means the
-/// frontend is a plain `<img>` instead of a canvas that has to be fed.
-fn encode_thumbnail(thumb: &fitcom_video::Miniatuur) -> Option<Vec<u8>> {
-    let mut rgba = thumb.data.to_vec();
-    if rgba.len() < (thumb.breedte as usize * thumb.hoogte as usize * 4) {
-        return None;
+fn window_options(cx: &App) -> WindowOptions {
+    let (w, h) = debug_size().unwrap_or(WINDOW_SIZE);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(w), px(h)),
+            cx,
+        ))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("FitCommunication".into()),
+            // Our own titlebar on both platforms. On macOS the traffic lights stay native
+            // and sit in it; on Windows the caption buttons are ours, hit-tested through
+            // `WindowControlArea` (see `view/titlebar.rs`).
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(12.), px(10.))),
+        }),
+        // The titlebar moves the window itself (`start_window_move`), so AppKit must not
+        // treat the top strip as its own drag region and delay clicks on it.
+        app_owns_titlebar_drag: true,
+        window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
+        // Opaque, and the root paints the canvas colour from the first frame: the app is
+        // used in a dark room, and a white flash is the one thing the theme exists to avoid.
+        window_background: WindowBackgroundAppearance::Opaque,
+        app_id: Some("nl.fitcommunication.app".into()),
+        ..Default::default()
     }
-    for px in rgba.chunks_exact_mut(4) {
-        px.swap(0, 2);
-        // The alpha byte means nothing on the way here — Media Foundation's RGB32 leaves
-        // it at 0 — and an `<img>` honours it, so a camera tile came out transparent:
-        // the tile's dark background, read as "black". A thumbnail is opaque by definition.
-        px[3] = 255;
-    }
-    let buffer = image::RgbaImage::from_raw(thumb.breedte, thumb.hoogte, rgba)?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(buffer)
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(png)
 }
 
-/// Two ways out that are not the close button: the tray's Quit item, and a confirmed
+/// `FITCOM_DEBUG_SIZE=980x720`: the first window size, so a narrow layout can be shot
+/// without dragging. Debug builds only.
+fn debug_size() -> Option<(f32, f32)> {
+    #[cfg(debug_assertions)]
+    {
+        let v = std::env::var("FITCOM_DEBUG_SIZE").ok()?;
+        let (w, h) = v.split_once('x')?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    }
+    #[cfg(not(debug_assertions))]
+    None
+}
+
+/// The OS close request — the traffic light, Alt+F4, the Windows caption button — goes
+/// through the same rule as our own close button.
+fn hook_close(handle: &AnyWindowHandle, ui: Arc<Ui>, cx: &mut App) {
+    let _ = handle.update(cx, |_, window, cx| {
+        window.on_window_should_close(cx, move |_, cx| {
+            if commands::close_window(&ui, cx) {
+                cx.quit();
+            }
+            // Never let GPUI drop the window itself: quitting is `cx.quit()`, hiding keeps it.
+            false
+        });
+    });
+}
+
+fn show_window(target: &Arc<Mutex<Option<AnyWindowHandle>>>, cx: &mut App) {
+    cx.activate(true);
+    if let Some(handle) = *target.lock().unwrap_or_else(|e| e.into_inner()) {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+    }
+}
+
+/// The Windows tray: unchanged `tray.rs`, on its own Win32 thread, which needs the HWND to
+/// show the window again even when nothing is drawing.
+#[cfg(windows)]
+fn start_windows_tray(handle: &AnyWindowHandle, cx: &mut App) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let _ = handle.update(cx, |_, window, _| match window.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => tray::onthoud_venster(h.hwnd.get()),
+        Ok(_) => tracing::warn!("no Win32 window handle; the tray cannot show the window"),
+        Err(e) => tracing::warn!(error = %e, "no window handle; the tray cannot show the window"),
+    });
+    // The icon has to stay alive or it drops straight out of the tray.
+    match tray::start() {
+        Ok(t) => std::mem::forget(t),
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "starting the tray icon failed"),
+    }
+}
+
+/// The macOS tray: the same `tray-icon` crate as Windows, on the main thread, with the
+/// same two items. On macOS the run loop keeps pumping while the window is hidden, so the
+/// Win32 detour is not needed. "Afsluiten" flips the shared flag so the quit watcher does
+/// the same clean shutdown on both platforms; "Openen" is handed to the window thread over
+/// a channel, so nothing polls for it.
+#[cfg(target_os = "macos")]
+fn mac_tray(target: Arc<Mutex<Option<AnyWindowHandle>>>, cx: &mut App) -> anyhow::Result<()> {
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+    use tray_icon::TrayIconBuilder;
+
+    const OPENEN: &str = "fitcom-openen";
+    const AFSLUITEN: &str = "fitcom-afsluiten";
+
+    let menu = Menu::new();
+    menu.append(&MenuItem::with_id(OPENEN, "Openen", true, None))?;
+    menu.append(&PredefinedMenuItem::separator())?;
+    menu.append(&MenuItem::with_id(AFSLUITEN, "Afsluiten", true, None))?;
+
+    let (rgba, n) = tray::icoon_rgba();
+    let icon = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("FitCommunication")
+        .with_icon(tray_icon::Icon::from_rgba(rgba, n, n)?)
+        .build()?;
+    // Same rule as on Windows: the icon has to stay alive or it drops out of the bar.
+    std::mem::forget(icon);
+
+    let (open_tx, mut open_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    MenuEvent::set_event_handler(Some(move |ev: MenuEvent| match ev.id.0.as_str() {
+        OPENEN => {
+            let _ = open_tx.send(());
+        }
+        AFSLUITEN => tray::markeer_afsluiten(),
+        _ => {}
+    }));
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        while open_rx.recv().await.is_some() {
+            cx.update(|cx| show_window(&target, cx));
+        }
+    })
+    .detach();
+    Ok(())
+}
+
+/// Two ways out that are not the close button: the tray's quit item, and a confirmed
 /// update whose updater process has already been started. Both need the app to shut down
 /// properly rather than be killed, so the connections close cleanly.
-fn spawn_quit_watcher(app: tauri::AppHandle, quit_for_update: Arc<std::sync::atomic::AtomicBool>) {
-    std::thread::Builder::new()
+///
+/// The flags are plain atomics set from other threads, so a thread of its own looks at
+/// them — as before — and wakes the window thread only when one is set.
+fn spawn_quit_watcher(quit_for_update: Arc<std::sync::atomic::AtomicBool>, cx: &mut App) {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let started = std::thread::Builder::new()
         .name("fitcom-quit-watch".into())
         .spawn(move || loop {
             if tray::wil_afsluiten() || quit_for_update.load(Ordering::Relaxed) {
-                app.exit(0);
+                let _ = tx.send(());
                 return;
             }
-            std::thread::sleep(Duration::from_millis(200));
-        })
-        .ok();
+            std::thread::sleep(QUIT_POLL);
+        });
+    if let Err(e) = started {
+        tracing::warn!(error = %e, "the quit watcher did not start; quitting from the tray will not work");
+        return;
+    }
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        if rx.await.is_ok() {
+            cx.update(|cx| cx.quit());
+        }
+    })
+    .detach();
 }

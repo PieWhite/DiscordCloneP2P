@@ -1,9 +1,10 @@
-//! The view model the webview reads.
+//! The view model the window reads.
 //!
 //! This is one half of the `Snapshot`/`UiCommand` boundary that survived the move off
-//! egui (see `docs/OVERDRACHT.md`, decision 19). The engine still publishes an
-//! immutable `Snapshot`; this module turns it into JSON the frontend can render, and
-//! nothing else. No decision about the network, the store or the media threads is taken
+//! egui and then off the webview (see `docs/OVERDRACHT.md`, decision 19). The engine still
+//! publishes an immutable `Snapshot`; this module turns it into plain data the GPUI views
+//! render, and nothing else. The serde derives are what the debug fixture mode loads from
+//! JSON; `PartialEq` is what keeps an unchanged state from reaching the window at all. No decision about the network, the store or the media threads is taken
 //! here, and no state that matters lives here — the window may stop drawing entirely
 //! without anything going wrong.
 //!
@@ -76,7 +77,7 @@ fn avatar_hues(me: PeerId, peers: &[PeerView]) -> HashMap<PeerId, u8> {
 
 /// One line of presence vocabulary, shared by the roster, the status bar and the peer
 /// table in settings. Deliberately not a colour: `offline` is drawn as an unlit ring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Presence {
     Online,
@@ -87,7 +88,7 @@ pub enum Presence {
     Broken,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PeerState {
     /// Empty for a peer whose identity we have not learned yet.
     pub id: String,
@@ -115,7 +116,7 @@ pub struct PeerState {
     pub desktop_stream: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelfState {
     pub id: String,
     pub name: String,
@@ -124,14 +125,14 @@ pub struct SelfState {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VoiceState {
     pub joined: bool,
     pub muted: bool,
     pub deafened: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipsState {
     /// Recording is on.
     pub enabled: bool,
@@ -149,7 +150,7 @@ pub struct ClipsState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelState {
     pub key: String,
     pub name: String,
@@ -158,7 +159,7 @@ pub struct ChannelState {
     pub removable: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnStreamState {
     pub stream_id: u32,
     pub title: String,
@@ -169,7 +170,7 @@ pub struct OwnStreamState {
     pub is_camera: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamState {
     pub owner: String,
     pub owner_name: String,
@@ -185,7 +186,7 @@ pub struct StreamState {
     pub volume: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum TransferState {
     /// Offered by someone else and not fetched yet.
@@ -203,7 +204,7 @@ pub enum TransferState {
 }
 
 /// One peer's score on one Wordle day, as the card in the log draws it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordleScore {
     pub peer: String,
     pub name: String,
@@ -223,7 +224,7 @@ pub struct WordleScore {
     pub won: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TimelineItem {
     Message {
@@ -305,8 +306,8 @@ pub enum TimelineItem {
     },
 }
 
-/// An `OpId` in a shape the frontend can hand straight back to a command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// An `OpId` in a shape the view can hand straight back to a command.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpRef {
     pub author: String,
     pub channel: String,
@@ -315,7 +316,7 @@ pub struct OpRef {
 
 /// The quote above a reply: who wrote the parent and how it opens. Built here so the
 /// frontend never has to look an `OpRef` up in the log itself.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplySnippet {
     pub author_name: String,
     /// The parent's body, cut off at roughly one line.
@@ -323,7 +324,7 @@ pub struct ReplySnippet {
 }
 
 /// One reaction pill under a message.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReactionState {
     pub emoji: String,
     pub count: usize,
@@ -351,7 +352,7 @@ impl OpRef {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum UpdateState {
     /// A check the user asked for is running. An automatic one never reaches the window.
@@ -372,7 +373,7 @@ pub enum UpdateState {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VideoSettings {
     pub codec: String,
     pub fps: u32,
@@ -380,7 +381,7 @@ pub struct VideoSettings {
 }
 
 /// Which set of notification tones is picked, and how loud.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SoundSettings {
     /// The set that will actually be heard, which is not always the one in `config.toml`.
     ///
@@ -396,7 +397,7 @@ pub struct SoundSettings {
 
 /// One choosable set of tones. Comes from the engine rather than being spelled out in the
 /// frontend, so adding a set is one place instead of two.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SoundSetInfo {
     pub id: String,
     pub name: String,
@@ -405,14 +406,14 @@ pub struct SoundSetInfo {
 
 /// One event that can be auditioned, so all six can be judged instead of only the one the
 /// preview button happens to play.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SoundEventInfo {
     pub id: String,
     pub name: String,
 }
 
 /// One row of the board: the word and its five colours.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordleRow {
     pub word: String,
     /// `0` miss, `1` near, `2` hit — one per letter.
@@ -420,7 +421,7 @@ pub struct WordleRow {
 }
 
 /// Today's board, as the dialog draws it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordleBoard {
     pub number: u32,
     pub rows: Vec<WordleRow>,
@@ -435,7 +436,7 @@ pub struct WordleBoard {
 }
 
 /// One line of the leaderboard.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordleStanding {
     pub peer: String,
     pub name: String,
@@ -448,7 +449,7 @@ pub struct WordleStanding {
 }
 
 /// The game of the day and the leaderboard over all days.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WordleState {
     /// Today's puzzle date as `YYYYMMDD`. Rolls over at 07:00, not at midnight.
     pub day: u32,
@@ -463,7 +464,7 @@ pub struct WordleState {
 }
 
 /// One person's week, for the Recap panel.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecapRow {
     pub peer: String,
     pub name: String,
@@ -486,7 +487,7 @@ pub struct RecapRow {
 ///
 /// Not part of `UiState`: every figure in here moves while a call is running, and a state
 /// event fires on any change to that struct. Same reasoning as the timeline.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recap {
     /// Length of the window in days.
     pub days: u32,
@@ -501,7 +502,7 @@ pub struct Recap {
 /// The timeline is fetched per conversation with `get_timeline` instead of riding along
 /// here. It is the only unbounded part of the state, and pushing a whole history through
 /// the IPC bridge on every tick would undo the reason for moving off immediate mode.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(rename = "self")]
     pub me: SelfState,
@@ -1325,6 +1326,67 @@ mod tests {
             })
             .collect();
         assert_eq!(dagen, [20_260_819], "morgen hoort er niet bij te staan");
+    }
+
+    /// The fixture mode loads what this module serializes. A field that serializes but does
+    /// not come back (a missing `Deserialize`, a rename on one side only) fails here.
+    #[test]
+    fn the_state_and_the_timeline_survive_a_json_round_trip() {
+        let constants = Constants {
+            me: peer(1),
+            fallback_name: "me".into(),
+            sound_sets: Vec::new(),
+            sound_events: Vec::new(),
+            control_port: 1,
+            media_port: 2,
+            autostart: false,
+            minimize_to_tray: true,
+        };
+        let state = UiState::build(&Snapshot::default(), &constants, 7, &HashMap::new());
+        let back: UiState = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(back, state);
+
+        let op = OpRef::of(OpId::new(peer(2), Channel::GENERAL, 3));
+        let items = vec![
+            TimelineItem::Message {
+                id: op.clone(),
+                author: peer(2).to_string(),
+                author_name: "two".into(),
+                avatar: 2,
+                body: "hi".into(),
+                at: 5,
+                edited: false,
+                mine: false,
+                mentions_you: true,
+                reply_to: Some(op.clone()),
+                reply_snippet: Some(ReplySnippet {
+                    author_name: "two".into(),
+                    body: "earlier".into(),
+                }),
+                reactions: vec![ReactionState {
+                    emoji: "+".into(),
+                    count: 1,
+                    peers: vec![peer(1).to_string()],
+                    mine: true,
+                }],
+            },
+            TimelineItem::File {
+                id: op,
+                author: peer(2).to_string(),
+                author_name: "two".into(),
+                avatar: 2,
+                name: "a.png".into(),
+                size: 9,
+                at: 0,
+                mine: false,
+                transfer: TransferState::Running { received: 1, total: 9 },
+                image_path: None,
+                local_path: None,
+                opens_folder: false,
+            },
+        ];
+        let back: Vec<TimelineItem> = serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+        assert_eq!(back, items);
     }
 
     #[test]

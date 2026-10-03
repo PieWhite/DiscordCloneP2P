@@ -5,8 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+# The exe carries its icon and an application manifest (common controls v6, PerMonitorV2
+# DPI), which tauri-build used to embed. Host-gated like every build-dependency; `build.rs`
+# only calls it when the *target* is Windows.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -20,13 +23,18 @@ fitcom-net.workspace = true
 fitcom-proto.workspace = true
 fitcom-store.workspace = true
 fitcom-video.workspace = true
+# Tray icon on both platforms: a Win32 thread of its own on Windows (`tray.rs`), the main
+# thread on macOS (`ui/mod.rs::mac_tray`). The module docs of `tray.rs` say why they differ.
+tray-icon = "0.24.2"
+# GPUI plus its component library and default icon set. The default features are exactly
+# those two layers; tree-sitter, webview and speech stay off.
+gpui-kit = "0.7"
 rfd = "0.17.2"
 # Alleen voor het ophalen van de release-feed (`release.rs`). Rustls, zodat er geen
 # tweede TLS-stack naast die van quinn komt; `ring` is dezelfde crypto-backend.
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.145"
-tauri = { version = "2.11.5", features = ["protocol-asset"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "macros", "fs", "io-util"] }
 toml = "1.1.4"
 tracing = "0.1.44"
@@ -36,13 +44,9 @@ uuid = { version = "1.24.0", features = ["v4", "serde"] }
 ureq = { version = "3.3.0", default-features = false, features = ["rustls", "json"] }
 
 [target.'cfg(windows)'.dependencies]
+# The window handle the Win32 tray thread shows and hides (`tray::onthoud_venster`).
+raw-window-handle = "0.6.2"
 tauri-winrt-notification = "0.8.1"
-tray-icon = "0.24.2"
 # `Win32_Media_Audio` is voor `PlaySound` uit `geluid.rs`, `Win32_UI_Shell` voor
 # `ShellExecuteW` uit `ui/commands.rs`; de rest stond er al.
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Media", "Win32_Media_Audio", "Win32_System_Diagnostics_Debug", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-
-# De mac-tray loopt via Tauri's eigen tray-API (main-thread); zie `ui/mod.rs::mac_tray`
-# en het modulecommentaar van `tray.rs` voor waarom Windows dat anders doet.
-[target.'cfg(target_os = "macos")'.dependencies]
-tauri = { version = "2.11.5", features = ["protocol-asset", "tray-icon"] }

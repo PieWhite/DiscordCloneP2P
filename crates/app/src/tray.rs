@@ -8,9 +8,9 @@
 //! met het venster via Win32.
 //!
 //! Op macOS is die reden er niet: de main-runloop van `NSApplication` blijft pompen
-//! terwijl het venster verborgen is. Daar gebruikt `ui/mod.rs` gewoon de tray-API van
-//! Tauri op de main thread; deze module levert alleen de gedeelde afsluitvlag, het
-//! icoon en de autostart-schakelaar.
+//! terwijl het venster verborgen is. Daar draait `ui/mod.rs::mac_tray` dezelfde
+//! `tray-icon`-crate gewoon op de main thread; deze module levert alleen de gedeelde
+//! afsluitvlag, het icoon en de autostart-schakelaar.
 
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,14 +57,14 @@ const OPENEN_ID: &str = "fitcom-openen";
 #[cfg(windows)]
 const AFSLUITEN_ID: &str = "fitcom-afsluiten";
 
-/// Tauri kaapt bij het bouwen van zijn event-loop de globale menu-handler van `muda`, en
-/// vanaf dat moment blijft `MenuEvent::receiver()` leeg: muda stuurt een gebeurtenis naar
-/// de handler *of* naar het kanaal, nooit naar allebei. Onze tray gebruikt dezelfde
-/// muda-versie, dus de klikken op "Openen" en "Afsluiten" verdwenen in Tauri.
+/// Zet de globale menu-handler van `muda`: zo komen "Openen" en "Afsluiten" binnen, op de
+/// thread die het menu toont, ook als het venster niet tekent. muda stuurt een gebeurtenis
+/// naar de handler *of* naar `MenuEvent::receiver()`, nooit naar allebei.
 ///
-/// `set_event_handler` schrijft in een `OnceCell` — wie eerst is, wint. Deze functie moet
-/// daarom vóór `tauri::Builder::run` aangeroepen worden. De app heeft geen Tauri-menu's,
-/// dus alle menu-gebeurtenissen zijn van ons.
+/// `set_event_handler` schrijft in een `OnceCell` — wie eerst is, wint. Onder Tauri was dat
+/// een race met Tauri's eigen event-loop; GPUI gebruikt muda niet, maar de regel blijft:
+/// aanroepen vóór de event-loop start (`ui::open`). De app heeft geen andere menu's, dus
+/// alle menu-gebeurtenissen zijn van ons.
 #[cfg(windows)]
 pub fn claim_menu_events() {
     MenuEvent::set_event_handler(Some(|ev: MenuEvent| match ev.id.0.as_str() {

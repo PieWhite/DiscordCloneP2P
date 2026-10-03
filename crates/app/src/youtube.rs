@@ -109,7 +109,7 @@ fn thumb_pad(id: &str, cache_dir: &Path) -> PathBuf {
 
 /// Een titel verandert bijna nooit en een miniatuur nog minder; er is dus geen reden om
 /// ooit te verversen. Ontbreekt een van de twee helften, dan is dit geen cache-treffer.
-fn uit_cache(id: &str, cache_dir: &Path) -> Option<Preview> {
+pub(crate) fn uit_cache(id: &str, cache_dir: &Path) -> Option<Preview> {
     let thumbnail = thumb_pad(id, cache_dir);
     if !thumbnail.exists() {
         return None;

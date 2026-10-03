@@ -27,6 +27,21 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Debug builds only: the window without mesh, store or engine, fed from JSON. Before
+    // the data directory on purpose — a fixture run must not touch a real install's logs.
+    #[cfg(debug_assertions)]
+    if let Ok(dir) = std::env::var("FITCOM_UI_FIXTURE") {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_env("FITCOM_LOG")
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_writer(std::io::stderr)
+            .init();
+        return ui::run_fixture(PathBuf::from(dir));
+    }
+
     let data_dir = config::resolve_data_dir(args.data_dir)?;
     init_logging(&data_dir)?;
 
@@ -101,10 +116,9 @@ fn main() -> Result<()> {
 
     // De motor draait op de tokio-runtime, niet op de UI-thread: chat en synchronisatie
     // moeten doorlopen terwijl het venster geminimaliseerd is of naar de tray staat.
-    // Alleen om het `asset:`-protocol deze map te laten lezen; wat de UI tekent komt uit
-    // `Snapshot::pictures_dir`, want de map verhuist mee als de gebruiker zijn
-    // downloadmap verzet (zie `config::resolve_pictures_dir`).
-    let pictures_dir = config::resolve_pictures_dir(&cfg, &data_dir);
+    // De afbeeldingenmap staat hier niet meer: de UI leest hem uit `Snapshot::pictures_dir`,
+    // want hij verhuist mee als de gebruiker zijn downloadmap verzet (zie
+    // `config::resolve_pictures_dir` en `Ui::image_path_allowed`).
     let youtube_dir = config::resolve_youtube_dir(&data_dir);
 
     if let Err(e) = tray::zet_autostart(cfg.autostart) {
@@ -121,17 +135,9 @@ fn main() -> Result<()> {
         engine::spawn(mesh, store, cfg, config_path).context("motor starten")?
     };
 
-    // Het venster: Tauri v2 op WebView2. Eigen titelbalk volgens het ontwerp, dus de
-    // OS-decoraties staan uit (`tauri.conf.json`). Alles eromheen — tray, vensterhandle,
-    // gebeurtenissen — zit in `ui::run`.
-    ui::run(
-        engine,
-        identity.peer_id,
-        &cfg_voor_ui,
-        pictures_dir,
-        youtube_dir,
-        runtime,
-    )
+    // Het venster: GPUI met gpui-kit. Eigen titelbalk volgens het ontwerp; alles eromheen
+    // — tray, vensterhandle, de drie feeds — zit in `ui::run`.
+    ui::run(engine, identity.peer_id, &cfg_voor_ui, youtube_dir, runtime)
 }
 
 /// Logt naar een dagelijks roterend bestand in `<data>/logs` en naar de console.

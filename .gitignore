@@ -11,6 +11,4 @@
 *.sqlite-shm
 fitcom.toml
 
-# Door tauri-build gegenereerd uit tauri.conf.json + capabilities/.
-/crates/app/gen/
 .DS_Store
