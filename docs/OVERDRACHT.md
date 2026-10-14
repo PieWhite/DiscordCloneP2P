@@ -2019,9 +2019,10 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
   register en paniekt met "Failed to find fxc.exe" als hij er niet is. Een debug-build
   compileert de shaders pas bij het starten, uit de cargo-registry van de bouwmachine; zo'n
   exe tekent op een andere pc niets.
-- **`crates/app/icons/icon.ico` en `crates/app/windows-app.manifest` moeten bestaan**, anders
-  faalt `build.rs` (`winresource`) op een Windows-doel. Het icoon is het merkteken uit de
-  titelbalk.
+- **`crates/app/icons/icon.ico` moet bestaan**, anders faalt `build.rs` (`winresource`) op
+  een Windows-doel. Het icoon is het merkteken uit de titelbalk. Het manifest komt van GPUI
+  (feature `windows-manifest`, standaard aan); zelf een tweede inbakken liet de eerste
+  Windows-build stuklopen op CVT1100 "duplicate resource".
 - **Geen witte flits:** het venster is `Opaque` en de wortel schildert de achtergrondkleur
   vanaf het eerste beeld. *(Historie: onder Tauri sloopte `backgroundColor` in
   `tauri.conf.json` het venster op deze machine (WebView2 startte niet, `0x80070057`), en

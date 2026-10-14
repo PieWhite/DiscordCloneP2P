@@ -5,8 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# The exe carries its icon and an application manifest (common controls v6, PerMonitorV2
-# DPI), which tauri-build used to embed. Host-gated like every build-dependency; `build.rs`
+# The exe carries its icon, which tauri-build used to embed (the manifest comes from GPUI's
+# `windows-manifest` feature, see `build.rs`). Host-gated like every build-dependency; `build.rs`
 # only calls it when the *target* is Windows.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"

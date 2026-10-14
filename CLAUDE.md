@@ -296,8 +296,9 @@ Geen Node en geen frontend-bouwstap: de weergave is Rust, en fonts en iconen uit
   SDK komt mee met de C++-workload van de VS Build Tools die MSVC toch al vraagt. Een
   debug-build compileert de shaders pas bij het starten, uit de cargo-registry van de
   bouwmachine: zo'n exe tekent alleen daar. Uitdelen gaat altijd met een release-build.
-- **Windows:** `build.rs` bakt `icons/icon.ico` en `windows-app.manifest` (common controls
-  v6, PerMonitorV2-DPI) in de exe via `winresource`. Ontbreekt er een, dan faalt de build.
+- **Windows:** `build.rs` bakt `icons/icon.ico` in de exe via `winresource`. Het manifest
+  (common controls v6, PerMonitorV2-DPI) komt van GPUI's feature `windows-manifest`; een
+  tweede ernaast geeft bij het linken CVT1100 "duplicate resource".
 
 **Fixturemodus** (alleen debug): het venster zonder mesh, store en motor, gevoed uit JSON
 (`state.json` verplicht, de rest staat in `ui/fixture.rs`). Zo is elke toestand te tekenen en
