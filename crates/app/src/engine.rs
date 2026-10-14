@@ -1162,6 +1162,18 @@ impl Engine {
         };
         match fitcom_audio::start(cfg) {
             Ok(h) => {
+                // Een nieuwe sessie begint op 100% voor iedereen. Wat de gebruiker per
+                // peer en per stream instelde (ook iemand lokaal dempen, volume 0) staat
+                // hier in de motor en moet er dus opnieuw in, anders toont de UI 30% en
+                // hoor je na opnieuw joinen of een apparaatwissel weer 100%.
+                for p in &self.peers {
+                    if let Some(id) = p.peer_id {
+                        h.zet_volume(id, p.volume);
+                    }
+                }
+                for (&bron, &vol) in &self.stream_volumes {
+                    h.zet_bron_volume(bron, vol);
+                }
                 self.voice = Some(h);
                 self.geluid(geluid::Geluid::EigenJoin);
                 self.werk_voice_peers_bij();
@@ -2038,9 +2050,16 @@ impl Engine {
                 // (`fitcom_audio::start`). Zit je in een gesprek, dan is opnieuw openen
                 // de enige manier om te wisselen; `bind_met_geduld` vangt op dat de
                 // mediapoort nog even bezet is.
-                if self.voice.is_some() {
+                if let Some(v) = &self.voice {
+                    // De nieuwe sessie begint ongemute; wie gemute was zou anders na een
+                    // apparaatwissel ongemerkt weer open staan.
+                    let (mute, deafen) = (v.is_mute(), v.is_deafen());
                     self.verlaten();
                     self.deelnemen();
+                    if let Some(v) = &self.voice {
+                        v.zet_mute(mute);
+                        v.zet_deafen(deafen);
+                    }
                 }
                 // De clip-opname kiest zijn microfoon op hetzelfde moment: bij het
                 // starten. Draait hij, dan moet hij dus ook opnieuw, anders neemt hij
