@@ -337,6 +337,8 @@ pub enum UiCommand {
     /// Welk scherm er voor clips opgenomen wordt (naam uit de bronlijst). Leeg =
     /// automatisch het eerste.
     ZetClipMonitor(String),
+    /// Hoe lang een clip is, in seconden (10 tot `config::MAX_CLIP_SEC`).
+    ZetClipLengte(u32),
     /// De globale clip-sneltoets wisselen, zonder herstart.
     ZetClipsHotkey(String),
     /// Waar clips (en de ring eronder) heen gaan. Een lopende opname verhuist mee.
@@ -1867,6 +1869,23 @@ impl Engine {
                     // maar een paar seconden opnieuw opstarten is genoeg troost.
                     let stond_aan = self.clips.aan();
                     if stond_aan {
+                        self.zet_clips_motor(false);
+                        self.zet_clips_motor(true);
+                    }
+                }
+            }
+            UiCommand::ZetClipLengte(sec) => {
+                let sec = sec.clamp(10, crate::config::MAX_CLIP_SEC);
+                if self.cfg.clips.venster_sec != sec {
+                    self.cfg.clips.venster_sec = sec;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                        return;
+                    }
+                    // De ring kent zijn lengte vanaf het starten; opnieuw opstarten, net
+                    // als bij een ander scherm. Wat er al in de ring stond blijft niet
+                    // staan, maar een clip langer dan de opname tot nu toe kon toch niet.
+                    if self.clips.aan() {
                         self.zet_clips_motor(false);
                         self.zet_clips_motor(true);
                     }

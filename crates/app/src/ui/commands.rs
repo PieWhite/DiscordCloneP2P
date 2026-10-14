@@ -556,6 +556,11 @@ pub fn set_clip_monitor(ui: &Ui, name: &str) {
     send(ui, UiCommand::ZetClipMonitor(name.to_string()));
 }
 
+/// Hoe lang een clip teruggaat, in seconden.
+pub fn set_clip_length(ui: &Ui, seconds: u32) {
+    send(ui, UiCommand::ZetClipLengte(seconds));
+}
+
 /// De globale sneltoets wisselen, zonder herstart.
 pub fn set_clip_hotkey(ui: &Ui, hotkey: &str) {
     send(ui, UiCommand::ZetClipsHotkey(hotkey.to_string()));

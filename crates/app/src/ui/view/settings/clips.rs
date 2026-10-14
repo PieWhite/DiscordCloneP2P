@@ -16,6 +16,40 @@ use gpui_kit::{
 };
 use std::rc::Rc;
 
+/// The clip lengths on offer, in seconds. Up to half an hour; the buffer on disk holds as
+/// much as the clip is long.
+const LENGTHS: [u32; 7] = [30, 60, 120, 300, 600, 900, 1800];
+
+/// "30 seconds", "1 minute", "15 minutes".
+pub(super) fn length_label(sec: u32) -> String {
+    match sec {
+        s if !s.is_multiple_of(60) => format!("{s} seconds"),
+        60 => "1 minute".into(),
+        s => format!("{} minutes", s / 60),
+    }
+}
+
+/// The other way round, for the select's choice. Accepts any label `length_label` makes,
+/// so a length set by hand in `config.toml` survives being re-chosen.
+pub(super) fn length_seconds(label: &str) -> Option<u32> {
+    let (n, unit) = label.split_once(' ')?;
+    let n: u32 = n.parse().ok()?;
+    Some(if unit.starts_with("second") {
+        n
+    } else {
+        n * 60
+    })
+}
+
+/// "30s", "5 min": short enough for the button.
+fn length_short(sec: u32) -> String {
+    if sec.is_multiple_of(60) {
+        format!("{} min", sec / 60)
+    } else {
+        format!("{sec}s")
+    }
+}
+
 /// The modifiers held, in the order the engine's shortcut format writes them. `platform`
 /// (Cmd on a Mac, the Windows key on Windows) is `win` on the wire.
 fn modifier_names(m: &Modifiers) -> Vec<&'static str> {
@@ -83,6 +117,17 @@ impl SettingsPane {
         let monitor_width = auto_width(&items, 280.);
         self.monitor.sync(items, &wanted, window, cx);
 
+        // A length from `config.toml` that is not on the list still shows, as its own item.
+        let mut lengths: Vec<u32> = LENGTHS.to_vec();
+        if !lengths.contains(&clips.window_sec) {
+            lengths.push(clips.window_sec);
+            lengths.sort_unstable();
+        }
+        let length_items: Vec<String> = lengths.iter().map(|&s| length_label(s)).collect();
+        let length_width = auto_width(&length_items, 160.);
+        self.clip_length
+            .sync(length_items, &length_label(clips.window_sec), window, cx);
+
         let waiting = snap.v.hotkey_wait;
         // The debug view sets `hotkey_wait` without a click: hand the box the keyboard.
         #[cfg(debug_assertions)]
@@ -133,10 +178,11 @@ impl SettingsPane {
                 concat!(
                     "While enabled, a screen is recorded into a rolling buffer that never leaves ",
                     "your machine. Press {} \u{2014} anywhere, also while the app sits in the tray ",
-                    "\u{2014} to save the last {} seconds as a playable clip, with game sound and ",
+                    "\u{2014} to save the last {} as a playable clip, with game sound and ",
                     "your microphone mixed in."
                 ),
-                hotkey, clips.window_sec
+                hotkey,
+                length_label(clips.window_sec)
             ))
             .field(
                 div()
@@ -159,6 +205,16 @@ impl SettingsPane {
                     .child(label("Screen"))
                     .child(help("Which screen gets recorded while the switch is on."))
                     .child(control_row().child(select("clips-monitor", &self.monitor, monitor_width, false))),
+            )
+            .field(
+                div()
+                    .child(label("Clip length"))
+                    .child(help(concat!(
+                        "How far back a saved clip goes. The rolling buffer keeps that much on ",
+                        "disk: about 90 MB per minute, so 2.7 GB at 30 minutes. Changing it ",
+                        "restarts the recording with an empty buffer."
+                    )))
+                    .child(control_row().child(select("clips-length", &self.clip_length, length_width, false))),
             )
             .field(
                 div()
@@ -193,7 +249,7 @@ impl SettingsPane {
                     .child(
                         control_row()
                             .child(
-                                Btn::new("clip-now", format!("Save last {}s", clips.window_sec))
+                                Btn::new("clip-now", format!("Save last {}", length_short(clips.window_sec)))
                                     .kind(BtnKind::Accent)
                                     .icon(Icon::Play)
                                     .disabled(!clips.enabled)
@@ -268,6 +324,15 @@ mod tests {
             hotkey_name(&mods(false, false, false, false), "f13").as_deref(),
             Some("f13")
         );
+    }
+
+    #[test]
+    fn a_clip_length_label_reads_back_to_its_seconds() {
+        for sec in LENGTHS.into_iter().chain([45, 90, 3600]) {
+            assert_eq!(length_seconds(&length_label(sec)), Some(sec), "{sec}");
+        }
+        assert_eq!(length_label(1800), "30 minutes");
+        assert_eq!(length_label(60), "1 minute");
     }
 
     #[test]

@@ -37,7 +37,7 @@ use std::sync::Arc;
 /// The first option of the two device selects: `None` in the engine.
 const DEFAULT_DEVICE: &str = "Windows default";
 /// The first option of the screen select: an empty name in the engine.
-const AUTO_MONITOR: &str = "Automatic (first screen)";
+const AUTO_MONITOR: &str = "Automatic (main screen)";
 
 pub struct SettingsPane {
     app: AppHandle,
@@ -49,6 +49,7 @@ pub struct SettingsPane {
     mic: Choices,
     speaker: Choices,
     monitor: Choices,
+    clip_length: Choices,
     bitrate: Ranged,
     sound_volume: Ranged,
     /// The clip shortcut box; it has focus exactly while it is listening.
@@ -67,6 +68,7 @@ impl SettingsPane {
         let mic = Choices::new(window, cx);
         let speaker = Choices::new(window, cx);
         let monitor = Choices::new(window, cx);
+        let clip_length = Choices::new(window, cx);
         let bitrate = Ranged::new(4., 40., cx);
         let sound_volume = Ranged::new(0., 100., cx);
         let hotkey_focus = cx.focus_handle().tab_stop(true);
@@ -100,6 +102,17 @@ impl SettingsPane {
                         label.as_str()
                     };
                     commands::set_clip_monitor(&this.ui, name);
+                },
+            ),
+            cx.subscribe(
+                clip_length.state(),
+                |this, _, ev: &SelectEvent<Vec<String>>, _| {
+                    let SelectEvent::Confirm(Some(label)) = ev else {
+                        return;
+                    };
+                    if let Some(sec) = clips::length_seconds(label) {
+                        commands::set_clip_length(&this.ui, sec);
+                    }
                 },
             ),
             // Dragging only moves the readout; the change goes out on release, once, like
@@ -140,6 +153,7 @@ impl SettingsPane {
             mic,
             speaker,
             monitor,
+            clip_length,
             bitrate,
             sound_volume,
             hotkey_focus,

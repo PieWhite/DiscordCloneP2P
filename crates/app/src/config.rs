@@ -209,8 +209,9 @@ pub struct ClipsConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Hoeveel seconden een clip teruggaat. 10–300; buiten die band afgekapt door
-    /// [`ClipsConfig::herstel`].
+    /// Hoeveel seconden een clip teruggaat. 10–1800 (een half uur); buiten die band
+    /// afgekapt door [`ClipsConfig::herstel`]. De ring op schijf houdt zoveel vast, dus
+    /// een half uur is bij 12 Mbit ~2,7 GB.
     #[serde(default = "default_clips_venster")]
     pub venster_sec: u32,
 
@@ -253,6 +254,9 @@ fn default_clips_venster() -> u32 {
     60
 }
 
+/// De langste clip: een half uur.
+pub const MAX_CLIP_SEC: u32 = 30 * 60;
+
 /// Standaard F9: één toets, ver van de meeste gamebinds, en zonder modifier zodat hij
 /// ook tijdens het spelen met één hand te halen is.
 fn default_clip_hotkey() -> String {
@@ -261,7 +265,7 @@ fn default_clip_hotkey() -> String {
 
 impl ClipsConfig {
     pub fn herstel(&mut self) {
-        if self.venster_sec == 0 || self.venster_sec > 300 {
+        if !(10..=MAX_CLIP_SEC).contains(&self.venster_sec) {
             tracing::warn!(
                 venster = self.venster_sec,
                 "clipvenster uit de band; standaard van 60 s gebruikt"
