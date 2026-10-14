@@ -330,6 +330,10 @@ pub struct Reassembler {
     /// Hoe vaak een frame sneuvelde doordat er stukken misten. Boven nul is een
     /// aanleiding om een nieuw keyframe te vragen.
     pub incompleet: u64,
+    /// Het deel van `incompleet` dat een keyframe was. Sneuvelt het keyframe waar de
+    /// kijker op wacht, dan heeft hij geen reden meer om de volle pauze uit te zitten
+    /// voor hij opnieuw vraagt.
+    pub incompleet_keyframes: u64,
     /// Hoe vaak één verloren fragment uit de pariteit is teruggerekend. Elk van deze
     /// zou zonder pariteit een bevroren beeld van rond de honderd milliseconde geweest
     /// zijn, dus dit is het getal dat zegt of het werkt.
@@ -354,6 +358,7 @@ impl Reassembler {
             laatste: None,
             verworpen: 0,
             incompleet: 0,
+            incompleet_keyframes: 0,
             hersteld: 0,
             hersynchronisaties: 0,
         }
@@ -462,8 +467,9 @@ impl Reassembler {
                 .map(|(&t, _)| t)
                 .collect();
             for t in ouder {
-                self.onderweg.remove(&t);
-                self.incompleet += 1;
+                if let Some(d) = self.onderweg.remove(&t) {
+                    self.tel_incompleet(&d);
+                }
             }
 
             self.laatste = Some(header.timestamp);
@@ -481,10 +487,17 @@ impl Reassembler {
     /// hoogstens [`MAX_ONDERWEG`] over zijn. Loopt over maximaal negen elementen en leest
     /// de klok niet: alleen integervergelijkingen op het pakketpad.
     fn ruim_op(&mut self, nu: Instant) {
-        let voor = self.onderweg.len();
-        self.onderweg
-            .retain(|_, d| nu.duration_since(d.gezien) < HALFFABRIKAAT_TTL);
-        self.incompleet += (voor - self.onderweg.len()) as u64;
+        let (mut weg, mut weg_keyframes) = (0u64, 0u64);
+        self.onderweg.retain(|_, d| {
+            let blijft = nu.duration_since(d.gezien) < HALFFABRIKAAT_TTL;
+            if !blijft {
+                weg += 1;
+                weg_keyframes += u64::from(d.keyframe);
+            }
+            blijft
+        });
+        self.incompleet += weg;
+        self.incompleet_keyframes += weg_keyframes;
 
         // Blijven wachten op iets dat niet meer komt levert alleen maar oplopende
         // vertraging op. Het beeld waarvan net nog een fragment binnenkwam is nooit de
@@ -498,9 +511,15 @@ impl Reassembler {
             else {
                 break;
             };
-            self.onderweg.remove(&stilste);
-            self.incompleet += 1;
+            if let Some(d) = self.onderweg.remove(&stilste) {
+                self.tel_incompleet(&d);
+            }
         }
+    }
+
+    fn tel_incompleet(&mut self, d: &Halffabrikaat) {
+        self.incompleet += 1;
+        self.incompleet_keyframes += u64::from(d.keyframe);
     }
 }
 
@@ -615,6 +634,33 @@ mod tests {
             );
         }
         assert_eq!(r.hersteld, 0, "met twee gaten valt er niets te herstellen");
+    }
+
+    #[test]
+    fn een_gesneuveld_keyframe_wordt_apart_geteld() {
+        // Zo weet de kijker dat het keyframe waar hij op wacht niet meer komt.
+        let bron: Vec<u8> = (0..5_000u32).map(|i| i as u8).collect();
+        let mut r = Reassembler::new();
+        let mut kapot = pakketten(&bron, true, 100);
+        kapot.remove(3);
+        kapot.remove(1);
+        for (h, s) in &kapot {
+            assert!(r.push(h, s).is_none());
+        }
+        // Een later beeld dat wel heel aankomt maakt het oudere definitief kwijt.
+        for (h, s) in &pakketten(&bron, false, 200) {
+            r.push(h, s);
+        }
+        assert_eq!((r.incompleet, r.incompleet_keyframes), (1, 1));
+
+        // Een gewoon beeld dat sneuvelt telt alleen als incompleet.
+        let mut kapot = pakketten(&bron, false, 300);
+        kapot.remove(3);
+        kapot.remove(1);
+        for (h, s) in kapot.iter().chain(pakketten(&bron, false, 400).iter()) {
+            r.push(h, s);
+        }
+        assert_eq!((r.incompleet, r.incompleet_keyframes), (2, 1));
     }
 
     #[test]

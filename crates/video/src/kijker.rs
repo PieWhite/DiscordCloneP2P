@@ -33,6 +33,12 @@ const ONTVANG_TIMEOUT: Duration = Duration::from_millis(8);
 /// Niet vaker dan dit om een keyframe vragen. Bij aanhoudend verlies zou een verzoek
 /// per kapot beeld de deler bedelven en het probleem alleen maar erger maken.
 const KEYFRAME_PAUZE: Duration = Duration::from_millis(500);
+/// Sneuvelt het keyframe waar we op wachten zelf, dan opnieuw vragen na zoveel in plaats
+/// van na de volle [`KEYFRAME_PAUZE`]. Een groot keyframe overleeft verlies het slechtst,
+/// en de pauze maakte van één verloren keyframe 600-700 ms stilstaand beeld (gemeten
+/// 2026-10-14). Eén keer per kapot keyframe, dus geen storm: de deler stuurt er per
+/// verzoek maar één.
+const KEYFRAME_HERVRAAG: Duration = Duration::from_millis(100);
 /// Hoe vaak er een miniatuur voor het overzicht in het hoofdvenster wordt afgeleid.
 /// Dit is geen weergavepad — twee keer per seconde is ruim genoeg om levend te ogen en
 /// te weinig om ook maar iets te merken van de GPU-naar-CPU-kopie die het kost.
@@ -199,6 +205,7 @@ fn kijk_lus(
     let mut wacht_op_keyframe = true;
     let mut laatst_gevraagd = Instant::now() - KEYFRAME_PAUZE;
     let mut laatste_incompleet = 0u64;
+    let mut laatste_kapotte_keyframes = 0u64;
     let mut laatste_pomp = Instant::now();
     let mut laatste_miniatuur = Instant::now() - MINIATUUR_INTERVAL;
 
@@ -428,7 +435,13 @@ fn kijk_lus(
                 wacht_op_keyframe = true;
                 decoder.spoel();
                 laatst_gevraagd = Instant::now() - KEYFRAME_PAUZE;
+            } else if samensteller.incompleet_keyframes > laatste_kapotte_keyframes {
+                // Het keyframe waar we op wachtten komt niet meer: zo zetten dat het
+                // volgende verzoek [`KEYFRAME_HERVRAAG`] na het vorige vertrekt.
+                laatst_gevraagd =
+                    laatst_gevraagd.min(Instant::now() - (KEYFRAME_PAUZE - KEYFRAME_HERVRAAG));
             }
+            laatste_kapotte_keyframes = samensteller.incompleet_keyframes;
         }
 
         if frame.keyframe {
@@ -517,7 +530,7 @@ fn toon_beeld(
             }
             let toon_us = voor_toon.elapsed().as_micros() as u64;
             meter.toon_us += toon_us;
-            meter.toonde(voor_toon);
+            meter.toonde(voor_toon, tijd_hns);
             gedeeld.beelden.fetch_add(1, Ordering::Relaxed);
             meet_vertraging(gedeeld, tijd_hns);
 
@@ -567,10 +580,12 @@ fn toon_beeld(
 /// dit de knop.
 const WEERGAVE_VOORSPRONG: Duration = Duration::from_millis(30);
 
-/// Diagnostisch: boven dit gat tussen twee getoonde beelden loggen we meteen, in plaats
-/// van te wachten op de per-seconde `spreiding_ms`. Voor het uitzoeken van de periodieke
-/// microhapering — die aggregatie verbergt precies wanneer en hoe vaak het gebeurt.
-const GROTE_SPRONG_MS: f64 = 40.0;
+/// Een beeld dat zoveel later op het scherm kwam dan de opname-afstand tot het vorige
+/// voorschreef, telt als te laat. Het verschil telt en niet het gat zelf: een 24
+/// fps-film heeft van nature gaten van 42 ms (en 50 ms met 3:2-pulldown), en de oude
+/// drempel van 40 ms op het kale gat gaf daarop duizenden loze waarschuwingen per sessie,
+/// elk een logschrijfactie op de weergavethread (2026-10-14).
+const TE_LAAT_MS: f64 = 25.0;
 
 /// Zoveel beelden mogen er hoogstens wachten. Meer betekent dat de klok ergens is
 /// weggesprongen — een herstart van de deler, een stream die opnieuw begint — en dan is
@@ -709,6 +724,13 @@ struct Meter {
     /// zegt of het hapert**: het aantal beelden per seconde kan kloppen terwijl ze
     /// ongelijk uit elkaar staan, en dan ziet het er alsnog uit als schokken.
     vorige_toon: Option<Instant>,
+    /// Opnametijd van het vorige getoonde beeld, in hns.
+    vorige_opname: Option<i64>,
+    /// Beelden die meer dan [`TE_LAAT_MS`] later kwamen dan de opname voorschreef, en de
+    /// ergste daarvan. Dát is haperen; een laag `getoond_fps` met nul te laat is gewoon
+    /// trage inhoud bij de deler.
+    te_laat: u32,
+    ergste_ms: f64,
     afstand_som: f64,
     afstand_som_kwadraat: f64,
     afstanden: u32,
@@ -730,6 +752,9 @@ impl Meter {
             decode_us: 0,
             toon_us: 0,
             vorige_toon: None,
+            vorige_opname: None,
+            te_laat: 0,
+            ergste_ms: 0.0,
             afstand_som: 0.0,
             afstand_som_kwadraat: 0.0,
             afstanden: 0,
@@ -737,21 +762,26 @@ impl Meter {
     }
 
     /// Eén beeld op het scherm gezet.
-    fn toonde(&mut self, nu: Instant) {
+    fn toonde(&mut self, nu: Instant, opname_hns: i64) {
         if let Some(vorige) = self.vorige_toon {
             let ms = nu.duration_since(vorige).as_secs_f64() * 1000.0;
             self.afstand_som += ms;
             self.afstand_som_kwadraat += ms * ms;
             self.afstanden += 1;
-            if ms > GROTE_SPRONG_MS {
-                tracing::warn!(
-                    stream = self.stream_id,
-                    gap_ms = (ms * 10.0).round() / 10.0,
-                    "grote sprong tussen twee getoonde beelden"
-                );
+            // Een negatief of absurd opnamegat (omloop, deler herstart) zegt niets.
+            if let Some(vorige_opname) = self.vorige_opname {
+                let opname_ms = (opname_hns - vorige_opname) as f64 / 10_000.0;
+                if (0.0..1000.0).contains(&opname_ms) {
+                    let laat = ms - opname_ms;
+                    if laat > TE_LAAT_MS {
+                        self.te_laat += 1;
+                        self.ergste_ms = self.ergste_ms.max(laat);
+                    }
+                }
             }
         }
         self.vorige_toon = Some(nu);
+        self.vorige_opname = Some(opname_hns);
         self.getoond += 1;
     }
 
@@ -788,15 +818,18 @@ impl Meter {
             hersteld = self.hersteld,
             hersync = self.hersync,
             keyframe_verzoeken = self.keyframe_verzoeken,
+            te_laat = self.te_laat,
+            ergste_te_laat_ms = self.ergste_ms.round() as u32,
             decode_ms = per_beeld(self.decode_us),
             toon_ms = per_beeld(self.toon_us),
             "kijker"
         );
-        let vorige_toon = self.vorige_toon;
+        let (vorige_toon, vorige_opname) = (self.vorige_toon, self.vorige_opname);
         *self = Meter::nieuw(self.stream_id);
         // De afstand over de secondegrens heen telt gewoon door; anders mis je juist de
         // hapering die precies daar valt.
         self.vorige_toon = vorige_toon;
+        self.vorige_opname = vorige_opname;
     }
 }
 
