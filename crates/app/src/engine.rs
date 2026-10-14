@@ -1937,7 +1937,24 @@ impl Engine {
             UiCommand::GelezenTopic(topic) => self.chat.markeer_topic_gelezen(topic),
             UiCommand::FoutWeg => self.fout = None,
             UiCommand::VoiceDeelnemen => self.deelnemen(),
-            UiCommand::VoiceVerlaten => self.verlaten(),
+            UiCommand::VoiceVerlaten => {
+                self.verlaten();
+                // Wie het gesprek verlaat stopt ook met delen: een scherm of camera die
+                // blijft lopen nadat je weg bent moest je anders apart uitzetten. Alleen
+                // hier en niet in `verlaten` zelf, want een apparaatwissel gaat ook door
+                // `verlaten` en hoort je stream niet af te breken. Bureaubladgeluid heeft
+                // `verlaten` al opgeruimd.
+                let eigen: Vec<u32> = self
+                    .streams
+                    .eigen()
+                    .iter()
+                    .filter(|s| s.kind != StreamKind::DESKTOP_AUDIO)
+                    .map(|s| s.id)
+                    .collect();
+                for id in eigen {
+                    self.stop_met_delen(id);
+                }
+            }
             UiCommand::Mute(aan) => {
                 if let Some(v) = &self.voice {
                     v.zet_mute(aan);
