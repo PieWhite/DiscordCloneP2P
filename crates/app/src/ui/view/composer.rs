@@ -1646,7 +1646,7 @@ mod window_tests {
         let mut h = Harness::new(cx);
         h.focus_composer(cx);
         cx.write_to_clipboard(ClipboardItem::new_string("tekst".into()));
-        h.with_window(cx, |window, cx| window.press("cmd-v", cx));
+        h.with_window(cx, |window, cx| window.press("secondary-v", cx));
         assert_eq!(h.text(cx), "tekst");
 
         let png = vec![0x89, b'P', b'N', b'G'];
@@ -1656,7 +1656,7 @@ mod window_tests {
                 png.clone(),
             ))],
         });
-        h.with_window(cx, |window, cx| window.press("cmd-v", cx));
+        h.with_window(cx, |window, cx| window.press("secondary-v", cx));
         assert_eq!(h.text(cx), "tekst", "an image does not land in the text");
         let offered = h.drain().into_iter().any(|c| match c {
             UiCommand::BiedBestandAan(p, channel) => {
