@@ -158,6 +158,11 @@ fn monitoren() -> Result<Vec<Bron>> {
         .ok()
         .context("schermen opsommen")?;
     }
+    // Het hoofdscherm vooraan. Windows somt ze op in zijn eigen volgorde, en "het eerste
+    // scherm" is de standaard voor clips en het bovenste in de deelkiezer: op een pc met
+    // twee schermen nam de clipopname zo het verkeerde op tot je hem elke keer koos.
+    // Stabiel sorteren, dus de rest houdt zijn volgorde (en zijn "#2"-nummer).
+    gevonden.sort_by_key(|b| !b.naam.ends_with("(hoofdscherm)"));
     Ok(gevonden)
 }
 
