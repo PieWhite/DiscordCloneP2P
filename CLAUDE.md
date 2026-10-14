@@ -265,6 +265,36 @@ Spotify-link bij de DJ. Wat je niet mag omdraaien:
 - **Eén knop voor afspelen én pauzeren.** De luisteraar kent de afspeeltoestand niet; zet
   die niet op de draad om een knop te laten wisselen.
 
+## Push-to-talk en push-to-mute (2026-10-15)
+Beslissing 42 in `docs/OVERDRACHT.md`. Eén toets, drie modi, `crates/audio/src/spreektoets.rs`.
+Wat je niet mag omdraaien:
+
+- **Pollen, geen `RegisterHotKey` en geen low-level hook.** `GetAsyncKeyState` per 20 ms-frame
+  in `opname_lus`. Een hotkey ziet het loslaten niet en neemt de toets van het spel af; een
+  `WH_KEYBOARD_LL`/`WH_MOUSE_LL` draait op elke toetsaanslag van het systeem, in het
+  invoerpad van de game (invariant 4). Zet er ook geen eigen pollthread of timer naast: de
+  opname-lus tikt al op elk microfoonblok, ook met een dichte VAD.
+- **De toets gaat vóór de VAD.** `Poort::open` is de ene plek die dat beslist. In
+  push-to-talk geldt de VAD er niet bovenop; push-to-mute is "VAD, tenzij de toets omlaag
+  staat" en heeft geen staart. Push-to-talk houdt 200 ms staart (`STAART_FRAMES`), anders
+  knipt het loslaten je laatste woord af.
+- **Mute wint van elke modus, en de ring volgt wat er verstuurd wordt.**
+  `eigen_spreekt = poort && !mute`, in dezelfde regel als de verzendbeslissing (zie
+  `df7a975`). Een tweede, aparte berekening voor de ring loopt vroeg of laat uit de pas.
+- **Elke wijziging geldt meteen, zonder de sessie te herstarten.** Modus en toets zijn
+  atomics in `Gedeeld`; `deelnemen` zet ze na het starten opnieuw uit de config.
+- **Zonder leesbare toets blijft het spraakdetectie.** Op een platform waar
+  `spreektoets::BESCHIKBAAR` `false` is (macOS) rekent `zet_spreektoets` elke modus terug naar
+  spraakdetectie. Push-to-talk met een toets die nooit ingedrukt is, is een permanente mute.
+- **De toetsenlijst is `spreektoets::TOETSEN`, en alleen dat.** Config, motor en scherm
+  lezen die tabel; een toets erbij is één rij, en een test bewaakt dat naam, label en
+  toetscode uniek zijn.
+- **Een kapotte configregel valt terug, weigert niet.** `PushToTalkConfig::herstel`: onbekende
+  modus wordt `voice`, onbekende toets `RightCtrl`, met een waarschuwing. De standaard na de
+  update is spraakdetectie: wie niets instelt merkt niets.
+- **De toets wordt niet ingeslikt.** Dat is de prijs van pollen en het hele punt ervan: de
+  game die vooraan staat krijgt hem ook. Beloof in de UI dus niet dat hij "gereserveerd" is.
+
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`
 (Media Foundation, alleen Windows) levert dezelfde `Opgenomen` als de schermopname, dus

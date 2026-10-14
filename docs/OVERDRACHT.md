@@ -2013,6 +2013,99 @@ regels. Niet op een echte Mac getest.
 
 **Wat je niet mag omdraaien:** zie de sectie "Luisteraars bedienen de muziek" in `CLAUDE.md`.
 
+### 42. Push-to-talk en push-to-mute: een toets die gepolld wordt, geen sneltoets en geen hook (2026-10-15)
+
+Rick wilde een globale toets voor de microfoon, ook terwijl een spel vooraan staat. Zijn
+antwoorden: de standaard na de update blijft spraakdetectie; er zijn drie modi (spraakdetectie,
+push-to-talk, push-to-mute) met één toets; standaardtoets Rechter-Ctrl; toetsenbordtoetsen én
+de zijknoppen van de muis (Mouse4/Mouse5) moeten te kiezen zijn.
+
+**Het mechanisme: `GetAsyncKeyState` op de tik van de opname-lus.** Overwogen en afgewezen:
+
+- *`RegisterHotKey`* (zoals de clip-sneltoets, `clips.rs`). Meldt alleen het indrukken, dus
+  push-to-talk kan het loslaten niet zien; het neemt de toets af van het spel dat vooraan
+  staat; en een kale Rechter-Ctrl is er niet mee te registreren (een hotkey wil een modifier
+  plus een toets).
+- *`WH_KEYBOARD_LL` / `WH_MOUSE_LL`.* Lost dat op, maar een low-level hook draait als
+  callback op elke toetsaanslag en muisbeweging van het hele systeem, in het invoerpad van
+  het spel. Dat is invariant 4. Pas als pollen echt niet kon was dit de terugval; het kon.
+- *Pollen.* `opname_lus` krijgt elk microfoonblok van de cpal-callback, ook als de VAD dicht
+  staat (de VAD slaat alleen het coderen over, niet het ontvangen), dus de lus tikt al
+  elke 10–20 ms zolang je in het gesprek zit. Per 20 ms-frame één `GetAsyncKeyState` kost
+  ~50 aanroepen per seconde, alleen tijdens een gesprek, geen extra thread of timer, en het
+  spel krijgt de toets gewoon. `VK_XBUTTON1/2` en `VK_RCONTROL` zijn dezelfde aanroep. Alleen
+  de hoogste bit telt: de laagste ("ingedrukt sinds de vorige aanroep") wordt door elk ander
+  programma dat dezelfde toets pollt mee gewist.
+
+**De poort** (`crates/audio/src/spreektoets.rs`, `Poort::open`, aangeroepen in `opname_lus`
+op de plek van het oude `hangover > 0`):
+
+| Modus | Poort open als |
+|---|---|
+| spraakdetectie | VAD (met haar 500 ms nahouden), zoals altijd |
+| push-to-talk | toets ingedrukt, plus 200 ms staart na het loslaten |
+| push-to-mute | VAD en toets *niet* ingedrukt; direct dicht, geen staart |
+
+- **In push-to-talk gaat de toets vóór de VAD en geldt de VAD er niet bovenop.** Gekozen:
+  wie push-to-talk kiest wil juist niet afhangen van een gok van RNNoise (drempel 0,65 knipt
+  zachte spraak af); een ingedrukte toets is een besluit van de gebruiker. Ruisonderdrukking
+  blijft gewoon werken. Gevolg: zolang je de toets vasthoudt wordt er ook stilte verstuurd
+  (32 kbit/s Opus), en alleen dan. Een aparte "en ook de VAD"-schakelaar is bewust niet
+  gebouwd.
+- **De staart is 10 frames = 200 ms** (`STAART_FRAMES`). Je laat de toets los op het moment
+  dat het laatste woord nog uitklinkt; zonder staart hoor je dat afgekapt. 200 ms is kort
+  genoeg om niet als "open microfoon" te voelen. De VAD heeft 500 ms nahouden en daar blijft
+  het bij; push-to-mute heeft bewust geen staart, want stil moet direct stil zijn.
+- **Mute wint van elke modus.** De poort bepaalt alleen of een frame mag; handmatig dempen
+  (en deafen, dat dempt) zet het daarna op nul, zoals het was.
+- **De spreekring volgt de poort** (commit `df7a975`): `eigen_spreekt = poort && !mute`,
+  dus in push-to-talk brandt hij zolang de toets (plus staart) open is, in push-to-mute gaat
+  hij uit zodra je de toets indrukt. Wat de ring toont is wat de anderen horen.
+- **Een wijziging geldt meteen, ook in een lopend gesprek.** Modus en toetscode staan als
+  atomics in `Gedeeld` (`VoiceHandle::zet_spreektoets`); de opname-thread leest ze per frame.
+  Geen herstart van de sessie, anders dan bij een apparaatwissel. `deelnemen` zet ze na het
+  starten opnieuw uit de config.
+
+**De toetsenlijst is één tabel** (`spreektoets::TOETSEN`: confignaam, label, `VK_*`-code).
+Config, motor en instellingenscherm lezen die ene tabel: Rechter/linker Ctrl, Shift en Alt,
+Caps Lock, Tab, backtick, Mouse3/4/5, F1–F24, Insert/Delete/Home/End/PageUp/PageDown, Scroll
+Lock, Pause, numpad 0–9 en A–Z. Een toets kiezen gaat via een keuzelijst en niet via "druk een
+toets": de zijknoppen en een kale modifier komen niet als GPUI-toetsgebeurtenis binnen, dus
+het luistervak van het tabblad Clips was hier niet te hergebruiken. Spatie en cijfers zitten
+er bewust niet in (te makkelijk per ongeluk, en typen in de chat opent dan de poort).
+
+**Config** (`config.toml`, `#[serde(default)]` op alles; een config van vóór deze versie
+start gewoon, in spraakdetectie):
+
+```toml
+[push_to_talk]
+mode = "voice"        # voice | talk | mute
+key = "RightCtrl"     # een naam uit TOETSEN, hoofdletters maken niet uit
+```
+
+`PushToTalkConfig::herstel` loopt bij het inlezen: een onbekende modus valt terug op `voice`,
+een onbekende toets op `RightCtrl`, beide met een waarschuwing, en de spelling wordt
+canoniek (`mouse4` wordt `Mouse4`). Een kapotte regel mag de app niet laten weigeren te
+starten en de microfoon niet stil laten vallen.
+
+**macOS: een nette stub.** `spreektoets::BESCHIKBAAR` is daar `false`, `ingedrukt` geeft
+altijd `false`, en `VoiceHandle::zet_spreektoets` rekent elke modus dan terug naar
+spraakdetectie (met een waarschuwing). Dat is geen luiheid maar een noodzaak: push-to-talk
+met een toets die nooit "ingedrukt" is zou een permanente mute zijn. Het instellingenscherm
+toont op de Mac alleen een regel dat het er nog niet is. `CGEventSourceKeyState` zou kunnen,
+maar het is niet getest en de zijknoppen vragen daar een ander pad.
+
+**Bekende grenzen** (niet gemeten, zie `docs/TESTPLAN.md`):
+
+- Een spel dat als *administrator* draait: of `GetAsyncKeyState` dan nog de toets ziet vanuit
+  een niet-verhoogd proces is niet getest.
+- Muissoftware (Logitech G Hub, Razer Synapse) die de zijknoppen zelf afvangt en herbindt
+  geeft ze mogelijk nooit door aan `GetAsyncKeyState`.
+- De toets wordt niet ingeslikt: het spel krijgt Rechter-Ctrl ook. Kies een toets die het
+  spel niet bindt. Een letter opent de poort ook als je in de chat typt.
+
+**Wat je niet mag omdraaien:** zie de sectie "Push-to-talk en push-to-mute" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

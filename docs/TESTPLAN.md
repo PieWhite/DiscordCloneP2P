@@ -1240,3 +1240,51 @@ Met de hand, want echte Spotify en twee of drie machines. A deelt Spotify, B en 
     alles. Omgekeerd ziet een 1.9.0-luisteraar gewoon geen knoppen.
 12. Gamen bij A terwijl B herhaaldelijk op Volgende drukt: geen merkbare hapering
     (invariant 4).
+
+## Push-to-talk en push-to-mute (2026-10-15, beslissing 42)
+
+Nooit op een echte tweede machine of met een echt spel geprobeerd: de poortlogica en de
+configvalback hebben unit-tests, het lezen van de toets zelf (`GetAsyncKeyState`) is alleen
+op deze PC bekeken in de instellingen (fixturemodus), niet ingedrukt. Doe dit met A (de
+tester) en B (luistert), A met een headset, in een gesprek. Per stap kijkt A ook naar de
+eigen spreekring (de ring moet doen wat B hoort).
+
+**Voorbereiding.** Update A naar deze build. Instellingen, tabblad Audio, sectie "Push to
+talk".
+
+1. **Standaard is spraakdetectie.** Een bestaande `config.toml` zonder `[push_to_talk]`:
+   de app start, de modus staat op *Voice activity*, de toets op *Right Ctrl*, en A wordt
+   gehoord zoals vroeger. Na het kiezen van iets staat er een `[push_to_talk]`-tabel in.
+2. **Push-to-talk, Rechter-Ctrl.** Kies *Push to talk*. A praat zonder de toets: B hoort
+   niets en A's ring blijft donker. A houdt Rechter-Ctrl vast en praat: B hoort het, de ring
+   brandt. Zachte spraak en fluisteren komen ook door (de VAD geldt er niet bovenop). Los
+   laten: het laatste woord wordt niet afgekapt en de ring dooft binnen ~0,2 s.
+3. **Zonder te praten** de toets vasthouden: B hoort alleen stilte/ruis, geen fouten in de
+   log, en na loslaten stopt het verkeer (Tailscale-teller of `netstat`).
+4. **Het kan live.** Wissel van modus en toets tijdens het gesprek: het geldt zonder
+   herverbinden, B hoort geen onderbreking en er klinkt geen join/leave-toon.
+5. **Push-to-mute.** Kies *Push to mute*. A praat gewoon: B hoort het. A houdt de toets
+   vast en praat: B hoort niets, direct (geen staart), en de ring gaat uit. Los laten: het
+   gaat weer open met de VAD.
+6. **Muisknoppen.** Kies *Mouse 4* en daarna *Mouse 5* (de zijknoppen): zelfde gedrag als
+   stap 2. Als de muis zijn eigen software heeft (G Hub, Synapse) en het niet werkt: noteer
+   welke, en probeer de knop daar op "standaard" te zetten.
+7. **Met een spel vooraan (de hoofdreden).** Start een spel in **exclusieve volle-scherm-
+   modus** en daarna in venster zonder rand, en doe stap 2 met Rechter-Ctrl en met een
+   zijknop. Dit moet werken zonder dat A de app voor de voorgrond haalt. Kijk ook of het
+   spel de toets zelf nog krijgt (dat hoort zo; kies een toets die het spel niet bindt).
+8. **Een spel als administrator.** Start het spel "als administrator" en herhaal stap 2.
+   Werkt het niet: dat is mogelijk de UIPI-grens van een niet-verhoogd proces; noteer het, dan
+   beslissen we of er een melding of een andere aanpak voor nodig is.
+9. **Gamen wint (invariant 4).** Een zwaar spel met push-to-talk aan en veel toetsen/muis
+   gebruiken: geen merkbare hapering, geen extra frame-tijd ten opzichte van VAD-modus.
+10. **Mute wint.** Zet A op mute (de knop in het voicepaneel), kies *Push to talk* en houd
+    de toets vast: B hoort niets, de ring blijft uit. Zelfde met deafen.
+11. **Apparaatwissel.** Wissel van microfoon in de instellingen tijdens het gesprek: de
+    sessie herstart kort en de gekozen modus en toets gelden daarna meteen.
+12. **Kapotte config.** Zet in `config.toml` `mode = "schreeuwen"` en `key = "Hyper"`: de
+    app start, logt twee waarschuwingen, staat op *Voice activity* met *Right Ctrl*. Zet
+    `key = "mouse4"` (kleine letters): hij staat als *Mouse 4* in de lijst.
+13. **macOS** (alleen te zien, niet te testen): het tabblad toont "Push to talk is not
+    available on macOS yet" en een bestaande `mode = "talk"` in de config doet niets: de
+    microfoon blijft op spraakdetectie en de log meldt het één keer.
