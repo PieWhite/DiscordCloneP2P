@@ -20,7 +20,7 @@ pub const MAX_PAYLOAD: usize = fitcom_proto::MAX_MEDIA_PAYLOAD;
 /// uit en laat percussie rammelen. Stereo, het audio-model en ruim boven de grens waar
 /// Opus in luistertests niet meer van het origineel te onderscheiden is (~256 kbit/s
 /// stereo); 384 past met marge in één pakket. Echt verliesvrij (PCM, 1,5 Mbit/s) zou
-/// fragmenteren en zonder FEC of verliesverberging een tik per verloren pakket geven, en
+/// fragmenteren en zonder verliesverberging (Opus' PLC) een tik per verloren pakket geven, en
 /// Spotify zelf levert meestal al gecomprimeerd aan — de laatste paar procent is hoorbaar
 /// slechter, niet beter. 0,4 Mbit/s per luisteraar kost bij 1 Gbit niets.
 const BUREAUBLAD_BITRATE: i32 = 384_000;

@@ -1938,8 +1938,10 @@ beide kanalen), de mix en de weergave zijn verweven stereo, herbemonsteren per k
 Opus in luistertests niet meer van het origineel te onderscheiden is (~256 kbit/s stereo) en
 past met marge in één mediapakket (`MAX_PAYLOAD = MAX_MEDIA_PAYLOAD`, 1100 bytes per 20 ms).
 Echt verliesvrij is overwogen en afgewezen: PCM is 1,5 Mbit/s, moet gefragmenteerd en heeft
-geen FEC of verliesverberging, dus elk verloren pakket is een tik; Opus met FEC klinkt op een
-echt netwerk beter. En Spotify zelf levert meestal al gecomprimeerd aan. Een oudere peer met
+geen verliesverberging, dus elk verloren pakket is een tik; Opus vult een verloren frame
+op (PLC) en klinkt op een echt netwerk daardoor beter. Inband-FEC staat aan maar doet op
+deze bitrate niets: fullband stereo op 384 kbit/s is pure CELT, en FEC bestaat alleen in de
+SILK-modi. En Spotify zelf levert meestal al gecomprimeerd aan. Een oudere peer met
 een monodecoder kan de stereopakketten nog steeds decoderen.
 
 **Afgewezen:** iedereen in zijn eigen Spotify en die gelijk houden via de Spotify Web API.

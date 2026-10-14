@@ -1192,7 +1192,9 @@ Met de hand, want echte Spotify en twee machines:
 7. A deelt ook zijn scherm, B kijkt: B hoort Spotify één keer, niet dubbel. Stop Spotify:
    het bureaubladgeluid van het scherm komt terug.
 8. Kwaliteit: hetzelfde nummer bij B via de stream en rechtstreeks in Spotify vergelijken,
-   op een koptelefoon. Verwachting: niet te onderscheiden.
+   op een koptelefoon. Verwachting: niet te onderscheiden. **Spotify's eigen volume bij A op
+   100%**: de opname zit ná die schuif, dus Spotify op 30% is zachte (en minder fijne) muziek
+   voor iedereen. Harder of zachter doet B met de SPOTIFY-schuif, A met het Windows-volume.
 9. Gamen bij A met Spotify gedeeld: geen merkbare impact (invariant 4).
 10. macOS als DJ: Screen Recording-toestemming is er al; eerste keer vraagt macOS of de app
     Spotify mag bedienen (voor de titel). Nee zeggen = de stream heet "Spotify", muziek werkt.
