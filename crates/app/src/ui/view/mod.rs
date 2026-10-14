@@ -534,6 +534,13 @@ fn active_channel(v: &ViewState) -> String {
     }
 }
 
+/// Whether the open conversation is really on screen: the window in front and not on a
+/// settings tab. In settings the last channel is still "active" but not visible, and
+/// marking it read there swallowed messages and their notifications.
+fn looking(v: &ViewState) -> bool {
+    v.focused && v.view != View::Settings
+}
+
 fn unread_count(s: &UiState, v: &ViewState) -> usize {
     let key = active_channel(v);
     match key.strip_prefix("dm:") {
@@ -667,7 +674,7 @@ impl AppView {
                     .voorgrond
                     .store(active, std::sync::atomic::Ordering::Relaxed);
                 this.v_mut().focused = active;
-                if active && unread_count(&this.s, &this.v) > 0 {
+                if looking(&this.v) && unread_count(&this.s, &this.v) > 0 {
                     commands::mark_read(&this.ui, &active_channel(&this.v));
                 }
                 cx.notify();
@@ -708,8 +715,12 @@ impl AppView {
             .store(active, std::sync::atomic::Ordering::Relaxed);
         this.v_mut().focused = active;
         this.load_timeline();
-        // The boot sequence of `app.js`: draw, then mark the open conversation read.
-        commands::mark_read(&this.ui, &active_channel(&this.v));
+        // The boot sequence of `app.js`: draw, then mark the open conversation read, but only
+        // when someone is looking: an autostarted window that opens behind the game must not
+        // swallow what came in overnight.
+        if looking(&this.v) {
+            commands::mark_read(&this.ui, &active_channel(&this.v));
+        }
         window.focus(&focus, cx);
 
         #[cfg(debug_assertions)]
@@ -788,7 +799,7 @@ impl AppView {
 
         // Looking at a conversation is reading it, but only the one actually on screen,
         // so a DM cannot quietly clear the general channel's counter or the other way round.
-        if self.v.focused && unread_count(&self.s, &self.v) > 0 {
+        if looking(&self.v) && unread_count(&self.s, &self.v) > 0 {
             commands::mark_read(&self.ui, &active_channel(&self.v));
         }
     }
@@ -802,6 +813,10 @@ impl AppView {
     fn after_conversation_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = active_channel(&self.v);
         if key != self.composer_key {
+            // Here and not only in `open_channel`/`open_dm`: the rail buttons and a vanished
+            // channel come through here too. A reply that moved along to another
+            // conversation made Enter drop the text with an error banner.
+            self.leave_conversation_state();
             let draft = self.v_mut().drafts.remove(&key).unwrap_or_default();
             let left = self
                 .panes
@@ -971,6 +986,10 @@ impl AppView {
     }
 
     fn on_drag_files(&mut self, cx: &mut Context<Self>) {
+        // Settings shows no conversation to share into.
+        if self.v.view == View::Settings {
+            return;
+        }
         if !self.drop_hover {
             self.drop_hover = true;
             self.v_mut().overlay = Overlay::Drop;
@@ -980,6 +999,11 @@ impl AppView {
 
     /// B-52: the paths stay in `Ui::dropped`; `offer_files` gets indices into them.
     fn on_drop_files(&mut self, paths: &ExternalPaths, _: &mut Window, cx: &mut Context<Self>) {
+        // See `on_drag_files`: without this a file let go over settings went, with no
+        // overlay, to everyone in the last opened channel.
+        if self.v.view == View::Settings {
+            return;
+        }
         self.drop_hover = false;
         if self.v.overlay == Overlay::Drop {
             self.v_mut().overlay = Overlay::None;
