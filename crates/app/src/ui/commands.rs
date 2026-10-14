@@ -637,8 +637,9 @@ pub fn open_link(url: &str) {
 /// there. Without the Web API there is no "add to queue" from outside the app.
 ///
 /// The id came out of a message a peer typed, and it goes into a URI: it is checked again
-/// here (`muziek::geldig_track_id`, 22 characters base62), whatever the view found. With
-/// no Spotify app to take the URI, the web player gets the same id instead.
+/// here (`muziek::geldig_track_id`, 22 characters base62), whatever the view found. If
+/// Windows reports that nothing took the URI, the web player gets the same id instead — a
+/// safety net only: the DJ cannot share without the app running.
 pub fn open_spotify_track(id: &str) {
     if !crate::muziek::geldig_track_id(id) {
         tracing::warn!(id, "not a Spotify track id; not opened");
@@ -679,9 +680,10 @@ fn shell_open(target: &str) -> bool {
 
     #[cfg(target_os = "macos")]
     {
-        // `open` finishes quickly and says whether an app took the URI.
-        match std::process::Command::new("open").arg(target).status() {
-            Ok(s) => s.success(),
+        // Spawned, not awaited: the click must not wait on an app launch. So `true` only
+        // means `open` started, not that an app took the URI.
+        match std::process::Command::new("open").arg(target).spawn() {
+            Ok(_) => true,
             Err(e) => {
                 tracing::warn!(error = %e, target, "opening failed");
                 false

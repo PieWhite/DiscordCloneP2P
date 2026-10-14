@@ -1229,7 +1229,8 @@ Met de hand, want echte Spotify en twee of drie machines. A deelt Spotify, B en 
    **Open in Spotify**; B en C zien alleen de link. A klikt: het nummer opent in A's
    Spotify-app en speelt pas als A er zelf op drukt of het in zijn wachtrij zet. Ook met
    `open.spotify.com/intl-nl/track/…`.
-8. Zelfde klik op een pc zonder Spotify-app: de webspeler opent in de browser met dat nummer.
+8. Twee keer achter elkaar op dezelfde knop: Spotify bij A springt naar dat nummer, er gaat
+   niets dubbel in de wachtrij en er opent geen tweede venster.
 9. Een link naar een album of afspeellijst geeft géén knop. Een kapotte link (te kort, rare
    tekens) ook niet.
 10. A is een macOS-DJ: de eerste pauze vraagt mogelijk opnieuw of de app Spotify mag

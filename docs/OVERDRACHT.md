@@ -1996,8 +1996,11 @@ De knop opent `spotify:track:<id>` in de Spotify-app van de DJ, en daar speelt h
 zet hij het zelf in zijn wachtrij. **Echt "aan de wachtrij toevoegen" van buiten de app kan
 niet zonder de Spotify Web API** (OAuth en Premium per persoon, een cloud-API: een vierde
 uitzondering op invariant 1), en de URI-handler van de desktop-app kent geen
-wachtrij-opdracht. Zonder geregistreerde `spotify:`-handler (`ShellExecuteW` ≤ 32, of
-`open` die faalt) opent dezelfde id in de webspeler.
+wachtrij-opdracht. In de praktijk heeft de DJ de app altijd (delen weigert zonder draaiende
+`Spotify.exe`), dus de terugval op de webspeler bij een `ShellExecuteW` ≤ 32 is een vangnet
+dat nooit getest is: Windows toont bij een onbekend schema mogelijk zijn eigen
+"zoek een app"-keuze en meldt dan succes. Op macOS wordt `open` gestart en niet afgewacht
+(de klik mag niet op het opstarten van een app wachten), dus daar is er geen terugval.
 
 **Het track-id is de B-03-klasse.** Het komt uit een bericht dat een peer typte en gaat een
 URI in. `muziek::geldig_track_id` eist precies 22 tekens `[A-Za-z0-9]`, en
