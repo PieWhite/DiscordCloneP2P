@@ -10,7 +10,9 @@ pub mod mesh;
 mod tls;
 
 pub use media::{MediaSocket, MAX_PAKKET};
-pub use mesh::{spawn, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget};
+pub use mesh::{
+    spawn, MeshCommand, MeshConfig, MeshEvent, MeshHandle, MeshSluiter, PeerStatus, PeerTarget,
+};
 // De ruwe quinn-streamtypes, zodat `fitcom-app` een bestandsoverdracht kan lezen/schrijven
 // zonder zelf een directe afhankelijkheid op `quinn` te hoeven opnemen.
 pub use quinn::{RecvStream, SendStream};

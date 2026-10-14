@@ -25,7 +25,28 @@ struct Args {
     data_dir: Option<PathBuf>,
 }
 
-fn main() -> Result<()> {
+fn main() {
+    // Een paniek ging in een release-build naar een stderr die er niet is, en tokio slikt
+    // die van de motor helemaal: de app werd stil offline zonder spoor in de log.
+    let standaard = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(
+            thread = std::thread::current().name().unwrap_or("?"),
+            backtrace = %std::backtrace::Backtrace::force_capture(),
+            "paniek: {info}"
+        );
+        standaard(info);
+    }));
+
+    if let Err(e) = start() {
+        let tekst = format!("{e:#}");
+        tracing::error!(error = %tekst, "opstarten mislukt");
+        tray::toon_fout(&tekst);
+        std::process::exit(1);
+    }
+}
+
+fn start() -> Result<()> {
     let args = Args::parse();
 
     // Debug builds only: the window without mesh, store or engine, fed from JSON. Before
@@ -43,6 +64,9 @@ fn main() -> Result<()> {
     }
 
     let data_dir = config::resolve_data_dir(args.data_dir)?;
+    if tray::al_actief(&data_dir) {
+        return Ok(());
+    }
     init_logging(&data_dir)?;
 
     tracing::info!(
@@ -107,8 +131,14 @@ fn main() -> Result<()> {
 
     let mesh = {
         let _enter = runtime.enter();
-        fitcom_net::spawn(mesh_cfg).context("netwerklaag starten")?
+        fitcom_net::spawn(mesh_cfg).with_context(|| {
+            format!(
+                "netwerklaag starten op poort {}; draait er al een ander programma op die poort?",
+                cfg.control_port
+            )
+        })?
     };
+    let mesh_sluiter = mesh.sluiter();
 
     let store = fitcom_store::Store::open(&data_dir.join("chat.sqlite"), identity.peer_id)
         .context("chat-database openen")?;
@@ -137,7 +167,14 @@ fn main() -> Result<()> {
 
     // Het venster: GPUI met gpui-kit. Eigen titelbalk volgens het ontwerp; alles eromheen
     // (tray, vensterhandle, de drie feeds) zit in `ui::run`.
-    ui::run(engine, identity.peer_id, &cfg_voor_ui, youtube_dir, runtime)
+    ui::run(
+        engine,
+        identity.peer_id,
+        &cfg_voor_ui,
+        youtube_dir,
+        runtime,
+        mesh_sluiter,
+    )
 }
 
 /// Logt naar een dagelijks roterend bestand in `<data>/logs` en naar de console.

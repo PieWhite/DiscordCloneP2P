@@ -268,3 +268,71 @@ pub fn zet_autostart(aan: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Draait er al een FitCommunication op deze datamap? Dan wordt dat venster naar voren
+/// gehaald en geeft dit `true`: de aanroeper hoort dan te stoppen.
+///
+/// Zonder dit liep een tweede exemplaar (een dubbelklik op de exe terwijl de eerste in de
+/// tray staat, autostart plus een handmatige start) vast op de bezette poort en stopte het
+/// zonder één melding: "poort al in gebruik" waar niemand een tweede app zag. Per datamap,
+/// zodat `--data-dir` voor lokale testpeers blijft werken.
+#[cfg(windows)]
+pub fn al_actief(data_dir: &std::path::Path) -> bool {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    // Een backslash is in een mutexnaam een naamruimte-scheiding.
+    let sleutel: String = data_dir
+        .to_string_lossy()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c == '\\' || c == ':' { '_' } else { c })
+        .collect();
+    let naam = HSTRING::from(format!("Local\\FitCommunication-{sleutel}"));
+    // SAFETY: geldige naam; de handle blijft bewust open tot het proces eindigt, want
+    // zolang hij bestaat bestaat de mutex.
+    let bestond = unsafe {
+        match CreateMutexW(None, false, &naam) {
+            Ok(_) => GetLastError() == ERROR_ALREADY_EXISTS,
+            Err(_) => false,
+        }
+    };
+    if bestond {
+        // SAFETY: alleen lezen; een venster dat er niet (meer) is levert een fout op.
+        if let Ok(h) = unsafe { FindWindowW(None, &HSTRING::from("FitCommunication")) } {
+            HWND.store(h.0 as isize, Ordering::Relaxed);
+            toon_venster();
+        }
+    }
+    bestond
+}
+
+/// Een macOS-app is vanzelf één exemplaar: Launch Services start hem geen tweede keer.
+#[cfg(not(windows))]
+pub fn al_actief(_data_dir: &std::path::Path) -> bool {
+    false
+}
+
+/// Een fout bij het opstarten zichtbaar maken. Een release-exe heeft geen console, dus
+/// zonder dit stopte de app bij een kapotte config of een bezette poort zonder één spoor.
+#[cfg(windows)]
+pub fn toon_fout(tekst: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    // SAFETY: geldige strings, geen ouder-venster.
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(tekst),
+            &HSTRING::from("FitCommunication kon niet starten"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn toon_fout(tekst: &str) {
+    eprintln!("FitCommunication kon niet starten: {tekst}");
+}

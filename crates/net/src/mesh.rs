@@ -177,6 +177,27 @@ impl MeshHandle {
         endpoint.close(0u32.into(), b"afsluiten");
         endpoint.wait_idle().await;
     }
+
+    /// Een handvat om bij het afsluiten van de app de verbindingen te sluiten, ook nadat
+    /// de handle zelf aan de motor is gegeven.
+    pub fn sluiter(&self) -> MeshSluiter {
+        MeshSluiter(self.endpoint.clone())
+    }
+}
+
+/// Zie [`MeshHandle::sluiter`]. Zonder dit verdween de app zonder CONNECTION_CLOSE: de
+/// anderen zagen je nog 15 s (de idle-timeout) online en in het gesprek en bleven audio
+/// naar een dode poort sturen.
+#[derive(Clone)]
+pub struct MeshSluiter(quinn::Endpoint);
+
+impl MeshSluiter {
+    /// Stuurt elke peer een nette afsluiting en wacht hoogstens `max` tot die weg is.
+    /// De endpoint-taak moet daarvoor nog draaien: aanroepen vóór de runtime weg is.
+    pub async fn sluit(&self, max: Duration) {
+        self.0.close(0u32.into(), b"afsluiten");
+        let _ = tokio::time::timeout(max, self.0.wait_idle()).await;
+    }
 }
 
 /// Zet alle netwerktaken stil zodra de handle wegvalt. Zonder dit blijft de UDP-poort

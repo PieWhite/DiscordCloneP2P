@@ -237,6 +237,7 @@ pub fn run(
     cfg: &Config,
     youtube_dir: PathBuf,
     runtime: tokio::runtime::Runtime,
+    mesh: fitcom_net::MeshSluiter,
 ) -> anyhow::Result<()> {
     let ui = Arc::new(Ui {
         me,
@@ -256,8 +257,13 @@ pub fn run(
     });
     let feeds = bridge::spawn_live(&ui);
     open(ui, feeds);
-    // Kept alive until the window loop has ended; see `Ui::runtime`.
-    drop(runtime);
+    // Kept alive until the window loop has ended; see `Ui::runtime`. Before it goes, the
+    // peers get a proper close (otherwise they saw us online and in the call for another
+    // 15 s), and then at most 2 s for whatever blocking work is still running: a plain
+    // drop waited for every `spawn_blocking` to finish, which left a window-less process
+    // and a ghost tray icon behind during an update download or a big hash.
+    runtime.block_on(mesh.sluit(std::time::Duration::from_millis(500)));
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     Ok(())
 }
 
