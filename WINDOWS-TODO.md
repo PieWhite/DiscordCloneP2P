@@ -1,17 +1,19 @@
 # Voor de sessie op de Windows-PC
 
 `main` draait sinds 2026-10-04 op GPUI in plaats van Tauri (beslissing 39 in
-`docs/OVERDRACHT.md`). Op Windows is hij nog nooit gestart; vanaf de Mac is alleen
-gecompileerd. Wat hier moet gebeuren:
+`docs/OVERDRACHT.md`). Stand op 2026-10-14:
 
-1. `git pull`, alle fitcom-instanties sluiten, `cargo build --release -p fitcom`.
-   Een release-build heeft `fxc.exe` uit de Windows SDK nodig (zit bij de C++-workload van
-   de VS Build Tools); zonder faalt de build.
-2. De handmatige checks V.1 t/m V.12 uit `docs/TESTPLAN.md`, sectie "GPUI-weergave
-   (2026-10-04)": tray, sluiten naar tray en terug, titelbalk en snap layouts, slepen uit
-   Verkenner, plakken, meldingen, DPI 125/150%, streamtegels, pop-out kijkvenster, CPU naast
-   een game.
-3. Wat stuk is: repareren en vastleggen in TESTPLAN. Pas daarna een release uitgeven
-   (volgorde in `docs/OVERDRACHT.md` § "Een release uitgeven").
+1. ~~Release-build op Windows~~: gedaan; de eerste build liep stuk op een dubbel manifest
+   (opgelost in `build.rs`).
+2. Van de handmatige checks uit `docs/TESTPLAN.md`, sectie "GPUI-weergave (2026-10-04)",
+   zijn V.1, het rustdeel van V.12 en de eerste helft van V.3 gedaan (zie de resultaten
+   daar). **Nog open: V.2 t/m V.11 en het game-deel van V.12**: tray-menu, terug uit de
+   tray, titelbalk en snap layouts, slepen uit Verkenner, plakken, meldingen, DPI 125/150%,
+   streamtegels, pop-out kijkvenster, CPU naast een game.
+3. **1.8.0 is op Rick's verzoek al uitgegeven vóór die checks.** Wat er bij V.2-V.11 stuk
+   blijkt: repareren, vastleggen in TESTPLAN, en een 1.8.1 uitgeven (volgorde in
+   `docs/OVERDRACHT.md` § "Een release uitgeven").
 
-Verwijder dit bestand als het gedaan is.
+De openstaande bevindingen van de code-audit staan in `docs/AUDIT-2026-10.md`.
+
+Verwijder dit bestand als punt 2 gedaan is.
