@@ -560,6 +560,10 @@ pub struct Constants {
     pub minimize_to_tray: bool,
 }
 
+fn reply_snippet(body: &str) -> String {
+    body.chars().take(REPLY_SNIPPET_LEN).collect()
+}
+
 fn display_name(snap: &Snapshot, peer: PeerId, fallback: &str) -> String {
     snap.timeline
         .nicknames
@@ -845,11 +849,10 @@ pub fn timeline_of(
         .messages
         .iter()
         .filter(|m| belongs_to_channel(channel, me, m.channel, m.author))
-        .map(|m| {
-            let mut body = m.body.clone();
-            body.truncate(REPLY_SNIPPET_LEN);
-            (m.id, (m, body))
-        })
+        // In characters, not bytes: `String::truncate` panics inside an é or an emoji, and
+        // this runs over every message of the conversation, a peer's included. One such
+        // message in the synced log crashed every peer on every start.
+        .map(|m| (m.id, (m, reply_snippet(&m.body))))
         .collect();
 
     // Reactions per message id, in the store's own order — already sorted the same way
@@ -1426,6 +1429,15 @@ mod tests {
         let back: Vec<TimelineItem> =
             serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
         assert_eq!(back, items);
+    }
+
+    #[test]
+    fn a_reply_snippet_never_cuts_a_character_in_half() {
+        // Byte 90 falls inside the é: `String::truncate(90)` panicked here.
+        let body = format!("{}é en de rest", "a".repeat(89));
+        let snippet = reply_snippet(&body);
+        assert_eq!(snippet.chars().count(), REPLY_SNIPPET_LEN);
+        assert!(snippet.ends_with('é'));
     }
 
     #[test]
