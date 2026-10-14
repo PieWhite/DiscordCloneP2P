@@ -176,3 +176,55 @@ fn de_encoder_houdt_hoogstens_een_beeld_vast() {
          in te halen is"
     );
 }
+
+#[test]
+#[ignore = "vereist een GPU met een hardware-encoder"]
+fn een_encoder_loslaten_midden_in_een_stream_laat_het_proces_staan() {
+    // Zo stopt een deler: zijn thread eindigt midden in een stream en de encoder gaat
+    // mee. Zonder `IMFShutdown` liep de NVENC-MFT daarna nog werk af op een
+    // MF-werkthread tegen afgebroken staat, en viel het hele proces om met een access
+    // violation in `nvencmfthevcx.dll` (twee crashdumps van 2026-10-12, telkens vlak na
+    // "delen gestopt"). Komt dit proces niet heelhuids aan het eind, dan is het terug.
+    //
+    // Het is een race, dus één keer groen zegt weinig: voer de testexe een stuk of tien
+    // keer los uit. Vóór de fix crashte ongeveer de helft van de runs (STATUS_ACCESS_
+    // VIOLATION, geen nette testfout); zie `codec::sluit_af` voor de meting.
+    let d3d = D3dContext::new().expect("D3D11");
+    let beelden = std::sync::Arc::new(fasen(&d3d).into_iter().map(SendTextuur).collect::<Vec<_>>());
+
+    for ronde in 0..20 {
+        for codec in [Codec::Hevc, Codec::H264] {
+            let d3d = d3d.clone();
+            let beelden = beelden.clone();
+            std::thread::spawn(move || {
+                let mut encoder = Encoder::new(
+                    &d3d,
+                    &EncoderConfig {
+                        codec,
+                        breedte: BREEDTE,
+                        hoogte: HOOGTE,
+                        fps: FPS,
+                        bitrate: BITRATE,
+                    },
+                )
+                .expect("encoder");
+                // Een oneven aantal, zodat er nog werk in de pijplijn zit bij het loslaten.
+                for n in 0..(25 + ronde) {
+                    let tijd = (n as i64) * HNS_PER_SEC / i64::from(FPS);
+                    let _ = encoder.encode(&beelden[n % FASEN].0, tijd);
+                }
+            })
+            .join()
+            .expect("deel-thread");
+        }
+    }
+    // Het werk van een losgelaten MFT loopt nog even door op de MF-werkthreads.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+}
+
+/// Een textuur over een threadgrens, zoals de opname hem aan de deel-thread geeft.
+struct SendTextuur(ID3D11Texture2D);
+// SAFETY: een ID3D11Texture2D is vrij-threaded; elke thread gebruikt hem hier alleen om
+// hem aan zijn eigen encoder te geven.
+unsafe impl Send for SendTextuur {}
+unsafe impl Sync for SendTextuur {}

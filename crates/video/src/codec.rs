@@ -128,6 +128,8 @@ pub struct Pakket {
 
 pub struct Encoder {
     transform: IMFTransform,
+    /// Bewaard voor `ShutdownObject` in `Drop`; zie [`sluit_af`].
+    activate: IMFActivate,
     events: IMFMediaEventGenerator,
     codec_api: Option<ICodecAPI>,
     frame_duur: i64,
@@ -267,6 +269,7 @@ impl Encoder {
 
         Ok(Self {
             transform,
+            activate: activate.clone(),
             events,
             codec_api,
             frame_duur,
@@ -410,6 +413,95 @@ impl Encoder {
     }
 }
 
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        sluit_af(&self.transform, Some(&self.events), &self.activate);
+    }
+}
+
+/// Een MFT netjes afsluiten voordat hij losgelaten wordt.
+///
+/// Een asynchrone MFT (de NVENC-encoder) zet zelf werk klaar op de MF-werkwachtrij, onder
+/// meer een wacht op de GPU. Liet je hem midden in een stream los, dan vuurde dat werk
+/// daarna tegen afgebroken staat en viel het hele proces om: een access violation in
+/// `nvencmfthevcx.dll` op een rtworkq-thread, telkens vlak na "delen gestopt" (twee
+/// crashdumps van 2026-10-12). `tests/encoder_gedrag.rs` reproduceert hem; gemeten met die
+/// test, telkens 40 encoders per proces:
+///
+/// - alleen loslaten, zoals het was: ongeveer de helft van de processen crasht;
+/// - `Shutdown` zonder leegdraaien: nog steeds vaak;
+/// - leegdraaien tot `METransformDrainComplete`, dan `Shutdown`: ~1 op 7;
+/// - plus [`NA_DRAIN`] wachten vóór `Shutdown`: 0 op 57 (ruim 2000 keer loslaten).
+///
+/// Dat laatste is een driverkwestie en geen nette API: na `DrainComplete` staat er bij
+/// NVIDIA nog een wacht op de GPU uit, en `Shutdown` zet de staat op nul waar die wacht in
+/// schrijft (het adres in de dumps is `0x24`, dus een nulwijzer, geen vrijgegeven geheugen).
+///
+/// Fouten tellen hier niet: een synchrone MFT kent `IMFShutdown` niet, en een MFT die al
+/// in een fouttoestand zit mag alsnog weg. Draait op de thread die hem bezat, want de
+/// encoder sterft met zijn deel- of opnamethread; die wacht kost dus geen ander werk iets.
+fn sluit_af(
+    transform: &IMFTransform,
+    events: Option<&IMFMediaEventGenerator>,
+    activate: &IMFActivate,
+) {
+    // SAFETY: de transform leeft nog (we zitten in `Drop` van zijn eigenaar) en wordt na
+    // deze aanroepen niet meer gebruikt.
+    unsafe {
+        let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+        if let Some(events) = events {
+            leeg_tot_drain_klaar(transform, events);
+            std::thread::sleep(NA_DRAIN);
+        }
+        let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+        let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+        let _ = transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, 0);
+        if let Ok(shutdown) = transform.cast::<IMFShutdown>() {
+            let _ = shutdown.Shutdown();
+        }
+        let _ = activate.ShutdownObject();
+    }
+}
+
+/// Zie [`sluit_af`]. 100 ms was in de meting genoeg; de deel-thread eindigt toch al.
+const NA_DRAIN: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Een asynchrone MFT leegdraaien: `COMMAND_DRAIN`, dan zijn gebeurtenissen afhandelen
+/// (uitvoer ophalen en weggooien) tot `METransformDrainComplete`. Begrensd in tijd: een
+/// MFT in een fouttoestand meldt misschien nooit meer iets, en dan moet het loslaten
+/// alsnog doorgaan.
+unsafe fn leeg_tot_drain_klaar(transform: &IMFTransform, events: &IMFMediaEventGenerator) {
+    if transform
+        .ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)
+        .is_err()
+    {
+        return;
+    }
+    let tot = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while std::time::Instant::now() < tot {
+        let event = match events.GetEvent(MF_EVENT_FLAG_NO_WAIT) {
+            Ok(e) => e,
+            Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            Err(_) => return,
+        };
+        let Ok(soort) = event.GetType() else { return };
+        if soort == METransformDrainComplete.0 as u32 {
+            return;
+        }
+        if soort == METransformHaveOutput.0 as u32 {
+            let mut buffers = [MFT_OUTPUT_DATA_BUFFER::default()];
+            let mut status = 0u32;
+            let _ = transform.ProcessOutput(0, &mut buffers, &mut status);
+            let _ = buffers[0].pEvents.take();
+            let _ = buffers[0].pSample.take();
+        }
+    }
+    tracing::warn!("MFT meldde geen DrainComplete binnen 500 ms; toch afsluiten");
+}
+
 // ---------------------------------------------------------------------------
 // Decoder
 // ---------------------------------------------------------------------------
@@ -438,6 +530,8 @@ enum Uitvoer {
 /// hangt af van de machine en niet van de codec.
 pub struct Decoder {
     transform: IMFTransform,
+    /// Bewaard voor `ShutdownObject` in `Drop`; zie [`sluit_af`].
+    activate: IMFActivate,
     /// `Some` bij een asynchrone MFT.
     events: Option<IMFMediaEventGenerator>,
     d3d: D3dContext,
@@ -461,6 +555,15 @@ pub struct Decoder {
 // SAFETY: zelfde reden als bij `Encoder`: alleen gebruikt vanaf de render-thread van
 // één stream.
 unsafe impl Send for Decoder {}
+
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        // Zonder leegdraaien en zonder de wacht: de crash is alleen bij de encoder gezien,
+        // en een decoder wordt ook midden in een stream vervangen (codecwissel), waar
+        // 100 ms stilstand zichtbaar is.
+        sluit_af(&self.transform, None, &self.activate);
+    }
+}
 
 impl Decoder {
     pub fn new(d3d: &D3dContext, codec: Codec, breedte: u32, hoogte: u32) -> Result<Self> {
@@ -542,6 +645,7 @@ impl Decoder {
 
         let mut decoder = Self {
             transform,
+            activate: activate.clone(),
             events,
             d3d: d3d.clone(),
             kleur: None,
