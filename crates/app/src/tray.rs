@@ -98,14 +98,15 @@ pub fn start() -> Result<Tray> {
     std::thread::Builder::new()
         .name("fitcom-tray".into())
         .spawn(move || {
+            // Blokkerend en alles leeglezen: tray-icon zet élke muisbeweging boven het
+            // icoon in deze onbegrensde wachtrij. Eén per 100 ms ophalen liet een
+            // dubbelklik achter een rij Move-events wachten, soms seconden, en het venster
+            // kwam dan naar voren terwijl je alweer in je game zat.
             let tray_events = TrayIconEvent::receiver();
-
-            loop {
-                if let Ok(TrayIconEvent::DoubleClick { .. }) = tray_events.try_recv() {
+            while let Ok(ev) = tray_events.recv() {
+                if let TrayIconEvent::DoubleClick { .. } = ev {
                     toon_venster();
                 }
-
-                std::thread::sleep(std::time::Duration::from_millis(100));
             }
         })
         .context("tray-thread starten")?;
@@ -127,13 +128,17 @@ pub fn verberg_venster() {
 #[cfg(windows)]
 pub fn toon_venster() {
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+        IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
     };
     if let Some(h) = venster() {
         // SAFETY: geldige HWND van ons eigen venster.
         unsafe {
             let _ = ShowWindow(h, SW_SHOW);
-            let _ = ShowWindow(h, SW_RESTORE);
+            // Alleen als hij geminimaliseerd is: `SW_RESTORE` haalt een gemaximaliseerd
+            // venster ook terug naar zijn gewone maat.
+            if IsIconic(h).as_bool() {
+                let _ = ShowWindow(h, SW_RESTORE);
+            }
             let _ = SetForegroundWindow(h);
         }
     }
