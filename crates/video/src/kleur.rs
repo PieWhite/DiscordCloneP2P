@@ -83,7 +83,10 @@ pub struct Kleuromzetter {
     /// staan, dan kon een vrijgegeven textuur hetzelfde adres terugkrijgen en wees de
     /// cache stilzwijgend naar een ander beeld.
     views: Vec<(ID3D11Texture2D, u32, ID3D11VideoProcessorInputView)>,
+    /// Het beeld zoals het getoond wordt.
     afmeting: (u32, u32),
+    /// De textuur van de decoder, die groter kan zijn (zie `new`).
+    textuur: (u32, u32),
 }
 
 // SAFETY: het D3D11-apparaat staat op multithread-protected (zie `d3d.rs`) en de
@@ -91,7 +94,16 @@ pub struct Kleuromzetter {
 unsafe impl Send for Kleuromzetter {}
 
 impl Kleuromzetter {
-    pub fn new(d3d: &D3dContext, breedte: u32, hoogte: u32, ruimte: Kleurruimte) -> Result<Self> {
+    /// `textuur` is wat de decoder aflevert, `beeld` wat er getoond hoort te worden. Die
+    /// verschillen: H.264 codeert in blokken van zestien, dus 1080 beeldlijnen komen als een
+    /// textuur van 1088, en 3440 kolommen als 3456. Alleen `beeld` gaat de uitvoer in.
+    pub fn new(
+        d3d: &D3dContext,
+        textuur: (u32, u32),
+        beeld: (u32, u32),
+        ruimte: Kleurruimte,
+    ) -> Result<Self> {
+        let (breedte, hoogte) = beeld;
         let video: ID3D11VideoDevice = d3d.device.cast().context("videoapparaat")?;
         let context: ID3D11VideoContext = d3d.context.cast().context("videocontext")?;
 
@@ -104,8 +116,8 @@ impl Kleuromzetter {
         let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
             InputFrameRate: tempo,
-            InputWidth: breedte,
-            InputHeight: hoogte,
+            InputWidth: textuur.0,
+            InputHeight: textuur.1,
             OutputFrameRate: tempo,
             OutputWidth: breedte,
             OutputHeight: hoogte,
@@ -154,10 +166,10 @@ impl Kleuromzetter {
             context.VideoProcessorSetStreamColorSpace(&processor, 0, &ruimte.als_invoer());
             context.VideoProcessorSetOutputColorSpace(&processor, &Kleurruimte::als_uitvoer());
 
-            // Expliciet knippen in plaats van schalen. H.264 codeert 1080 beeldlijnen
-            // als 1088 — een veelvoud van zestien — dus de textuur van de decoder is
-            // hoger dan het beeld. Zonder deze rechthoek zou de hele textuur worden
-            // uitgerekt naar het doel en is het beeld verticaal net iets ingedrukt.
+            // Expliciet knippen in plaats van schalen: de textuur van de decoder is groter
+            // dan het beeld (zie `new`). Deze rechthoek kreeg eerst de textuurmaat mee en
+            // knipte dus niets: de kijker zag 8 opvulrijen onderaan (16 kolommen rechts bij
+            // een ultrawide) en een iets vertekend beeld.
             let kader = RECT {
                 left: 0,
                 top: 0,
@@ -177,12 +189,19 @@ impl Kleuromzetter {
             doel,
             doel_view: doel_view.context("D3D11 gaf geen uitvoerview")?,
             views: Vec::new(),
-            afmeting: (breedte, hoogte),
+            afmeting: beeld,
+            textuur,
         })
     }
 
+    /// Het getoonde beeld.
     pub fn afmeting(&self) -> (u32, u32) {
         self.afmeting
+    }
+
+    /// De textuur zoals de decoder hem aflevert; zie `new`.
+    pub fn textuur_afmeting(&self) -> (u32, u32) {
+        self.textuur
     }
 
     /// Zet één NV12-beeld om naar BGRA. `slice` is de index binnen de texturenreeks van
@@ -289,7 +308,9 @@ mod tests {
     #[ignore = "vereist een GPU"]
     fn omzetter_is_op_te_zetten() {
         let d3d = D3dContext::new().expect("D3D11");
-        let k = Kleuromzetter::new(&d3d, 1920, 1080, Kleurruimte::default()).expect("omzetter");
+        let k = Kleuromzetter::new(&d3d, (1920, 1088), (1920, 1080), Kleurruimte::default())
+            .expect("omzetter");
         assert_eq!(k.afmeting(), (1920, 1080));
+        assert_eq!(k.textuur_afmeting(), (1920, 1088));
     }
 }

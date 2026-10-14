@@ -550,6 +550,9 @@ pub struct Decoder {
     /// Kwam het laatste beeld als GPU-textuur binnen? Zo niet, dan gaat elk beeld via
     /// het werkgeheugen en kost het een kopie — bij 1080p60 zichtbaar in de metingen.
     op_gpu: bool,
+    /// De maat die de deler aankondigde. Terugval voor het getoonde beeld als de decoder
+    /// geen display-apertuur opgeeft; zie `onderhandel_uitvoertype`.
+    aangekondigd: (u32, u32),
 }
 
 // SAFETY: zelfde reden als bij `Encoder`: alleen gebruikt vanaf de render-thread van
@@ -656,6 +659,7 @@ impl Decoder {
             wacht_op_invoer: false,
             frame_duur: HNS_PER_SEC / 60,
             op_gpu: false,
+            aangekondigd: (breedte, hoogte),
         };
         decoder.onderhandel_uitvoertype()?;
 
@@ -880,7 +884,7 @@ impl Decoder {
             .kleur
             .as_ref()
             .context("uitvoertype nog niet onderhandeld")?
-            .afmeting();
+            .textuur_afmeting();
         let doel = match &self.upload {
             Some(t) => t.clone(),
             None => {
@@ -983,7 +987,7 @@ impl Decoder {
     /// decoder werkelijk levert. Wordt opnieuw gedaan bij elke formaatwissel.
     fn onderhandel_uitvoertype(&mut self) -> Result<()> {
         // SAFETY: we lopen de aangeboden types af tot NV12 erbij zit en zetten er één.
-        let (breedte, hoogte, matrix, bereik) = unsafe {
+        let (breedte, hoogte, apertuur, matrix, bereik) = unsafe {
             let mut gekozen = None;
             for i in 0..32 {
                 let Ok(mt) = self.transform.GetOutputAvailableType(0, i) else {
@@ -1003,6 +1007,9 @@ impl Decoder {
             (
                 (maat >> 32) as u32,
                 maat as u32,
+                [&MF_MT_MINIMUM_DISPLAY_APERTURE, &MF_MT_GEOMETRIC_APERTURE]
+                    .into_iter()
+                    .find_map(|sleutel| lees_apertuur(&mt, sleutel)),
                 // Ontbreken deze, dan is het wat H.264 op HD standaard doet.
                 mt.GetUINT32(&MF_MT_YUV_MATRIX)
                     .unwrap_or(MFVideoTransferMatrix_BT709.0 as u32),
@@ -1031,14 +1038,42 @@ impl Decoder {
             self.uitvoer_uitlijning = info.cbAlignment;
         }
 
+        // Wat er getoond wordt: de display-apertuur van de decoder, en zonder die de maat
+        // die de deler aankondigde, zolang die binnen de textuur valt. De textuur zelf is
+        // opgevuld tot een veelvoud van zestien (1080 → 1088).
+        let (ab, ah) = self.aangekondigd;
+        let beeld = apertuur
+            .or_else(|| (ab > 0 && ah > 0).then_some((ab, ah)))
+            .filter(|&(b, h)| b > 0 && h > 0 && b <= breedte && h <= hoogte)
+            .unwrap_or((breedte, hoogte));
+        let textuur = (breedte, hoogte);
+
         // Een formaatwissel maakt zowel de omzetter als de uploadtextuur ongeldig.
-        if self.kleur.as_ref().map(|k| k.afmeting()) != Some((breedte, hoogte)) {
-            tracing::info!(breedte, hoogte, ?ruimte, "decoder levert beeld");
-            self.kleur = Some(Kleuromzetter::new(&self.d3d, breedte, hoogte, ruimte)?);
+        let huidig = self
+            .kleur
+            .as_ref()
+            .map(|k| (k.textuur_afmeting(), k.afmeting()));
+        if huidig != Some((textuur, beeld)) {
+            tracing::info!(?textuur, ?beeld, ?ruimte, "decoder levert beeld");
+            self.kleur = Some(Kleuromzetter::new(&self.d3d, textuur, beeld, ruimte)?);
             self.upload = None;
         }
         Ok(())
     }
+}
+
+/// Een `MFVideoArea` uit een mediatype: het deel van de textuur dat beeld is. `None` als
+/// hij ontbreekt of niet bij de linkerbovenhoek begint (dat doet geen encoder van ons).
+fn lees_apertuur(mt: &IMFMediaType, sleutel: &GUID) -> Option<(u32, u32)> {
+    let mut buf = [0u8; std::mem::size_of::<MFVideoArea>()];
+    // SAFETY: de buffer is precies zo groot als de structuur die MF erin schrijft.
+    let gebied = unsafe {
+        mt.GetBlob(sleutel, &mut buf, None).ok()?;
+        std::ptr::read_unaligned(buf.as_ptr() as *const MFVideoArea)
+    };
+    let begint_linksboven = gebied.OffsetX.value == 0 && gebied.OffsetY.value == 0;
+    let (b, h) = (gebied.Area.cx, gebied.Area.cy);
+    (begint_linksboven && b > 0 && h > 0).then_some((b as u32, h as u32))
 }
 
 /// NV12 heeft halve chroma-resolutie, dus een oneven maat bestaat er niet.
