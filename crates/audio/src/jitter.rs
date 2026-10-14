@@ -21,6 +21,13 @@ pub const MIN_DIEPTE: usize = 2;
 pub const MAX_DIEPTE: usize = 10;
 /// Zoveel frames boven de streefdiepte gooien we weg om opgelopen vertraging in te lopen.
 const OVERLOOP: usize = MAX_DIEPTE + 4;
+/// Een pakket dat verder dan dit achter `volgende` zit is geen nakomer meer: een seconde
+/// te laat komt op een tailnet niet voor.
+const HERSTART_AFSTAND: u32 = 50;
+/// Zoveel van zulke pakketten op rij en de zender is opnieuw begonnen (app herstart,
+/// opnieuw in het gesprek): zijn teller staat weer bij 0. Eén verdwaald pakket mag de
+/// buffer niet leeggooien, drie op rij is geen toeval meer.
+const HERSTART_NA: u32 = 3;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Frame {
@@ -41,6 +48,8 @@ pub struct JitterBuffer {
     /// Verlies en te-laat sinds de laatste aanpassing van de streefdiepte.
     misser_teller: u32,
     schoon_teller: u32,
+    /// Pakketten op rij die ver achter `volgende` zaten; zie `HERSTART_NA`.
+    ver_achter: u32,
     pub verloren_totaal: u64,
     pub te_laat_totaal: u64,
 }
@@ -59,6 +68,7 @@ impl JitterBuffer {
             streefdiepte: MIN_DIEPTE,
             misser_teller: 0,
             schoon_teller: 0,
+            ver_achter: 0,
             verloren_totaal: 0,
             te_laat_totaal: 0,
         }
@@ -82,11 +92,27 @@ impl JitterBuffer {
         // stil (B-38).
         if let Some(v) = self.volgende {
             if seq.wrapping_sub(v) > u32::MAX / 2 {
+                // Zonder dit bleef een spreker die herstartte onhoorbaar tot de luisteraar
+                // zelf opnieuw in het gesprek kwam: zijn nieuwe teller begint bij 0, en
+                // alles daarvan gold hier als te laat zolang `volgende` op de oude stond.
+                // Dat gebeurt als zijn laatste pakketten met een gat aankwamen, want dan
+                // loopt de buffer nooit leeg en zet `pop` `volgende` niet terug.
+                if v.wrapping_sub(seq) > HERSTART_AFSTAND {
+                    self.ver_achter += 1;
+                    if self.ver_achter >= HERSTART_NA {
+                        self.frames.clear();
+                        self.volgende = None;
+                        self.ver_achter = 0;
+                        self.frames.insert(seq, payload);
+                        return;
+                    }
+                }
                 self.te_laat_totaal += 1;
                 self.misser_teller += 1;
                 return;
             }
         }
+        self.ver_achter = 0;
         self.frames.insert(seq, payload);
     }
 
@@ -340,6 +366,39 @@ mod tests {
         assert_eq!(b.te_laat_totaal, 0, "0 is na de omloop het eerstvolgende");
         assert_eq!(b.pop(), Frame::Data(vec![10]));
         assert_eq!(b.pop(), Frame::Data(vec![11]));
+    }
+
+    #[test]
+    fn een_herstarte_zender_is_weer_te_horen() {
+        // Zijn laatste spurt eindigde met een gat (4 kwam nooit): er blijft één frame
+        // liggen, de buffer loopt nooit leeg en `volgende` blijft op 4 staan.
+        let mut b = JitterBuffer::new();
+        let oud: Vec<u32> = (1000..1003).chain([1004]).collect();
+        vul(&mut b, &oud);
+        for _ in 0..3 {
+            b.pop();
+        }
+        assert_eq!(b.pop(), Frame::Stilte, "het gat wacht op een nakomer");
+
+        // Hij herstart: de teller begint weer bij 0. Eén verdwaald oud pakket mag de
+        // buffer niet omgooien, drie op rij wel.
+        vul(&mut b, &[0, 1, 2, 3]);
+        let mut gehoord = false;
+        for _ in 0..4 {
+            gehoord |= matches!(b.pop(), Frame::Data(_));
+            b.push(4, vec![4]);
+        }
+        assert!(gehoord, "de nieuwe sessie moet hoorbaar worden");
+    }
+
+    #[test]
+    fn een_losse_nakomer_gooit_de_buffer_niet_om() {
+        let mut b = JitterBuffer::new();
+        vul(&mut b, &(1000..1004).collect::<Vec<_>>());
+        assert_eq!(b.pop(), Frame::Data(vec![(1000u32) as u8]));
+        b.push(1, vec![99]); // stokoud, maar alleen
+        assert_eq!(b.pop(), Frame::Data(vec![(1001u32) as u8]));
+        assert_eq!(b.te_laat_totaal, 1);
     }
 
     #[test]
