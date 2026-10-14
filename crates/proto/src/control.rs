@@ -33,12 +33,21 @@ impl StreamKind {
     /// aankondiging en tekent er niet op in. Dat is precies het gedrag dat bij een
     /// onbekende soort hoort.
     pub const CAMERA: Self = Self(4);
+    /// Alleen het geluid van Spotify, in stereo, voor iedereen in het gesprek — ook wie
+    /// niet naar een scherm kijkt. De titel is "Artiest – Nummer" en wordt bij elk nieuw
+    /// nummer opnieuw aangekondigd. Additief zoals `CAMERA`: een oudere peer negeert hem.
+    pub const MUSIC: Self = Self(5);
 
     pub fn is_known(self) -> bool {
         matches!(
             self,
-            Self::MONITOR | Self::WINDOW | Self::DESKTOP_AUDIO | Self::CAMERA
+            Self::MONITOR | Self::WINDOW | Self::DESKTOP_AUDIO | Self::CAMERA | Self::MUSIC
         )
+    }
+
+    /// Of dit geluid is dat over de voice-socket meeloopt in plaats van een venster.
+    pub fn is_geluid(self) -> bool {
+        matches!(self, Self::DESKTOP_AUDIO | Self::MUSIC)
     }
 
     /// Of dit iets is dat je in een venster bekijkt. Geluid heeft geen venster, en een
@@ -61,6 +70,7 @@ impl std::fmt::Debug for StreamKind {
             Self::WINDOW => write!(f, "Window"),
             Self::DESKTOP_AUDIO => write!(f, "DesktopAudio"),
             Self::CAMERA => write!(f, "Camera"),
+            Self::MUSIC => write!(f, "Music"),
             Self(n) => write!(f, "Unknown({n})"),
         }
     }

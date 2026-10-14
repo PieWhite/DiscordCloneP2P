@@ -18,10 +18,12 @@ nnnoiseless = { version = "0.5.2", default-features = false }
 opus = "0.3.1"
 tracing = "0.1.44"
 
-# Alleen voor de proces-exclusieve loopback van bureaubladgeluid;
-# zie `session::wasapi_capture`.
+# Alleen voor de proces-loopback van bureaubladgeluid en Spotify;
+# zie `session::wasapi_capture`. `windows` is dezelfde versie die `wasapi` al meeneemt,
+# voor het zoeken van het Spotify-proces (`spotify::pid`).
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.23"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
 
 # Bureaubladgeluid op macOS loopt via ScreenCaptureKit (audio-only SCStream met
 # `excludesCurrentProcessAudio`, macOS 14+); zie `session::sck_capture`.

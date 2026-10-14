@@ -156,6 +156,20 @@ impl Streams {
         (id, vec![MeshCommand::Broadcast(melding)])
     }
 
+    /// Nieuwe titel voor een eigen stream — bij muziek het nummer dat nu speelt. Een
+    /// herhaalde aankondiging is voor de ontvanger al "gegevens bijwerken" (zie
+    /// `aangekondigd`), dus er is geen eigen bericht voor nodig. Niets als er niets
+    /// verandert: dit wordt elke tik gevraagd.
+    pub fn zet_titel(&mut self, stream_id: u32, titel: &str) -> Vec<MeshCommand> {
+        match self.eigen.iter_mut().find(|s| s.id == stream_id) {
+            Some(s) if s.titel != titel => {
+                s.titel = titel.to_string();
+                vec![MeshCommand::Broadcast(s.aankondiging())]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     pub fn stop_delen(&mut self, stream_id: u32) -> (Vec<MeshCommand>, Vec<Actie>) {
         let Some(plek) = self.eigen.iter().position(|s| s.id == stream_id) else {
             return (Vec::new(), Vec::new());
@@ -166,7 +180,7 @@ impl Streams {
         if stream.wordt_bekeken() {
             acties.push(Actie::StopDelen {
                 stream_id,
-                is_geluid: stream.kind == StreamKind::DESKTOP_AUDIO,
+                is_geluid: stream.kind.is_geluid(),
             });
         }
         (
@@ -195,7 +209,7 @@ impl Streams {
             titel: s.titel.clone(),
             breedte: s.breedte,
             hoogte: s.hoogte,
-            is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+            is_geluid: s.kind.is_geluid(),
         }]
     }
 
@@ -222,12 +236,14 @@ impl Streams {
             .map(|s| s.eigenaar)
             .collect();
 
+        // Muziek hangt niet aan beeld: wie in het gesprek zit hoort hem, net als een stem.
         let wissels: Vec<(PeerId, u32, bool)> = self
             .vreemd
             .iter()
-            .filter(|s| s.kind == StreamKind::DESKTOP_AUDIO)
+            .filter(|s| s.kind.is_geluid())
             .filter_map(|s| {
-                let hoort = in_gesprek && met_beeld.contains(&s.eigenaar);
+                let hoort =
+                    in_gesprek && (s.kind == StreamKind::MUSIC || met_beeld.contains(&s.eigenaar));
                 (hoort != s.kijken).then_some((s.eigenaar, s.id, hoort))
             })
             .collect();
@@ -330,7 +346,7 @@ impl Streams {
                 } else {
                     Actie::StopDelen {
                         stream_id: s.id,
-                        is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                        is_geluid: s.kind.is_geluid(),
                     }
                 });
             }
@@ -483,7 +499,7 @@ impl Streams {
             tracing::info!(stream = stream_id, "laatste kijker weg; opnemen stopt");
             vec![Actie::StopDelen {
                 stream_id,
-                is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                is_geluid: s.kind.is_geluid(),
             }]
         }
     }
@@ -945,5 +961,56 @@ mod tests {
             }],
             "de oude poort mag geen beeld meer krijgen"
         );
+    }
+
+    fn muziek(stream_id: u32, titel: &str) -> ControlMsg {
+        ControlMsg::StreamAnnounce(StreamAnnounce {
+            stream_id,
+            kind: StreamKind::MUSIC,
+            title: titel.into(),
+            width: 0,
+            height: 0,
+        })
+    }
+
+    #[test]
+    fn muziek_hoor_je_in_het_gesprek_zonder_ergens_naar_te_kijken() {
+        let mut s = Streams::new();
+        let dj = PeerId::new_random();
+        s.bij_bericht(dj, ip(), &muziek(3, "Spotify"));
+
+        let (_, acties) = s.stem_geluid_af_op_beeld(false);
+        assert!(acties.is_empty(), "buiten het gesprek geen geluid");
+
+        let (_, acties) = s.stem_geluid_af_op_beeld(true);
+        assert!(matches!(
+            acties.as_slice(),
+            [Actie::StartKijken {
+                stream_id: 3,
+                is_geluid: true,
+                ..
+            }]
+        ));
+        assert!(s.stem_geluid_af_op_beeld(true).1.is_empty(), "idempotent");
+
+        // Een nieuw nummer is een nieuwe titel, geen nieuwe stream.
+        s.bij_bericht(dj, ip(), &muziek(3, "Artiest – Nummer"));
+        assert_eq!(s.vreemd().len(), 1);
+        assert_eq!(s.vreemd()[0].titel, "Artiest – Nummer");
+        assert!(s.vreemd()[0].kijken);
+
+        let (cmds, acties) = s.stem_geluid_af_op_beeld(false);
+        assert_eq!(cmds.len(), 1, "uittekenen bij het verlaten van het gesprek");
+        assert!(matches!(acties.as_slice(), [Actie::StopKijken { .. }]));
+    }
+
+    #[test]
+    fn titel_wijzigen_kondigt_alleen_een_echte_wijziging_aan() {
+        let mut s = Streams::new();
+        let (id, _) = s.deel(StreamKind::MUSIC, "Spotify".into(), 0, 0);
+        assert!(s.zet_titel(id, "Spotify").is_empty());
+        assert_eq!(s.zet_titel(id, "A – B").len(), 1);
+        assert!(s.zet_titel(id, "A – B").is_empty());
+        assert!(s.zet_titel(id + 1, "C").is_empty());
     }
 }

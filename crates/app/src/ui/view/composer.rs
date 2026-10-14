@@ -1269,6 +1269,7 @@ mod window_tests {
             last_seen: None,
             desktop_volume: None,
             desktop_stream: None,
+            music: None,
         }
     }
 

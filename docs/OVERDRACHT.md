@@ -1898,6 +1898,62 @@ een verwachting en geen meting. GPU-geheugen is niet apart gemeten. Het harnas (
 een headless bot-peer, de zaaigenerator) staat buiten de repo; de opzet staat hierboven, zodat
 hij na te bouwen is.
 
+### 40. Spotify delen: het geluid van één app, niet een gesynchroniseerde Spotify (2026-10-14)
+
+Rick wilde "samen onze Spotify luisteren", zo native en zo weinig moeite als mogelijk, en
+daarna "zo verliesvrij als het kan, net als screenshare".
+
+**Wat het werd.** Eén knop in het voicepaneel, *Share Spotify*. De DJ speelt in zijn eigen
+Spotify-app; de app neemt **alleen Spotify's geluid** op en stuurt het in stereo naar
+iedereen in het gesprek. Luisteraars doen niets: wie in het gesprek zit hoort het, met een
+eigen volumeschuif onder de peer in de ledenlijst, en ziet "Artiest – Nummer".
+
+- **Alleen Spotify** komt van dezelfde Windows-API als bureaubladgeluid, andersom gebruikt:
+  `new_application_loopback_client(spotify_pid, include_tree: true)` in plaats van
+  `(eigen_pid, false)`. Geen spel, geen stemmen, geen meldingsgeluiden. `fitcom_audio::
+  spotify::pid` zoekt de bovenste `Spotify.exe` (CEF heeft er een handvol; de boom van de
+  bovenste dekt ook het proces dat echt afspeelt). Op macOS een SCK-filter met alleen de
+  Spotify-app erin (`includingApplications`), pid via `pgrep -x Spotify`.
+- **Spotify die dichtgaat of herstart** is gewoon: de opname wacht tot hij er is en pakt
+  een nieuw pid elke twee seconden op. Alleen een fout bij de allereerste poging gaat terug
+  naar de UI (dan kan deze Windows geen proces-loopback).
+- **Wat er speelt** (`crates/app/src/muziek.rs`) komt op Windows uit de systeembrede
+  mediabediening (`GlobalSystemMediaTransportControlsSessionManager`, dezelfde bron als de
+  mediaknoppen), op macOS via AppleScript bij Spotify zelf (`NSAppleEventsUsageDescription`
+  in `bundle-mac.sh`). Het reist als de titel van de stream: een herhaalde
+  `StreamAnnounce` is voor de ontvanger al "gegevens bijwerken", dus er is geen nieuw
+  bericht. Alleen bij een echt ander nummer (`Streams::zet_titel`).
+- **`StreamKind::MUSIC = 5`**, additief zoals `CAMERA`, geen protocolbump: een 1.8.0-peer
+  negeert de aankondiging. Niet `DESKTOP_AUDIO` hergebruikt: dat hoort alleen wie naar je
+  scherm kijkt en het verdwijnt met je laatste scherm, en muziek moet iedereen in het gesprek
+  horen, los van beeld (`stem_geluid_af_op_beeld`).
+- **Bureaubladgeluid staat uit zolang Spotify gedeeld wordt.** Het bevat Spotify ook; wie je
+  scherm bekijkt zou de muziek dan twee keer horen, net niet gelijk. Stop je Spotify en deel
+  je nog een scherm, dan komt het bureaubladgeluid terug.
+
+**Kwaliteit: stereo Opus op 384 kbit/s, niet PCM.** De hele geluidsketen was mono. Nu:
+bureaubladgeluid en muziek worden stereo gecodeerd, elke decoder is stereo (een stem komt op
+beide kanalen), de mix en de weergave zijn verweven stereo, herbemonsteren per kanaal
+(`StereoResampler`). Voice zelf blijft mono op 32 kbit/s. 384 kbit/s ligt ruim boven waar
+Opus in luistertests niet meer van het origineel te onderscheiden is (~256 kbit/s stereo) en
+past met marge in één mediapakket (`MAX_PAYLOAD = MAX_MEDIA_PAYLOAD`, 1100 bytes per 20 ms).
+Echt verliesvrij is overwogen en afgewezen: PCM is 1,5 Mbit/s, moet gefragmenteerd en heeft
+geen FEC of verliesverberging, dus elk verloren pakket is een tik; Opus met FEC klinkt op een
+echt netwerk beter. En Spotify zelf levert meestal al gecomprimeerd aan. Een oudere peer met
+een monodecoder kan de stereopakketten nog steeds decoderen.
+
+**Afgewezen:** iedereen in zijn eigen Spotify en die gelijk houden via de Spotify Web API.
+Dat is een cloud-API met OAuth per persoon en Premium voor iedereen, dus een vierde
+uitzondering op invariant 1, en het loopt uit de pas zodra iemand reclame krijgt. Spotify's
+eigen Jam bestaat ook, buiten de app.
+
+**Meegevonden:** de captureloop van bureaubladgeluid stopte voorgoed na de eerste
+time-out van 500 ms, dus na een halve seconde stilte bleef het gedeelde geluid stom tot je
+opnieuw deelde. Dezelfde fout die `loopback.rs` in `ee9ada0` kwijtraakte; hier stond hij
+nog. Voor muziek was dat fataal (pauze = einde), dus nu opgelost in de gedeelde lus.
+
+**Wat je niet mag omdraaien:** zie de sectie "Spotify delen" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

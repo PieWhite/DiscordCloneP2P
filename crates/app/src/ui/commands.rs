@@ -243,6 +243,12 @@ pub fn set_camera(ui: &Ui, on: bool) {
     send(ui, UiCommand::ZetCamera(on));
 }
 
+/// Share Spotify's sound with the call, or stop. Same as the camera: the engine finds
+/// Spotify and reports through the error banner when it is not running.
+pub fn set_spotify(ui: &Ui, on: bool) {
+    send(ui, UiCommand::DeelSpotify(on));
+}
+
 pub fn set_video_settings(ui: &Ui, codec: &str, fps: u32, bitrate: u32) {
     send(
         ui,

@@ -1170,3 +1170,30 @@ Met de hand, want UI en tweede machine:
    weg in plaats van voor altijd blijven liggen. Werkt met de opname aan (hij herstart) en
    uit.
 6. Frametime-vergelijking spel met recorder aan/uit — de meetpunt-notitie in SPEC.md.
+
+## Spotify delen (2026-10-14, beslissing 40)
+
+Geautomatiseerd gedekt (`cargo test`): stereo blijft stereo door Opus heen, een stem komt
+op beide kanalen, stereo herbemonsteren houdt links en rechts uit elkaar, de bovenste
+`Spotify.exe` wordt gevonden, muziek wordt gehoord zodra je in het gesprek zit (zonder
+kijken) en een nieuw nummer is een nieuwe titel en geen nieuwe stream.
+
+Met de hand, want echte Spotify en twee machines:
+
+1. A en B in het gesprek, Spotify draait bij A. A drukt **Share Spotify**: B hoort de
+   muziek zonder iets te doen, in stereo (een nummer met duidelijk links/rechts), en ziet
+   "A plays Artiest – Nummer" in het voicepaneel en een SPOTIFY-schuif onder A.
+2. Geen spelgeluid, Discord of meldingen van A in de muziek, en A's eigen stem ook niet.
+3. Volgend nummer bij A: binnen een paar seconden staat de nieuwe titel bij B.
+4. Pauze bij A van een minuut, dan verder: de muziek komt bij B terug zonder opnieuw te
+   delen. (Dit was de stiltebug; ook bureaubladgeluid na een stilte nalopen.)
+5. Spotify bij A dicht en weer open, en dan afspelen: de muziek komt bij B vanzelf terug.
+6. Share Spotify zonder dat Spotify draait: nette foutmelding, niets gedeeld.
+7. A deelt ook zijn scherm, B kijkt: B hoort Spotify één keer, niet dubbel. Stop Spotify:
+   het bureaubladgeluid van het scherm komt terug.
+8. Kwaliteit: hetzelfde nummer bij B via de stream en rechtstreeks in Spotify vergelijken,
+   op een koptelefoon. Verwachting: niet te onderscheiden.
+9. Gamen bij A met Spotify gedeeld: geen merkbare impact (invariant 4).
+10. macOS als DJ: Screen Recording-toestemming is er al; eerste keer vraagt macOS of de app
+    Spotify mag bedienen (voor de titel). Nee zeggen = de stream heet "Spotify", muziek werkt.
+11. B is een 1.8.0-peer: krijgt geen muziek, maar zijn stem en de rest werken gewoon.

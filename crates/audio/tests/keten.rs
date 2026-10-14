@@ -77,7 +77,8 @@ fn stuur_en_ontvang(frames: &[Vec<i16>], verlies: &[usize], omdraaien: bool) -> 
     let mut dec = Decoder::new().unwrap();
     let mut uit = Vec::new();
     for _ in 0..frames.len() + 2 {
-        let mut pcm = vec![0i16; FRAME_SAMPLES];
+        // De decoder is stereo; een stem komt op beide kanalen, de energie blijft gelijk.
+        let mut pcm = vec![0i16; FRAME_SAMPLES * 2];
         match buffer.pop() {
             Frame::Data(p) => {
                 dec.decode(&p, &mut pcm).unwrap();

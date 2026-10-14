@@ -8,6 +8,7 @@ pub mod loopback;
 pub mod microfoon;
 pub mod mix;
 pub mod session;
+pub mod spotify;
 
 pub use jitter::{Frame, JitterBuffer};
 pub use mix::{FRAME_SAMPLES, SAMPLE_RATE};

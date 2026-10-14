@@ -22,7 +22,7 @@
 
 use crate::codec::{Decoder, Encoder, MAX_PAYLOAD};
 use crate::jitter::{Frame, JitterBuffer};
-use crate::mix::{self, Resampler, FRAME_SAMPLES, SAMPLE_RATE};
+use crate::mix::{self, Resampler, StereoResampler, FRAME_SAMPLES, SAMPLE_RATE};
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -86,11 +86,19 @@ pub struct Niveaus {
 /// volumeschuif, want spelgeluid en een stem wil je los kunnen regelen.
 pub type Bron = (PeerId, u32);
 
-/// Wat we van ons eigen bureaubladgeluid delen, en met wie.
+/// Wat we van ons eigen bureaubladgeluid of Spotify delen, en met wie.
 #[derive(Debug, Clone)]
 struct Bureaublad {
     stream_id: u32,
     doelen: Vec<SocketAddr>,
+}
+
+/// Welk geluid van deze pc we delen. Eén pijplijn, twee bronnen: bureaubladgeluid is
+/// alles behalve deze app, muziek is alleen Spotify (`crate::spotify`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Soort {
+    Bureaublad,
+    Muziek,
 }
 
 struct Gedeeld {
@@ -106,9 +114,28 @@ struct Gedeeld {
     /// `None` betekent: we delen geen bureaubladgeluid. De opname-thread stopt zichzelf
     /// zodra dit leeg is, dus er wordt niets opgenomen als niemand luistert.
     bureaublad: Mutex<Option<Bureaublad>>,
+    /// Zelfde, voor Spotify.
+    muziek: Mutex<Option<Bureaublad>>,
 }
 
 impl Gedeeld {
+    fn deling(&self, soort: Soort) -> &Mutex<Option<Bureaublad>> {
+        match soort {
+            Soort::Bureaublad => &self.bureaublad,
+            Soort::Muziek => &self.muziek,
+        }
+    }
+
+    /// Of deze deling nog loopt. Een vergiftigde lock telt als gestopt.
+    fn deelt(&self, soort: Soort) -> bool {
+        !self.stop.load(Ordering::Relaxed)
+            && self
+                .deling(soort)
+                .lock()
+                .map(|b| b.is_some())
+                .unwrap_or(false)
+    }
+
     fn volume_van(&self, bron: Bron) -> f32 {
         self.volumes
             .lock()
@@ -193,27 +220,43 @@ impl VoiceHandle {
     /// lege lijst luisteraars stopt de opname — er wordt niets opgenomen als niemand
     /// meeluistert.
     pub fn deel_bureaublad(&self, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
-        let draaide_al = self
-            .gedeeld
-            .bureaublad
-            .lock()
-            .map(|b| b.is_some())
-            .unwrap_or(false);
+        self.deel(Soort::Bureaublad, stream_id, doelen)
+    }
+
+    /// Als [`Self::deel_bureaublad`], maar alleen het geluid van Spotify. Draait Spotify
+    /// (nog) niet, dan wacht de opname tot hij er is, en een herstarte Spotify wordt
+    /// vanzelf weer opgepikt.
+    pub fn deel_muziek(&self, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
+        self.deel(Soort::Muziek, stream_id, doelen)
+    }
+
+    fn deel(&self, soort: Soort, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
+        let slot = self.gedeeld.deling(soort);
+        let draaide_al = slot.lock().map(|b| b.is_some()).unwrap_or(false);
 
         if doelen.is_empty() {
-            self.stop_bureaublad();
+            if let Ok(mut b) = slot.lock() {
+                *b = None;
+            }
             return Ok(());
         }
 
-        if let Ok(mut b) = self.gedeeld.bureaublad.lock() {
+        if let Ok(mut b) = slot.lock() {
             *b = Some(Bureaublad { stream_id, doelen });
         }
         if !draaide_al {
-            start_bureaublad(
+            let gestart = start_bureaublad(
                 self.gedeeld.clone(),
                 self.socket.probeer_clone()?,
                 self.uitvoer_apparaat.clone(),
-            )?;
+                soort,
+            );
+            if gestart.is_err() {
+                if let Ok(mut b) = slot.lock() {
+                    *b = None;
+                }
+            }
+            gestart?;
         }
         Ok(())
     }
@@ -221,6 +264,18 @@ impl VoiceHandle {
     pub fn stop_bureaublad(&self) {
         if let Ok(mut b) = self.gedeeld.bureaublad.lock() {
             *b = None;
+        }
+    }
+
+    /// Stopt wat er op `stream_id` gedeeld wordt, bureaubladgeluid of muziek. Voor wie
+    /// alleen het id nog heeft: de stream zelf is dan al uit de administratie.
+    pub fn stop_geluid(&self, stream_id: u32) {
+        for soort in [Soort::Bureaublad, Soort::Muziek] {
+            if let Ok(mut b) = self.gedeeld.deling(soort).lock() {
+                if b.as_ref().is_some_and(|d| d.stream_id == stream_id) {
+                    *b = None;
+                }
+            }
         }
     }
 
@@ -281,6 +336,7 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
         eigen_niveau: AtomicU32::new(0),
         stop: AtomicBool::new(false),
         bureaublad: Mutex::new(None),
+        muziek: Mutex::new(None),
     });
 
     let (opname_tx, opname_rx) = bounded::<Vec<f32>>(32);
@@ -475,12 +531,13 @@ fn bouw_uitvoer(
     let scfg = cfg.config();
 
     // Wat er van het vorige blok overbleef. De geluidskaart vraagt zelden precies
-    // een heel frame, dus zonder dit zou elk blok een stukje stilte krijgen.
+    // een heel frame, dus zonder dit zou elk blok een stukje stilte krijgen. Verweven
+    // stereo van de mix-thread: links, rechts, links, ...
     let mut rest: Vec<f32> = Vec::new();
     let mut pos = 0usize;
 
-    let mut volgende = move || -> f32 {
-        if pos >= rest.len() {
+    let mut volgende = move || -> (f32, f32) {
+        if pos + 1 >= rest.len() {
             match rx.try_recv() {
                 Ok(v) => {
                     rest = v;
@@ -488,12 +545,28 @@ fn bouw_uitvoer(
                 }
                 // Niets klaar: stilte is het enige juiste antwoord. Wachten zou de
                 // driver-thread blokkeren.
-                Err(_) => return 0.0,
+                Err(_) => return (0.0, 0.0),
             }
         }
-        let s = rest.get(pos).copied().unwrap_or(0.0);
-        pos += 1;
-        s
+        let l = rest.get(pos).copied().unwrap_or(0.0);
+        let r = rest.get(pos + 1).copied().unwrap_or(0.0);
+        pos += 2;
+        (l, r)
+    };
+
+    // Links en rechts op de eerste twee kanalen (vóór in elke Windows-indeling), de rest
+    // stil; een monoapparaat krijgt het gemiddelde.
+    let mut vul = move |blok: &mut [f32]| {
+        let (l, r) = volgende();
+        match blok {
+            [m] => *m = (l + r) * 0.5,
+            [a, b, overig @ ..] => {
+                *a = l;
+                *b = r;
+                overig.iter_mut().for_each(|k| *k = 0.0);
+            }
+            [] => {}
+        }
     };
 
     let stream = match cfg.sample_format() {
@@ -501,8 +574,7 @@ fn bouw_uitvoer(
             scfg,
             move |data: &mut [f32], _| {
                 for blok in data.chunks_mut(kanalen) {
-                    let s = volgende();
-                    blok.iter_mut().for_each(|k| *k = s);
+                    vul(blok);
                 }
             },
             fout_melden,
@@ -511,9 +583,16 @@ fn bouw_uitvoer(
         cpal::SampleFormat::I16 => dev.build_output_stream::<i16, _, _>(
             scfg,
             move |data: &mut [i16], _| {
+                // Een kanaalindeling met meer dan acht kanalen bestaat niet in WASAPI;
+                // wat erboven zit blijft stil.
+                let mut f = [0f32; 8];
                 for blok in data.chunks_mut(kanalen) {
-                    let s = (volgende() * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                    blok.iter_mut().for_each(|k| *k = s);
+                    let n = blok.len().min(f.len());
+                    vul(&mut f[..n]);
+                    for (i, k) in blok.iter_mut().enumerate() {
+                        let s = f.get(i).copied().unwrap_or(0.0);
+                        *k = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                    }
                 }
             },
             fout_melden,
@@ -674,16 +753,21 @@ fn start_bureaublad(
     gedeeld: Arc<Gedeeld>,
     socket: MediaSocket,
     apparaat: Option<String>,
+    soort: Soort,
 ) -> Result<()> {
+    let naam = match soort {
+        Soort::Bureaublad => "fitcom-bureaublad",
+        Soort::Muziek => "fitcom-muziek",
+    };
     std::thread::Builder::new()
-        .name("fitcom-bureaublad".into())
+        .name(naam.into())
         .spawn(move || {
-            if let Err(e) = bureaublad_lus(&gedeeld, &socket, apparaat.as_ref()) {
-                tracing::error!(error = %format!("{e:#}"), "bureaubladgeluid gestopt door een fout");
+            if let Err(e) = bureaublad_lus(&gedeeld, &socket, apparaat.as_ref(), soort) {
+                tracing::error!(error = %format!("{e:#}"), ?soort, "gedeeld geluid gestopt door een fout");
             }
             // Wat er ook gebeurde: de staat moet kloppen, anders denkt de UI dat we
             // nog delen en start er nooit meer een opname.
-            if let Ok(mut b) = gedeeld.bureaublad.lock() {
+            if let Ok(mut b) = gedeeld.deling(soort).lock() {
                 *b = None;
             }
         })
@@ -695,16 +779,20 @@ fn bureaublad_lus(
     gedeeld: &Arc<Gedeeld>,
     socket: &MediaSocket,
     apparaat: Option<&String>,
+    soort: Soort,
 ) -> Result<()> {
     let (tx, rx) = bounded::<Vec<f32>>(32);
 
     // De stroom/thread moet blijven leven zolang deze functie loopt; laat je hem vallen
     // dan stopt de opname stil. `_stroom` is alleen gevuld bij de cpal-terugval — de
     // wasapi/sck-route beheert haar eigen thread en stopt zichzelf via `gedeeld`.
-    let (rate, _kanalen, _stroom) = open_bureaublad_bron(gedeeld, tx, apparaat)?;
+    let (rate, kanalen, _stroom) = open_bureaublad_bron(gedeeld, tx, apparaat, soort)?;
 
-    let mut resampler = Resampler::new(rate, SAMPLE_RATE);
+    // Stereo, op de draad en in de mix: bij muziek is dat het hele verschil.
+    const STEREO_FRAME: usize = FRAME_SAMPLES * 2;
+    let mut resampler = StereoResampler::new(rate, SAMPLE_RATE);
     let mut encoder = Encoder::voor_muziek()?;
+    let mut stereo: Vec<f32> = Vec::new();
     let mut op48: Vec<f32> = Vec::new();
     let mut pakket = [0u8; MAX_PAYLOAD];
     let mut seq: u32 = 0;
@@ -712,19 +800,25 @@ fn bureaublad_lus(
     let mut hangover: u32 = 0;
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
-        let Some(deling) = gedeeld.bureaublad.lock().ok().and_then(|b| b.clone()) else {
+        let Some(deling) = gedeeld.deling(soort).lock().ok().and_then(|b| b.clone()) else {
             break; // niemand luistert meer
         };
 
         let Ok(blok) = rx.recv_timeout(Duration::from_millis(200)) else {
             continue;
         };
+        let blok = if kanalen == 2 {
+            blok
+        } else {
+            mix::naar_stereo(&blok, kanalen, &mut stereo);
+            std::mem::take(&mut stereo)
+        };
         let mut herbemonsterd = Vec::new();
         resampler.verwerk(&blok, &mut herbemonsterd);
         op48.extend(herbemonsterd.iter().map(|s| s * 32768.0));
 
-        while op48.len() >= FRAME_SAMPLES {
-            let frame: Vec<f32> = op48.drain(..FRAME_SAMPLES).collect();
+        while op48.len() >= STEREO_FRAME {
+            let frame: Vec<f32> = op48.drain(..STEREO_FRAME).collect();
             timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
 
             if rms(&frame) / 32768.0 > BUREAUBLAD_DREMPEL {
@@ -764,19 +858,28 @@ fn bureaublad_lus(
         }
     }
 
-    tracing::info!("bureaubladgeluid niet meer gedeeld");
+    tracing::info!(?soort, "geluid niet meer gedeeld");
     Ok(())
 }
 
 /// Opent de bron voor bureaubladgeluid: eerst de proces-exclusieve WASAPI-loopback,
 /// bij een fout de gewone `cpal`-loopback (invoerstroom op een uitvoerapparaat — die
 /// truc bestaat alleen op WASAPI en vangt ook de eigen voice-weergave mee).
+///
+/// Muziek heeft geen terugval: de gewone loopback zou alles meenemen, en "alleen
+/// Spotify" is de hele belofte. Liever een nette fout.
 #[cfg(windows)]
 fn open_bureaublad_bron(
     gedeeld: &Arc<Gedeeld>,
     tx: crossbeam_channel::Sender<Vec<f32>>,
     apparaat: Option<&String>,
+    soort: Soort,
 ) -> Result<(u32, usize, Option<cpal::Stream>)> {
+    if soort == Soort::Muziek {
+        wasapi_capture::start_spotify_thread(gedeeld.clone(), tx)?;
+        tracing::info!("spotify-geluid via proces-inclusieve WASAPI-loopback");
+        return Ok((SAMPLE_RATE, wasapi_capture::KANALEN, None));
+    }
     match wasapi_capture::start_exclude_thread(gedeeld.clone(), tx.clone()) {
         Ok(()) => {
             tracing::info!(
@@ -801,7 +904,8 @@ fn open_bureaublad_bron(
             let stroom = bouw_invoer(&dev, &cfg, kanalen, tx)?;
             stroom.play().context("bureaubladopname starten")?;
             tracing::info!(apparaat = %dev.to_string(), rate, kanalen, "bureaubladgeluid wordt gedeeld");
-            Ok((rate, kanalen, Some(stroom)))
+            // `bouw_invoer` mengt al naar mono.
+            Ok((rate, 1, Some(stroom)))
         }
     }
 }
@@ -814,9 +918,13 @@ fn open_bureaublad_bron(
     gedeeld: &Arc<Gedeeld>,
     tx: crossbeam_channel::Sender<Vec<f32>>,
     _apparaat: Option<&String>,
+    soort: Soort,
 ) -> Result<(u32, usize, Option<cpal::Stream>)> {
-    sck_capture::start_exclude_thread(gedeeld.clone(), tx)?;
-    tracing::info!("bureaubladgeluid via ScreenCaptureKit (eigen stem uitgesloten)");
+    sck_capture::start_thread(gedeeld.clone(), tx, soort)?;
+    tracing::info!(
+        ?soort,
+        "gedeeld geluid via ScreenCaptureKit (eigen stem uitgesloten)"
+    );
     Ok((SAMPLE_RATE, sck_capture::KANALEN, None))
 }
 
@@ -829,12 +937,10 @@ fn open_bureaublad_bron(
 /// op de gewone `cpal`-loopback.
 #[cfg(windows)]
 mod wasapi_capture {
-    use super::Gedeeld;
-    use crate::mix;
+    use super::{Gedeeld, Soort};
     use anyhow::{bail, Context, Result};
     use crossbeam_channel::Sender;
     use std::collections::VecDeque;
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -855,7 +961,9 @@ mod wasapi_capture {
         std::thread::Builder::new()
             .name("fitcom-bureaublad-wasapi".into())
             .spawn(move || {
-                let (client, capture_client, event) = match opzetten() {
+                // `include_tree: false` is de exclude-modus: alles behalve dit proces (en
+                // zijn kindprocessen).
+                let (client, capture_client, event) = match opzetten(std::process::id(), false) {
                     Ok(v) => {
                         let _ = klaar_tx.send(Ok(()));
                         v
@@ -865,18 +973,86 @@ mod wasapi_capture {
                         return;
                     }
                 };
-                capture_lus(&gedeeld, &capture_client, &event, &tx);
+                capture_lus(
+                    &gedeeld,
+                    Soort::Bureaublad,
+                    &capture_client,
+                    &event,
+                    &tx,
+                    &mut || true,
+                );
                 let _ = client.stop_stream();
             })
             .context("wasapi-captureloop starten")?;
 
+        wacht_op(klaar_rx)
+    }
+
+    /// Precies andersom: alleen Spotify en zijn kindprocessen. Spotify is een CEF-app
+    /// met een handvol `Spotify.exe`'s; de boom van de bovenste dekt ze allemaal, ook het
+    /// proces dat het geluid echt afspeelt.
+    ///
+    /// Spotify is een gewone app die dicht kan en weer open: niet draaien is wachten, en
+    /// een nieuwe Spotify (ander pid) wordt opnieuw opgepikt. Alleen een fout bij de
+    /// allereerste poging gaat terug naar de beller — dan kan deze Windows het niet.
+    pub fn start_spotify_thread(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>) -> Result<()> {
+        let (klaar_tx, klaar_rx) = crossbeam_channel::bounded::<Result<()>>(1);
+
+        std::thread::Builder::new()
+            .name("fitcom-muziek-wasapi".into())
+            .spawn(move || {
+                let mut klaar = Some(klaar_tx);
+                while gedeeld.deelt(Soort::Muziek) {
+                    let Some(pid) = crate::spotify::pid() else {
+                        if let Some(k) = klaar.take() {
+                            let _ = k.send(Ok(()));
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    };
+                    match opzetten(pid, true) {
+                        Ok((client, capture_client, event)) => {
+                            if let Some(k) = klaar.take() {
+                                let _ = k.send(Ok(()));
+                            }
+                            tracing::info!(pid, "spotify gevonden; zijn geluid wordt opgenomen");
+                            capture_lus(
+                                &gedeeld,
+                                Soort::Muziek,
+                                &capture_client,
+                                &event,
+                                &tx,
+                                &mut || crate::spotify::pid() == Some(pid),
+                            );
+                            let _ = client.stop_stream();
+                        }
+                        Err(e) => {
+                            if let Some(k) = klaar.take() {
+                                let _ = k.send(Err(e));
+                                return;
+                            }
+                            tracing::warn!(error = %format!("{e:#}"), pid, "spotify-geluid openen mislukt; opnieuw over 2 s");
+                            std::thread::sleep(Duration::from_secs(2));
+                        }
+                    }
+                }
+            })
+            .context("wasapi-captureloop starten")?;
+
+        wacht_op(klaar_rx)
+    }
+
+    fn wacht_op(klaar_rx: crossbeam_channel::Receiver<Result<()>>) -> Result<()> {
         match klaar_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(res) => res,
             Err(_) => bail!("geen antwoord van de wasapi-captureloop binnen 2 seconden"),
         }
     }
 
-    fn opzetten() -> Result<(
+    fn opzetten(
+        pid: u32,
+        include_tree: bool,
+    ) -> Result<(
         wasapi::AudioClient,
         wasapi::AudioCaptureClient,
         wasapi::Handle,
@@ -886,15 +1062,12 @@ mod wasapi_capture {
             32,
             32,
             &wasapi::SampleType::Float,
-            mix::SAMPLE_RATE as usize,
+            crate::mix::SAMPLE_RATE as usize,
             KANALEN,
             None,
         );
-        // `include_tree: false` is de exclude-modus: alles behalve dit proces (en zijn
-        // kindprocessen) — precies andersom dan "capture alleen dit ene proces".
-        let mut client =
-            wasapi::AudioClient::new_application_loopback_client(std::process::id(), false)
-                .context("proces-exclusieve loopback niet beschikbaar op deze Windows-versie")?;
+        let mut client = wasapi::AudioClient::new_application_loopback_client(pid, include_tree)
+            .context("proces-loopback niet beschikbaar op deze Windows-versie")?;
         let modus = wasapi::StreamMode::EventsShared {
             autoconvert: true,
             buffer_duration_hns: 0,
@@ -910,25 +1083,26 @@ mod wasapi_capture {
         Ok((client, capture_client, event))
     }
 
-    /// Blijft lopen zolang wij bureaubladgeluid delen; stopt zichzelf zodra `gedeeld`
-    /// zegt dat niemand meer luistert, net als de cpal-route in `bureaublad_lus` dat
-    /// via dezelfde velden doet.
+    /// Blijft lopen zolang wij dit geluid delen; stopt zichzelf zodra `gedeeld` zegt dat
+    /// niemand meer luistert, net als de cpal-route in `bureaublad_lus` dat via dezelfde
+    /// velden doet. `nog_goed` wordt elke twee seconden gevraagd of de bron er nog is.
     fn capture_lus(
         gedeeld: &Arc<Gedeeld>,
+        soort: Soort,
         capture_client: &wasapi::AudioCaptureClient,
         event: &wasapi::Handle,
         tx: &Sender<Vec<f32>>,
+        nog_goed: &mut dyn FnMut() -> bool,
     ) {
         let mut bytes: VecDeque<u8> = VecDeque::new();
+        let mut gecontroleerd = std::time::Instant::now();
 
-        while !gedeeld.stop.load(Ordering::Relaxed) {
-            if gedeeld
-                .bureaublad
-                .lock()
-                .map(|b| b.is_none())
-                .unwrap_or(true)
-            {
-                break; // niemand luistert meer, of het geheel is gestopt
+        while gedeeld.deelt(soort) {
+            if gecontroleerd.elapsed() >= Duration::from_secs(2) {
+                gecontroleerd = std::time::Instant::now();
+                if !nog_goed() {
+                    break;
+                }
             }
 
             match capture_client.get_next_packet_size() {
@@ -955,14 +1129,13 @@ mod wasapi_capture {
                     ];
                     verweven.push(f32::from_le_bytes(b));
                 }
-                let mut mono = Vec::new();
-                mix::naar_mono(&verweven, KANALEN, &mut mono);
-                let _ = tx.try_send(mono);
+                let _ = tx.try_send(verweven);
             }
 
-            if event.wait_for_event(500).is_err() {
-                break;
-            }
+            // Een time-out is normaal: speelt er niets (Spotify op pauze), dan levert de
+            // loopback niets. Hier stoppen maakte het delen na een halve seconde stilte
+            // voorgoed stom — dezelfde fout die `loopback.rs` in ee9ada0 kwijtraakte.
+            let _ = event.wait_for_event(500);
         }
     }
 }
@@ -973,7 +1146,7 @@ mod wasapi_capture {
 /// nodig heeft). Alles degradeert naar een `Err`; `open_bureaublad_bron` meldt dat dan.
 #[cfg(target_os = "macos")]
 mod sck_capture {
-    use super::Gedeeld;
+    use super::{Gedeeld, Soort};
     use anyhow::{anyhow, bail, Context, Result};
     use block2::RcBlock;
     use crossbeam_channel::Sender;
@@ -990,7 +1163,6 @@ mod sck_capture {
     };
 
     use std::ptr::NonNull;
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1020,19 +1192,19 @@ mod sck_capture {
                 if soort != SCStreamOutputType::Audio {
                     return;
                 }
-                if let Some(mono) = mono_uit_samplebuffer(sbuf) {
+                if let Some(stereo) = stereo_uit_samplebuffer(sbuf) {
                     // Vol kanaal betekent dat de verwerker achterloopt; dan is het
                     // oudste blok toch al te laat.
-                    let _ = self.ivars().tx.try_send(mono);
+                    let _ = self.ivars().tx.try_send(stereo);
                 }
             }
         }
     );
 
-    /// Haalt de PCM uit een audio-CMSampleBuffer en mengt naar mono. SCK levert
+    /// Haalt de PCM uit een audio-CMSampleBuffer als verweven stereo. SCK levert
     /// 32-bit float, per kanaal een eigen vlak (deinterleaved); één verweven vlak
     /// kan ook voorkomen en wordt net zo afgehandeld.
-    fn mono_uit_samplebuffer(sbuf: &CMSampleBuffer) -> Option<Vec<f32>> {
+    fn stereo_uit_samplebuffer(sbuf: &CMSampleBuffer) -> Option<Vec<f32>> {
         // Ruimte voor twee kanalen; de C-struct heeft een variabele staart.
         let mut lijst = [AudioBufferList {
             mNumberBuffers: 0,
@@ -1082,60 +1254,83 @@ mod sck_capture {
         };
 
         if buffers.len() >= 2 {
-            // Deinterleaved: elk vlak één kanaal — middelen.
+            // Deinterleaved: elk vlak één kanaal — verweven.
             let (l, r) = (vlak(&buffers[0]), vlak(&buffers[1]));
             let lengte = l.len().min(r.len());
-            Some((0..lengte).map(|i| (l[i] + r[i]) * 0.5).collect())
+            Some((0..lengte).flat_map(|i| [l[i], r[i]]).collect())
         } else {
             let data = vlak(&buffers[0]);
             let kanalen = (buffers[0].mNumberChannels as usize).max(1);
-            if kanalen == 1 {
-                Some(data.to_vec())
-            } else {
-                let mut mono = Vec::new();
-                crate::mix::naar_mono(data, kanalen, &mut mono);
-                Some(mono)
-            }
+            let mut stereo = Vec::new();
+            crate::mix::naar_stereo(data, kanalen, &mut stereo);
+            Some(stereo)
         }
     }
 
     /// Zelfde contract als `wasapi_capture::start_exclude_thread`: start de capture op
     /// een eigen thread, wacht tot bekend is of dat gelukt is, en laat hem daarna
     /// zelfstandig doorlopen tot `gedeeld` zegt dat niemand meer luistert.
-    pub fn start_exclude_thread(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>) -> Result<()> {
+    ///
+    /// Bij muziek alleen de Spotify-app, en net als op Windows: Spotify die niet draait
+    /// is wachten, en een herstarte Spotify (ander pid) wordt opnieuw opgepikt.
+    pub fn start_thread(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, soort: Soort) -> Result<()> {
         let (klaar_tx, klaar_rx) = crossbeam_channel::bounded::<Result<()>>(1);
 
         std::thread::Builder::new()
-            .name("fitcom-bureaublad-sck".into())
+            .name("fitcom-geluid-sck".into())
             .spawn(move || {
-                let (stream, _uitvoer) = match opzetten(tx) {
-                    Ok(v) => {
-                        let _ = klaar_tx.send(Ok(()));
-                        v
+                let mut klaar = Some(klaar_tx);
+                while gedeeld.deelt(soort) {
+                    let app = match soort {
+                        Soort::Bureaublad => None,
+                        Soort::Muziek => match crate::spotify::pid() {
+                            Some(pid) => Some(pid),
+                            None => {
+                                if let Some(k) = klaar.take() {
+                                    let _ = k.send(Ok(()));
+                                }
+                                std::thread::sleep(Duration::from_secs(1));
+                                continue;
+                            }
+                        },
+                    };
+                    let (stream, _uitvoer) = match opzetten(tx.clone(), app) {
+                        Ok(v) => {
+                            if let Some(k) = klaar.take() {
+                                let _ = k.send(Ok(()));
+                            }
+                            v
+                        }
+                        Err(e) => {
+                            if let Some(k) = klaar.take() {
+                                let _ = k.send(Err(e));
+                                return;
+                            }
+                            tracing::warn!(error = %format!("{e:#}"), "sck-geluid openen mislukt; opnieuw over 2 s");
+                            std::thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    };
+                    // SCK duwt zelf; deze thread bewaakt alleen de levensduur.
+                    let mut gecontroleerd = std::time::Instant::now();
+                    while gedeeld.deelt(soort) {
+                        std::thread::sleep(Duration::from_millis(100));
+                        if let Some(pid) = app {
+                            if gecontroleerd.elapsed() >= Duration::from_secs(2) {
+                                gecontroleerd = std::time::Instant::now();
+                                if crate::spotify::pid() != Some(pid) {
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let _ = klaar_tx.send(Err(e));
-                        return;
-                    }
-                };
-                // SCK duwt zelf; deze thread bewaakt alleen de levensduur.
-                while !gedeeld.stop.load(Ordering::Relaxed) {
-                    if gedeeld
-                        .bureaublad
-                        .lock()
-                        .map(|b| b.is_none())
-                        .unwrap_or(true)
-                    {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
+                    let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
+                    let blok = RcBlock::new(move |_fout: *mut NSError| {
+                        let _ = stop_tx.try_send(());
+                    });
+                    unsafe { stream.stopCaptureWithCompletionHandler(Some(&blok)) };
+                    let _ = stop_rx.recv_timeout(Duration::from_secs(3));
                 }
-                let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
-                let blok = RcBlock::new(move |_fout: *mut NSError| {
-                    let _ = stop_tx.try_send(());
-                });
-                unsafe { stream.stopCaptureWithCompletionHandler(Some(&blok)) };
-                let _ = stop_rx.recv_timeout(Duration::from_secs(3));
             })
             .context("sck-captureloop starten")?;
 
@@ -1145,7 +1340,11 @@ mod sck_capture {
         }
     }
 
-    fn opzetten(tx: Sender<Vec<f32>>) -> Result<(Retained<SCStream>, Retained<Geluidsuitvoer>)> {
+    /// `app`: alleen het geluid van het proces met dit pid, anders alles behalve wijzelf.
+    fn opzetten(
+        tx: Sender<Vec<f32>>,
+        app: Option<u32>,
+    ) -> Result<(Retained<SCStream>, Retained<Geluidsuitvoer>)> {
         // Deelbare inhoud is een async API; hier synchroon maken mag, we zitten op een
         // eigen thread.
         let (inhoud_tx, inhoud_rx) = crossbeam_channel::bounded::<
@@ -1173,13 +1372,31 @@ mod sck_capture {
         let scherm = schermen.iter().next().context("geen scherm gevonden")?;
 
         // Het filter moet ergens naar wijzen, ook al gaat het alleen om geluid;
-        // het eerste scherm zonder uitsluitingen is de goedkoopste keuze.
-        let filter = unsafe {
-            SCContentFilter::initWithDisplay_excludingWindows(
-                SCContentFilter::alloc(),
-                &scherm,
-                &NSArray::new(),
-            )
+        // het eerste scherm zonder uitsluitingen is de goedkoopste keuze. Met een app
+        // erbij hoort alleen díé app in het filter, en daarmee alleen zijn geluid.
+        let filter = match app {
+            None => unsafe {
+                SCContentFilter::initWithDisplay_excludingWindows(
+                    SCContentFilter::alloc(),
+                    &scherm,
+                    &NSArray::new(),
+                )
+            },
+            Some(pid) => {
+                let apps = unsafe { inhoud.applications() };
+                let gevonden = apps
+                    .iter()
+                    .find(|a| unsafe { a.processID() } as u32 == pid)
+                    .context("Spotify staat niet tussen de deelbare apps")?;
+                unsafe {
+                    SCContentFilter::initWithDisplay_includingApplications_exceptingWindows(
+                        SCContentFilter::alloc(),
+                        &scherm,
+                        &NSArray::from_retained_slice(&[gevonden]),
+                        &NSArray::new(),
+                    )
+                }
+            }
         };
         let cfg = unsafe { SCStreamConfiguration::new() };
         unsafe {
@@ -1309,9 +1526,11 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
     std::thread::Builder::new()
         .name("fitcom-mix".into())
         .spawn(move || {
+            // Alles in verweven stereo: een stem komt uit de stereodecoder op beide
+            // kanalen, muziek en spelgeluid houden hun links en rechts.
             let mut decoders: HashMap<Bron, Decoder> = HashMap::new();
-            let mut resampler = Resampler::new(SAMPLE_RATE, uitvoer_rate);
-            let mut gemixt = vec![0i16; FRAME_SAMPLES];
+            let mut resampler = StereoResampler::new(SAMPLE_RATE, uitvoer_rate);
+            let mut gemixt = vec![0i16; FRAME_SAMPLES * 2];
 
             while !gedeeld.stop.load(Ordering::Relaxed) {
                 // Laten aandrijven door de geluidskaart: pas bijmaken als er ruimte is.
@@ -1351,7 +1570,7 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
                         },
                     };
 
-                    let mut pcm = vec![0i16; FRAME_SAMPLES];
+                    let mut pcm = vec![0i16; FRAME_SAMPLES * 2];
                     let gelukt = match frame {
                         Frame::Data(payload) => decoder.decode(&payload, &mut pcm).is_ok(),
                         Frame::Verloren => decoder.verberg_verlies(&mut pcm).is_ok(),

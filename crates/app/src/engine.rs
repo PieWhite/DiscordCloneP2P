@@ -112,6 +112,8 @@ pub struct EigenStreamView {
     pub titel: String,
     pub kijkers: usize,
     pub is_geluid: bool,
+    /// Ons gedeelde Spotify-geluid. Ook `is_geluid`; de titel is wat er nu speelt.
+    pub is_muziek: bool,
     /// Onze eigen camera in plaats van een scherm. De UI heeft dit nodig om de
     /// camera-knop ingedrukt te tonen en om te weten welke stream hij weer uitzet.
     pub is_camera: bool,
@@ -131,6 +133,9 @@ pub struct StreamView {
     pub kijken: bool,
     /// Geluid in plaats van beeld: geen venster, wel een volumeschuif.
     pub is_geluid: bool,
+    /// Iemands Spotify (ook `is_geluid`). Hoor je in het gesprek vanzelf, zonder te
+    /// kijken; de titel is "Artiest – Nummer".
+    pub is_muziek: bool,
     /// Iemands camera in plaats van zijn scherm. Verder identiek — hetzelfde venster,
     /// dezelfde miniatuur — alleen het icoontje in de lijst verschilt.
     pub is_camera: bool,
@@ -270,6 +275,9 @@ pub enum UiCommand {
     /// De camera aan (`true`) of uit (`false`). Eén schakelaar in plaats van de UI laten
     /// uitzoeken welke bron de camera is; bureaubladgeluid blijft er buiten.
     ZetCamera(bool),
+    /// Het geluid van Spotify delen met iedereen in het gesprek (`true`) of daarmee
+    /// stoppen. Alleen Spotify, in stereo; zie `zet_spotify`.
+    DeelSpotify(bool),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
     /// Volume van één stream van een peer, los van zijn stem.
@@ -447,6 +455,7 @@ pub fn spawn(
         kijkers: HashMap::new(),
         miniaturen: HashMap::new(),
         stream_volumes: HashMap::new(),
+        nu_speelt: None,
         files,
         downloads_dir,
         pictures_dir,
@@ -517,6 +526,8 @@ struct Engine {
     /// Volume per bron, ook als de voice-sessie even niet draait. Zo blijft een
     /// zachtgezette stream zacht als je het gesprek verlaat en weer aansluit.
     stream_volumes: HashMap<(PeerId, u32), f32>,
+    /// Leest wat Spotify speelt zolang wij hem delen; `None` als we dat niet doen.
+    nu_speelt: Option<crate::muziek::NuSpeelt>,
 
     /// Wie wat aanbiedt en waar onze eigen downloads staan. Neemt de beslissingen;
     /// het lezen/schrijven/hashen zelf gebeurt in losse tokio-taken hieronder.
@@ -691,6 +702,7 @@ impl Engine {
                     let r = self.chat.tick(&verbonden);
                     self.verwerk(r);
                     self.ruim_gestopte_camera_op();
+                    self.werk_muziektitel_bij();
                     self.wordle_tick();
                     self.meet_gebruik();
                     // Verlopen typindicaties opruimen; de volgende publiceer() merkt
@@ -1200,14 +1212,14 @@ impl Engine {
         self.geluid(geluid::Geluid::EigenLeave);
         self.meld_voice_status(None);
 
-        // Bureaubladgeluid loopt over de voice-socket, en die is er nu niet meer.
-        // Zowel wat we deelden als waar we naar luisterden moet daarom weg — anders
+        // Bureaubladgeluid en muziek lopen over de voice-socket, en die is er nu niet
+        // meer. Zowel wat we deelden als waar we naar luisterden moet daarom weg — anders
         // blijven de anderen naar een dood adres sturen en denkt de UI dat het werkt.
         let eigen: Vec<u32> = self
             .streams
             .eigen()
             .iter()
-            .filter(|s| s.kind == StreamKind::DESKTOP_AUDIO)
+            .filter(|s| s.kind.is_geluid())
             .map(|s| s.id)
             .collect();
         for id in eigen {
@@ -1215,12 +1227,13 @@ impl Engine {
             self.stuur_alles(cmds);
             self.voer_uit(acties);
         }
+        self.nu_speelt = None;
 
         let geluid: Vec<(PeerId, u32)> = self
             .streams
             .vreemd()
             .iter()
-            .filter(|s| s.kijken && s.kind == StreamKind::DESKTOP_AUDIO)
+            .filter(|s| s.kijken && s.kind.is_geluid())
             .map(|s| (s.eigenaar, s.id))
             .collect();
         for (eigenaar, id) in geluid {
@@ -1481,6 +1494,67 @@ impl Engine {
         }
     }
 
+    /// Onze muziekstream, als we Spotify delen.
+    fn eigen_muziek(&self) -> Option<u32> {
+        self.streams
+            .eigen()
+            .iter()
+            .find(|s| s.kind == StreamKind::MUSIC)
+            .map(|s| s.id)
+    }
+
+    /// Spotify delen of ermee stoppen.
+    ///
+    /// Net als een scherm wordt er pas opgenomen als iemand luistert — maar bij muziek
+    /// tekent iedereen in het gesprek vanzelf in (`Streams::stem_geluid_af_op_beeld`), dus
+    /// in de praktijk meteen. Alleen Spotify, niet je spel of je stem: de proces-loopback
+    /// pakt alleen zijn procesboom (`fitcom_audio::spotify`).
+    ///
+    /// Bureaubladgeluid gaat zolang uit. Dat bevat Spotify ook, dus wie je scherm bekijkt
+    /// zou de muziek anders twee keer horen, net niet gelijk.
+    fn zet_spotify(&mut self, aan: bool) {
+        match (aan, self.eigen_muziek()) {
+            (true, None) => {
+                if self.voice.is_none() {
+                    self.fout = Some("Spotify delen: neem eerst deel aan het gesprek".into());
+                    return;
+                }
+                if fitcom_audio::spotify::pid().is_none() {
+                    self.fout = Some(
+                        "Spotify draait niet; open de Spotify-app en probeer het opnieuw".into(),
+                    );
+                    return;
+                }
+                self.stop_bureaubladgeluid();
+                let (_, cmds) = self.streams.deel(StreamKind::MUSIC, "Spotify".into(), 0, 0);
+                self.stuur_alles(cmds);
+                self.nu_speelt = Some(crate::muziek::NuSpeelt::start());
+                self.werk_muziektitel_bij();
+            }
+            (false, Some(id)) => {
+                let (cmds, acties) = self.streams.stop_delen(id);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+                self.nu_speelt = None;
+                if self.deelt_scherm_of_venster() {
+                    self.deel_bureaubladgeluid();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Het nummer dat nu speelt als titel van onze muziekstream. Elke tik gevraagd; er
+    /// gaat alleen iets de draad op als het nummer echt wisselde.
+    fn werk_muziektitel_bij(&mut self) {
+        let (Some(nu), Some(id)) = (&self.nu_speelt, self.eigen_muziek()) else {
+            return;
+        };
+        let titel = nu.titel().unwrap_or_else(|| "Spotify".into());
+        let cmds = self.streams.zet_titel(id, &titel);
+        self.stuur_alles(cmds);
+    }
+
     /// Stopt bureaubladgeluid omdat het laatste gedeelde scherm net gestopt is. Geen-op
     /// als er toch niets gedeeld wordt.
     fn stop_bureaubladgeluid(&mut self) {
@@ -1506,7 +1580,7 @@ impl Engine {
         self.streams
             .eigen()
             .iter()
-            .any(|s| s.id == stream_id && s.kind == StreamKind::DESKTOP_AUDIO)
+            .any(|s| s.id == stream_id && s.kind.is_geluid())
     }
 
     /// Het geluid van deze PC aankondigen. Net als bij een scherm wordt er nog niets
@@ -1523,6 +1597,9 @@ impl Engine {
             .any(|s| s.kind == StreamKind::DESKTOP_AUDIO)
         {
             return; // delen we al
+        }
+        if self.eigen_muziek().is_some() {
+            return; // Spotify zit er al apart in; zie `zet_spotify`
         }
         // Geen afmeting: dit is geluid. De ontvanger leidt daar niets uit af — hij
         // kijkt naar `kind`.
@@ -1541,13 +1618,23 @@ impl Engine {
                 | Actie::ZetKijkers { stream_id, kijkers }
                     if self.is_geluid(stream_id) =>
                 {
-                    // Bureaubladgeluid gaat over de voice-socket mee, dus opnieuw
-                    // aanzetten met een andere lijst luisteraars is hetzelfde als
+                    // Bureaubladgeluid en muziek gaan over de voice-socket mee, dus
+                    // opnieuw aanzetten met een andere lijst luisteraars is hetzelfde als
                     // starten. De sessie zelf is idempotent.
+                    let muziek = self.eigen_muziek() == Some(stream_id);
                     if let Some(v) = &self.voice {
-                        if let Err(e) = v.deel_bureaublad(stream_id, kijkers) {
-                            tracing::error!(error = %format!("{e:#}"), "bureaubladgeluid delen mislukt");
-                            self.fout = Some(format!("bureaubladgeluid: {e:#}"));
+                        let uitkomst = if muziek {
+                            v.deel_muziek(stream_id, kijkers)
+                        } else {
+                            v.deel_bureaublad(stream_id, kijkers)
+                        };
+                        if let Err(e) = uitkomst {
+                            tracing::error!(error = %format!("{e:#}"), muziek, "geluid delen mislukt");
+                            self.fout = Some(if muziek {
+                                format!("Spotify delen: {e:#}")
+                            } else {
+                                format!("bureaubladgeluid: {e:#}")
+                            });
                         }
                     }
                 }
@@ -1577,7 +1664,7 @@ impl Engine {
                 } => {
                     if is_geluid {
                         if let Some(v) = &self.voice {
-                            v.stop_bureaublad();
+                            v.stop_geluid(stream_id);
                         }
                     }
                     // De laatste kijker weg betekent niet dat de deler weg moet: draagt
@@ -1979,7 +2066,7 @@ impl Engine {
                     .streams
                     .eigen()
                     .iter()
-                    .filter(|s| s.kind != StreamKind::DESKTOP_AUDIO)
+                    .filter(|s| !s.kind.is_geluid())
                     .map(|s| s.id)
                     .collect();
                 for id in eigen {
@@ -2073,11 +2160,16 @@ impl Engine {
                     // De nieuwe sessie begint ongemute; wie gemute was zou anders na een
                     // apparaatwissel ongemerkt weer open staan.
                     let (mute, deafen) = (v.is_mute(), v.is_deafen());
+                    // `verlaten` trekt de muziek in; een apparaatwissel hoort dat niet te doen.
+                    let muziek = self.eigen_muziek().is_some();
                     self.verlaten();
                     self.deelnemen();
                     if let Some(v) = &self.voice {
                         v.zet_mute(mute);
                         v.zet_deafen(deafen);
+                    }
+                    if muziek {
+                        self.zet_spotify(true);
                     }
                 }
                 // De clip-opname kiest zijn microfoon op hetzelfde moment: bij het
@@ -2118,6 +2210,7 @@ impl Engine {
             }
             UiCommand::StopDelen(id) => self.stop_met_delen(id),
             UiCommand::ZetCamera(aan) => self.zet_camera(aan),
+            UiCommand::DeelSpotify(aan) => self.zet_spotify(aan),
             UiCommand::Kijken(eigenaar, id) => {
                 let acties = self.streams.wil_kijken(eigenaar, id);
                 self.voer_uit(acties);
@@ -2195,16 +2288,11 @@ impl Engine {
         }
 
         let mut deelt: Vec<PeerId> = Vec::new();
-        if self
-            .streams
-            .eigen()
-            .iter()
-            .any(|s| s.kind != StreamKind::DESKTOP_AUDIO)
-        {
+        if self.streams.eigen().iter().any(|s| !s.kind.is_geluid()) {
             deelt.push(me);
         }
         for s in self.streams.vreemd() {
-            if s.kind != StreamKind::DESKTOP_AUDIO && !deelt.contains(&s.eigenaar) {
+            if !s.kind.is_geluid() && !deelt.contains(&s.eigenaar) {
                 deelt.push(s.eigenaar);
             }
         }
@@ -2694,7 +2782,8 @@ impl Engine {
                 stream_id: s.id,
                 titel: s.titel.clone(),
                 kijkers: s.kijkers.len(),
-                is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                is_geluid: s.kind.is_geluid(),
+                is_muziek: s.kind == StreamKind::MUSIC,
                 is_camera: s.kind == StreamKind::CAMERA,
                 miniatuur: self.delers.get(&s.id).and_then(|d| d.miniatuur()),
             })
@@ -2711,7 +2800,8 @@ impl Engine {
                 breedte: s.breedte,
                 hoogte: s.hoogte,
                 kijken: s.kijken,
-                is_geluid: s.kind == StreamKind::DESKTOP_AUDIO,
+                is_geluid: s.kind.is_geluid(),
+                is_muziek: s.kind == StreamKind::MUSIC,
                 is_camera: s.kind == StreamKind::CAMERA,
                 volume: self
                     .stream_volumes

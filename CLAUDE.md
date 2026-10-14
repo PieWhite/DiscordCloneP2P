@@ -220,6 +220,29 @@ Wat je niet mag omdraaien:
   uitgerekend en de UI haalt hem met `get_recap` op. Erin zetten is tien `state`-events per
   seconde zodra er een gesprek loopt.
 
+## Spotify delen (2026-10-14)
+Beslissing 40 in `docs/OVERDRACHT.md`. Eén DJ, alleen Spotify's geluid, stereo, naar
+iedereen in het gesprek. Wat je niet mag omdraaien:
+
+- **Het is het geluid van één app, geen gesynchroniseerde Spotify.** Geen Web API, geen
+  login, geen Premium: dat zou een vierde uitzondering op invariant 1 zijn. Luisteraars
+  hebben geen Spotify nodig.
+- **Alleen Spotify's procesboom** (`new_application_loopback_client(pid, true)`, op mac een
+  SCK-filter met alleen de app). Geen terugval op de gewone loopback: die neemt je spel en
+  je stem mee, en "alleen Spotify" is de belofte.
+- **`StreamKind::MUSIC` hoort iedereen in het gesprek, los van beeld.** Hem op
+  `DESKTOP_AUDIO` laten meeliften maakt hem afhankelijk van naar je scherm kijken.
+- **Bureaubladgeluid uit zolang muziek gedeeld wordt**, anders hoort je kijker Spotify
+  dubbel (`deel_bureaubladgeluid` checkt `eigen_muziek`).
+- **Wat er speelt is de titel van de stream** en gaat alleen opnieuw de draad op bij een
+  ander nummer (`Streams::zet_titel`). Niet in een eigen bericht en niet elke tik.
+- **De geluidsketen is stereo** behalve de microfoon: decoders, mix en weergave zijn
+  verweven stereo. Een `FRAME_SAMPLES`-buffer voor gedecodeerde audio is daarom
+  `FRAME_SAMPLES * 2`. Muziek en bureaubladgeluid zijn 384 kbit/s, het plafond van één
+  pakket (`MAX_PAYLOAD = MAX_MEDIA_PAYLOAD`); hoger kan alleen met fragmenteren.
+- **Een time-out van de loopback is stilte, geen einde.** Nooit `break` op
+  `wait_for_event`; pauze in Spotify mag het delen niet stoppen.
+
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`
 (Media Foundation, alleen Windows) levert dezelfde `Opgenomen` als de schermopname, dus

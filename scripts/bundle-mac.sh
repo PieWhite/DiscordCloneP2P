@@ -61,6 +61,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
        microfoon aanraakt. -->
   <key>NSMicrophoneUsageDescription</key>
   <string>FitCommunication gebruikt de microfoon voor spraakgesprekken met je peers.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>FitCommunication leest welk nummer Spotify speelt, zodat je peers zien wat je met ze deelt.</string>
 </dict>
 </plist>
 PLIST

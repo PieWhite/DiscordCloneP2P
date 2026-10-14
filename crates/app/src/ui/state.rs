@@ -114,6 +114,19 @@ pub struct PeerState {
     /// Does this peer share desktop audio we are listening to?
     pub desktop_volume: Option<f32>,
     pub desktop_stream: Option<u32>,
+    /// The Spotify this peer shares, whether or not we are in the call to hear it.
+    #[serde(default)]
+    pub music: Option<MusicState>,
+}
+
+/// A peer's shared Spotify: what plays, and its own volume while we listen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicState {
+    pub stream: u32,
+    /// "Artist – Track", or "Spotify" while nothing is known.
+    pub title: String,
+    pub listening: bool,
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,6 +181,9 @@ pub struct OwnStreamState {
     /// Our own camera rather than a screen: the camera button reads this for its pressed
     /// state, and the sharing line leaves it out of "Sharing <screen>".
     pub is_camera: bool,
+    /// Our shared Spotify (also `is_audio`); the title is what plays now.
+    #[serde(default)]
+    pub is_music: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -614,8 +630,21 @@ impl UiState {
         let desktop = |owner: PeerId| {
             snap.streams
                 .iter()
-                .find(|s| s.eigenaar == owner && s.is_geluid && s.kijken)
+                .find(|s| s.eigenaar == owner && s.is_geluid && !s.is_muziek && s.kijken)
                 .map(|s| (s.stream_id, s.volume))
+        };
+        // Spotify likewise, but shown even when we are not listening: "X plays ..." is
+        // a reason to join the call.
+        let music = |owner: PeerId| {
+            snap.streams
+                .iter()
+                .find(|s| s.eigenaar == owner && s.is_muziek)
+                .map(|s| MusicState {
+                    stream: s.stream_id,
+                    title: s.titel.clone(),
+                    listening: s.kijken,
+                    volume: s.volume,
+                })
         };
 
         let peers = snap
@@ -653,6 +682,7 @@ impl UiState {
                         .flatten(),
                     desktop_volume: desk.map(|d| d.1),
                     desktop_stream: desk.map(|d| d.0),
+                    music: id.and_then(music),
                 }
             })
             .collect();
@@ -706,6 +736,7 @@ impl UiState {
                     viewers: s.kijkers,
                     is_audio: s.is_geluid,
                     is_camera: s.is_camera,
+                    is_music: s.is_muziek,
                 })
                 .collect(),
             streams: snap

@@ -115,6 +115,9 @@ UDP ─► ontvang-thread ─► jitterbuffer per spreker ─► mix-thread ─�
 ```
 
 - 48 kHz mono, 20 ms frames, Opus op 32 kbit/s met inband-FEC.
+- Bureaubladgeluid en gedeelde Spotify zijn **stereo** Opus (`Application::Audio`,
+  384 kbit/s); elke decoder is stereo en de mix en weergave zijn verweven stereo. Een stem
+  komt uit de stereodecoder op beide kanalen. Zie `docs/OVERDRACHT.md` beslissing 40.
 - **De cpal-callbacks doen niets dan samples in of uit een kanaal schuiven.** Ze draaien
   op threads van de geluidsdriver; wat daar te lang duurt is een hoorbare klik.
 - **De mix-thread laat zich aandrijven door de geluidskaart**, niet door een timer: hij
@@ -174,8 +177,10 @@ enum ControlMsg {
 }
 ```
 
-`StreamKind` is een `u8` op de draad met vier bekende waarden: `MONITOR = 1`,
-`WINDOW = 2`, `DESKTOP_AUDIO = 3` en `CAMERA = 4`. Een camerastream is op de draad niet
+`StreamKind` is een `u8` op de draad met vijf bekende waarden: `MONITOR = 1`,
+`WINDOW = 2`, `DESKTOP_AUDIO = 3`, `CAMERA = 4` en `MUSIC = 5` (alleen Spotify, voor
+iedereen in het gesprek; de titel is het nummer en wordt bij elk nieuw nummer opnieuw
+aangekondigd, ook zonder bump — beslissing 40). Een camerastream is op de draad niet
 van een gedeeld scherm te onderscheiden — dezelfde H.264 in dezelfde fragmenten — maar de
 app moet het verschil weten, want bureaubladgeluid hangt aan een gedeeld *scherm* en niet
 aan een camera. `CAMERA` kwam erbij **zonder `protocol_version`-bump**: een peer die hem

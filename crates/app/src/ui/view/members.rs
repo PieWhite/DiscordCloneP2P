@@ -32,6 +32,7 @@ pub struct MembersPane {
 enum SliderKey {
     Voice(String),
     Desktop(String, u32),
+    Music(String, u32),
 }
 
 struct VolumeSlider {
@@ -82,7 +83,7 @@ impl MembersPane {
                     let volume = v.end() / 100.;
                     match &key {
                         SliderKey::Voice(peer) => commands::set_peer_volume(&ui, peer, volume),
-                        SliderKey::Desktop(peer, stream) => {
+                        SliderKey::Desktop(peer, stream) | SliderKey::Music(peer, stream) => {
                             commands::set_stream_volume(&ui, peer, *stream, volume)
                         }
                     }
@@ -656,6 +657,53 @@ impl MembersPane {
             None => None,
         };
 
+        // Their Spotify while we hear it: what plays, and its own slider next to the voice.
+        let music =
+            match peer.and_then(|p| p.music.as_ref().filter(|m| m.listening).map(|m| (p, m))) {
+                Some((p, m)) => {
+                    let k = SliderKey::Music(p.id.clone(), m.stream);
+                    used.insert(k.clone());
+                    let state = self.slider(k, format::vol_pct(m.volume), snap, window, cx);
+                    Some(
+                        div()
+                            .mt(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .line_height(relative(1.1))
+                                    .text_color(c::SILVER)
+                                    .child(tracked("SPOTIFY", 9.5, 0.04)),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(2.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(11.5))
+                                    .text_color(theme::TEXT)
+                                    .child(m.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .mt(px(2.))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_color(theme::TEXT_DIM)
+                                            .child(Icon::Music.size(14.)),
+                                    )
+                                    .child(range(&state, cx))
+                                    .child(vol_num(state.read(cx).value().end().round() as u32)),
+                            ),
+                    )
+                }
+                None => None,
+            };
+
         let chips: Vec<AnyElement> = match peer {
             Some(p) if !p.id.is_empty() => {
                 let shared: Vec<_> = s.streams.iter().filter(|st| st.owner == p.id).collect();
@@ -732,6 +780,7 @@ impl MembersPane {
                     .children(sub)
                     .children(tools)
                     .children(desk)
+                    .children(music)
                     .children(chips),
             )
             .into_any_element()
@@ -800,6 +849,7 @@ mod tests {
             last_seen: None,
             desktop_volume: None,
             desktop_stream: None,
+            music: None,
         }
     }
 

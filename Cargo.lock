@@ -2262,6 +2262,7 @@ dependencies = [
  "opus",
  "tracing",
  "wasapi",
+ "windows 0.62.2",
 ]
 
 [[package]]

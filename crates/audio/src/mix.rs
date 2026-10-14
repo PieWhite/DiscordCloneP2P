@@ -116,6 +116,52 @@ impl Resampler {
     }
 }
 
+/// Twee [`Resampler`]s, één per kanaal, voor verweven stereo. Herbemonsteren over de
+/// verweven reeks zou links en rechts door elkaar interpoleren.
+pub struct StereoResampler {
+    links: Resampler,
+    rechts: Resampler,
+}
+
+impl StereoResampler {
+    pub fn new(van: u32, naar: u32) -> Self {
+        Self {
+            links: Resampler::new(van, naar),
+            rechts: Resampler::new(van, naar),
+        }
+    }
+
+    pub fn verwerk(&mut self, verweven: &[f32], uit: &mut Vec<f32>) {
+        if !self.links.nodig() {
+            uit.extend_from_slice(verweven);
+            return;
+        }
+        let l: Vec<f32> = verweven.iter().step_by(2).copied().collect();
+        let r: Vec<f32> = verweven.iter().skip(1).step_by(2).copied().collect();
+        let (mut ul, mut ur) = (Vec::new(), Vec::new());
+        self.links.verwerk(&l, &mut ul);
+        self.rechts.verwerk(&r, &mut ur);
+        // Zelfde invoerlengte en zelfde stap, dus zelfde uitvoerlengte.
+        for (a, b) in ul.into_iter().zip(ur) {
+            uit.push(a);
+            uit.push(b);
+        }
+    }
+}
+
+/// Willekeurig aantal kanalen naar verweven stereo: mono gaat op beide kanalen, van
+/// meer kanalen tellen de eerste twee (links en rechts vóór in elke Windows-indeling).
+pub fn naar_stereo(verweven: &[f32], kanalen: usize, uit: &mut Vec<f32>) {
+    uit.clear();
+    match kanalen {
+        0 => {}
+        1 => verweven.iter().for_each(|&s| uit.extend([s, s])),
+        _ => verweven
+            .chunks_exact(kanalen)
+            .for_each(|b| uit.extend([b[0], b[1]])),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +277,27 @@ mod tests {
             (totaal as i32 - verwacht).abs() <= 5,
             "na 100 blokken {totaal} samples, verwachtte ongeveer {verwacht}"
         );
+    }
+
+    #[test]
+    fn stereo_herbemonsteren_houdt_de_kanalen_uit_elkaar() {
+        let mut r = StereoResampler::new(44_100, 48_000);
+        let invoer: Vec<f32> = (0..441).flat_map(|_| [1.0f32, -1.0]).collect();
+        let mut uit = Vec::new();
+        r.verwerk(&invoer, &mut uit);
+        assert_eq!(uit.len() % 2, 0);
+        assert!((475..=482).contains(&(uit.len() / 2)), "{}", uit.len() / 2);
+        // De eerste twee paren interpoleren vanaf de stilte van vóór het blok; daarna
+        // zuiver, en nooit links en rechts door elkaar.
+        assert!(uit[4..].chunks(2).all(|lr| lr[0] > 0.99 && lr[1] < -0.99));
+    }
+
+    #[test]
+    fn naar_stereo_kent_mono_en_surround() {
+        let mut uit = Vec::new();
+        naar_stereo(&[0.5, 0.25], 1, &mut uit);
+        assert_eq!(uit, [0.5, 0.5, 0.25, 0.25]);
+        naar_stereo(&[1., 2., 3., 4., 5., 6.], 6, &mut uit);
+        assert_eq!(uit, [1., 2.]);
     }
 }

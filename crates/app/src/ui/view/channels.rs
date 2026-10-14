@@ -447,7 +447,21 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
             })
             .when_some(snap.own_camera(), |d, cam| {
                 d.child(share_line(Icon::Cam, "Camera on \u{00b7} ", &cam.title, ""))
-            });
+            })
+            .when_some(snap.own_music(), |d, m| {
+                d.child(share_line(
+                    Icon::Music,
+                    "Sharing ",
+                    &m.title,
+                    &format!(" \u{00b7} {} listening", m.viewers),
+                ))
+            })
+            // Everyone in the call hears it without a click, so the line only says what.
+            .children(others.iter().filter_map(|p| {
+                p.music
+                    .as_ref()
+                    .map(|m| share_line(Icon::Music, &format!("{} plays ", p.name), &m.title, ""))
+            }));
         let live = if joined {
             live.child(voice_acts(snap, &sharing))
         } else {
@@ -671,10 +685,46 @@ fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
         .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&ui, false));
     div()
         .flex()
+        .flex_col()
         .gap(px(6.))
         .mt(px(9.))
-        .child(share)
-        .child(leave)
+        .child(div().flex().gap(px(6.)).child(share).child(leave))
+        .child(spotify_button(snap))
+}
+
+/// Share Spotify / Stop Spotify: only Spotify's sound, for everyone in the call.
+fn spotify_button(snap: &AppSnapshot) -> Stateful<Div> {
+    let on = snap.own_music().is_some();
+    let ui = snap.ui.clone();
+    div()
+        .id("btn-spotify")
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .h(px(30.))
+        .px(px(8.))
+        .border_1()
+        .border_color(theme::BORDER_STRONG)
+        .text_color(theme::TEXT)
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .tooltip(tooltip(if on {
+            "Stop sending Spotify to the call"
+        } else {
+            "Everyone in the call hears your Spotify, and only that"
+        }))
+        .hover(|s| {
+            s.bg(c::PAPER)
+                .border_color(c::PAPER)
+                .text_color(theme::ON_INVERT)
+        })
+        .child(if on { Icon::X } else { Icon::Music }.size(14.))
+        .child(if on { "Stop Spotify" } else { "Share Spotify" })
+        .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&ui, !on))
 }
 
 /// `.self`: who you are, how you are, and the four toggles.
@@ -836,6 +886,7 @@ mod tests {
             last_seen: None,
             desktop_volume: None,
             desktop_stream: None,
+            music: None,
         }
     }
 

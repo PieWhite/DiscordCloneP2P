@@ -157,3 +157,42 @@ fn microfoon_tap_levert_chunks() {
 /// Voorkomt dat de compiler het type wegoptimaliseert als de tests overgeslagen worden.
 #[allow(dead_code)]
 fn typecheck(_: &VoiceHandle) {}
+
+#[test]
+#[ignore = "vereist een echte geluidskaart en een draaiende Spotify-desktopapp"]
+fn spotify_geluid_kan_worden_afgetapt() {
+    // Spotify hoeft niet te spelen: dit bewijst dat de bovenste `Spotify.exe` gevonden
+    // wordt en dat de proces-inclusieve loopback op zijn boom opengaat. Speelt hij wél,
+    // dan komen er stereopakketten binnen.
+    use fitcom_net::MediaSocket;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let pid = fitcom_audio::spotify::pid().expect("start eerst de Spotify-desktopapp");
+    println!("spotify-pid: {pid}");
+
+    let sessie = fitcom_audio::start(config()).expect("voice moet kunnen starten");
+    let luisteraar = MediaSocket::bind(0).expect("luisterpoort");
+    let doel = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        luisteraar.local_addr().unwrap().port(),
+    );
+    sessie
+        .deel_muziek(9, vec![doel])
+        .expect("spotify-geluid moet te delen zijn");
+
+    std::thread::sleep(Duration::from_secs(3));
+    let mut buf = [0u8; fitcom_net::MAX_PAKKET];
+    let mut pakketten = 0;
+    for _ in 0..50 {
+        if let Ok(Some((_, header, payload))) = luisteraar.ontvang(&mut buf) {
+            assert_eq!(header.stream_id, 9);
+            // TOC-byte van Opus: bit 2 is de stereovlag.
+            assert!(payload[0] & 0b100 != 0, "muziek moet stereo zijn");
+            pakketten += 1;
+        }
+    }
+    println!("{pakketten} pakketten opgevangen (nul is goed als Spotify op pauze staat)");
+
+    sessie.stop_geluid(9);
+    std::thread::sleep(Duration::from_millis(400));
+}

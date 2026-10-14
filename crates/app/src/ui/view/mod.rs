@@ -495,6 +495,9 @@ impl AppSnapshot {
     pub fn own_camera(&self) -> Option<&OwnStreamState> {
         self.s.own_streams.iter().find(|s| s.is_camera)
     }
+    pub fn own_music(&self) -> Option<&OwnStreamState> {
+        self.s.own_streams.iter().find(|s| s.is_music)
+    }
     pub fn watched_streams(&self) -> impl Iterator<Item = &StreamState> {
         self.s.streams.iter().filter(|s| s.watching)
     }

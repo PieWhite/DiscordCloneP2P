@@ -77,6 +77,7 @@ icons! {
     Open => "open",
     Play => "play",
     Tiles => "tiles",
+    Music => "music",
     /// The titlebar mark: three nodes on a 16×16 grid, filled, with faint links.
     Brand => "brand",
 }

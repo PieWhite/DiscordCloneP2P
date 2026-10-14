@@ -202,6 +202,7 @@ mod tests {
             viewers,
             is_audio,
             is_camera,
+            is_music: false,
         }
     }
 
