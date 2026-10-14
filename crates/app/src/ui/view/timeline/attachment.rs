@@ -399,6 +399,30 @@ fn render_shot(
     )
 }
 
+/// The DJ's button under a Spotify track link: opens it in their own Spotify app, where
+/// they play or queue it themselves. Only drawn while we share Spotify; a listener's link
+/// stays a link. The view hands over the id it found, and `open_spotify_track` checks it
+/// again before it becomes a URI.
+pub(super) fn spotify_button(key: &SharedString, id: &str) -> AnyElement {
+    let track = id.to_string();
+    div()
+        .id(ElementId::Name(format!("{key}-spotify-{id}").into()))
+        .flex()
+        .mt(px(6.))
+        .tooltip(tooltip(
+            "Opens this track in your Spotify. Play it or add it to your queue there.",
+        ))
+        .child(
+            Btn::new(
+                ElementId::Name(format!("{key}-spotify-btn-{id}").into()),
+                "Open in Spotify",
+            )
+            .icon(Icon::Music)
+            .on_click(move |_, _, _| commands::open_spotify_track(&track)),
+        )
+        .into_any_element()
+}
+
 /// `ytCard`: thumbnail with the play plate, title (two lines at most) and channel. The
 /// whole card is the link.
 pub(super) fn youtube_card(

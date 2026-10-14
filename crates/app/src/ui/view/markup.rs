@@ -329,6 +329,33 @@ pub fn yt_ids(text: &str) -> Vec<String> {
     ids
 }
 
+/// The Spotify tracks linked in a body (`open.spotify.com/track/<id>`, also with an
+/// `intl-xx/` segment), in order, without repeats, two at most. Only the DJ draws a button
+/// for them; `muziek::geldig_track_id` checks the id again before it becomes a URI.
+pub fn spotify_tracks(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for (at, _) in text.match_indices("open.spotify.com/") {
+        let mut rest = &text[at + "open.spotify.com/".len()..];
+        if let Some(r) = rest.strip_prefix("intl-") {
+            rest = r.split_once('/').map_or("", |(_, r)| r);
+        }
+        let Some(after) = rest.strip_prefix("track/") else {
+            continue;
+        };
+        let id: String = after.chars().take(22).collect();
+        // A 23rd word character means this was not a track id but something longer.
+        let next = after[id.len()..].chars().next();
+        if crate::muziek::geldig_track_id(&id)
+            && !next.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+    }
+    ids.truncate(2);
+    ids
+}
+
 /// `watch\?(?:[\w=&%.-]*&)?v=`: the greedy group tries the last `&` first.
 fn watch_v(q: &str) -> Option<&str> {
     let run = q
@@ -668,5 +695,26 @@ mod tests {
         );
         assert!(yt_ids("https://youtu.be/short").is_empty());
         assert!(yt_ids("https://example.com/watch?v=aaaaaaaaaaa").is_empty());
+    }
+
+    #[test]
+    fn spotify_tracks_take_only_a_clean_22_character_id() {
+        let a = "4uLU6hMCjMI75M1A2tKUQC";
+        let b = "0VjIjW4GlUZAMYd2vXMi3b";
+        assert_eq!(
+            spotify_tracks(&format!(
+                "luister https://open.spotify.com/track/{a}?si=abc123 en \
+                 https://open.spotify.com/intl-nl/track/{b} en https://open.spotify.com/track/{a}"
+            )),
+            [a, b]
+        );
+        // Albums, playlists, too short, too long, and a path-shaped attempt: no button.
+        assert!(spotify_tracks(&format!("https://open.spotify.com/album/{a}")).is_empty());
+        assert!(spotify_tracks("https://open.spotify.com/track/4uLU6hMCjMI75M1A2").is_empty());
+        assert!(spotify_tracks(&format!("https://open.spotify.com/track/{a}X")).is_empty());
+        assert!(
+            spotify_tracks("https://open.spotify.com/track/..%2F..%2F..%2Fcmd.exe%20x").is_empty()
+        );
+        assert!(spotify_tracks("open.spotify.com/intl-nl").is_empty());
     }
 }

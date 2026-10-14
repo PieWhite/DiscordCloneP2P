@@ -368,6 +368,14 @@ fn content(
                     .filter_map(|yt| ctx.yt.get(&yt).cloned().flatten().map(|p| (yt, p)))
                     .filter_map(|(yt, p)| attachment::youtube_card(ctx, key, &yt, &p)),
             );
+            // Only the DJ gets a button on a track link; no bytes go over the wire for it.
+            if ctx.snap.own_music().is_some() {
+                out.extend(
+                    markup::spotify_tracks(body)
+                        .iter()
+                        .map(|id| attachment::spotify_button(key, id)),
+                );
+            }
             out
         }
         TimelineItem::File { .. } => vec![attachment::render_file(ctx, item, key)],

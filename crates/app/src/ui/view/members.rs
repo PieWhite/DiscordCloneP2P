@@ -3,7 +3,7 @@
 //! with the old level remembered in `v.volume_before_mute`), the desktop-audio volume, and
 //! the Watch / Stop watching chips.
 
-use super::super::commands;
+use super::super::commands::{self, MusicAction};
 use super::super::icons::Icon;
 use super::super::state::{PeerState, Presence};
 use super::super::theme::{self, c, Dither};
@@ -676,13 +676,39 @@ impl MembersPane {
                             )
                             .child(
                                 div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(2.))
                                     .mt(px(2.))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_size(px(11.5))
-                                    .text_color(theme::TEXT)
-                                    .child(m.title.clone()),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .text_size(px(11.5))
+                                            .text_color(theme::TEXT)
+                                            .child(m.title.clone()),
+                                    )
+                                    // Anyone in the call may pause or skip, at once; the DJ
+                                    // checks that and does it in their own Spotify.
+                                    .child(music_btn(
+                                        snap,
+                                        p,
+                                        m.stream,
+                                        MusicAction::PLAY_PAUSE,
+                                        Icon::PlayPause,
+                                        "Play / pause",
+                                    ))
+                                    .child(music_btn(
+                                        snap,
+                                        p,
+                                        m.stream,
+                                        MusicAction::NEXT,
+                                        Icon::Next,
+                                        "Next track",
+                                    )),
                             )
                             .child(
                                 div()
@@ -785,6 +811,35 @@ impl MembersPane {
             )
             .into_any_element()
     }
+}
+
+/// A listener's 22px glyph button on someone's Spotify, in the mute button's grammar.
+fn music_btn(
+    snap: &AppSnapshot,
+    p: &PeerState,
+    stream: u32,
+    action: MusicAction,
+    icon: Icon,
+    label: &'static str,
+) -> gpui_kit::Stateful<Div> {
+    let (ui, dj) = (snap.ui.clone(), p.id.clone());
+    div()
+        .id(ElementId::Name(
+            format!("music-{}-{}-{:?}", p.id, stream, action).into(),
+        ))
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .size(px(22.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(c::SILVER)
+        .hover(|st| st.bg(c::PAPER).text_color(theme::ON_INVERT))
+        .tooltip(tooltip(label))
+        .child(icon.size(13.))
+        .on_click(move |_: &ClickEvent, _, _| commands::music_control(&ui, &dj, stream, action))
 }
 
 /// `.share-chip`: an accent-framed chip whose verb and source break apart, never inside

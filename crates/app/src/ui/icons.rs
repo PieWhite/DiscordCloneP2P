@@ -78,6 +78,9 @@ icons! {
     Play => "play",
     Tiles => "tiles",
     Music => "music",
+    /// One toggle for a listener: they do not know whether the DJ's Spotify is playing.
+    PlayPause => "play-pause",
+    Next => "next",
     /// The titlebar mark: three nodes on a 16×16 grid, filled, with faint links.
     Brand => "brand",
 }

@@ -16,6 +16,7 @@ use super::Ui;
 use crate::engine::{self, UiCommand};
 #[cfg(windows)]
 use crate::tray;
+pub use fitcom_proto::control::MusicAction;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -165,6 +166,14 @@ pub fn set_peer_volume(ui: &Ui, peer: &str, volume: f32) {
 pub fn set_stream_volume(ui: &Ui, peer: &str, stream: u32, volume: f32) {
     if let Some(p) = super::parse_peer(peer) {
         send(ui, UiCommand::StreamVolume(p, stream, volume));
+    }
+}
+
+/// Play/pause or next on the Spotify `peer` shares. The DJ decides whether to do it
+/// (only for someone in the call); nothing comes back but the next title.
+pub fn music_control(ui: &Ui, peer: &str, stream: u32, action: MusicAction) {
+    if let Some(p) = super::parse_peer(peer) {
+        send(ui, UiCommand::BedienMuziek(p, stream, action));
     }
 }
 
@@ -619,15 +628,38 @@ pub fn open_link(url: &str) {
         tracing::warn!(url, "link not opened: only http(s) is followed");
         return;
     }
+    shell_open(url);
+}
 
+/// A Spotify track from the chat, opened in this machine's Spotify app as
+/// `spotify:track:<id>` — the DJ's button on an `open.spotify.com/track/…` link
+/// (decision 41). Spotify shows the track; playing or queueing it is the DJ's own click
+/// there. Without the Web API there is no "add to queue" from outside the app.
+///
+/// The id came out of a message a peer typed, and it goes into a URI: it is checked again
+/// here (`muziek::geldig_track_id`, 22 characters base62), whatever the view found. With
+/// no Spotify app to take the URI, the web player gets the same id instead.
+pub fn open_spotify_track(id: &str) {
+    if !crate::muziek::geldig_track_id(id) {
+        tracing::warn!(id, "not a Spotify track id; not opened");
+        return;
+    }
+    if !shell_open(&format!("spotify:track:{id}")) {
+        shell_open(&format!("https://open.spotify.com/track/{id}"));
+    }
+}
+
+/// Hands one URI to the system, as one argument and never through a command line.
+/// `false` when nothing took it (on Windows: no handler registered for the scheme).
+fn shell_open(target: &str) -> bool {
     #[cfg(windows)]
     {
         use windows::core::{w, HSTRING, PCWSTR};
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        let doel = HSTRING::from(url);
+        let doel = HSTRING::from(target);
         // Geen console-venster, geen shell-parsing: de URL is één argument.
-        unsafe {
+        let h = unsafe {
             ShellExecuteW(
                 None,
                 w!("open"),
@@ -635,13 +667,26 @@ pub fn open_link(url: &str) {
                 PCWSTR::null(),
                 PCWSTR::null(),
                 SW_SHOWNORMAL,
-            );
+            )
+        };
+        // ShellExecute's documented success test: a value above 32.
+        let gelukt = h.0 as isize > 32;
+        if !gelukt {
+            tracing::warn!(target, code = h.0 as isize, "opening failed");
         }
+        gelukt
     }
 
     #[cfg(target_os = "macos")]
-    if let Err(e) = std::process::Command::new("open").arg(url).spawn() {
-        tracing::warn!(error = %e, url, "opening the link failed");
+    {
+        // `open` finishes quickly and says whether an app took the URI.
+        match std::process::Command::new("open").arg(target).status() {
+            Ok(s) => s.success(),
+            Err(e) => {
+                tracing::warn!(error = %e, target, "opening failed");
+                false
+            }
+        }
     }
 }
 

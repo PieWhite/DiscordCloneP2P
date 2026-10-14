@@ -170,6 +170,8 @@ pub struct TimelinePane {
     hover_row: Option<usize>,
     hover_strip: Option<usize>,
     yt: HashMap<String, Yt>,
+    /// We share Spotify: track links carry the DJ's button (`spotify_button`).
+    dj: bool,
     /// The press that closed the emoji bar from outside, so the click it ends on the same
     /// message's react button does not open it again (`data-react-open` toggled).
     emoji_closed_by: Option<(OpRef, Point<Pixels>)>,
@@ -189,6 +191,7 @@ impl TimelinePane {
             hover_row: None,
             hover_strip: None,
             yt: HashMap::new(),
+            dj: false,
             emoji_closed_by: None,
             #[cfg(debug_assertions)]
             debug: super::super::fixture::DebugView::from_env(),
@@ -203,6 +206,22 @@ impl TimelinePane {
     /// Brings the list in line with the timeline it is drawing. Runs every render; does
     /// nothing unless the conversation, the timeline or the unread mark changed.
     fn sync_list(&mut self, snap: &AppSnapshot, intro: bool, cx: &mut Context<Self>) {
+        // Starting or stopping Spotify adds or drops the DJ's button under track links:
+        // remeasure those rows, so one scrolled out of view does not keep its old height.
+        let dj = snap.own_music().is_some();
+        if dj != self.dj {
+            self.dj = dj;
+            if let Some(s) = &self.shown {
+                let offset = usize::from(s.intro);
+                for (i, item) in s.tl.iter().enumerate() {
+                    if let TimelineItem::Message { body, .. } = item {
+                        if !markup::spotify_tracks(body).is_empty() {
+                            self.list.remeasure_items(offset + i..offset + i + 1);
+                        }
+                    }
+                }
+            }
+        }
         let key = snap.active_channel();
         let unread = snap.v.unread_at_open;
         let same = self.shown.as_ref().is_some_and(|s| {
