@@ -243,6 +243,28 @@ iedereen in het gesprek. Wat je niet mag omdraaien:
 - **Een time-out van de loopback is stilte, geen einde.** Nooit `break` op
   `wait_for_event`; pauze in Spotify mag het delen niet stoppen.
 
+## Luisteraars bedienen de muziek (2026-10-15)
+Beslissing 41 in `docs/OVERDRACHT.md`. Pauze/volgende bij de luisteraar, een knop op een
+Spotify-link bij de DJ. Wat je niet mag omdraaien:
+
+- **De DJ beslist, niet de luisteraar.** `MusicControl` (tag 46) wordt alleen uitgevoerd als
+  de `stream_id` de eigen muziekstream is, de DJ en de afzender (`from` van de verbinding,
+  nooit uit de payload) allebei in het gesprek zitten en de actie bekend is
+  (`mag_muziek_bedienen`). Geen stemming, geen host: iedereen in het gesprek mag meteen.
+- **Vluchtig en single-hop, nooit een op.** Een klik op pauze is geen geschiedenis.
+- **Uitvoeren via de mediabediening van het systeem** (`muziek::bedien`), op een eigen
+  thread, nooit op de motortik. Op macOS een vast script zonder iets van de draad erin,
+  achter "is running": een klik van een ander start Spotify nooit op.
+- **De Spotify-link stuurt niets over de draad.** Hij staat al in de chat; alleen wie Spotify
+  deelt krijgt een knop die `spotify:track:<id>` opent. Niets speelt of komt in de wachtrij
+  zonder de klik van de DJ in zijn eigen Spotify. Echt "aan de wachtrij toevoegen" kan niet
+  zonder Web API — dat blijft nee (invariant 1).
+- **Het track-id is 22 tekens base62 en wordt in Rust opnieuw gecontroleerd**
+  (`muziek::geldig_track_id`, in `open_spotify_track`) voordat het een URI in gaat. B-03-klasse,
+  net als het YouTube-id. `open_link` blijft alleen `http(s)` doorlaten; verruim hem niet.
+- **Eén knop voor afspelen én pauzeren.** De luisteraar kent de afspeeltoestand niet; zet
+  die niet op de draad om een knop te laten wisselen.
+
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`
 (Media Foundation, alleen Windows) levert dezelfde `Opgenomen` als de schermopname, dus

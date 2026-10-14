@@ -170,6 +170,22 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   Begrensd met `state::MAX_INLINE_SIDE`; het restant is het aantal frames van een GIF.
 >   B-22 verwijst voor het decoderen naar B-61.
 
+> **Addendum 2026-10-15 (luisteraars bedienen de muziek, beslissing 41).** Twee stukjes
+> oppervlak erbij:
+>
+> - **`MusicControl` (tag 46) laat een peer iets doen bij een ander**: pauze/afspelen of
+>   volgende in diens Spotify. Begrensd tot wie in het gesprek zit (`peers_in_voice`, de
+>   afzender uit de verbinding), tot de muziekstream die de DJ nú deelt, en tot twee
+>   bekende acties. Het uitvoeren is de systeemmediabediening (Windows) of een vast
+>   `osascript` zonder iets van de draad erin (macOS), en start Spotify nooit op. Geen
+>   ratelimit: elke geldige klik start een kortlevende thread. Binnen het vriendenmodel is
+>   het ergste een vriend die blijft overslaan.
+> - **Een Spotify-link uit de chat wordt een URI** (`spotify:track:<id>`), alleen na een klik
+>   van de DJ. B-03-klasse: `muziek::geldig_track_id` eist precies 22 tekens `[A-Za-z0-9]`,
+>   opnieuw gecontroleerd in `commands::open_spotify_track`, en de URI wordt aan deze kant
+>   samengesteld. Via `ShellExecuteW`/`open` als één argument, nooit een opdrachtregel.
+>   `open_link` blijft alleen `http(s)` doorlaten.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35

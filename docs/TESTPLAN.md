@@ -1199,3 +1199,43 @@ Met de hand, want echte Spotify en twee machines:
 10. macOS als DJ: Screen Recording-toestemming is er al; eerste keer vraagt macOS of de app
     Spotify mag bedienen (voor de titel). Nee zeggen = de stream heet "Spotify", muziek werkt.
 11. B is een 1.8.0-peer: krijgt geen muziek, maar zijn stem en de rest werken gewoon.
+
+## Luisteraars bedienen de muziek (2026-10-15, beslissing 41)
+
+Geautomatiseerd gedekt (`cargo test`): `MusicControl` (tag 46) komt heel over de draad en
+een onbekende actie decodeert als onbekend; de DJ-regel (`mag_muziek_bedienen`) weigert een
+afzender buiten het gesprek, een DJ die zelf niet in het gesprek zit, een andere stream-id en
+een onbekende actie; het track-id is precies 22 tekens base62 en de linkparser pakt alleen
+`open.spotify.com/[intl-xx/]track/<id>`. In fixturemodus nagekeken: de twee knoppen naast
+de titel bij de luisteraar, en "Open in Spotify" onder een tracklink alleen bij de DJ.
+
+Met de hand, want echte Spotify en twee of drie machines. A deelt Spotify, B en C luisteren:
+
+1. B drukt de pauzeknop (naast de titel onder A in de ledenlijst): Spotify bij A pauzeert,
+   binnen een halve seconde. Nog eens: hij speelt verder. Er verschijnt niets bij A behalve
+   wat Spotify zelf doet.
+2. C drukt Volgende: A's Spotify slaat over, en binnen een paar seconden staat de nieuwe
+   titel bij B en C.
+3. B verlaat het gesprek: de knoppen verdwijnen bij B (de muziek hoort hij dan ook niet
+   meer). Wat B daarna nog zou sturen weigert A; dat staat als `debug`-regel
+   "muziekbediening genegeerd" in A's log.
+4. A stopt met delen en deelt opnieuw: knoppen bij B werken weer (nieuwe stream-id).
+5. Spotify bij A staat in de **Store-versie** en in de **los geïnstalleerde versie**: beide
+   reageren op pauze en volgende (de mediasessie heet anders, `SpotifyAB.SpotifyMusic_…!Spotify`
+   tegenover `Spotify.exe`).
+6. Spotify bij A is dicht maar A deelt nog: pauze en volgende doen niets, geen foutmelding,
+   en Spotify start **niet** vanzelf op (ook niet op macOS).
+7. B plakt `https://open.spotify.com/track/<id>?si=…` in de chat. A (de DJ) ziet eronder
+   **Open in Spotify**; B en C zien alleen de link. A klikt: het nummer opent in A's
+   Spotify-app en speelt pas als A er zelf op drukt of het in zijn wachtrij zet. Ook met
+   `open.spotify.com/intl-nl/track/…`.
+8. Zelfde klik op een pc zonder Spotify-app: de webspeler opent in de browser met dat nummer.
+9. Een link naar een album of afspeellijst geeft géén knop. Een kapotte link (te kort, rare
+   tekens) ook niet.
+10. A is een macOS-DJ: de eerste pauze vraagt mogelijk opnieuw of de app Spotify mag
+    bedienen (dezelfde toestemming als voor de titel). Ja: pauze en volgende werken. Nee: ze
+    doen niets, de muziek speelt door.
+11. B draait 1.9.0 (zonder deze functie) en is DJ: de knoppen bij A doen niets, verder werkt
+    alles. Omgekeerd ziet een 1.9.0-luisteraar gewoon geen knoppen.
+12. Gamen bij A terwijl B herhaaldelijk op Volgende drukt: geen merkbare hapering
+    (invariant 4).

@@ -174,8 +174,17 @@ enum ControlMsg {
     // automatische updates (fase 11) — zie "Automatische updates" hieronder
     UpdateRequest  { have_bytes: u64 },
     UpdateResponse { outcome: FileOutcome, size: u64, hash: [u8; 32] },
+
+    // vluchtig, single-hop, nooit in de log
+    Typing       { channel: Channel },                       // 44
+    UserStatus   { status: UserStatusValue },                // 45
+    MusicControl { stream_id: u32, action: MusicAction },    // 46, luisteraar → DJ
 }
 ```
+
+`MusicControl` (beslissing 41): `MusicAction` is een `u8` (`PLAY_PAUSE = 1`, `NEXT = 2`),
+zodat een onbekende actie als onbekend doorkomt. De DJ voert hem alleen uit voor zijn
+huidige muziekstream en voor een afzender in het gesprek; er komt geen antwoord.
 
 `StreamKind` is een `u8` op de draad met vijf bekende waarden: `MONITOR = 1`,
 `WINDOW = 2`, `DESKTOP_AUDIO = 3`, `CAMERA = 4` en `MUSIC = 5` (alleen Spotify, voor

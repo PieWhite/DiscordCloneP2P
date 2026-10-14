@@ -1956,6 +1956,60 @@ nog. Voor muziek was dat fataal (pauze = einde), dus nu opgelost in de gedeelde 
 
 **Wat je niet mag omdraaien:** zie de sectie "Spotify delen" in `CLAUDE.md`.
 
+### 41. Luisteraars bedienen de muziek: één klein bericht, en een link die niets hoeft te sturen (2026-10-15)
+
+Rick: luisteraars moeten de muziek kunnen pauzeren en doorspoelen, en een Spotify-link in de
+chat moet de DJ in zijn wachtrij kunnen zetten. Zijn antwoorden: iedereen in het gesprek mag
+meteen pauzeren en overslaan, zonder stemming; de link krijgt bij de DJ een knop, en niets
+speelt of verandert in de Spotify van de DJ zonder zijn eigen klik.
+
+**Pauze en volgende: `MusicControl`, control-tag 46.** Van luisteraar naar DJ, single-hop
+en vluchtig zoals `Typing` en `UserStatus` (44-45): een klik op pauze is geen geschiedenis en
+hoort niet in de log. `MusicAction` is een `u8` op de draad (`PLAY_PAUSE = 1`, `NEXT = 2`),
+zodat een actie van een nieuwere peer als onbekend binnenkomt in plaats van het bericht te
+laten vallen. Een oudere DJ slaat de tag over; dan gebeurt er niets. Geen protocolbump.
+
+- **De DJ beslist** (`engine.rs::mag_muziek_bedienen`): de `stream_id` is zijn huidige
+  muziekstream, hij zit zelf in het gesprek, de afzender staat in `peers_in_voice`, en de
+  actie is bekend. `from` komt uit de verbinding, niet uit het bericht. Wie niet in het
+  gesprek zit hoort de muziek niet en bedient hem dus ook niet. De `stream_id` staat erin
+  zodat een late klik na opnieuw delen niets met een andere stream doet.
+- **Uitvoeren gaat via dezelfde mediabediening waar de titel uit komt** (`muziek::bedien`):
+  op Windows de Spotify-sessie in `GlobalSystemMediaTransportControlsSessionManager` met
+  `TryTogglePlayPauseAsync` / `TrySkipNextAsync`, op macOS een *vast* `osascript`
+  (`playpause`, `next track`) achter dezelfde "is running"-rem als het lezen, zodat een
+  klik van een ander Spotify nooit opstart. Niets van de draad gaat dat script in. Op een
+  eigen kortlevende thread: de WinRT-aanroep wacht en `osascript` start een proces, en
+  geen van beide hoort op de motortik. Mislukt het, dan een `debug`-regel en verder niets.
+- **Eén knop voor afspelen én pauzeren.** De luisteraar weet niet of Spotify bij de DJ
+  speelt; die toestand staat niet op de draad. Een eerlijke schakelaar (`PlayPause`-icoon,
+  "Play / pause") is beter dan een pauzeknop die soms afspeelt.
+- **Geen antwoord.** Wat de luisteraar terugziet is de volgende titel (`Streams::zet_titel`)
+  of stilte. Een bevestiging zou een tweede bericht zijn voor iets wat je al hoort.
+
+**De Spotify-link: nul bytes op de draad.** Overwogen: een "zet dit in je wachtrij"-bericht
+van luisteraar naar DJ. Afgewezen, want de link staat al in de chat en dus al bij de DJ
+(het is gewoon een `Post`). De DJ krijgt onder elke `open.spotify.com/track/<id>`-link
+(ook met een `intl-xx/`-segment, twee per bericht hooguit) een knop **Open in Spotify**,
+alleen zolang hij zelf Spotify deelt (`own_music()`); een luisteraar ziet alleen de link.
+De knop opent `spotify:track:<id>` in de Spotify-app van de DJ, en daar speelt hij het af of
+zet hij het zelf in zijn wachtrij. **Echt "aan de wachtrij toevoegen" van buiten de app kan
+niet zonder de Spotify Web API** (OAuth en Premium per persoon, een cloud-API: een vierde
+uitzondering op invariant 1), en de URI-handler van de desktop-app kent geen
+wachtrij-opdracht. Zonder geregistreerde `spotify:`-handler (`ShellExecuteW` ≤ 32, of
+`open` die faalt) opent dezelfde id in de webspeler.
+
+**Het track-id is de B-03-klasse.** Het komt uit een bericht dat een peer typte en gaat een
+URI in. `muziek::geldig_track_id` eist precies 22 tekens `[A-Za-z0-9]`, en
+`commands::open_spotify_track` controleert dat opnieuw, wat de view ook vond: het id kan
+niets anders worden dan een id, en de URI wordt aan deze kant samengesteld. `open_link`
+blijft alleen `http(s)` doorlaten; het openen zelf staat nu in een gedeelde `shell_open`.
+
+**macOS** heeft hetzelfde: het lezen liep er al via AppleScript, dus bedienen was twee vaste
+regels. Niet op een echte Mac getest.
+
+**Wat je niet mag omdraaien:** zie de sectie "Luisteraars bedienen de muziek" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
