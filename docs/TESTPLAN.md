@@ -1009,11 +1009,24 @@ alleen additief" en er is geen protocolbump geweest.
 
 De weergave is van Tauri naar GPUI gewisseld (`docs/OVERDRACHT.md` beslissing 39). Op de
 Mac is elke toestand naast de oude weergave gelegd, en toetsenbord, plakken en slepen zijn
-headless getest. **Op Windows heeft nog niemand deze build gestart**: alles onder "Windows"
-is daar nooit gebeurd, dus begin daar. Gebruik een **release**-build; een debug-exe tekent
-alleen op de pc die hem bouwde.
+headless getest. Gebruik een **release**-build; een debug-exe tekent alleen op de pc die
+hem bouwde.
 
 ### Windows
+
+**Eerste Windows-run, 2026-10-14 (dev-PC, RTX 5070 Ti, peers offline):**
+- De release-build linkte niet: CVT1100 "duplicate resource", omdat GPUI zelf al een manifest
+  inbakt. Opgelost in `build.rs` (alleen nog het icoon); het manifest in de exe heeft
+  PerMonitorV2 en common controls v6.
+- V.1 **werkt**: donker venster met titelbalk, rail, kanalen, tijdlijn, leden en statusbalk;
+  D3D11.1 op de NVIDIA-kaart, mesh luistert. Witte flits niet te zien in een PrintWindow.
+- V.12, alleen het rustdeel: **0,23%** van één kern met het venster open, **0,00%** in de
+  tray (gemeten over 20 s). Het deel naast een game staat nog open.
+- V.3, eerste helft: `WM_CLOSE` verbergt het venster en de app blijft draaien. Terughalen
+  via de tray nog niet getest.
+- Bijvangst, niet nieuw: een tweede instantie op een bezette poort stopt zonder één logregel,
+  want de fout gaat naar stderr en die heeft een windows-subsystem-exe niet.
+- Nog met de hand te doen: V.2 t/m V.11 en het game-deel van V.12.
 
 **V.1 Starten en tekenen**
 Start `fitcom.exe`. Het venster hoort meteen donker te openen, zonder witte flits, met
