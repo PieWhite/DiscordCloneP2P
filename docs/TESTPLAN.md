@@ -1028,6 +1028,19 @@ hem bouwde.
   want de fout gaat naar stderr en die heeft een windows-subsystem-exe niet.
 - Nog met de hand te doen: V.2 t/m V.11 en het game-deel van V.12.
 
+**Zelfde dag, 1.8.0-releasebuild, twee lokale instanties tegen elkaar (127.0.0.1):**
+- Verbinden werkt beide kanten op; leden, DM-lijst, RTT in de statusbalk en `v1.8.0`
+  kloppen op het scherm (PrintWindow).
+- Netjes afsluiten (venster dicht met `minimize_to_tray = false`): het proces is na 158 ms
+  weg en de andere kant logt 9 ms later `closed by peer: afsluiten`. Een hard gekilde
+  instantie werd pas na 15 s gezien (`timed out`).
+- Een tweede start op dezelfde datamap stopt meteen (exitcode 0) en het eerste venster
+  blijft draaien.
+- GPU-tests (`cargo test -p fitcom-video --release -- --ignored`): alles groen, inclusief
+  de nieuwe `een_encoder_loslaten_midden_in_een_stream_laat_het_proces_staan` (de
+  stream-stop-crash, vóór de fix ~helft van de runs) en de cliptests (7 op 7 na de
+  geluidsfix in `ee9ada0`).
+
 **V.1 Starten en tekenen**
 Start `fitcom.exe`. Het venster hoort meteen donker te openen, zonder witte flits, met
 titelbalk, rail, kanalen, tijdlijn, leden en statusbalk. *Blijft het venster leeg of zwart,
