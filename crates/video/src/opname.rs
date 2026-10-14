@@ -876,11 +876,17 @@ impl Menger {
 
     /// Tot welk frame hebben álle aanwezige bronnen geleverd? Daarvóór kan niet
     /// gecodeerd worden: een latere chunk van een andere bron mag er nog in mengen.
-    fn veilig_tot_frame(&self) -> i64 {
+    ///
+    /// Behalve een bron die al langer dan [`STILTE_GRENS_HNS`] niets leverde: die is stil,
+    /// niet laat. De loopback levert niets zolang er niets speelt, en op hem wachten hield
+    /// het coderen van álle geluid tegen; de clip kreeg dan een geluidsspoor dat seconden
+    /// vóór het beeld ophield. `nu_frame` is de wandklok in frames sinds `basis_hns`.
+    fn veilig_tot_frame(&self, nu_frame: i64) -> i64 {
+        let stil_tot = nu_frame - STILTE_GRENS_HNS * 48_000 / HNS_PER_SEC;
         self.bron_einde_frame
             .iter()
             .flatten()
-            .copied()
+            .map(|&einde| einde.max(stil_tot))
             .min()
             .unwrap_or(0)
     }
@@ -984,6 +990,11 @@ pub fn start_opname(
         .context("opnamedraad starten")?;
     Ok(OpnameHandle { staat })
 }
+
+/// Een geluidsbron die langer dan dit niets leverde was stil, niet laat: zijn volgende
+/// geluid hoort op zijn echte tijd en de menger wacht niet langer op hem. Ruim boven een
+/// WASAPI-periode (10 ms) en de haperingen van een drukke pc.
+const STILTE_GRENS_HNS: i64 = 2 * HNS_PER_SEC / 10;
 
 fn nu_hns(begin: Instant) -> i64 {
     (begin.elapsed().as_nanos() / 100) as i64
@@ -1142,11 +1153,19 @@ fn opname_lus(
                     if chunk.is_empty() {
                         continue;
                     }
-                    let start = *m.klok[bron_idx].get_or_insert_with(|| nu_hns(begin));
                     let duur = i64::try_from(chunk.len()).unwrap_or(0) / 2 * HNS_PER_SEC / 48_000;
                     if duur == 0 {
                         continue;
                     }
+                    // Aansluiten op het vorige stuk, behalve na een stilte: dan hoort dit
+                    // geluid op zijn echte tijd. Vastplakken aan het vorige stuk schoof al
+                    // het geluid na elke stilte naar voren, weg van het beeld.
+                    let nu = nu_hns(begin);
+                    let start = match m.klok[bron_idx] {
+                        Some(klok) if nu - klok <= STILTE_GRENS_HNS => klok,
+                        Some(_) => nu - duur,
+                        None => nu,
+                    };
                     m.voeg_toe(bron_idx, start, &chunk);
                     m.klok[bron_idx] = Some(start + duur);
                     diag_geluid[bron_idx] += 1;
@@ -1156,7 +1175,13 @@ fn opname_lus(
             // Alles wat álle bronnen tot en met leverden mag de encoder in — in
             // blokjes van ~50 ms, zodat één lange stilte niet één reuzenchunk wordt.
             if let Some(enc) = &mut aac {
-                let veilig = m.veilig_tot_frame();
+                let nu_frame = (nu_hns(begin) - m.basis_hns) * 48_000 / HNS_PER_SEC;
+                let veilig = m.veilig_tot_frame(nu_frame);
+                // Een stille bron heeft de buffer niet tot hier gevuld: aanvullen met stilte.
+                let nodig = usize::try_from(veilig).unwrap_or(0) * 2;
+                if m.buffer.len() < nodig {
+                    m.buffer.resize(nodig, 0.0);
+                }
                 const STAP_FRAMES: i64 = 2400;
                 while m.gecodeerd_tot_frame < veilig {
                     let n = (veilig - m.gecodeerd_tot_frame).min(STAP_FRAMES);
@@ -1382,6 +1407,29 @@ fn bewaar_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn de_menger_wacht_niet_op_een_stille_bron() {
+        let menger = |einden: [Option<i64>; 2]| Menger {
+            basis_hns: 0,
+            buffer: Vec::new(),
+            gecodeerd_tot_frame: 0,
+            klok: [None; 2],
+            bron_einde_frame: einden,
+        };
+        let grens = STILTE_GRENS_HNS * 48_000 / HNS_PER_SEC;
+        // Allebei bij: de traagste bepaalt, zoals altijd.
+        let m = menger([Some(49_000), Some(48_500)]);
+        assert_eq!(m.veilig_tot_frame(50_000), 48_500);
+        // De loopback zweeg al seconden: niet meer op hem wachten, wel op de microfoon.
+        let m = menger([Some(100), Some(49_900)]);
+        assert_eq!(m.veilig_tot_frame(50_000), (50_000 - grens).min(49_900));
+        // Beide stil: de wandklok min de grens, zodat er stilte in de clip komt.
+        let m = menger([Some(100), Some(200)]);
+        assert_eq!(m.veilig_tot_frame(50_000), 50_000 - grens);
+        // Nog nooit iets geleverd: niets te coderen.
+        assert_eq!(menger([None, None]).veilig_tot_frame(50_000), 0);
+    }
 
     #[test]
     fn vier_byte_startcodes_worden_gesplitst() {

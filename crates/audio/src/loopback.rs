@@ -129,9 +129,10 @@ fn lus(
         if tx.send(chunks_lezen(capture_client, &mut bytes)).is_err() {
             break; // ontvanger weg: recorder gestopt
         }
-        if event.wait_for_event(500).is_err() {
-            break;
-        }
+        // `wait_for_event` faalt alleen op een time-out, en die is normaal: speelt er
+        // niets, dan levert de loopback niets. Hier stoppen liet de clip na een halve
+        // seconde stilte voorgoed zonder spelgeluid.
+        let _ = event.wait_for_event(500);
     }
 }
 
@@ -143,9 +144,12 @@ fn chunks_lezen(capture_client: &wasapi::AudioCaptureClient, bytes: &mut VecDequ
             break;
         }
     }
+    // Eén f32 per kanaal per frame. Per frame één monster lezen nam maar de helft van de
+    // bytes mee en liet de rest voor de volgende keer liggen: oneven chunks, en daarmee af
+    // en toe links en rechts verwisseld in de clip.
     let frames = bytes.len() / BYTES_PER_FRAME;
     let mut verweven = Vec::with_capacity(frames * KANALEN);
-    for _ in 0..frames {
+    for _ in 0..frames * KANALEN {
         let b0 = bytes.pop_front().unwrap_or(0);
         let b1 = bytes.pop_front().unwrap_or(0);
         let b2 = bytes.pop_front().unwrap_or(0);
