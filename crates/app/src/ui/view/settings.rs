@@ -48,6 +48,8 @@ pub struct SettingsPane {
     status: Choices,
     mic: Choices,
     speaker: Choices,
+    /// The key that operates the microphone gate (push-to-talk / push-to-mute).
+    ptt_key: Choices,
     monitor: Choices,
     clip_length: Choices,
     bitrate: Ranged,
@@ -67,6 +69,7 @@ impl SettingsPane {
         let status = Choices::new(window, cx);
         let mic = Choices::new(window, cx);
         let speaker = Choices::new(window, cx);
+        let ptt_key = Choices::new(window, cx);
         let monitor = Choices::new(window, cx);
         let clip_length = Choices::new(window, cx);
         let bitrate = Ranged::new(4., 40., cx);
@@ -89,6 +92,15 @@ impl SettingsPane {
             cx.subscribe(
                 speaker.state(),
                 |this, _, _: &SelectEvent<Vec<String>>, cx| this.devices_chosen(cx),
+            ),
+            cx.subscribe(
+                ptt_key.state(),
+                |this, _, ev: &SelectEvent<Vec<String>>, cx| {
+                    let SelectEvent::Confirm(Some(label)) = ev else {
+                        return;
+                    };
+                    this.commit_ptt(None, audio::ptt_key_name(label), cx);
+                },
             ),
             cx.subscribe(
                 monitor.state(),
@@ -152,6 +164,7 @@ impl SettingsPane {
             status,
             mic,
             speaker,
+            ptt_key,
             monitor,
             clip_length,
             bitrate,
@@ -172,6 +185,15 @@ impl SettingsPane {
             device(self.mic.value(cx)),
             device(self.speaker.value(cx)),
         );
+    }
+
+    /// A new mode, a new key, or both. What is not given stays what the engine has.
+    fn commit_ptt(&self, mode: Option<&str>, key: Option<&str>, cx: &mut Context<Self>) {
+        let Some(snap) = self.app.snapshot(cx) else {
+            return;
+        };
+        let now = &snap.s.push_to_talk;
+        commands::set_push_to_talk(&snap.ui, mode.unwrap_or(&now.mode), key.unwrap_or(&now.key));
     }
 
     fn commit_bitrate(&self, mbit: f32, cx: &mut Context<Self>) {

@@ -9,7 +9,9 @@ pub mod microfoon;
 pub mod mix;
 pub mod session;
 pub mod spotify;
+pub mod spreektoets;
 
 pub use jitter::{Frame, JitterBuffer};
 pub use mix::{FRAME_SAMPLES, SAMPLE_RATE};
 pub use session::{start, Bron, Niveaus, PeerAdres, VoiceConfig, VoiceHandle};
+pub use spreektoets::Modus as Spreekmodus;

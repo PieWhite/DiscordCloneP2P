@@ -44,6 +44,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         video: VideoConfig::default(),
         sound: Default::default(),
         clips: ClipsConfig::default(),
+        push_to_talk: Default::default(),
         download_dir: None,
     }
 }

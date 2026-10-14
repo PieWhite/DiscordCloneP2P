@@ -23,6 +23,7 @@
 use crate::codec::{Decoder, Encoder, MAX_PAYLOAD};
 use crate::jitter::{Frame, JitterBuffer};
 use crate::mix::{self, Resampler, StereoResampler, FRAME_SAMPLES, SAMPLE_RATE};
+use crate::spreektoets::{self, Modus, Poort};
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -30,7 +31,7 @@ use fitcom_net::MediaSocket;
 use fitcom_proto::{MediaHeader, PayloadType, PeerId, VOICE_STREAM_ID};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -115,6 +116,11 @@ struct Gedeeld {
     niveaus: Mutex<HashMap<Bron, (f32, bool)>>,
     mute: AtomicBool,
     deafen: AtomicBool,
+    /// Push-to-talk-modus (`Modus::als_u8`) en de Windows-toetscode die de poort bedient
+    /// (`0` = geen). Atomics, zodat een wijziging in de instellingen meteen geldt zonder de
+    /// sessie te herstarten.
+    spreekmodus: AtomicU8,
+    spreektoets: AtomicU16,
     /// `f32` via `to_bits`, zodat de UI hem zonder lock kan uitlezen.
     eigen_niveau: AtomicU32,
     eigen_spreekt: AtomicBool,
@@ -189,6 +195,27 @@ impl VoiceHandle {
 
     pub fn is_deafen(&self) -> bool {
         self.gedeeld.deafen.load(Ordering::Relaxed)
+    }
+
+    /// Welke toets de microfoon bedient en hoe (zie `spreektoets`). Mag op elk moment; de
+    /// opname-thread leest hem bij het volgende frame.
+    ///
+    /// Waar dit platform de toets niet kan lezen valt het terug op spraakdetectie: een
+    /// push-to-talk met een toets die nooit ingedrukt is zou een permanente mute zijn.
+    pub fn zet_spreektoets(&self, modus: Modus, vk: u16) {
+        let modus = if spreektoets::BESCHIKBAAR || modus == Modus::Spraak {
+            modus
+        } else {
+            tracing::warn!(
+                ?modus,
+                "push-to-talk bestaat hier niet; spraakdetectie gebruikt"
+            );
+            Modus::Spraak
+        };
+        self.gedeeld.spreektoets.store(vk, Ordering::Relaxed);
+        self.gedeeld
+            .spreekmodus
+            .store(modus.als_u8(), Ordering::Relaxed);
     }
 
     /// Volume van iemands stem.
@@ -344,6 +371,8 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
         niveaus: Mutex::new(HashMap::new()),
         mute: AtomicBool::new(false),
         deafen: AtomicBool::new(false),
+        spreekmodus: AtomicU8::new(Modus::Spraak.als_u8()),
+        spreektoets: AtomicU16::new(0),
         eigen_niveau: AtomicU32::new(0),
         eigen_spreekt: AtomicBool::new(false),
         stop: AtomicBool::new(false),
@@ -655,6 +684,7 @@ fn opname_lus(
     let mut seq: u32 = 0;
     let mut timestamp: u32 = 0;
     let mut hangover: u32 = 0;
+    let mut poort = Poort::default();
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         let Ok(chunk) = rx.recv_timeout(Duration::from_millis(200)) else {
@@ -682,8 +712,14 @@ fn opname_lus(
                 .eigen_niveau
                 .store(niveau.to_bits(), Ordering::Relaxed);
 
-            let praat = hangover > 0;
+            // De toets gaat vóór de VAD (zie `spreektoets`). Gepolld per frame, op de tik die
+            // deze lus toch al heeft: ook met een dichte VAD-poort komt hier elk blok langs.
+            let modus = Modus::van_u8(gedeeld.spreekmodus.load(Ordering::Relaxed));
+            let toets = modus != Modus::Spraak
+                && spreektoets::ingedrukt(gedeeld.spreektoets.load(Ordering::Relaxed));
+            let praat = poort.open(modus, toets, hangover > 0);
             hangover = hangover.saturating_sub(1);
+            // De ring volgt precies wat hieronder verstuurd wordt.
             gedeeld.eigen_spreekt.store(
                 praat && !gedeeld.mute.load(Ordering::Relaxed),
                 Ordering::Relaxed,

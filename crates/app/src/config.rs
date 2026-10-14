@@ -81,6 +81,11 @@ pub struct Config {
     #[serde(default)]
     pub clips: ClipsConfig,
 
+    /// Push-to-talk of push-to-mute met een globale toets. Standaard spraakdetectie, zoals
+    /// het altijd was.
+    #[serde(default)]
+    pub push_to_talk: PushToTalkConfig,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
@@ -283,6 +288,73 @@ impl ClipsConfig {
     }
 }
 
+/// Hoe de microfoon aan- en uitgaat: alleen op de stem, of met een toets erbij. De toets
+/// wordt gepold (`fitcom_audio::spreektoets`), niet geregistreerd, dus het spel dat vooraan
+/// staat krijgt hem gewoon.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PushToTalkConfig {
+    /// `voice` (alleen spraakdetectie), `talk` (toets ingedrukt = praten) of `mute` (toets
+    /// ingedrukt = stil). Een onbekende waarde valt bij het inlezen terug op `voice`.
+    #[serde(default = "default_ptt_mode")]
+    pub mode: String,
+
+    /// De toets, zoals `RightCtrl`, `CapsLock`, `F13` of `Mouse4`; zie
+    /// `fitcom_audio::spreektoets::TOETSEN` voor alle namen. Hoofdletters maken niet uit.
+    /// Een onbekende naam valt bij het inlezen terug op `RightCtrl`.
+    #[serde(default = "default_ptt_key")]
+    pub key: String,
+}
+
+impl Default for PushToTalkConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_ptt_mode(),
+            key: default_ptt_key(),
+        }
+    }
+}
+
+fn default_ptt_mode() -> String {
+    fitcom_audio::spreektoets::Modus::Spraak.naam().into()
+}
+
+fn default_ptt_key() -> String {
+    fitcom_audio::spreektoets::STANDAARD_TOETS.into()
+}
+
+impl PushToTalkConfig {
+    /// Zet met de hand geschreven waarden terug op iets dat bestaat, en schrijft de
+    /// canonieke spelling (`rightctrl` wordt `RightCtrl`). Een kapotte regel hier mag de
+    /// app niet laten weigeren te starten, en mag de microfoon ook niet stil laten vallen:
+    /// bij twijfel is het de modus van vóór deze instelling bestond.
+    pub fn herstel(&mut self) {
+        use fitcom_audio::spreektoets::{toets_van_naam, Modus};
+        match Modus::van_naam(&self.mode) {
+            Some(m) => self.mode = m.naam().into(),
+            None => {
+                tracing::warn!(modus = %self.mode, "onbekende push-to-talk-modus; spraakdetectie gebruikt");
+                self.mode = default_ptt_mode();
+            }
+        }
+        match toets_van_naam(&self.key) {
+            Some(t) => self.key = t.naam.into(),
+            None => {
+                tracing::warn!(toets = %self.key, "onbekende push-to-talk-toets; terug op RightCtrl");
+                self.key = default_ptt_key();
+            }
+        }
+    }
+
+    /// De modus en toetscode zoals de audiolaag ze wil. Alleen aanroepen na `herstel`.
+    pub fn voor_audio(&self) -> (fitcom_audio::Spreekmodus, u16) {
+        use fitcom_audio::spreektoets::{toets_van_naam, Modus};
+        (
+            Modus::van_naam(&self.mode).unwrap_or_default(),
+            toets_van_naam(&self.key).map_or(0, |t| t.vk),
+        )
+    }
+}
+
 fn waar() -> bool {
     true
 }
@@ -375,6 +447,7 @@ impl Config {
             video: VideoConfig::default(),
             sound: SoundConfig::default(),
             clips: ClipsConfig::default(),
+            push_to_talk: PushToTalkConfig::default(),
             download_dir: None,
         }
     }
@@ -387,6 +460,7 @@ impl Config {
                 .with_context(|| format!("config parsen uit {}", path.display()))?;
             cfg.sound.herstel();
             cfg.clips.herstel();
+            cfg.push_to_talk.herstel();
             Ok(cfg)
         } else {
             let cfg = Self::template();
@@ -674,6 +748,56 @@ mod tests {
         // En hij overleeft opslaan-en-teruglezen; anders is hij één herstart later weg.
         let terug: Config = toml::from_str(&toml::to_string_pretty(&gezet).unwrap()).unwrap();
         assert_eq!(terug.clips.map, gezet.clips.map);
+    }
+
+    /// Een config van vóór de push-to-talk-tabel moet starten, in de oude modus; kapotte
+    /// waarden vallen terug in plaats van de app te laten weigeren; en een gekozen toets
+    /// overleeft opslaan-en-teruglezen.
+    #[test]
+    fn push_to_talk_start_zonder_tabel_valt_terug_en_overleeft_opslaan() {
+        let oud: Config = toml::from_str(r#"display_name = "Rick""#)
+            .expect("een config zonder push-to-talk hoort te laden");
+        assert_eq!(oud.push_to_talk, PushToTalkConfig::default());
+        assert_eq!(oud.push_to_talk.mode, "voice");
+        assert_eq!(oud.push_to_talk.key, "RightCtrl");
+
+        // Alleen de modus gezet: de toets is de standaard.
+        let half: Config = toml::from_str(
+            r#"
+            display_name = "Rick"
+            [push_to_talk]
+            mode = "talk"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(half.push_to_talk.key, "RightCtrl");
+
+        let mut kapot = PushToTalkConfig {
+            mode: "schreeuwen".into(),
+            key: "Hyper".into(),
+        };
+        kapot.herstel();
+        assert_eq!(kapot, PushToTalkConfig::default());
+
+        let mut spelling = PushToTalkConfig {
+            mode: " Mute ".into(),
+            key: "mouse4".into(),
+        };
+        spelling.herstel();
+        assert_eq!(
+            (spelling.mode.as_str(), spelling.key.as_str()),
+            ("mute", "Mouse4")
+        );
+
+        let gezet = Config {
+            push_to_talk: spelling,
+            ..oud
+        };
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&gezet).unwrap()).unwrap();
+        assert_eq!(terug.push_to_talk, gezet.push_to_talk);
+        let (modus, vk) = terug.push_to_talk.voor_audio();
+        assert_eq!(modus, fitcom_audio::Spreekmodus::PushToMute);
+        assert_eq!(vk, 0x05);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! stilvallen zonder dat er iets misgaat.
 
 use crate::chat::Chat;
-use crate::config::{self, Config, SoundConfig, VideoConfig};
+use crate::config::{self, Config, PushToTalkConfig, SoundConfig, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::gebruik::{self, Gebruik};
 use crate::geluid;
@@ -205,6 +205,8 @@ pub struct Snapshot {
     /// Welke set tonen de app zelf maakt en hoe hard. Alleen voor het instellingenscherm;
     /// het afspelen leest de config rechtstreeks.
     pub geluid: SoundConfig,
+    /// Push-to-talk-modus en -toets, voor het instellingenscherm.
+    pub push_to_talk: PushToTalkConfig,
     /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
     /// instellingenscherm: de sessie leest dit bij het starten uit de config.
     pub input_device: Option<String>,
@@ -325,6 +327,9 @@ pub enum UiCommand {
     VerwijderKanaal(TopicId),
     /// Welke set tonen en hoe hard. Wordt meteen weggeschreven naar `config.toml`.
     ZetGeluidInstellingen(SoundConfig),
+    /// Modus (spraak, push-to-talk, push-to-mute) en toets. Geldt meteen, ook in een lopend
+    /// gesprek, en wordt weggeschreven naar `config.toml`.
+    ZetSpreektoets(PushToTalkConfig),
     /// Eén toon laten horen om te kiezen. Negeert niet-storen: wie op de knop drukt vraagt
     /// er expliciet om, en anders lijkt de knop stuk.
     ProefGeluid(String),
@@ -1198,6 +1203,8 @@ impl Engine {
                 for (&bron, &vol) in &self.stream_volumes {
                     h.zet_bron_volume(bron, vol);
                 }
+                let (modus, vk) = self.cfg.push_to_talk.voor_audio();
+                h.zet_spreektoets(modus, vk);
                 self.voice = Some(h);
                 self.geluid(geluid::Geluid::EigenJoin);
                 self.werk_voice_peers_bij();
@@ -2170,6 +2177,34 @@ impl Engine {
                 // Meteen laten horen wat je gekozen hebt.
                 self.speel_geluid(geluid::Geluid::EigenJoin);
             }
+            UiCommand::ZetSpreektoets(nieuw) => {
+                // Dezelfde opschoning als bij het inlezen. Het venster stuurt alleen namen
+                // uit de tabel, dus een onbekende is een grens en geen verwacht geval; wat
+                // we dan niet kennen houdt de vorige waarde, niet de standaard.
+                let mut veilig = nieuw;
+                if fitcom_audio::spreektoets::Modus::van_naam(&veilig.mode).is_none() {
+                    tracing::warn!(modus = %veilig.mode, "onbekende push-to-talk-modus geweigerd");
+                    veilig.mode = self.cfg.push_to_talk.mode.clone();
+                }
+                if fitcom_audio::spreektoets::toets_van_naam(&veilig.key).is_none() {
+                    tracing::warn!(toets = %veilig.key, "onbekende push-to-talk-toets geweigerd");
+                    veilig.key = self.cfg.push_to_talk.key.clone();
+                }
+                veilig.herstel();
+                if veilig == self.cfg.push_to_talk {
+                    return;
+                }
+                self.cfg.push_to_talk = veilig;
+                if let Err(e) = self.cfg.save(&self.config_path) {
+                    tracing::warn!(error = %format!("{e:#}"), "push-to-talk niet opgeslagen");
+                    self.fout = Some(format!("instellingen opslaan: {e:#}"));
+                }
+                // Geen herstart van de sessie: de opname-thread leest dit per frame.
+                if let Some(v) = &self.voice {
+                    let (modus, vk) = self.cfg.push_to_talk.voor_audio();
+                    v.zet_spreektoets(modus, vk);
+                }
+            }
             UiCommand::ProefGeluid(naam) => match geluid::Geluid::van_naam(&naam) {
                 Some(g) => self.speel_geluid(g),
                 None => tracing::warn!(?naam, "onbekend geluid gevraagd voor de proef"),
@@ -2878,6 +2913,7 @@ impl Engine {
             streams,
             video: self.cfg.video.clone(),
             geluid: self.cfg.sound.clone(),
+            push_to_talk: self.cfg.push_to_talk.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),

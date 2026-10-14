@@ -1,7 +1,7 @@
 //! The Audio tab: devices, the input level, and the notification sounds.
 
 use super::controls::{
-    auto_width, control_row, help, label, note, readout, select, Body, Piece, Range,
+    auto_width, control_row, help, label, note, readout, select, Body, Piece, Range, Seg,
 };
 use super::{SettingsPane, DEFAULT_DEVICE};
 use crate::ui::commands;
@@ -10,6 +10,7 @@ use crate::ui::theme::{self, c};
 use crate::ui::view::format;
 use crate::ui::view::widgets::{meter_view, Btn, BtnKind};
 use crate::ui::view::AppSnapshot;
+use fitcom_audio::spreektoets;
 use gpui_kit::{
     div, prelude::FluentBuilder, px, relative, Context, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
@@ -27,6 +28,22 @@ pub(super) fn device_options(listed: &[String], chosen: Option<&str>) -> (Vec<St
         }
     }
     (items, chosen.unwrap_or(DEFAULT_DEVICE).to_string())
+}
+
+/// The labels of the key select, in the order of `fitcom_audio::spreektoets::TOETSEN`.
+fn ptt_key_labels() -> Vec<String> {
+    spreektoets::TOETSEN
+        .iter()
+        .map(|t| t.label.to_string())
+        .collect()
+}
+
+/// The config name behind a label of the key select.
+pub(super) fn ptt_key_name(label: &str) -> Option<&'static str> {
+    spreektoets::TOETSEN
+        .iter()
+        .find(|t| t.label == label)
+        .map(|t| t.naam)
 }
 
 impl SettingsPane {
@@ -48,6 +65,11 @@ impl SettingsPane {
         let (items, wanted) = device_options(outputs, s.output_device.as_deref());
         let speaker_width = auto_width(&items, 300.);
         self.speaker.sync(items, &wanted, window, cx);
+        let ptt = &s.push_to_talk;
+        let key_label = spreektoets::toets_van_naam(&ptt.key)
+            .or_else(|| spreektoets::toets_van_naam(spreektoets::STANDAARD_TOETS))
+            .map_or("", |t| t.label);
+        self.ptt_key.sync(ptt_key_labels(), key_label, window, cx);
         self.sound_volume
             .sync(format::vol_pct(s.sound.volume) as f32, window, cx);
 
@@ -72,6 +94,13 @@ impl SettingsPane {
                 .into_any_element()
         });
 
+        // A mode button sends the new mode with the key the engine has now.
+        let mode_button = |mode: &'static str| {
+            let (ui, key) = (snap.ui.clone(), ptt.key.clone());
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, _: &mut gpui_kit::App| {
+                commands::set_push_to_talk(&ui, mode, &key)
+            }
+        };
         let sets = div()
             .flex()
             .flex_wrap()
@@ -172,11 +201,69 @@ impl SettingsPane {
                 div()
                     .child(label("Input level"))
                     .child(help(concat!(
-                        "Voice is only sent while you are actually speaking. When you are quiet, ",
-                        "nothing goes over the line."
+                        "In voice activity mode, voice is only sent while you are actually ",
+                        "speaking. When you are quiet, nothing goes over the line."
                     )))
                     .child(div().mt(px(6.)).max_w(px(320.)).child(level)),
             )
+            .h2("Push to talk")
+            .p(concat!(
+                "Operate the microphone with a key instead of (or on top of) voice activity. The ",
+                "key works while a game is in front, and the game still receives it too: it is ",
+                "read, not taken."
+            ))
+            .when(!ptt.available, |b| {
+                b.field(note(&[Piece::Text(concat!(
+                    "Push to talk is not available on macOS yet. The microphone stays on voice ",
+                    "activity."
+                ))]))
+            })
+            .when(ptt.available, |b| {
+                b.field(
+                    div()
+                        .child(label("Mode"))
+                        .child(help(match ptt.mode.as_str() {
+                            "talk" => concat!(
+                                "Hold the key to talk. It overrides voice activity, so quiet speech ",
+                                "goes through too, and the microphone stays open for a fifth of a ",
+                                "second after you let go so the end of your last word is not cut off."
+                            ),
+                            "mute" => concat!(
+                                "Voice activity as usual, but holding the key mutes you at once. ",
+                                "Useful to cough or answer someone next to you."
+                            ),
+                            _ => "Only voice activity decides when you are heard.",
+                        }))
+                        .child(
+                            Seg::new("ptt-mode")
+                                .option(
+                                    "Voice activity",
+                                    ptt.mode == "voice",
+                                    mode_button("voice"),
+                                )
+                                .option(
+                                    "Push to talk",
+                                    ptt.mode == "talk",
+                                    mode_button("talk"),
+                                )
+                                .option(
+                                    "Push to mute",
+                                    ptt.mode == "mute",
+                                    mode_button("mute"),
+                                ),
+                        ),
+                )
+                .field(
+                    div()
+                        .child(label("Key"))
+                        .child(help(concat!(
+                            "Right Ctrl is the default. Mouse side buttons work too. A letter key ",
+                            "also types in the chat while you hold it, so a modifier, an F-key or a ",
+                            "mouse button is the better choice."
+                        )))
+                        .child(control_row().child(select("set-ptt-key", &self.ptt_key, 300., true))),
+                )
+            })
             .h2("Notification sounds")
             .p(concat!(
                 "Short tones when someone joins or leaves the call, or starts and stops sharing. ",

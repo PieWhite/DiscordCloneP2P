@@ -297,6 +297,19 @@ pub fn set_sound_settings(ui: &Ui, set: &str, volume: f32) {
     );
 }
 
+/// How the microphone gate works and which key operates it. Saved to `config.toml` by the
+/// engine and live at once, also in a running call. `mode` is `voice`, `talk` or `mute`;
+/// `key` is a name from `fitcom_audio::spreektoets::TOETSEN`.
+pub fn set_push_to_talk(ui: &Ui, mode: &str, key: &str) {
+    send(
+        ui,
+        UiCommand::ZetSpreektoets(crate::config::PushToTalkConfig {
+            mode: mode.to_string(),
+            key: key.to_string(),
+        }),
+    );
+}
+
 /// Play one tone so it can be judged. Ignores do-not-disturb on purpose: pressing the
 /// button is asking for it.
 pub fn preview_sound(ui: &Ui, sound: &str) {

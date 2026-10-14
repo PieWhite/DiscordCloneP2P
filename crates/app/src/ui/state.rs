@@ -411,6 +411,30 @@ pub struct SoundSettings {
     pub volume: f32,
 }
 
+/// How the microphone gate is operated: voice activity alone, or with a key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushToTalkState {
+    /// `voice`, `talk` or `mute`, as in `config.toml`.
+    pub mode: String,
+    /// The key's config name (`RightCtrl`, `Mouse4`, ...). The labels live in
+    /// `fitcom_audio::spreektoets::TOETSEN`.
+    pub key: String,
+    /// False where the platform cannot read a global key (macOS): the tab says so and the
+    /// engine keeps to voice activity.
+    pub available: bool,
+}
+
+impl Default for PushToTalkState {
+    fn default() -> Self {
+        let c = crate::config::PushToTalkConfig::default();
+        PushToTalkState {
+            mode: c.mode,
+            key: c.key,
+            available: fitcom_audio::spreektoets::BESCHIKBAAR,
+        }
+    }
+}
+
 /// One choosable set of tones. Comes from the engine rather than being spelled out in the
 /// frontend, so adding a set is one place instead of two.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -529,6 +553,8 @@ pub struct UiState {
     pub streams: Vec<StreamState>,
     pub video: VideoSettings,
     pub sound: SoundSettings,
+    #[serde(default)]
+    pub push_to_talk: PushToTalkState,
     /// Constant for the life of the process; rides along so the Settings panel does not
     /// need a second call to draw the picker.
     pub sound_sets: Vec<SoundSetInfo>,
@@ -767,6 +793,11 @@ impl UiState {
                     .naam()
                     .to_string(),
                 volume: snap.geluid.volume,
+            },
+            push_to_talk: PushToTalkState {
+                mode: snap.push_to_talk.mode.clone(),
+                key: snap.push_to_talk.key.clone(),
+                available: fitcom_audio::spreektoets::BESCHIKBAAR,
             },
             sound_sets: c.sound_sets.clone(),
             sound_events: c.sound_events.clone(),

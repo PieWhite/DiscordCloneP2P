@@ -45,6 +45,15 @@ impl Body {
         Self::default()
     }
 
+    /// Adds what `build` adds, only when `show` is true.
+    pub fn when(self, show: bool, build: impl FnOnce(Self) -> Self) -> Self {
+        if show {
+            build(self)
+        } else {
+            self
+        }
+    }
+
     /// `.set-body h2`: the blue strip across the whole window. A second one in the same tab
     /// sits 32px lower (`style="margin-top:32px"`).
     pub fn h2(mut self, text: &str) -> Self {

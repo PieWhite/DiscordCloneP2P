@@ -20,10 +20,11 @@ tracing = "0.1.44"
 
 # Alleen voor de proces-loopback van bureaubladgeluid en Spotify;
 # zie `session::wasapi_capture`. `windows` is dezelfde versie die `wasapi` al meeneemt,
-# voor het zoeken van het Spotify-proces (`spotify::pid`).
+# voor het zoeken van het Spotify-proces (`spotify::pid`) en `GetAsyncKeyState`
+# voor push-to-talk (`spreektoets`).
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.23"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Input_KeyboardAndMouse"] }
 
 # Bureaubladgeluid op macOS loopt via ScreenCaptureKit (audio-only SCStream met
 # `excludesCurrentProcessAudio`, macOS 14+); zie `session::sck_capture`.
