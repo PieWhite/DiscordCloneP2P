@@ -149,10 +149,6 @@ fn link(
             });
             (square(Some(theme::ONLINE), false), div().child(rtt))
         }
-        Presence::Connecting => (
-            square(Some(theme::CONNECTING), false),
-            div().child("reconnecting"),
-        ),
         Presence::Broken => (
             square(None, false),
             div().child(

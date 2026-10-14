@@ -62,7 +62,6 @@ fn link(
     let square = div().size(px(6.)).flex_none();
     let square = match p.presence {
         Presence::Online => square.bg(theme::ONLINE),
-        Presence::Connecting => square.bg(theme::CONNECTING),
         Presence::Offline => square.border(px(1.5)).border_color(theme::OFFLINE),
         // The stylesheet has no rule for a broken link: the square's place stays empty.
         Presence::Broken => square,
@@ -80,7 +79,6 @@ fn link(
             )
             .into_any_element()
         }
-        Presence::Connecting => div().child("reconnecting").into_any_element(),
         Presence::Broken => div().child("needs attention").into_any_element(),
         Presence::Offline => div().child("offline").into_any_element(),
     };

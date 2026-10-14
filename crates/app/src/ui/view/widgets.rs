@@ -34,7 +34,6 @@ use std::rc::Rc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dot {
     Online,
-    Connecting,
     /// Our own do-not-disturb.
     Dnd,
     Away,
@@ -54,7 +53,6 @@ impl Dot {
         }
         match p.presence {
             Presence::Online => Dot::Online,
-            Presence::Connecting => Dot::Connecting,
             Presence::Offline => Dot::Offline,
             Presence::Broken => Dot::Broken,
         }
@@ -116,7 +114,6 @@ pub fn avatar(name: &str, hue: u8, size: f32, dot: Option<Dot>, speaking: bool) 
 fn presence_dot(dot: Dot) -> Div {
     let fill: Option<Rgba> = match dot {
         Dot::Online => Some(theme::ONLINE),
-        Dot::Connecting => Some(theme::CONNECTING),
         Dot::Dnd | Dot::Busy => Some(theme::DND),
         Dot::Away => Some(c::AMBER),
         Dot::Offline => Some(c::INK),

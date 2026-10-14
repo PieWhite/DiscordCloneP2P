@@ -82,7 +82,6 @@ fn avatar_hues(me: PeerId, peers: &[PeerView]) -> HashMap<PeerId, u8> {
 #[serde(rename_all = "lowercase")]
 pub enum Presence {
     Online,
-    Connecting,
     Offline,
     /// Protocol or identity trouble. Rare, and the only peer state that is a real fault
     /// rather than a normal absence.
@@ -577,8 +576,10 @@ fn peer_presence(view: &PeerView) -> (Presence, Option<String>, Option<String>) 
         PeerStatus::Online { app_version, .. } => {
             (Presence::Online, None, Some(app_version.clone()))
         }
-        PeerStatus::Connecting => (Presence::Connecting, None, None),
-        PeerStatus::Offline { .. } => (Presence::Offline, None, None),
+        // The mesh redials an absent peer every few seconds and says `Connecting` for each
+        // attempt. For the window that is still just offline: showing it made an absent
+        // friend look like a fault, and flipped the state push on every retry.
+        PeerStatus::Connecting | PeerStatus::Offline { .. } => (Presence::Offline, None, None),
         PeerStatus::VersionMismatch { theirs, ours } => (
             Presence::Broken,
             Some(format!(

@@ -233,7 +233,7 @@ struct Group<'a> {
     rows: Vec<Row<'a>>,
 }
 
-/// `renderMembers`' grouping: In the call, Online, Connecting, Offline, Not introduced yet,
+/// `renderMembers`' grouping: In the call, Online, Offline, Not introduced yet,
 /// in that order, empty groups left out.
 fn member_groups<'a>(me: &Me, peers: &'a [PeerState]) -> Vec<Group<'a>> {
     let known = || peers.iter().filter(|p| !p.id.is_empty());
@@ -284,14 +284,6 @@ fn member_groups<'a>(me: &Me, peers: &'a [PeerState]) -> Vec<Group<'a>> {
             }),
     );
 
-    let connecting = known()
-        .filter(|p| p.presence == Presence::Connecting)
-        .map(|p| Row {
-            who: Who::Peer(p),
-            sub: text("Reconnecting"),
-            tools: false,
-        })
-        .collect();
     let away = known()
         .filter(|p| matches!(p.presence, Presence::Offline | Presence::Broken))
         .map(|p| {
@@ -319,7 +311,6 @@ fn member_groups<'a>(me: &Me, peers: &'a [PeerState]) -> Vec<Group<'a>> {
     [
         ("In the call", call),
         ("Online", online),
-        ("Connecting", connecting),
         ("Offline", away),
         ("Not introduced yet", unknown),
     ]
@@ -833,16 +824,16 @@ mod tests {
     }
 
     /// The `connecting` reference: me alone online, one of each trouble. Dropping the
-    /// `!p.id.is_empty()` filter from `known` puts the address into Connecting too.
+    /// `!p.id.is_empty()` filter from `known` puts the address into Offline too.
     #[test]
     fn every_presence_lands_in_its_group() {
         let mut broken = peer("b", "Bram", Presence::Broken, false);
         broken.problem = Some("Runs protocol 4.".into());
         let peers = vec![
-            peer("s", "Sander", Presence::Connecting, false),
+            peer("s", "Sander", Presence::Offline, false),
             peer("j", "Joost", Presence::Offline, false),
             broken,
-            peer("", "100.88.14.2:41650", Presence::Connecting, false),
+            peer("", "100.88.14.2:41650", Presence::Offline, false),
         ];
         let me = Me {
             joined: false,
@@ -855,12 +846,9 @@ mod tests {
             vec![
                 ("Online", vec![("me".into(), Sub::None)]),
                 (
-                    "Connecting",
-                    vec![("Sander".into(), Sub::Text("Reconnecting".into()))]
-                ),
-                (
                     "Offline",
                     vec![
+                        ("Sander".into(), Sub::Text("Offline".into())),
                         ("Joost".into(), Sub::Text("Offline".into())),
                         ("Bram".into(), Sub::Text("Runs protocol 4.".into())),
                     ]
