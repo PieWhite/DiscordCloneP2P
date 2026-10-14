@@ -2128,9 +2128,10 @@ gemaximaliseerd venster met een verborgen taakbalk bedekt de monitor ook, een sp
 geen titelbalk), is niet geminimaliseerd, en de exe staat niet op de lijst `GEEN_SPEL`
 (explorer, browsers, Discord, Spotify, wijzelf, OBS, spelers, launchers, kantoor, VM's...).
 Per meting een handvol goedkope Win32-aanroepen; de versie-resource van een exe wordt één keer
-gelezen en onthouden. **Naam:** `FileDescription` van de exe, anders de venstertitel, anders
-de exe-naam. Overwogen: eerst de titel. Afgewezen omdat titels vaak "Game - Level 3 - 62 fps"
-zijn; de bestandsbeschrijving is meestal de nette naam.
+gelezen en onthouden. **Naam:** `FileDescription` van de exe, anders de
+exe-naam. **Nooit de venstertitel**: een schermvullend programma zonder beschrijving zou zijn
+titel (met een documentnaam erin) naar alle peers sturen, en het delen staat standaard aan.
+Titels zijn ook vaak "Game - Level 3 - 62 fps"; de bestandsbeschrijving is meestal de nette naam.
 
 **Wisselbewaking (`speelt::Rust`).** Een nieuw spel telt pas na **2 gelijke metingen** (~6 s),
 "geen spel" pas na **10 metingen** (~30 s). Even alt-tabben naar je browser is niet stoppen

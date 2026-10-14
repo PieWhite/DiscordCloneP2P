@@ -312,6 +312,8 @@ Beslissing 43 in `docs/OVERDRACHT.md`. `crates/app/src/speelt.rs` is de meting,
 - **Een voorgrondvenster telt alleen als spel zonder titelbalk én over de hele monitor én
   niet op `GEEN_SPEL`.** Een vals alarm los je op in die lijst, niet met een extra heuristiek
   of een spellendatabase (invariant 1: geen server, geen lookup).
+- **De naam is `FileDescription`, anders de exe-naam, nooit de venstertitel.** Een titel kan
+  een documentnaam zijn en gaat naar alle peers, met het delen standaard aan.
 - **Standaard aan, uit via `Config::share_activity`.** Uit = niet eens meten, niets sturen,
   en een lege naam naar de anderen zodat hun regel verdwijnt.
 - **Staat in `UiState` (`PeerState::activity`) alleen omdat het alleen op een wissel

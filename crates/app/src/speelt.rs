@@ -155,6 +155,9 @@ fn is_opmaakteken(ch: char) -> bool {
         | '\u{202A}'..='\u{202E}'
         | '\u{2060}'..='\u{206F}'
         | '\u{FEFF}'
+        | '\u{E0000}'..='\u{E007F}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{2800}'
         | '\u{FFF9}'..='\u{FFFB}')
 }
 
@@ -251,8 +254,8 @@ mod win {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, GWL_STYLE, WS_CAPTION,
+        GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
+        GWL_STYLE, WS_CAPTION,
     };
 
     pub fn voorgrond_spel(namen: &mut HashMap<String, Option<String>>) -> Option<String> {
@@ -306,18 +309,12 @@ mod win {
                     return naam.clone();
                 }
             }
-            // Beschrijving van de exe boven venstertitel: de titel bevat vaak meer dan
-            // de naam ("Game - Level 3 - 62 fps"); de exe-naam is het laatste redmiddel.
+            // Bewust nooit de venstertitel: die kan een documentnaam bevatten en gaat naar
+            // alle peers. Beschrijving van de exe, anders de exe-naam.
             let naam = bestandsbeschrijving(&pad)
                 .and_then(|b| schoon(&b))
-                .or_else(|| {
-                    let mut buf = [0u16; 256];
-                    let n = GetWindowTextW(hwnd, &mut buf);
-                    schoon(&String::from_utf16_lossy(&buf[..n.max(0) as usize]))
-                })
                 .or_else(|| schoon(&stem));
-            // Alleen een gevonden naam onthouden: een venster dat nog zonder titel opstart
-            // krijgt bij de volgende meting een nieuwe kans.
+            // Alleen een gevonden naam onthouden.
             if naam.is_some() {
                 namen.insert(pad, naam.clone());
             }
@@ -403,6 +400,11 @@ mod tests {
         assert_eq!(schoon("  Half\u{0}-Life\n\t2 "), s("Half-Life 2"));
         assert_eq!(schoon("evil\u{202E}txt.exe"), s("eviltxt.exe"));
         assert_eq!(schoon("a\u{200B}b"), s("ab"));
+        assert_eq!(
+            schoon("a\u{E0041}\u{FE0F}\u{034F}\u{3164}\u{2800}b"),
+            s("ab")
+        );
+        assert_eq!(schoon("\u{2800}\u{3164}"), None);
         assert_eq!(schoon("\u{7}\u{1b}[31m"), s("[31m"));
         assert_eq!(schoon("   \u{0}\n"), None);
         assert_eq!(schoon(""), None);

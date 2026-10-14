@@ -179,12 +179,17 @@ enum ControlMsg {
     Typing       { channel: Channel },                       // 44
     UserStatus   { status: UserStatusValue },                // 45
     MusicControl { stream_id: u32, action: MusicAction },    // 46, luisteraar → DJ
+    Activity     { name: String },                           // 47, spel vooraan; "" = geen
 }
 ```
 
 `MusicControl` (beslissing 41): `MusicAction` is een `u8` (`PLAY_PAUSE = 1`, `NEXT = 2`),
 zodat een onbekende actie als onbekend doorkomt. De DJ voert hem alleen uit voor zijn
 huidige muziekstream en voor een afzender in het gesprek; er komt geen antwoord.
+
+`Activity` (beslissing 43): de naam is onbetrouwbare tekst (max 48 tekens, geen stuurtekens;
+`speelt::schoon`), alleen verstuurd bij een bevestigde wissel en bij het opkomen van een
+verbinding. Een oudere peer slaat de tag stil over.
 
 `StreamKind` is een `u8` op de draad met vijf bekende waarden: `MONITOR = 1`,
 `WINDOW = 2`, `DESKTOP_AUDIO = 3`, `CAMERA = 4` en `MUSIC = 5` (alleen Spotify, voor
