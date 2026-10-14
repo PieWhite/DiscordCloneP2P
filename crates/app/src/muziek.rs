@@ -8,6 +8,7 @@
 //! Het lezen gebeurt op een eigen thread: de WinRT-aanroep wacht op een async-antwoord en
 //! `osascript` start een proces, en geen van beide hoort op de motortik.
 
+use fitcom_proto::control::MusicAction;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -104,9 +105,98 @@ return """#;
     opmaak(artiest, nummer)
 }
 
+/// Pauze/afspelen of volgende bij onze eigen Spotify, op verzoek van een luisteraar
+/// (beslissing 41). Dezelfde mediabediening als `lees`, dus geen Web API en geen account.
+/// Op een eigen kortlevende thread: de WinRT-aanroep wacht en `osascript` start een
+/// proces, en geen van beide hoort op de motortik. Lukt het niet, dan gebeurt er niets.
+pub fn bedien(actie: MusicAction) {
+    let gestart = std::thread::Builder::new()
+        .name("fitcom-muziek-bediening".into())
+        .spawn(move || {
+            if !voer_uit(actie) {
+                tracing::debug!(?actie, "Spotify bedienen lukte niet");
+            }
+        });
+    if let Err(e) = gestart {
+        tracing::warn!(error = %e, "muziekbediening-thread starten mislukt");
+    }
+}
+
+#[cfg(windows)]
+fn voer_uit(actie: MusicAction) -> bool {
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as Beheer;
+
+    let Some(sessies) = Beheer::RequestAsync()
+        .and_then(|b| b.join())
+        .and_then(|b| b.GetSessions())
+        .ok()
+    else {
+        return false;
+    };
+    for sessie in sessies {
+        let is_spotify = sessie
+            .SourceAppUserModelId()
+            .is_ok_and(|a| a.to_string().to_ascii_lowercase().contains("spotify"));
+        if !is_spotify {
+            continue;
+        }
+        let gelukt = match actie {
+            MusicAction::PLAY_PAUSE => sessie.TryTogglePlayPauseAsync(),
+            MusicAction::NEXT => sessie.TrySkipNextAsync(),
+            _ => return false,
+        };
+        return gelukt.and_then(|a| a.join()).unwrap_or(false);
+    }
+    false
+}
+
+/// Vaste scripts zonder iets van de draad erin; zelfde "is running"-rem als `lees`, zodat
+/// een klik van een luisteraar Spotify nooit opstart.
+#[cfg(target_os = "macos")]
+fn voer_uit(actie: MusicAction) -> bool {
+    let opdracht = match actie {
+        MusicAction::PLAY_PAUSE => "playpause",
+        MusicAction::NEXT => "next track",
+        _ => return false,
+    };
+    let script = format!(
+        "if application \"Spotify\" is running then tell application \"Spotify\" to {opdracht}"
+    );
+    std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Een Spotify-track-id: precies 22 tekens base62. Het gaat een URI in
+/// (`spotify:track:<id>`) en komt uit een chatbericht dat een peer typte — de B-03-klasse,
+/// net als `youtube::geldig_id`. Dit kan niets anders worden dan een id.
+pub fn geldig_track_id(id: &str) -> bool {
+    id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{lees, opmaak};
+    use super::{geldig_track_id, lees, opmaak};
+
+    #[test]
+    fn track_id_is_precies_22_tekens_base62() {
+        assert!(geldig_track_id("4uLU6hMCjMI75M1A2tKUQC"));
+        for aanval in [
+            "",
+            "4uLU6hMCjMI75M1A2tKUQ",   // 21
+            "4uLU6hMCjMI75M1A2tKUQCx", // 23
+            "4uLU6hMCjMI75M1A2tKU-C",
+            "4uLU6hMCjMI75M1A2tKU_C",
+            "..\\..\\..\\Windows\\cmd",
+            "4uLU6hMCjMI75M1A2tK?x=1",
+            "4uLU6hMCjMI75M1A2tKUQ\n",
+            "4uLU6hMCjMI75M1A2tKU Q",
+            "4uLU6hMCjMI75M1A2tKUé", // 22 bytes, maar niet ASCII
+        ] {
+            assert!(!geldig_track_id(aanval), "geaccepteerd: {aanval:?}");
+        }
+    }
 
     /// `cargo test -p fitcom muziek -- --ignored --nocapture` met Spotify open: toont wat
     /// de mediabediening van het systeem over hem zegt (ook op pauze).

@@ -166,6 +166,50 @@ control_messages! {
     // niets hieronder kan een verbinding breken, dus geen protocolbump.
     44 => Typing(Typing),
     45 => UserStatus(UserStatus),
+
+    // 46: een luisteraar bedient de gedeelde Spotify (2026-10-15, beslissing 41). Van
+    // luisteraar naar DJ, single-hop en vluchtig zoals 44-45: een klik op pauze is geen
+    // geschiedenis. Een oudere DJ slaat hem als onbekende tag over; dan gebeurt er niets.
+    46 => MusicControl(MusicControl),
+}
+
+/// Wat een luisteraar met de gedeelde Spotify wil, als `u8` op de draad: een onbekende
+/// actie van een nieuwere peer komt als "onbekend" door en wordt genegeerd, in plaats van
+/// het bericht te laten vallen — zelfde reden als bij `StreamKind`.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MusicAction(pub u8);
+
+impl MusicAction {
+    /// Afspelen of pauzeren, wat Spotify bij de DJ op dat moment ook doet. De luisteraar
+    /// weet niet of er gespeeld wordt; die toestand staat niet op de draad.
+    pub const PLAY_PAUSE: Self = Self(1);
+    /// Volgende nummer.
+    pub const NEXT: Self = Self(2);
+
+    pub fn is_known(self) -> bool {
+        matches!(self, Self::PLAY_PAUSE | Self::NEXT)
+    }
+}
+
+impl std::fmt::Debug for MusicAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::PLAY_PAUSE => write!(f, "PlayPause"),
+            Self::NEXT => write!(f, "Next"),
+            Self(n) => write!(f, "Unknown({n})"),
+        }
+    }
+}
+
+/// "Doe dit met de muziek die je deelt." Alleen naar de eigenaar van de stream; die voert
+/// het uit als `stream_id` nog zijn muziekstream is en de afzender in het gesprek zit. De
+/// `stream_id` staat erin zodat een late klik na opnieuw delen niets met een andere stream
+/// doet. Er komt geen antwoord: het effect is de nieuwe titel, of stilte.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicControl {
+    pub stream_id: u32,
+    pub action: MusicAction,
 }
 
 /// "Ik ben tekst aan het typen in dit kanaal." Vluchtig: de ontvanger toont hem hooguit
@@ -497,6 +541,10 @@ mod tests {
             ControlMsg::UserStatus(UserStatus {
                 status: UserStatusValue::BUSY,
             }),
+            ControlMsg::MusicControl(MusicControl {
+                stream_id: 0,
+                action: MusicAction::NEXT,
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -638,6 +686,29 @@ mod tests {
                 ControlMsg::UserStatus(s) => {
                     assert_eq!(s.status, status);
                     assert_eq!(s.status.is_known(), status.is_known());
+                }
+                other => panic!("verkeerde variant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn music_control_roundtrip_en_onbekende_actie() {
+        for action in [
+            MusicAction::PLAY_PAUSE,
+            MusicAction::NEXT,
+            MusicAction(200), // van een nieuwere peer; komt als onbekend door
+        ] {
+            let msg = ControlMsg::MusicControl(MusicControl {
+                stream_id: 9,
+                action,
+            });
+            let bytes = msg.encode().unwrap();
+            assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 46);
+            match ControlMsg::decode(&bytes).unwrap().unwrap() {
+                ControlMsg::MusicControl(m) => {
+                    assert_eq!((m.stream_id, m.action), (9, action));
+                    assert_eq!(m.action.is_known(), action.is_known());
                 }
                 other => panic!("verkeerde variant: {other:?}"),
             }

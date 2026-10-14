@@ -27,7 +27,8 @@ use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{
-    StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin, VoiceLeave,
+    MusicAction, MusicControl, StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin,
+    VoiceLeave,
 };
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
@@ -282,6 +283,9 @@ pub enum UiCommand {
     /// Het geluid van Spotify delen met iedereen in het gesprek (`true`) of daarmee
     /// stoppen. Alleen Spotify, in stereo; zie `zet_spotify`.
     DeelSpotify(bool),
+    /// Pauze/afspelen of volgende bij de Spotify die deze peer deelt (stream-id erbij).
+    /// Gaat als `MusicControl` naar die peer; zie `bij_muziekbediening` voor wat hij doet.
+    BedienMuziek(PeerId, u32, MusicAction),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
     /// Volume van één stream van een peer, los van zijn stem.
@@ -885,6 +889,7 @@ impl Engine {
                             .insert((from, t.channel), Instant::now() + TYPING_TTL);
                     }
                 }
+                ControlMsg::MusicControl(m) => self.bij_muziekbediening(from, m),
                 ControlMsg::UserStatus(s) => {
                     if s.status.is_known() {
                         let was = self.peer_status.insert(from, s.status);
@@ -1547,6 +1552,25 @@ impl Engine {
             }
             _ => {}
         }
+    }
+
+    /// Een luisteraar drukt op pauze of volgende (beslissing 41). Iedereen in het gesprek
+    /// mag dat meteen, zonder stemming; wie er niet in zit niet — die hoort de muziek ook
+    /// niet. En alleen voor de stream die we nú delen, zodat een late klik na opnieuw
+    /// delen niets doet. Geen antwoord: wat de luisteraar terugziet is de nieuwe titel.
+    fn bij_muziekbediening(&mut self, van: PeerId, m: MusicControl) {
+        let mag = mag_muziek_bedienen(
+            self.eigen_muziek(),
+            self.voice.is_some(),
+            self.peers_in_voice.contains(&van),
+            &m,
+        );
+        if !mag {
+            tracing::debug!(peer = ?van, actie = ?m.action, "muziekbediening genegeerd");
+            return;
+        }
+        tracing::info!(peer = ?van, actie = ?m.action, "luisteraar bedient de muziek");
+        crate::muziek::bedien(m.action);
     }
 
     /// Het nummer dat nu speelt als titel van onze muziekstream. Elke tik gevraagd; er
@@ -2216,6 +2240,13 @@ impl Engine {
             UiCommand::StopDelen(id) => self.stop_met_delen(id),
             UiCommand::ZetCamera(aan) => self.zet_camera(aan),
             UiCommand::DeelSpotify(aan) => self.zet_spotify(aan),
+            UiCommand::BedienMuziek(dj, stream_id, action) => {
+                // Alleen naar de DJ zelf; hij beslist of hij het uitvoert.
+                self.stuur_alles(vec![MeshCommand::Send {
+                    to: dj,
+                    msg: ControlMsg::MusicControl(MusicControl { stream_id, action }),
+                }]);
+            }
             UiCommand::Kijken(eigenaar, id) => {
                 let acties = self.streams.wil_kijken(eigenaar, id);
                 self.voer_uit(acties);
@@ -2877,6 +2908,52 @@ impl Engine {
             overzicht: self.overzicht.clone(),
             fout: self.fout.clone(),
         }));
+    }
+}
+
+/// De regel van `bij_muziekbediening`, los zodat hij te testen is: wij delen precies deze
+/// muziekstream, wij zitten in het gesprek, de afzender ook, en de actie kennen we.
+fn mag_muziek_bedienen(
+    eigen_muziek: Option<u32>,
+    wij_in_gesprek: bool,
+    afzender_in_gesprek: bool,
+    m: &MusicControl,
+) -> bool {
+    eigen_muziek == Some(m.stream_id)
+        && wij_in_gesprek
+        && afzender_in_gesprek
+        && m.action.is_known()
+}
+
+#[cfg(test)]
+mod muziekbediening_tests {
+    use super::*;
+
+    #[test]
+    fn alleen_wie_in_het_gesprek_zit_bedient_onze_eigen_muziek() {
+        let m = |stream_id, action| MusicControl { stream_id, action };
+        let volgende = m(7, MusicAction::NEXT);
+        assert!(mag_muziek_bedienen(Some(7), true, true, &volgende));
+        assert!(mag_muziek_bedienen(
+            Some(7),
+            true,
+            true,
+            &m(7, MusicAction::PLAY_PAUSE)
+        ));
+        // Afzender niet in het gesprek: hoort de muziek niet, bedient hem ook niet.
+        assert!(!mag_muziek_bedienen(Some(7), true, false, &volgende));
+        // Wij zelf niet (meer) in het gesprek.
+        assert!(!mag_muziek_bedienen(Some(7), false, true, &volgende));
+        // We delen geen muziek, of een andere stream (een late klik na opnieuw delen).
+        assert!(!mag_muziek_bedienen(None, true, true, &volgende));
+        assert!(!mag_muziek_bedienen(Some(8), true, true, &volgende));
+        // Een actie van een nieuwere peer die we niet kennen.
+        assert!(!mag_muziek_bedienen(
+            Some(7),
+            true,
+            true,
+            &m(7, MusicAction(200))
+        ));
     }
 }
 
