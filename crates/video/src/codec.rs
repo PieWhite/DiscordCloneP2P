@@ -46,6 +46,11 @@ pub const HNS_PER_SEC: i64 = 10_000_000;
 /// vóór als ná `SetOutputType`. Dus blijft alleen: minder vaak.
 const GOP_SECONDEN: u32 = 10;
 
+/// Hoe lang [`Encoder::encode`] hoogstens op de uitvoer van het beeld wacht. Ruim boven de
+/// gemeten 2-3 ms, ruim onder een beeld bij 60 fps; loopt de GPU achter (een zware game)
+/// dan komt het pakket gewoon bij het volgende beeld mee, zoals vroeger.
+const UITVOER_WACHT: std::time::Duration = std::time::Duration::from_millis(8);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
     H264,
@@ -333,10 +338,21 @@ impl Encoder {
         unsafe { self.transform.ProcessInput(0, &sample, 0)? };
         self.wacht_op_invoer = false;
 
-        // Alles wat al klaarstaat meenemen, maar niet wachten: de encoder loopt een
-        // frame of twee achter en dat is normaal.
-        while let Some(event) = self.volgend_event(false)? {
-            self.verwerk_event(&event, &mut uit)?;
+        // Kort wachten op de uitvoer van dít beeld in plaats van één keer te kijken. De
+        // NVIDIA-MFT levert hem 2-3 ms na de invoer (gemeten, 360 van de 360 beelden),
+        // maar wie meteen terugkeerde vond hem pas bij het vólgende beeld: een hele
+        // opname-interval vertraging op elk beeld, 17 ms bij 60 fps en 42 ms bij een
+        // 24 fps-film, en op een stilstaand scherm bleef de laatste wijziging hangen tot
+        // er weer iets bewoog. Slapen, niet draaien: de game merkt er niets van.
+        let tot = std::time::Instant::now() + UITVOER_WACHT;
+        loop {
+            while let Some(event) = self.volgend_event(false)? {
+                self.verwerk_event(&event, &mut uit)?;
+            }
+            if !uit.is_empty() || std::time::Instant::now() >= tot {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(300));
         }
 
         Ok(uit)
