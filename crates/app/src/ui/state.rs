@@ -1482,6 +1482,7 @@ mod tests {
                 status: fitcom_net::PeerStatus::Connecting,
                 in_voice: false,
                 niveau: 0.0,
+                spreekt: false,
                 volume: 1.0,
                 user_status: None,
             })

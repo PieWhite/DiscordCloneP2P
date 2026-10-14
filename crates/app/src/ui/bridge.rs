@@ -31,15 +31,15 @@ const METER_INTERVAL: Duration = Duration::from_millis(250);
 /// The stream strip. `docs/OVERDRACHT.md` sets the budget at 2 fps and a small size.
 const THUMBNAIL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// The level above which a peer counts as speaking. Matches the voice VAD closely enough
-/// that the ring does not light on room noise.
+/// The level above which a still picture counts as speaking. Fixture mode only: the live
+/// ring follows the audio layer's own verdict (`spreekt`), which is the VAD that decides
+/// whether voice is sent at all, so the ring matches what the others hear.
 pub const SPEAKING: f32 = 0.06;
 
-/// How long the speaking state survives a dip under the threshold. Natural speech dips
-/// below any level threshold between words, and the 4 Hz tick samples straight into those
-/// dips: gating the ring on a single sample made it strobe. Light the moment the level is
-/// up, release only once it has stayed quiet this long (two ticks plus slack).
-pub const SPEAK_HOLD: Duration = Duration::from_millis(600);
+/// How long the ring survives a tick without voice. The sender's VAD hangover already
+/// smooths the gaps between words; this only bridges one sampled jitter-buffer gap
+/// (`Frame::Stilte` mid-stream). Longer double-holds with that hangover and lags the end.
+pub const SPEAK_HOLD: Duration = Duration::from_millis(300);
 
 /// One peer's live figures.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -77,7 +77,7 @@ impl Meters {
         self.readings.peers.get(peer).map_or(0.0, |m| m.level)
     }
     /// Is this peer speaking, with the hold applied? One rule for the voice panel and the
-    /// member list (`SPEAKING`, `SPEAK_HOLD`).
+    /// member list (the audio layer's `spreekt`, `SPEAK_HOLD`).
     pub fn speaking(&self, peer: &str) -> bool {
         self.readings.peers.get(peer).is_some_and(|m| m.speaking)
     }
@@ -201,11 +201,11 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
             ticker.tick().await;
             let snap = rx.borrow().clone();
             let now = Instant::now();
-            let mut held = |key: &str, level: f32, gate: bool| -> bool {
+            let mut held = |key: &str, now_speaking: bool, gate: bool| -> bool {
                 if !gate {
                     return false;
                 }
-                if level > SPEAKING {
+                if now_speaking {
                     speak_at.insert(key.to_string(), now);
                     return true;
                 }
@@ -222,7 +222,7 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
                     fitcom_net::PeerStatus::Online { rtt_ms, .. } => Some(*rtt_ms),
                     _ => None,
                 };
-                let speaking = held(&id, p.niveau, true);
+                let speaking = held(&id, p.spreekt, true);
                 readings.peers.insert(
                     id,
                     PeerMeter {
@@ -235,7 +235,7 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
             readings.self_level = snap.voice.eigen_niveau;
             readings.self_speaking = held(
                 "@self",
-                snap.voice.eigen_niveau,
+                snap.voice.eigen_spreekt,
                 snap.voice.actief && !snap.voice.muted,
             );
 

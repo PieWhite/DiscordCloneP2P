@@ -28,7 +28,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use fitcom_net::MediaSocket;
 use fitcom_proto::{MediaHeader, PayloadType, PeerId, VOICE_STREAM_ID};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,6 +77,12 @@ pub struct PeerAdres {
 pub struct Niveaus {
     pub eigen: f32,
     pub per_peer: HashMap<PeerId, f32>,
+    /// Gaat er nu stem van ons de deur uit: de VAD zegt praten en we staan niet op mute.
+    /// Precies de regel die bepaalt of er verstuurd wordt, dus de ring loopt gelijk op
+    /// met wat de anderen horen.
+    pub eigen_spreekt: bool,
+    /// Van wie er nu stem binnenkomt (een gedecodeerd of verborgen frame).
+    pub spreekt: HashSet<PeerId>,
 }
 
 /// Een geluidsbron: welke peer, en welke stream van hem.
@@ -105,11 +111,13 @@ struct Gedeeld {
     peers: Mutex<Vec<PeerAdres>>,
     volumes: Mutex<HashMap<Bron, f32>>,
     jitters: Mutex<HashMap<Bron, JitterBuffer>>,
-    niveaus: Mutex<HashMap<Bron, f32>>,
+    /// Niveau en of er van die bron nu geluid binnenkomt.
+    niveaus: Mutex<HashMap<Bron, (f32, bool)>>,
     mute: AtomicBool,
     deafen: AtomicBool,
     /// `f32` via `to_bits`, zodat de UI hem zonder lock kan uitlezen.
     eigen_niveau: AtomicU32,
+    eigen_spreekt: AtomicBool,
     stop: AtomicBool,
     /// `None` betekent: we delen geen bureaubladgeluid. De opname-thread stopt zichzelf
     /// zodra dit leeg is, dus er wordt niets opgenomen als niemand luistert.
@@ -197,21 +205,24 @@ impl VoiceHandle {
     }
 
     pub fn niveaus(&self) -> Niveaus {
-        Niveaus {
+        let mut uit = Niveaus {
             eigen: f32::from_bits(self.gedeeld.eigen_niveau.load(Ordering::Relaxed)),
-            per_peer: self
-                .gedeeld
-                .niveaus
-                .lock()
-                .map(|n| {
-                    // De UI toont één balkje per persoon, en dat hoort bij zijn stem.
-                    n.iter()
-                        .filter(|((_, stream), _)| *stream == VOICE_STREAM_ID)
-                        .map(|((peer, _), niveau)| (*peer, *niveau))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            eigen_spreekt: self.gedeeld.eigen_spreekt.load(Ordering::Relaxed),
+            ..Niveaus::default()
+        };
+        if let Ok(n) = self.gedeeld.niveaus.lock() {
+            // De UI toont één balkje per persoon, en dat hoort bij zijn stem.
+            for (&(peer, _), &(niveau, spreekt)) in n
+                .iter()
+                .filter(|((_, stream), _)| *stream == VOICE_STREAM_ID)
+            {
+                uit.per_peer.insert(peer, niveau);
+                if spreekt {
+                    uit.spreekt.insert(peer);
+                }
+            }
         }
+        uit
     }
 
     /// Begint het geluid van deze PC mee te sturen op `stream_id`.
@@ -334,6 +345,7 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
         mute: AtomicBool::new(false),
         deafen: AtomicBool::new(false),
         eigen_niveau: AtomicU32::new(0),
+        eigen_spreekt: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         bureaublad: Mutex::new(None),
         muziek: Mutex::new(None),
@@ -672,6 +684,10 @@ fn opname_lus(
 
             let praat = hangover > 0;
             hangover = hangover.saturating_sub(1);
+            gedeeld.eigen_spreekt.store(
+                praat && !gedeeld.mute.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
 
             timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
             if gedeeld.mute.load(Ordering::Relaxed) || !praat {
@@ -1556,7 +1572,7 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
                 }
 
                 let mut sprekers: Vec<(Vec<i16>, f32)> = Vec::new();
-                let mut niveaus: HashMap<Bron, f32> = HashMap::new();
+                let mut niveaus: HashMap<Bron, (f32, bool)> = HashMap::new();
 
                 for (peer, frame) in frames {
                     let decoder = match decoders.entry(peer) {
@@ -1577,13 +1593,13 @@ fn start_mixen(gedeeld: Arc<Gedeeld>, tx: Sender<Vec<f32>>, uitvoer_rate: u32) -
                         Frame::Stilte => false,
                     };
                     if !gelukt {
-                        niveaus.insert(peer, 0.0);
+                        niveaus.insert(peer, (0.0, false));
                         continue;
                     }
 
                     let niveau =
                         rms(&pcm.iter().map(|&s| f32::from(s)).collect::<Vec<_>>()) / 32768.0;
-                    niveaus.insert(peer, niveau);
+                    niveaus.insert(peer, (niveau, true));
                     sprekers.push((pcm, gedeeld.volume_van(peer)));
                 }
 

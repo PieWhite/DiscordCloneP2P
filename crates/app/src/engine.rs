@@ -90,6 +90,8 @@ pub struct PeerView {
     pub in_voice: bool,
     /// 0..1, voor de spreekindicatie.
     pub niveau: f32,
+    /// Komt er nu stem van hem binnen. Dit, niet `niveau`, drijft de spreekring.
+    pub spreekt: bool,
     pub volume: f32,
     /// De door de gebruiker gekozen status van deze peer, zoals hij hem zelf stuurde.
     /// `None` zolang hij nog niets stuurde (of offline was): dan is hij impliciet
@@ -103,6 +105,8 @@ pub struct VoiceView {
     pub muted: bool,
     pub deafened: bool,
     pub eigen_niveau: f32,
+    /// Gaat er nu stem van ons uit (VAD en niet op mute).
+    pub eigen_spreekt: bool,
 }
 
 /// Een bron die wij delen, zoals de UI hem toont.
@@ -418,6 +422,7 @@ pub fn spawn(
             },
             in_voice: false,
             niveau: 0.0,
+            spreekt: false,
             volume: 1.0,
             user_status: None,
         })
@@ -2759,6 +2764,7 @@ impl Engine {
             if let Some(id) = p.peer_id {
                 p.in_voice = self.peers_in_voice.contains(&id);
                 p.niveau = niveaus.per_peer.get(&id).copied().unwrap_or(0.0);
+                p.spreekt = niveaus.spreekt.contains(&id);
                 // Alleen tonen zolang hij er ook is; een status van een offline peer
                 // is tegen de tijd dat hij terugkomt toch verlopen.
                 if self.verbonden.contains_key(&id) {
@@ -2772,6 +2778,7 @@ impl Engine {
             muted: self.voice.as_ref().is_some_and(|v| v.is_mute()),
             deafened: self.voice.as_ref().is_some_and(|v| v.is_deafen()),
             eigen_niveau: niveaus.eigen,
+            eigen_spreekt: niveaus.eigen_spreekt,
         };
 
         let eigen_streams = self
