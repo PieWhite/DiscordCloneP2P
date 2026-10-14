@@ -86,6 +86,12 @@ pub struct Config {
     #[serde(default)]
     pub push_to_talk: PushToTalkConfig,
 
+    /// Het spel dat schermvullend vooraan staat meesturen ("Speelt X" onder je naam bij de
+    /// anderen). Standaard aan; uit betekent dat er niets verstuurd wordt en dat de
+    /// voorgrondvenster-check niet eens draait.
+    #[serde(default = "default_share_activity")]
+    pub share_activity: bool,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
@@ -314,6 +320,10 @@ impl Default for PushToTalkConfig {
     }
 }
 
+fn default_share_activity() -> bool {
+    true
+}
+
 fn default_ptt_mode() -> String {
     fitcom_audio::spreektoets::Modus::Spraak.naam().into()
 }
@@ -448,6 +458,7 @@ impl Config {
             sound: SoundConfig::default(),
             clips: ClipsConfig::default(),
             push_to_talk: PushToTalkConfig::default(),
+            share_activity: default_share_activity(),
             download_dir: None,
         }
     }
@@ -748,6 +759,20 @@ mod tests {
         // En hij overleeft opslaan-en-teruglezen; anders is hij één herstart later weg.
         let terug: Config = toml::from_str(&toml::to_string_pretty(&gezet).unwrap()).unwrap();
         assert_eq!(terug.clips.map, gezet.clips.map);
+    }
+
+    /// Een config van vóór deze instelling start met delen aan; uitzetten overleeft
+    /// opslaan-en-teruglezen.
+    #[test]
+    fn share_activity_staat_standaard_aan_ook_in_een_oude_config() {
+        let oud: Config = toml::from_str(r#"display_name = "Rick""#).unwrap();
+        assert!(oud.share_activity);
+        assert!(Config::template().share_activity);
+        let uit: Config =
+            toml::from_str("display_name = \"Rick\"\nshare_activity = false").unwrap();
+        assert!(!uit.share_activity);
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
+        assert!(!terug.share_activity);
     }
 
     /// Een config van vóór de push-to-talk-tabel moet starten, in de oude modus; kapotte

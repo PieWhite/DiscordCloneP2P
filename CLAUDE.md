@@ -295,6 +295,30 @@ Wat je niet mag omdraaien:
 - **De toets wordt niet ingeslikt.** Dat is de prijs van pollen en het hele punt ervan: de
   game die vooraan staat krijgt hem ook. Beloof in de UI dus niet dat hij "gereserveerd" is.
 
+## "Speelt X" naast je naam (2026-10-15)
+Beslissing 43 in `docs/OVERDRACHT.md`. `crates/app/src/speelt.rs` is de meting,
+`ControlMsg::Activity` (tag 47) het bericht. Wat je niet mag omdraaien:
+
+- **Het is een vluchtig, single-hop bericht en nooit een op.** Zelfde reden als status en
+  typindicatie: wat iemand nu speelt is geen geschiedenis, en drie peers die dat in een
+  append-only log schrijven laten hem groeien. Lege naam betekent "niets (meer)".
+- **Gemeten op de motor, op een trage tik (3 s), nooit in het venster.** Een handvol goedkope
+  Win32-aanroepen; de versie-resource van een exe één keer en dan onthouden. Het spel op
+  dezelfde PC wint (invariant 4): geen hooks, geen procesopsomming, geen vensterlijst.
+- **Over de draad alleen bij een bevestigde wissel** (`speelt::Rust`: 2 metingen voor een
+  nieuw spel, 10 voor "geen spel"). Niet bij elke meting en niet bij elke alt-tab.
+- **`speelt::schoon` voor alles wat een naam is, eigen en vreemd.** Lengte, stuurtekens,
+  bidi en zero-width eruit; getekend als gewone tekst. De naam komt van een andere PC.
+- **Een voorgrondvenster telt alleen als spel zonder titelbalk én over de hele monitor én
+  niet op `GEEN_SPEL`.** Een vals alarm los je op in die lijst, niet met een extra heuristiek
+  of een spellendatabase (invariant 1: geen server, geen lookup).
+- **Standaard aan, uit via `Config::share_activity`.** Uit = niet eens meten, niets sturen,
+  en een lege naam naar de anderen zodat hun regel verdwijnt.
+- **Staat in `UiState` (`PeerState::activity`) alleen omdat het alleen op een wissel
+  verandert.** Zet hier nooit iets neven dat per tik beweegt.
+- **macOS:** `Zoeker::voorgrond_spel` is er `None`. Geen Accessibility-/Screen Recording-
+  vraag voor een regel tekst.
+
 ## Camera (2026-08-06)
 Een camera is een derde `BronSoort`, geen tweede pijplijn: `crates/video/src/camera.rs`
 (Media Foundation, alleen Windows) levert dezelfde `Opgenomen` als de schermopname, dus

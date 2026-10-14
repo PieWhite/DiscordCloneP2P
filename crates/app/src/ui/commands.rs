@@ -310,6 +310,12 @@ pub fn set_push_to_talk(ui: &Ui, mode: &str, key: &str) {
     );
 }
 
+/// Whether the game in front is shared as "Playing X" under your name. Saved to
+/// `config.toml` by the engine; off also clears what the others still show.
+pub fn set_share_activity(ui: &Ui, on: bool) {
+    send(ui, UiCommand::ZetActiviteitDelen(on));
+}
+
 /// Play one tone so it can be judged. Ignores do-not-disturb on purpose: pressing the
 /// button is asking for it.
 pub fn preview_sound(ui: &Ui, sound: &str) {

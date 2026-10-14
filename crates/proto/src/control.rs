@@ -171,6 +171,10 @@ control_messages! {
     // luisteraar naar DJ, single-hop en vluchtig zoals 44-45: een klik op pauze is geen
     // geschiedenis. Een oudere DJ slaat hem als onbekende tag over; dan gebeurt er niets.
     46 => MusicControl(MusicControl),
+
+    // 47: het spel dat bij de afzender vooraan staat (2026-10-15, beslissing 43). Vluchtig
+    // en single-hop zoals 44-45; een oudere peer slaat de tag stil over en toont niets.
+    47 => Activity(Activity),
 }
 
 /// Wat een luisteraar met de gedeelde Spotify wil, als `u8` op de draad: een onbekende
@@ -210,6 +214,16 @@ impl std::fmt::Debug for MusicAction {
 pub struct MusicControl {
     pub stream_id: u32,
     pub action: MusicAction,
+}
+
+/// "Dit is het spel dat bij mij vooraan staat." Een lege naam betekent: niets (meer). Wordt
+/// alleen verstuurd bij een echte wissel en direct nadat een verbinding opkomt. De naam komt
+/// uit het venster- of bestandsdescriptie van een ander programma op een andere PC: de
+/// ontvanger moet hem als onbetrouwbare tekst behandelen (lengte, stuurtekens).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Activity {
+    #[serde(default)]
+    pub name: String,
 }
 
 /// "Ik ben tekst aan het typen in dit kanaal." Vluchtig: de ontvanger toont hem hooguit
@@ -545,6 +559,9 @@ mod tests {
                 stream_id: 0,
                 action: MusicAction::NEXT,
             }),
+            ControlMsg::Activity(Activity {
+                name: "Spel".into(),
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -689,6 +706,15 @@ mod tests {
                 }
                 other => panic!("verkeerde variant: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn activity_roundtrip_en_lege_naam() {
+        for name in ["Cyberpunk 2077", ""] {
+            let msg = ControlMsg::Activity(Activity { name: name.into() });
+            let bytes = msg.encode().unwrap();
+            assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
         }
     }
 

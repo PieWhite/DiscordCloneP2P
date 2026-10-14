@@ -1261,6 +1261,7 @@ mod window_tests {
             avatar: 1,
             presence: Presence::Online,
             user_status: None,
+            activity: None,
             problem: None,
             app_version: None,
             in_call: false,

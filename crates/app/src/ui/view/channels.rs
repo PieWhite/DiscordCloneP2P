@@ -878,6 +878,7 @@ mod tests {
             avatar: 1,
             presence,
             user_status: None,
+            activity: None,
             problem: None,
             app_version: None,
             in_call,

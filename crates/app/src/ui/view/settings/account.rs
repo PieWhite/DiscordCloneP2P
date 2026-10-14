@@ -13,6 +13,7 @@ use crate::ui::view::AppSnapshot;
 use gpui_kit::{
     div, px, relative, ClipboardItem, Context, IntoElement, ParentElement, Styled, Window,
 };
+use std::rc::Rc;
 
 const STATUSES: [(&str, &str); 3] = [("online", "Online"), ("away", "Away"), ("busy", "Busy")];
 
@@ -58,6 +59,10 @@ impl SettingsPane {
         );
         let ui = snap.ui.clone();
         let id = s.me.id.clone();
+        let (ui_share, share) = (snap.ui.clone(), s.share_activity);
+        let share_toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| {
+            commands::set_share_activity(&ui_share, !share)
+        });
 
         Body::new()
             .h2("Account")
@@ -89,6 +94,23 @@ impl SettingsPane {
                         "plain online again."
                     )))
                     .child(control_row().child(select("set-status", &self.status, 240., false))),
+            )
+            .field(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(label("Show the game I'm playing").mb(px(2.)))
+                            .child(help(concat!(
+                                "Shows \"Playing <game>\" under your name for the others while a game ",
+                                "fills your screen. Only the name goes over the wire, only on a ",
+                                "switch; with this off nothing is sent."
+                            ))),
+                    )
+                    .child(switch("share-activity", s.share_activity, Some(share_toggle))),
             )
             .field(
                 div()

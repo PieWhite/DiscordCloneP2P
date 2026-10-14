@@ -527,6 +527,11 @@ impl MembersPane {
             .and_then(|p| p.user_status.as_deref())
             .map(format::status_label)
             .filter(|l| !l.is_empty());
+        // Plain text only: GPUI draws a string as glyphs, there is nothing in it to run.
+        let playing = peer
+            .and_then(|p| p.activity.as_deref())
+            .filter(|_| !quiet)
+            .map(|g| format!("Playing {g}"));
         let sub: Option<AnyElement> = match &row.sub {
             Sub::None => None,
             Sub::Text(t) => Some(mem_sub(t.clone(), quiet_group.clone()).into_any_element()),
@@ -803,6 +808,9 @@ impl MembersPane {
                     .when_some(status, |d, label| {
                         d.child(mem_sub(label, quiet_group.clone()))
                     })
+                    .when_some(playing, |d, line| {
+                        d.child(mem_sub(line, quiet_group.clone()))
+                    })
                     .children(sub)
                     .children(tools)
                     .children(desk)
@@ -896,6 +904,7 @@ mod tests {
             avatar: 1,
             presence,
             user_status: None,
+            activity: None,
             problem: None,
             app_version: None,
             in_call,

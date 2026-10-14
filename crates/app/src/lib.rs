@@ -14,6 +14,7 @@ pub mod geluid;
 pub mod muziek;
 pub mod notify;
 pub mod release;
+pub mod speelt;
 pub mod streams;
 pub mod tags;
 pub mod tray;

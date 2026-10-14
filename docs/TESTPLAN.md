@@ -1288,3 +1288,41 @@ talk".
 13. **macOS** (alleen te zien, niet te testen): het tabblad toont "Push to talk is not
     available on macOS yet" en een bestaande `mode = "talk"` in de config doet niets: de
     microfoon blijft op spraakdetectie en de log meldt het één keer.
+
+## "Speelt X" naast je naam (2026-10-15, beslissing 43)
+
+Nooit met een echt spel of een tweede machine geprobeerd: de wisselbewaking en het
+schoonmaken van de naam hebben unit-tests, het bericht heeft een roundtrip-test; de
+Win32-meting (voorgrondvenster, monitor, versie-resource) is alleen gecompileerd. Doe dit met
+A (speelt) en B (kijkt in de ledenlijst), beide op deze versie, en C of een peer op 1.9.0 als
+je er een hebt.
+
+1. **Standaard aan.** Bestaande `config.toml` zonder `share_activity`: de app start, Instellingen
+   > Account toont de schakelaar "Show the game I'm playing" aan.
+2. **Schermvullend spel.** A start een spel in *exclusieve volle-schermmodus*. Binnen ~6-9 s
+   toont B onder A's naam (onder een eventuele statusregel) "Playing <spelnaam>". Herhaal met
+   *venster zonder rand*.
+3. **Naam.** Is het de nette naam van het spel en niet `spel.exe`? Noteer per spel wat er
+   staat; bij een nietszeggende naam ("Unreal Engine", launcherachtig) is dat een kandidaat
+   voor een betere keuze of voor `GEEN_SPEL`.
+4. **Geen vals alarm.** A zet schermvullend vooraan: een browser (F11), een video in een speler,
+   OBS, Spotify, Discord, een maximaal venster met verborgen taakbalk. Geen van allen mag een
+   "Playing"-regel geven. Wel iets onverwachts: noteer de exe-naam voor `GEEN_SPEL`.
+5. **Gewoon venster met rand.** Een spel in venstermodus (met titelbalk) geeft bewust niets.
+6. **Alt-tab flapt niet.** A alt-tabt kort (< 30 s) naar een browser en terug: B's regel blijft
+   staan. A blijft een halve minuut of langer buiten het spel: de regel verdwijnt.
+   Wisselen tussen twee spellen: de regel volgt binnen ~6-9 s.
+7. **Verbinding komt later op.** A speelt al; B start de app pas daarna: B ziet het spel
+   zodra de verbinding er is. A of B verbreekt de verbinding: de regel verdwijnt bij de
+   ander.
+8. **Uitzetten.** A zet de schakelaar uit terwijl het spel draait: B's regel verdwijnt direct
+   en komt niet terug zolang hij uit staat (ook niet na herstart van A; `share_activity =
+   false` staat in `config.toml`). Aanzetten: de regel komt binnen ~6-9 s terug.
+9. **Oudere peer.** Een peer op 1.9.0 verbindt gewoon, ziet niets en logt hooguit een
+   onbekende tag (46/47 `debug`).
+10. **Gamen wint (invariant 4).** Een zwaar spel met delen aan: geen merkbare hapering of
+    frametijdpiek elke 3 s ten opzichte van delen uit.
+11. **Rare namen.** Hernoem (testbuild of exe met aangepaste resource) naar een naam met
+    stuurtekens of een heel lange naam: B ziet de opgeschoonde, ingekorte versie (max 48 tekens).
+12. **macOS** (alleen te zien): de schakelaar staat er, doet niets; een Mac onder een Windows-peer
+    toont wel diens "Playing"-regel.

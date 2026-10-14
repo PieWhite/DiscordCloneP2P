@@ -100,6 +100,10 @@ pub struct PeerState {
     /// means it never sent one (or is offline): plain online, nothing extra to draw.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_status: Option<String>,
+    /// The game this peer has in front ("Elden Ring"), while it is online. Already cleaned
+    /// by the engine. It only moves when they switch games, so it may live here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     /// Set when `presence` is `broken`: what is wrong, in one sentence.
     pub problem: Option<String>,
     pub app_version: Option<String>,
@@ -555,6 +559,9 @@ pub struct UiState {
     pub sound: SoundSettings,
     #[serde(default)]
     pub push_to_talk: PushToTalkState,
+    /// Whether the game in front is shared as "Playing X". Comes from `config.toml`.
+    #[serde(default)]
+    pub share_activity: bool,
     /// Constant for the life of the process; rides along so the Settings panel does not
     /// need a second call to draw the picker.
     pub sound_sets: Vec<SoundSetInfo>,
@@ -693,6 +700,10 @@ impl UiState {
                         .user_status
                         .filter(|_| presence == Presence::Online)
                         .map(|s| s.to_string()),
+                    activity: p
+                        .activiteit
+                        .clone()
+                        .filter(|_| presence == Presence::Online),
                     problem,
                     app_version,
                     in_call: p.in_voice,
@@ -799,6 +810,7 @@ impl UiState {
                 key: snap.push_to_talk.key.clone(),
                 available: fitcom_audio::spreektoets::BESCHIKBAAR,
             },
+            share_activity: snap.deel_activiteit,
             sound_sets: c.sound_sets.clone(),
             sound_events: c.sound_events.clone(),
             input_device: snap.input_device.clone(),
@@ -1516,6 +1528,7 @@ mod tests {
                 spreekt: false,
                 volume: 1.0,
                 user_status: None,
+                activiteit: None,
             })
             .collect();
         // Three peers plus me is four identities, so one hue repeats — but never within

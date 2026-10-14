@@ -51,6 +51,7 @@ fn config(naam: &str, eigen: u16, ander: u16, downloads: &Path) -> Config {
         sound: Default::default(),
         clips: ClipsConfig::default(),
         push_to_talk: Default::default(),
+        share_activity: false,
         download_dir: Some(downloads.to_path_buf()),
     }
 }

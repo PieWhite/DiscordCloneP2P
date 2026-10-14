@@ -2106,6 +2106,60 @@ maar het is niet getest en de zijknoppen vragen daar een ander pad.
 
 **Wat je niet mag omdraaien:** zie de sectie "Push-to-talk en push-to-mute" in `CLAUDE.md`.
 
+### 43. "Speelt X" naast je naam: lokaal gemeten, één nieuw bericht, alleen bij een wissel (2026-10-15)
+
+Rick wilde zien wie wat speelt, zonder dat iemand het hoeft in te typen. Zijn antwoord: **aan
+na de update**, uit te zetten in de instellingen (en dan gaat er niets over de draad en wordt
+wat de anderen nog van je tonen gewist).
+
+**Het bericht: `ControlMsg::Activity` (tag 47), `{ name }`.** Een eigen tag in plaats van een
+veld erbij op `UserStatus`: de status wordt bij het opkomen van een verbinding alleen
+gestuurd als hij niet "online" is, en deze twee hebben een ander moment en een andere
+levensduur. Een oudere peer (1.9.0) decodeert een onbekende tag als `Ok(None)` en slaat hem
+stil over; hij ziet dus gewoon niets. Geen protocolbump. Lege naam = "geen spel (meer)".
+Vluchtig en single-hop zoals 44-46: geen op, geen doorgifte, weg zodra de verbinding wegvalt
+(`peer_activiteit` wordt dan gewist, naast `peer_status`). Bij het opkomen van een verbinding
+gaat het huidige spel er direct achteraan.
+
+**De meting (`crates/app/src/speelt.rs`, Windows).** Eens per 3 s op de motortik, dus nooit
+op een UI-tik. Een spel is: het voorgrondvenster bedekt zijn hele monitor
+(`GetWindowRect` tegen `rcMonitor`), heeft geen titelbalk (`WS_CAPTION` niet gezet: een
+gemaximaliseerd venster met een verborgen taakbalk bedekt de monitor ook, een spel heeft
+geen titelbalk), is niet geminimaliseerd, en de exe staat niet op de lijst `GEEN_SPEL`
+(explorer, browsers, Discord, Spotify, wijzelf, OBS, spelers, launchers, kantoor, VM's...).
+Per meting een handvol goedkope Win32-aanroepen; de versie-resource van een exe wordt één keer
+gelezen en onthouden. **Naam:** `FileDescription` van de exe, anders de venstertitel, anders
+de exe-naam. Overwogen: eerst de titel. Afgewezen omdat titels vaak "Game - Level 3 - 62 fps"
+zijn; de bestandsbeschrijving is meestal de nette naam.
+
+**Wisselbewaking (`speelt::Rust`).** Een nieuw spel telt pas na **2 gelijke metingen** (~6 s),
+"geen spel" pas na **10 metingen** (~30 s). Even alt-tabben naar je browser is niet stoppen
+met spelen, en een kwartier Discord tussendoor wel. Een flapperende waarneming wordt nooit
+een wissel. Zuiver en met tests.
+
+**Onbetrouwbare tekst.** `speelt::schoon` is de ene plek die lengte (48 tekens) en
+stuur-/opmaaktekens (ook bidi-override en zero-width) eraf haalt, op wat we sturen én op wat
+we ontvangen: een vreemde peer kan elke string sturen. De tekst wordt alleen als gewone tekst
+getekend (`mem_sub`), zonder opmaak of link.
+
+**UI.** `PeerState::activity` in `UiState`: dat mag omdat de waarde alleen wisselt als iemand
+van spel wisselt (drie-feedsregel van CLAUDE.md), niet elke tik. Een regel "Playing X" onder
+de naam, onder de statusregel, alleen bij een online peer. Onder je eigen naam toont hij niets.
+Schakelaar in tabblad Account (`UiState::share_activity`, `Config::share_activity`, standaard
+`true`, `#[serde(default)]`).
+
+**macOS: bewust niets.** `Zoeker::voorgrond_spel` geeft er altijd `None`. Het venster van een
+andere app benoemen vraagt Accessibility- of Screen Recording-rechten, te veel voor een regel
+tekst. De schakelaar staat er wel; hij doet er niets. Een mac-peer ziet wel wat Windows-peers
+spelen.
+
+**Bekende grenzen** (zie `docs/TESTPLAN.md`): geen spellendatabase, dus een schermvullend
+programma dat niet op de lijst staat (een foto-editor, een presentatie) heet "Speelt ..."; de
+lijst is de plek om dat te herstellen. Spellen met titelbalk in venstermodus tellen niet mee,
+bewust. Een exe met een nietszeggende `FileDescription` ("Unreal Engine") laat die zien.
+
+**Wat je niet mag omdraaien:** zie de sectie "Speelt X" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

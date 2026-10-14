@@ -27,8 +27,8 @@ use anyhow::{Context, Result};
 use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{
-    MusicAction, MusicControl, StreamKind, Typing, UserStatus, UserStatusValue, VoiceJoin,
-    VoiceLeave,
+    Activity, MusicAction, MusicControl, StreamKind, Typing, UserStatus, UserStatusValue,
+    VoiceJoin, VoiceLeave,
 };
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
@@ -98,6 +98,9 @@ pub struct PeerView {
     /// `None` zolang hij nog niets stuurde (of offline was): dan is hij impliciet
     /// "online", en de UI hoeft niets extra's te tonen.
     pub user_status: Option<UserStatusValue>,
+    /// Het spel dat bij deze peer vooraan staat, zoals hij het meldde en door `speelt::schoon`
+    /// gehaald. `None` zonder spel, of offline. Wisselt alleen als hij van spel wisselt.
+    pub activiteit: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -207,6 +210,8 @@ pub struct Snapshot {
     pub geluid: SoundConfig,
     /// Push-to-talk-modus en -toets, voor het instellingenscherm.
     pub push_to_talk: PushToTalkConfig,
+    /// Meesturen welk spel er vooraan staat (`Config::share_activity`).
+    pub deel_activiteit: bool,
     /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
     /// instellingenscherm: de sessie leest dit bij het starten uit de config.
     pub input_device: Option<String>,
@@ -264,6 +269,8 @@ pub enum UiCommand {
     Typing(Channel),
     /// Eigen aanwezigheidsstatus: 0 online, 1 away, 2 busy (`UserStatusValue`).
     ZetStatus(u8),
+    /// "Speelt X" meesturen aan of uit; wordt weggeschreven naar `config.toml`.
+    ZetActiviteitDelen(bool),
     Gelezen,
     /// Een DM-gesprek is bekeken; telt niet mee voor `Snapshot::ongelezen_dm`.
     GelezenDm(PeerId),
@@ -434,6 +441,7 @@ pub fn spawn(
             spreekt: false,
             volume: 1.0,
             user_status: None,
+            activiteit: None,
         })
         .collect();
 
@@ -494,6 +502,10 @@ pub fn spawn(
         typing_verzonden: HashMap::new(),
         peer_status: HashMap::new(),
         eigen_status: UserStatusValue::ONLINE,
+        speelt_zoeker: crate::speelt::Zoeker::default(),
+        speelt_rust: crate::speelt::Rust::default(),
+        speelt_gemeten: None,
+        peer_activiteit: HashMap::new(),
         snap_tx,
         voorgrond: voorgrond.clone(),
         afsluiten_voor_update: afsluiten_voor_update.clone(),
@@ -607,6 +619,12 @@ struct Engine {
     peer_status: HashMap<PeerId, UserStatusValue>,
     /// Onze eigen gekozen status. Vluchtig: na een herstart beginnen we weer op online.
     eigen_status: UserStatusValue,
+    /// "Speelt X" (beslissing 43): de meter, de wisselbewaking, het moment van de laatste
+    /// meting, en wat peers van zichzelf meldden. Alles vluchtig, zoals de status.
+    speelt_zoeker: crate::speelt::Zoeker,
+    speelt_rust: crate::speelt::Rust,
+    speelt_gemeten: Option<Instant>,
+    peer_activiteit: HashMap<PeerId, String>,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
     afsluiten_voor_update: Arc<AtomicBool>,
@@ -719,6 +737,7 @@ impl Engine {
                     self.werk_muziektitel_bij();
                     self.wordle_tick();
                     self.meet_gebruik();
+                    self.meet_activiteit();
                     // Verlopen typindicaties opruimen; de volgende publiceer() merkt
                     // het alleen als er ook echt iets verdween.
                     if !self.typing_tot.is_empty() {
@@ -803,6 +822,12 @@ impl Engine {
                                     }),
                                 }]);
                             }
+                            if let Some(naam) = self.speelt_rust.huidig().map(str::to_owned) {
+                                self.stuur_alles(vec![MeshCommand::Send {
+                                    to: id,
+                                    msg: ControlMsg::Activity(Activity { name: naam }),
+                                }]);
+                            }
                             let cmds = self.streams.bij_verbinding(id);
                             self.stuur_alles(cmds);
                         }
@@ -820,6 +845,7 @@ impl Engine {
                             // van een peer die er niet meer is klopt per definitie niet.
                             self.typing_tot.retain(|(p, _), _| *p != id);
                             self.peer_status.remove(&id);
+                            self.peer_activiteit.remove(&id);
                             let acties = self.streams.bij_verbreking(id);
                             self.voer_uit(acties);
                         }
@@ -900,6 +926,18 @@ impl Engine {
                         let was = self.peer_status.insert(from, s.status);
                         if was != Some(s.status) {
                             tracing::debug!(peer = ?from, status = %s.status, "status gewijzigd");
+                        }
+                    }
+                }
+                ControlMsg::Activity(a) => {
+                    // De naam komt van een andere PC: dezelfde opschoning als bij ons
+                    // zelf, en nooit langer of anders dan wat we zelf zouden sturen.
+                    match crate::speelt::schoon(&a.name) {
+                        Some(naam) => {
+                            self.peer_activiteit.insert(from, naam);
+                        }
+                        None => {
+                            self.peer_activiteit.remove(&from);
                         }
                     }
                 }
@@ -1948,6 +1986,23 @@ impl Engine {
             }
             UiCommand::Typing(channel) => self.stuur_typing(channel),
             UiCommand::ZetStatus(status) => self.zet_status(status),
+            UiCommand::ZetActiviteitDelen(aan) => {
+                if self.cfg.share_activity != aan {
+                    self.cfg.share_activity = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+                if !aan {
+                    // Uit betekent niets sturen, en wat de anderen nog van ons tonen
+                    // moet weg: een lege naam is "niets (meer)".
+                    if self.speelt_rust.huidig().is_some() {
+                        self.stuur_activiteit(String::new());
+                    }
+                    self.speelt_rust.wis();
+                    self.speelt_gemeten = None;
+                }
+            }
             UiCommand::ZetClips(aan) => {
                 if self.cfg.clips.enabled != aan {
                     self.cfg.clips.enabled = aan;
@@ -2791,6 +2846,38 @@ impl Engine {
         self.stuur_alles(vec![cmd]);
     }
 
+    /// Eén meting van het voorgrondvenster op een trage tik, met de wisselbewaking van
+    /// `speelt::Rust`. Alleen een bevestigde wissel gaat over de draad. Staat het delen uit,
+    /// dan wordt er niet eens gemeten.
+    fn meet_activiteit(&mut self) {
+        if !self.cfg.share_activity {
+            return;
+        }
+        let nu = Instant::now();
+        if !crate::speelt::is_aan_de_beurt(self.speelt_gemeten, nu) {
+            return;
+        }
+        self.speelt_gemeten = Some(nu);
+        let waarneming = self.speelt_zoeker.voorgrond_spel();
+        if let Some(nieuw) = self.speelt_rust.meet(waarneming) {
+            tracing::debug!(spel = ?nieuw, "voorgrondspel gewijzigd");
+            self.stuur_activiteit(nieuw.unwrap_or_default());
+        }
+    }
+
+    fn stuur_activiteit(&mut self, name: String) {
+        let cmds = self
+            .verbonden
+            .keys()
+            .copied()
+            .map(|to| MeshCommand::Send {
+                to,
+                msg: ControlMsg::Activity(Activity { name: name.clone() }),
+            })
+            .collect();
+        self.stuur_alles(cmds);
+    }
+
     /// Eigen status wisselen en iedereen op de hoogte brengen. Vluchtig: er zit geen op
     /// achter, dus wie offline was ziet de wisseling pas na zijn verbinding — daarom de
     /// extra melding bij het opkomen van een verbinding hierboven.
@@ -2835,6 +2922,7 @@ impl Engine {
                 // is tegen de tijd dat hij terugkomt toch verlopen.
                 if self.verbonden.contains_key(&id) {
                     p.user_status = self.peer_status.get(&id).copied();
+                    p.activiteit = self.peer_activiteit.get(&id).cloned();
                 }
             }
         }
@@ -2914,6 +3002,7 @@ impl Engine {
             video: self.cfg.video.clone(),
             geluid: self.cfg.sound.clone(),
             push_to_talk: self.cfg.push_to_talk.clone(),
+            deel_activiteit: self.cfg.share_activity,
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),

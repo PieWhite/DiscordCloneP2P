@@ -45,6 +45,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         sound: Default::default(),
         clips: ClipsConfig::default(),
         push_to_talk: Default::default(),
+        share_activity: false,
         download_dir: None,
     }
 }
