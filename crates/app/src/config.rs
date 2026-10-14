@@ -209,9 +209,9 @@ pub struct ClipsConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Hoeveel seconden een clip teruggaat. 10–1800 (een half uur); buiten die band
+    /// Hoeveel seconden een clip teruggaat. 10–7200 (twee uur); buiten die band
     /// afgekapt door [`ClipsConfig::herstel`]. De ring op schijf houdt zoveel vast, dus
-    /// een half uur is bij 12 Mbit ~2,7 GB.
+    /// twee uur is bij 12 Mbit ~10,8 GB.
     #[serde(default = "default_clips_venster")]
     pub venster_sec: u32,
 
@@ -254,8 +254,8 @@ fn default_clips_venster() -> u32 {
     60
 }
 
-/// De langste clip: een half uur.
-pub const MAX_CLIP_SEC: u32 = 30 * 60;
+/// De langste clip: twee uur.
+pub const MAX_CLIP_SEC: u32 = 120 * 60;
 
 /// Standaard F9: één toets, ver van de meeste gamebinds, en zonder modifier zodat hij
 /// ook tijdens het spelen met één hand te halen is.

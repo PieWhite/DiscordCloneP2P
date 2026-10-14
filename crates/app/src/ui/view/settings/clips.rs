@@ -16,9 +16,9 @@ use gpui_kit::{
 };
 use std::rc::Rc;
 
-/// The clip lengths on offer, in seconds. Up to half an hour; the buffer on disk holds as
+/// The clip lengths on offer, in seconds. Up to two hours; the buffer on disk holds as
 /// much as the clip is long.
-const LENGTHS: [u32; 7] = [30, 60, 120, 300, 600, 900, 1800];
+const LENGTHS: [u32; 10] = [30, 60, 120, 300, 600, 900, 1800, 3600, 5400, 7200];
 
 /// "30 seconds", "1 minute", "15 minutes".
 pub(super) fn length_label(sec: u32) -> String {
@@ -211,8 +211,8 @@ impl SettingsPane {
                     .child(label("Clip length"))
                     .child(help(concat!(
                         "How far back a saved clip goes. The rolling buffer keeps that much on ",
-                        "disk: about 90 MB per minute, so 2.7 GB at 30 minutes. Changing it ",
-                        "restarts the recording with an empty buffer."
+                        "disk: about 90 MB per minute, so 2.7 GB at 30 minutes and 10.8 GB at ",
+                        "2 hours. Changing it restarts the recording with an empty buffer."
                     )))
                     .child(control_row().child(select("clips-length", &self.clip_length, length_width, false))),
             )
@@ -332,6 +332,7 @@ mod tests {
             assert_eq!(length_seconds(&length_label(sec)), Some(sec), "{sec}");
         }
         assert_eq!(length_label(1800), "30 minutes");
+        assert_eq!(length_label(7200), "120 minutes");
         assert_eq!(length_label(60), "1 minute");
     }
 
