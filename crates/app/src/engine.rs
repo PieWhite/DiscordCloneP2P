@@ -987,6 +987,20 @@ impl Engine {
                         "update-bericht van een peer genegeerd; updates komen uit de release-feed"
                     );
                 }
+                // Tekenen (beslissing 45): alleen de routering in `streams.rs` en de laag of
+                // het kijkvenster bijwerken. Bewust niet door de algemene arm hieronder: die
+                // bouwt per bericht de lijst bekende afbeeldingen op en telt de streams voor
+                // het geluidje, en dit komt ~25 keer per seconde per tekenaar binnen, op de
+                // PC van de deler (invariant 4). Tekenwerk verandert geen stream en geen chat.
+                teken @ (ControlMsg::Draw(_)
+                | ControlMsg::DrawClear(_)
+                | ControlMsg::DrawState(_)) => {
+                    if let Some(ip) = self.verbonden.get(&from).map(|a| a.ip()) {
+                        let (cmds, acties) = self.streams.bij_bericht(from, ip, &teken);
+                        self.stuur_alles(cmds);
+                        self.voer_uit(acties);
+                    }
+                }
                 andere => {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
                     // van hem is ongemoeid, en andersom net zo.
