@@ -2357,7 +2357,9 @@ zijn kijkers tekenen en zien elkaar, hij ziet het op zijn tegel.
   voorvermenigvuldigd, rand, aanvulling) en de tegel.
 - `tekenlaag::tests::de_laag_tekent_en_blijft_buiten_de_opname` (handmatig, `--ignored`): de
   laag bij de deler op het echte bureaublad, gemeten met BitBlt én Windows.Graphics.Capture:
-  **0 rode pixels met uitsluiting, 450 zonder**.
+  **0 rode pixels met uitsluiting, 450 zonder**, en 676 nadat er een tweede lijn bij kwam
+  langs de aanvulweg (alleen het nieuwe stuk, met `prcDirty`), de weg die elke 40 ms loopt
+  terwijl iemand tekent.
 - `venster::tests::slepen_met_de_pen_wordt_een_lijn_voor_de_deler` (handmatig): berichten in
   de wachtrij van een echt kijkvenster, zonder de muis aan te raken. Pen uit doet niets, D en
   een sleep geven één `Draw` met drie genormaliseerde punten, Delete een `DrawClear`, en een
