@@ -51,6 +51,14 @@ pub(super) fn render_row(ctx: &RowCtx, ix: usize, window: &mut Window, cx: &mut 
                 .mb(px(2.))
                 .child(wordle::render_card(&ctx.snap, item, window, cx))
                 .into_any_element(),
+            TimelineItem::Clip { .. } => div()
+                .w_full()
+                .max_w(px(440.))
+                .ml(px(16.))
+                .mt(px(6.))
+                .mb(px(2.))
+                .child(attachment::render_clip_card(&ctx.snap, item))
+                .into_any_element(),
             _ => render_message(ctx, ix, item, row, window, cx),
         })
         .into_any_element()
@@ -157,7 +165,7 @@ fn render_message(
             mine,
             ..
         } => (id, author, author_name, *avatar, *mine, false, false),
-        TimelineItem::Wordle { .. } => return div().into_any_element(),
+        TimelineItem::Wordle { .. } | TimelineItem::Clip { .. } => return div().into_any_element(),
     };
     let key = op_key(id);
     let who = who(ctx, author, author_name, avatar_no, mine);
@@ -379,7 +387,7 @@ fn content(
             out
         }
         TimelineItem::File { .. } => vec![attachment::render_file(ctx, item, key)],
-        TimelineItem::Wordle { .. } => Vec::new(),
+        TimelineItem::Wordle { .. } | TimelineItem::Clip { .. } => Vec::new(),
     }
 }
 
@@ -551,7 +559,7 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
             author_name,
             ..
         } => (id, *mine, None, author_name.clone()),
-        TimelineItem::Wordle { .. } => return div().into_any_element(),
+        TimelineItem::Wordle { .. } | TimelineItem::Clip { .. } => return div().into_any_element(),
     };
     let button = |name: &str| {
         div()

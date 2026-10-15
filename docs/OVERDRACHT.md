@@ -2195,10 +2195,10 @@ gewone bestandsknop (+) opnieuw aanbieden. Mislukt het hashen (`FileEvent::Aanbo
 weer gewist en kan de knop opnieuw. Het onthouden blijft bewust alleen in het
 geheugen: na een herstart bestaat "de laatste clip" niet meer (zie `ClipsBeheer::laatste`).
 
-**Alleen in een gesprek.** De auto-post kijkt op het moment van `Klaar` naar `voice.is_some()`.
+**Alleen in een gesprek (en sinds de aanpassing hieronder standaard uit).** De auto-post kijkt op het moment van `Klaar` naar `voice.is_some()`.
 Een clip die klaarkomt terwijl je niet in een gesprek zit wordt niet achteraf alsnog gepost
 als je later joint; dan is de knop er. De instelling staat in `config.toml` onder `[clips]`
-als `auto_delen` (standaard `true`, `#[serde(default)]`, een test bewaakt een oude config).
+als `auto_post` (standaard `false`, `#[serde(default)]`, zie de aanpassing hieronder).
 
 **Platform.** Clips bestaan alleen op Windows (macOS-stub, `aanwezig() == false`), dus de knop
 en de schakelaar zijn alleen daar te zien. Een Mac kan een aangeboden clip wel downloaden en
@@ -2206,6 +2206,31 @@ openen als elk ander bestand.
 
 **Waar de knop zit.** In het Clips-tabblad, naast "Save last 60 s" en "Open folder". Geen
 extra plek in de composer: de hotkey is de snelle route, de knop de terugval.
+
+**Aanpassing na 1.10.0: standaard uit, plus een lokale kaart.** Rick besloot dat automatisch
+posten **uit** hoort te staan, en dat de maker na een clip in de chat een kaart ziet om hem
+in één klik te delen.
+
+- *Standaard uit zonder migratie.* 1.10.0 leverde `auto_delen` met standaard aan, en elke
+  config die sindsdien is opgeslagen bevat `auto_delen = true`. Alleen de standaard
+  veranderen had die mensen aan laten staan. De sleutel in `config.toml` heet daarom nu
+  `auto_post` (het Rust-veld blijft `auto_delen`, `#[serde(rename)]`): de oude sleutel is
+  voor serde een onbekend veld en wordt genegeerd, dus iedereen begint uit, en bij de
+  volgende opslag verdwijnt hij uit het bestand. Wie hem bewust aanzet houdt hem aan. Een
+  migratiestap (de oude waarde wissen) was een tweede codepad voor een eenmalige zaak; de
+  naamswissel kost niets. Tests: config van 1.9.0, van 1.10.0 met `auto_delen = true`, en
+  `auto_post = true` dat een opslaan-en-teruglezen overleeft.
+- *De deelkaart.* `ClipKaart { at, grootte, gedeeld }` zit in `ClipsWeergave`; de motor legt
+  hem vast op het moment van `Klaar` (één `metadata` op dat moment, nooit per momentopname)
+  en `gedeeld` volgt `clip_aangeboden`, dus ook na auto-post of na een mislukt aanbod
+  klopt de kaart. `timeline_of` zet hem als `TimelineItem::Clip` op `at` tussen de
+  berichten van #general, net als de Wordle-kaart; er is geen op en geen lamport. De knop
+  stuurt hetzelfde `DeelLaatsteClip` als die in Instellingen, dus de view noemt geen pad.
+  Alleen de laatste clip: een nieuwe vervangt de kaart. Na een herstart is er geen kaart,
+  net zoals er geen "laatste clip" is. Na delen toont de kaart "shared in the chat" zonder
+  knop. De kaart toont de grootte en niet de lengte: de motor weet de werkelijke duur
+  van een remux niet, en het ingestelde venster zou liegen als de ring nog niet vol was.
+  De knop in Instellingen > Clips blijft zoals hij was.
 
 **Wat je niet mag omdraaien:** zie de sectie "Clip delen" in `CLAUDE.md`.
 

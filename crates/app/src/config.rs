@@ -249,8 +249,13 @@ pub struct ClipsConfig {
     pub map: Option<PathBuf>,
 
     /// Een net bewaarde clip meteen als bestandsaanbod in het algemene kanaal zetten,
-    /// maar alleen zolang je in een gesprek zit (beslissing 44). Standaard aan.
-    #[serde(default = "default_clips_auto_delen")]
+    /// maar alleen zolang je in een gesprek zit (beslissing 44). Standaard UIT.
+    ///
+    /// De sleutel heet bewust `auto_post` en niet meer `auto_delen`: 1.10.0 leverde
+    /// `auto_delen` met standaard aan, en elke config die sindsdien is opgeslagen heeft
+    /// `auto_delen = true`. Een nieuwe sleutel laat die oude waarde vanzelf negeren, dus
+    /// iedereen begint uit, zonder migratiecode. Verander de sleutel nooit terug.
+    #[serde(default, rename = "auto_post")]
     pub auto_delen: bool,
 }
 
@@ -262,13 +267,9 @@ impl Default for ClipsConfig {
             monitor: None,
             hotkey: default_clip_hotkey(),
             map: None,
-            auto_delen: default_clips_auto_delen(),
+            auto_delen: false,
         }
     }
-}
-
-fn default_clips_auto_delen() -> bool {
-    true
 }
 
 fn default_clips_venster() -> u32 {
@@ -754,17 +755,19 @@ mod tests {
         )
         .expect("een config zonder clipmap hoort te laden");
         assert_eq!(oud.clips.map, None);
-        // Een config van vóór 1.7: automatisch delen staat aan, en uitzetten blijft staan.
-        assert!(oud.clips.auto_delen);
-        let uit: Config = toml::from_str(
-            "display_name = \"Rick\"
-[clips]
-auto_delen = false
-",
-        )
-        .unwrap();
-        let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
-        assert!(!terug.clips.auto_delen);
+        // Een config van vóór 1.10: automatisch delen staat uit.
+        assert!(!oud.clips.auto_delen);
+        // Een 1.10.0-config schreef `auto_delen = true` weg (toen de standaard). Die
+        // sleutel bestaat niet meer en wordt genegeerd: iedereen begint uit.
+        let uit_1_10: Config =
+            toml::from_str("display_name = \"Rick\"\n[clips]\nauto_delen = true\n").unwrap();
+        assert!(!uit_1_10.clips.auto_delen);
+        // Aanzetten blijft wél staan.
+        let aan: Config =
+            toml::from_str("display_name = \"Rick\"\n[clips]\nauto_post = true\n").unwrap();
+        assert!(aan.clips.auto_delen);
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&aan).unwrap()).unwrap();
+        assert!(terug.clips.auto_delen);
         assert_eq!(resolve_clips_dir(&oud, data), data.join("clips"));
 
         let gezet: Config = toml::from_str(

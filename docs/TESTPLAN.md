@@ -1292,30 +1292,33 @@ talk".
 ## Laatste clip delen (2026-10-15, beslissing 44)
 
 Windows met clips aan, plus minstens één andere peer (liefst twee, waarvan één op macOS).
-Instellingen > Clips: "Post clips in the chat automatically" staat standaard aan.
+Instellingen > Clips: "Post clips in the chat automatically" staat standaard UIT. Na elke
+clip ziet alleen de maker in #general een kaart "Clip saved" met een Share-knop.
 
-1. **Auto-post in een gesprek.** A zit in het gesprek, drukt F9. Binnen een paar seconden
-   (hashen duurt bij een grote clip langer) staat in het algemene kanaal een bestandskaart
-   `clip-<tijd>.mp4` bij B en C. Er wordt bij B/C niets automatisch gedownload (kijk in de
-   downloadmap en in de kaart: knop "Download", geen voortgang).
-2. **Downloaden werkt.** B klikt Download, opent de clip: hij speelt af met beeld en geluid.
-   De clip van A blijft in A's clipmap staan.
-3. **Niet tweemaal.** Na stap 1 staat de knop "Share last clip" bij A uit. Er komt geen
-   tweede kaart.
-4. **Buiten een gesprek.** A verlaat het gesprek, drukt F9: er komt niets in de chat. "Share
-   last clip" staat nu aan; klik: de kaart verschijnt, daarna staat de knop uit.
-5. **Nieuwe clip, nieuwe kaart.** F9 opnieuw in het gesprek: een tweede kaart, de knop weer uit.
-6. **Instelling uit.** Zet de schakelaar uit (blijft na herstart staan), in het gesprek F9:
-   geen kaart; de knop werkt wel.
-7. **Clip weg.** Verwijder de laatste clip uit de clipmap buiten de app: de knop blijft aan,
-   een klik geeft de melding dat de clip niet meer op schijf staat.
-8. **Grote clip.** Clipvenster op 30+ minuten, F9: de app blijft bruikbaar tijdens het hashen,
-   en een spel op de voorgrond merkt niets (invariant 4). Kaart komt zodra de hash klaar is.
-9. **Geen verse clip, geen gesprek.** Net opgestart, zonder clip: de knop staat uit.
-10. **Offline peer.** C is offline bij het posten: C ziet de kaart bij het verbinden, nog steeds
-    zonder automatische download.
-11. **Oude config.** Een `config.toml` zonder `auto_delen` start met de schakelaar aan.
-12. **macOS:** de Clips-tab bestaat daar niet; een Mac downloadt en opent de clip van een
+1. **Standaard uit, ook na de update.** Een pc met een config uit 1.10.0 (met
+   `auto_delen = true` erin): na de update staat de schakelaar uit. In `config.toml` is
+   `auto_delen` bij de volgende opslag weg en staat er desnoods `auto_post = false`.
+2. **De kaart is alleen van jou.** A zit in het gesprek (schakelaar uit), drukt F9. In
+   #general verschijnt bij A een kaart "Clip saved · <grootte> · only you can see this" met
+   Share. B en C zien niets.
+3. **Share op de kaart.** A klikt Share: de kaart wordt "shared in the chat", zonder knop; B
+   en C krijgen een bestandskaart `clip-<tijd>.mp4` (na het hashen) zonder automatische
+   download. B downloadt en speelt hem af.
+4. **Niet tweemaal.** De knop in Instellingen > "Share last clip" staat nu ook uit.
+5. **Nieuwe clip, nieuwe kaart.** A drukt weer F9: de oude kaart maakt plaats voor één
+   nieuwe, met knop. Er is nooit meer dan één kaart.
+6. **Buiten een gesprek.** A is niet in het gesprek, F9: kaart met Share; klikken werkt.
+7. **Auto-post aan.** Zet de schakelaar aan (blijft na herstart staan). In het gesprek F9:
+   de bestandskaart verschijnt bij iedereen, en A's kaart zegt meteen "shared in the chat".
+   Buiten een gesprek met schakelaar aan: niets automatisch, wel de kaart met knop.
+8. **Herstart.** Na herstarten van A is er geen kaart en staat "Share last clip" uit.
+9. **Clip weg.** Verwijder de laatste clip buiten de app en klik Share: een foutmelding
+   "De clip staat niet meer op schijf"; er komt niets in de chat.
+10. **Grote clip.** Clipvenster op 30+ minuten, F9, Share: de app blijft bruikbaar tijdens het
+    hashen, een spel op de voorgrond merkt niets (invariant 4).
+11. **Offline peer.** C is offline bij het posten: C ziet de kaart bij het verbinden, zonder
+    automatische download.
+12. **macOS:** er is geen kaart en geen Clips-tab; een Mac downloadt en opent de clip van een
     Windows-peer als elk ander bestand.
 
 ## "Speelt X" naast je naam (2026-10-15, beslissing 43)

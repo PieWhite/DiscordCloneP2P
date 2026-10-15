@@ -381,9 +381,16 @@ nieuwe pijplijn en geen protocolwijziging. Wat je niet mag omdraaien:
   grootteplafond zoals bij afbeeldingen: `files::is_afbeelding` blijft onwaar voor een mp4.
 - **Aanbieden pas na `ClipGebeurtenis::Klaar`**, nooit eerder; dat event komt na het sluiten
   van het bestand.
-- **Automatisch posten alleen terwijl je in een gesprek zit** (`voice.is_some()` op het
-  moment van `Klaar`), in het algemene kanaal, en uit te zetten met `clips.auto_delen`.
-  De knop werkt altijd.
+- **Automatisch posten staat standaard UIT** en gebeurt alleen terwijl je in een gesprek
+  zit (`voice.is_some()` op het moment van `Klaar`), in het algemene kanaal. De config-
+  sleutel heet `clips.auto_post`; **zet hem nooit terug op `auto_delen`**: 1.10.0 leverde
+  die sleutel met standaard aan, en de oude waarde moet genegeerd blijven. De knop werkt
+  altijd.
+- **De deelkaart is lokaal.** Na elke clip staat er in #general, alleen bij de maker, een
+  kaart "Clip saved" met een Share-knop (`TimelineItem::Clip`, uit `ClipsWeergave::kaart`).
+  Geen op, nooit over de draad, zelfde patroon als de Wordle-kaart: ze wordt in
+  `timeline_of` op de klok tussen de berichten gezet. Alleen de laatste clip heeft een kaart
+  en na een herstart is ze weg. Maak er nooit een op van.
 - **De view noemt nooit het pad.** `DeelLaatsteClip` draagt niets; de motor kent
   `ClipsBeheer::laatste()`. Dezelfde clip gaat niet tweemaal de chat in (`clip_aangeboden`).
 

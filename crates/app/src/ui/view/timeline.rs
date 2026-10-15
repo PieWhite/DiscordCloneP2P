@@ -55,6 +55,7 @@ fn item_at(item: &TimelineItem) -> i64 {
     match item {
         TimelineItem::Message { at, .. }
         | TimelineItem::File { at, .. }
+        | TimelineItem::Clip { at, .. }
         | TimelineItem::Wordle { at, .. } => *at,
     }
 }
@@ -98,7 +99,7 @@ pub fn build_rows(
             last_author = None;
         }
         let (author, mentions_you, reply) = match item {
-            TimelineItem::Wordle { .. } => {
+            TimelineItem::Wordle { .. } | TimelineItem::Clip { .. } => {
                 last_author = None;
                 last_at = if at != 0 { at } else { last_at };
                 rows.push(row);
@@ -129,7 +130,7 @@ pub fn build_rows(
 fn item_op(item: &TimelineItem) -> Option<&OpRef> {
     match item {
         TimelineItem::Message { id, .. } | TimelineItem::File { id, .. } => Some(id),
-        TimelineItem::Wordle { .. } => None,
+        TimelineItem::Wordle { .. } | TimelineItem::Clip { .. } => None,
     }
 }
 

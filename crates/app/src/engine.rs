@@ -515,6 +515,7 @@ pub fn spawn(
         clip_hotkey_verzender,
         clip_hotkey_ontvanger,
         clip_aangeboden: None,
+        clip_kaart: None,
         typing_tot: HashMap::new(),
         typing_verzonden: HashMap::new(),
         peer_status: HashMap::new(),
@@ -632,6 +633,9 @@ struct Engine {
     /// dus weer deelbaar. Bewust niet bewaard over herstarts: na een herstart is er
     /// geen "laatste clip" meer.
     clip_aangeboden: Option<PathBuf>,
+    /// De lokale deelkaart van de laatste clip: pad, moment (ms) en grootte, vastgelegd
+    /// op het moment van `Klaar`. Alleen in het geheugen en alleen de laatste.
+    clip_kaart: Option<(PathBuf, i64, u64)>,
     /// Vluchtige typindicaties: tot wanneer deze peer in dit kanaal aan het typen is.
     /// Geen oplog, geen doorgifte — na een paar seconden stilte of een verbreking is de
     /// betekenis weg en mag de administratie dat ook zijn.
@@ -779,6 +783,11 @@ impl Engine {
                     // nu iets voor je opgenomen/geleverd"-moment.
                     if let Some(pad) = self.clips.tik() {
                         self.geluid(crate::geluid::Geluid::StreamAan);
+                        let at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_millis() as i64);
+                        let grootte = std::fs::metadata(&pad).map_or(0, |m| m.len());
+                        self.clip_kaart = Some((pad.clone(), at, grootte));
                         // `Klaar` komt pas na het sluiten van het bestand, dus het is
                         // compleet. Buiten een gesprek niets: dan is de clip van jou.
                         if self.cfg.clips.auto_delen && self.voice.is_some() {
@@ -3173,6 +3182,14 @@ impl Engine {
             clips: self.clips.aanwezig().then(|| {
                 let mut w = self.clips.weergave(&self.cfg.clips);
                 // Geen schijftoegang in een momentopname; `deel_clip` meldt een weggeraakte clip.
+                w.kaart =
+                    self.clip_kaart
+                        .as_ref()
+                        .map(|(p, at, grootte)| crate::clips::ClipKaart {
+                            at: *at,
+                            grootte: *grootte,
+                            gedeeld: self.clip_aangeboden.as_deref() == Some(p.as_path()),
+                        });
                 w.kan_delen = self
                     .clips
                     .laatste()

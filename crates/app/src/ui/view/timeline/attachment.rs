@@ -15,9 +15,9 @@ use super::super::widgets::{tooltip, Btn, BtnKind};
 use super::super::{format, Dialog};
 use super::RowCtx;
 use gpui_kit::{
-    div, img, px, relative, AnyElement, Div, ElementId, ImageSource, InteractiveElement,
-    IntoElement, ObjectFit, ParentElement, SharedString, StatefulInteractiveElement, Styled,
-    StyledImage,
+    div, img, prelude::FluentBuilder, px, relative, AnyElement, Div, ElementId, ImageSource,
+    InteractiveElement, IntoElement, ObjectFit, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, StyledImage,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -513,4 +513,47 @@ pub(super) fn youtube_card(
             )
             .into_any_element(),
     )
+}
+
+/// The local "Clip saved" card (decision 44): only the clipper sees it. The button hands
+/// the engine no path; it shares "the last clip", exactly like the Clips tab does.
+pub fn render_clip_card(snap: &super::super::AppSnapshot, item: &TimelineItem) -> AnyElement {
+    let TimelineItem::Clip { size, shared, .. } = item else {
+        return div().into_any_element();
+    };
+    let ui = snap.ui.clone();
+    div()
+        .id("clip-card")
+        .border_1()
+        .border_color(theme::BORDER)
+        .bg(c::INK)
+        .p(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(Icon::Clip.size(14.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_size(px(13.)).child("Clip saved"))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(c::SILVER)
+                        .child(if *shared {
+                            format!("{} \u{00b7} shared in the chat", format::fmt_size(*size))
+                        } else {
+                            format!("{} \u{00b7} only you can see this", format::fmt_size(*size))
+                        }),
+                ),
+        )
+        .when(!*shared, |d| {
+            d.child(
+                Btn::new("clip-card-share", "Share")
+                    .kind(BtnKind::Accent)
+                    .on_click(move |_, _, _| commands::share_last_clip(&ui)),
+            )
+        })
+        .into_any_element()
 }

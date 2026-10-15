@@ -12,6 +12,17 @@
 
 use anyhow::{bail, Context, Result};
 
+/// De lokale "Share"-kaart in het algemene kanaal voor de laatste clip (beslissing 44).
+/// Geen op en nooit over de draad; de motor vult hem in de momentopname.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipKaart {
+    /// Wanneer de clip klaarkwam, in milliseconden sinds de epoch (zoals `created_at`).
+    pub at: i64,
+    pub grootte: u64,
+    /// Al aangeboden (automatisch of met de knop): de kaart toont dat, zonder knop.
+    pub gedeeld: bool,
+}
+
 /// Wat de UI over de clipopname weet. `Option<ClipsWeergave> == None` in de snapshot
 /// betekent: dit platform ondersteunt geen clips, verberg alles.
 #[derive(Debug, Clone)]
@@ -31,6 +42,7 @@ pub struct ClipsWeergave {
     /// De knop "Share last clip" mag werken: er is een clip, hij staat nog op schijf en
     /// is niet al aangeboden. Door de motor ingevuld; het beheer weet het niet.
     pub kan_delen: bool,
+    pub kaart: Option<ClipKaart>,
 }
 
 /// Ontleedt een sneltoets zoals `F9`, `ctrl+alt+c` of `shift+f2` naar
@@ -286,6 +298,7 @@ mod backend {
                 fout: self.fout.clone(),
                 auto_delen: cfg.auto_delen,
                 kan_delen: false,
+                kaart: None,
             }
         }
 
@@ -525,6 +538,7 @@ mod backend {
                 fout: None,
                 auto_delen: cfg.auto_delen,
                 kan_delen: false,
+                kaart: None,
             }
         }
         pub fn laatste(&self) -> Option<std::path::PathBuf> {

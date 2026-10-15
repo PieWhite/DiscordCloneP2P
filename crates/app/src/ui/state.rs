@@ -311,6 +311,17 @@ pub enum TimelineItem {
         /// the same `files::opent_als_code`.
         opens_folder: bool,
     },
+    /// "Clip saved" with a Share button, in #general on the machine that made the clip and
+    /// nowhere else (decision 44). Not an op and never on the wire, like the Wordle card;
+    /// only the last clip has one, and it is gone after a restart.
+    Clip {
+        /// When the clip finished, in ms like a message's `at`.
+        at: i64,
+        /// Bytes on disk when it finished.
+        size: u64,
+        /// Already offered in the chat: the card says so and drops the button.
+        shared: bool,
+    },
     /// The puzzle of the day, which shows up in #general at 07:00 (2026-08-20).
     ///
     /// Not an op and never on the wire: every peer can work out on its own that today is
@@ -1064,7 +1075,19 @@ pub fn timeline_of(
     // carries no clock of its own (`at == 0`) and inherits the last one seen, the same way
     // the frontend draws it.
     let mut kaarten = if channel == Channel::GENERAL {
-        wordle_cards(snap, me, &hues).into_iter().peekable()
+        let mut k = wordle_cards(snap, me, &hues);
+        if let Some(c) = snap.clips.as_ref().and_then(|c| c.kaart.as_ref()) {
+            k.push((
+                c.at,
+                TimelineItem::Clip {
+                    at: c.at,
+                    size: c.grootte,
+                    shared: c.gedeeld,
+                },
+            ));
+            k.sort_by_key(|(op, _)| *op);
+        }
+        k.into_iter().peekable()
     } else {
         Vec::new().into_iter().peekable()
     };
@@ -1410,6 +1433,38 @@ mod tests {
         assert!(!timeline_of(&snap, Channel::dm(peer(2)), peer(1), "me")
             .iter()
             .any(|i| matches!(i, TimelineItem::Wordle { .. })));
+    }
+
+    /// The local clip card sits in #general only, carries what the engine says about the
+    /// last clip, and is not an op: no clip in the snapshot, no card.
+    #[test]
+    fn the_clip_card_is_general_only_and_follows_the_snapshot() {
+        let mut snap = Snapshot::default();
+        let has = |s: &Snapshot, ch| {
+            timeline_of(s, ch, peer(1), "me")
+                .iter()
+                .any(|i| matches!(i, TimelineItem::Clip { .. }))
+        };
+        assert!(!has(&snap, Channel::GENERAL));
+        snap.clips = Some(crate::clips::ClipsWeergave {
+            aanwezig: true,
+            aan: true,
+            venster_sec: 60,
+            monitor: None,
+            hotkey: "F9".into(),
+            map: String::new(),
+            laatste: None,
+            fout: None,
+            auto_delen: false,
+            kan_delen: true,
+            kaart: Some(crate::clips::ClipKaart {
+                at: 5,
+                grootte: 7,
+                gedeeld: false,
+            }),
+        });
+        assert!(has(&snap, Channel::GENERAL));
+        assert!(!has(&snap, Channel::dm(peer(2))));
     }
 
     /// A day this machine never fetched still gets a card as soon as somebody's result

@@ -239,9 +239,10 @@ impl SettingsPane {
                             .flex_1()
                             .child(label("Post clips in the chat automatically").mb(px(2.)))
                             .child(help(concat!(
-                                "Only while you are in a voice call. A saved clip is offered in the ",
-                                "general channel; nobody downloads it unless they click. Outside a ",
-                                "call nothing is posted, but \"Share last clip\" always works."
+                                "Off by default. Only while you are in a voice call. A saved clip is ",
+                                "offered in the general channel; nobody downloads it unless they click. ",
+                                "Otherwise a card with a Share button appears in the general channel, ",
+                                "for you only."
                             ))),
                     )
                     .child(switch("clips-auto-share", auto_share, Some(auto_toggle))),
