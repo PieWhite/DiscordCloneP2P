@@ -623,14 +623,41 @@ mod tests {
         std::thread::sleep(Duration::from_millis(250));
         let binnen = rode_pixels(&opname(kader));
         let binnen_wgc = wgc();
+
+        // Een tweede lijn erbij: dat is de weg die elke 40 ms loopt terwijl iemand tekent,
+        // alleen het nieuwe stuk met een vuil gebied (`prcDirty`), niet het hele beeld.
+        let mut meer = (*t).clone();
+        assert!(meer.teken(
+            PeerId::new_random(),
+            &Draw {
+                stream_id: 1,
+                author: None,
+                line: 2,
+                color: 0,
+                width: 2,
+                start: 0,
+                points: vec![[2000, 12000], [63000, 12000]],
+            },
+        ));
+        assert!(
+            crate::penseel::aanvulling(&t, &meer).is_some(),
+            "alleen bijgekomen"
+        );
+        laag.toon(&Arc::new(meer), kader);
+        std::thread::sleep(Duration::from_millis(250));
+        let aangevuld = rode_pixels(&opname(kader));
         drop(laag);
         eprintln!(
-            "rode pixels, met uitsluiting / zonder: BitBlt {buiten} / {binnen}, WGC {buiten_wgc} / {binnen_wgc}"
+            "rode pixels, met uitsluiting / zonder: BitBlt {buiten} / {binnen}, WGC {buiten_wgc} / {binnen_wgc}; na een tweede lijn {aangevuld}"
         );
 
         assert!(
             binnen > 100 && binnen_wgc > 100,
             "de lijn hoort te zien te zijn zonder uitsluiting: {binnen}, {binnen_wgc}"
+        );
+        assert!(
+            aangevuld > binnen + 100,
+            "de tweede lijn hoort erbij te komen zonder alles opnieuw: {aangevuld} na {binnen}"
         );
         assert!(
             buiten < binnen / 10 && buiten_wgc < binnen_wgc / 10,

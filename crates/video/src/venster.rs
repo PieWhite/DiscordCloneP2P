@@ -747,9 +747,14 @@ fn maak_swapchain(
 fn schakel_volledig_scherm(hwnd: HWND, staat: &mut Staat) {
     // SAFETY: `hwnd` is geldig en we draaien op de thread van het venster.
     unsafe {
+        // De aanroepen hieronder sturen WM_SIZE/WM_MOVE terug naar `venster_proc`, die de
+        // tekenlaag verplaatst. Dus eerst de staat bijwerken en na die aanroepen niet meer
+        // aanraken.
         if staat.volledig_scherm {
+            staat.volledig_scherm = false;
+            let plaatsing = staat.vorige_plaatsing;
             let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW.0 as isize);
-            let _ = SetWindowPlacement(hwnd, &staat.vorige_plaatsing);
+            let _ = SetWindowPlacement(hwnd, &plaatsing);
             let _ = SetWindowPos(
                 hwnd,
                 None,
@@ -759,7 +764,6 @@ fn schakel_volledig_scherm(hwnd: HWND, staat: &mut Staat) {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
             );
-            staat.volledig_scherm = false;
             return;
         }
 
@@ -773,6 +777,7 @@ fn schakel_volledig_scherm(hwnd: HWND, staat: &mut Staat) {
             return;
         }
         let r = info.rcMonitor;
+        staat.volledig_scherm = true;
         let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP.0 as isize);
         let _ = SetWindowPos(
             hwnd,
@@ -783,7 +788,6 @@ fn schakel_volledig_scherm(hwnd: HWND, staat: &mut Staat) {
             r.bottom - r.top,
             SWP_NOZORDER | SWP_FRAMECHANGED,
         );
-        staat.volledig_scherm = true;
     }
 }
 
