@@ -128,6 +128,10 @@ pub struct EigenStreamView {
     /// Terugblik op wat wij zelf uitsturen, voor de tegel in de streamstrook. `None` zolang
     /// er geen deler draait (een scherm zonder kijkers) en tot het eerste beeld binnen is.
     pub miniatuur: Option<Miniatuur>,
+    /// Wat de kijkers op dit scherm tekenden, en of dat mag (beslissing 45). Bewust niet in
+    /// `UiState`: het verandert terwijl iemand tekent. De tegel krijgt de lijnen via de
+    /// miniaturenpomp, alleen de schakelaar gaat de toestand in.
+    pub tekening: Arc<fitcom_proto::teken::Tekening>,
 }
 
 /// Een bron die een ander deelt.
@@ -151,6 +155,8 @@ pub struct StreamView {
     /// Verkleind beeld voor het overzicht in het hoofdvenster. `None` tot het eerste
     /// beeld binnen is, en altijd `None` voor geluid.
     pub miniatuur: Option<Miniatuur>,
+    /// Onze kopie van wat er op dit scherm getekend staat; leeg zolang we niet kijken.
+    pub tekening: Arc<fitcom_proto::teken::Tekening>,
 }
 
 /// Een aangeboden bestand zoals de UI het toont: de metadata uit de oplog plus, als wij
@@ -297,6 +303,11 @@ pub enum UiCommand {
     BedienMuziek(PeerId, u32, MusicAction),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
+    /// Mogen kijkers op dit eigen scherm tekenen (beslissing 45). Uit wist ook alles. Geldt
+    /// deze sessie ook voor schermen die je hierna deelt.
+    ZetTekenen(u32, bool),
+    /// Alle lijnen op dit eigen scherm wissen, van iedereen.
+    WisTekening(u32),
     /// Volume van één stream van een peer, los van zijn stem.
     StreamVolume(PeerId, u32, f32),
     /// Codec, framerate en bitrate voor screenshare. Geldt voor delers die al lopen
@@ -479,6 +490,7 @@ pub fn spawn(
         bronnen: HashMap::new(),
         delers: HashMap::new(),
         kijkers: HashMap::new(),
+        deellagen: HashMap::new(),
         miniaturen: HashMap::new(),
         stream_volumes: HashMap::new(),
         nu_speelt: None,
@@ -550,6 +562,9 @@ struct Engine {
     bronnen: HashMap<u32, Bron>,
     delers: HashMap<u32, DelerHandle>,
     kijkers: HashMap<(PeerId, u32), KijkerHandle>,
+    /// De laag met lijnen over een eigen gedeelde monitor, zolang er lijnen staan. Zie
+    /// `werk_deellaag_bij`.
+    deellagen: HashMap<u32, fitcom_video::tekenlaag::Deellaag>,
     /// Laatste miniatuur per bekeken stream, voor het overzicht in het hoofdvenster.
     /// Blijft hier staan in plaats van in `Streams`, want dat is pure beslislogica en
     /// dit is een bijproduct van het decoderen.
@@ -865,7 +880,8 @@ impl Engine {
                             self.typing_tot.retain(|(p, _), _| *p != id);
                             self.peer_status.remove(&id);
                             self.peer_activiteit.remove(&id);
-                            let acties = self.streams.bij_verbreking(id);
+                            let (cmds, acties) = self.streams.bij_verbreking(id);
+                            self.stuur_alles(cmds);
                             self.voer_uit(acties);
                         }
                     }
@@ -1808,8 +1824,56 @@ impl Engine {
                         v.vergeet_bron((eigenaar, stream_id));
                     }
                 }
+                Actie::Tekening {
+                    eigenaar: Some(eigenaar),
+                    stream_id,
+                } => {
+                    if let (Some(k), Some(t)) = (
+                        self.kijkers.get(&(eigenaar, stream_id)),
+                        self.streams.tekening(Some(eigenaar), stream_id),
+                    ) {
+                        k.zet_tekening(t);
+                    }
+                }
+                Actie::Tekening {
+                    eigenaar: None,
+                    stream_id,
+                } => self.werk_deellaag_bij(stream_id),
             }
         }
+    }
+
+    /// De laag met lijnen over een gedeelde monitor (beslissing 45): er alleen zolang er
+    /// lijnen staan, en alleen bij een monitor. Een venster delen heeft geen laag; daar
+    /// staan de lijnen op de eigen tegel in de app. Of hij moet wijken voor een spel dat
+    /// schermvullend draait beslist de laag zelf.
+    fn werk_deellaag_bij(&mut self, stream_id: u32) {
+        let tekening = self
+            .streams
+            .tekening(None, stream_id)
+            .filter(|t| !t.is_leeg());
+        let monitor = self
+            .bronnen
+            .get(&stream_id)
+            .filter(|b| b.soort == BronSoort::Monitor)
+            .map(|b| b.handle);
+        let (Some(tekening), Some(monitor)) = (tekening, monitor) else {
+            self.deellagen.remove(&stream_id);
+            return;
+        };
+        let laag = match self.deellagen.entry(stream_id) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                match fitcom_video::tekenlaag::Deellaag::start(monitor) {
+                    Ok(laag) => v.insert(laag),
+                    Err(e) => {
+                        tracing::warn!(error = %format!("{e:#}"), "tekenlaag starten mislukt");
+                        return;
+                    }
+                }
+            }
+        };
+        laag.toon(tekening);
     }
 
     /// Zet het meeluisteren op andermans bureaubladgeluid gelijk aan wat we van hem
@@ -1959,6 +2023,11 @@ impl Engine {
             })
             .context("doorgeefthread voor kijkermeldingen starten")?;
 
+        // Of de deler tekenen toestaat weet het venster zo meteen; de lijnen zelf volgen
+        // als de deler ons intekenen ziet.
+        if let Some(t) = self.streams.tekening(Some(eigenaar), stream_id) {
+            handle.zet_tekening(t);
+        }
         self.kijkers.insert((eigenaar, stream_id), handle);
         Ok(())
     }
@@ -1985,6 +2054,10 @@ impl Engine {
                 let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
+            }
+            KijkerEvent::Teken(msg) => {
+                let cmds = self.streams.kijker_tekent(eigenaar, stream_id, msg);
+                self.stuur_alles(cmds);
             }
         }
     }
@@ -2374,6 +2447,16 @@ impl Engine {
             }
             UiCommand::StopKijken(eigenaar, id) => {
                 let (cmds, acties) = self.streams.stop_kijken(eigenaar, id);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+            UiCommand::ZetTekenen(id, aan) => {
+                let (cmds, acties) = self.streams.zet_tekenen(id, aan);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+            UiCommand::WisTekening(id) => {
+                let (cmds, acties) = self.streams.wis_tekening(id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
@@ -3006,6 +3089,7 @@ impl Engine {
                 is_muziek: s.kind == StreamKind::MUSIC,
                 is_camera: s.kind == StreamKind::CAMERA,
                 miniatuur: self.delers.get(&s.id).and_then(|d| d.miniatuur()),
+                tekening: s.tekening.clone(),
             })
             .collect();
 
@@ -3029,6 +3113,7 @@ impl Engine {
                     .copied()
                     .unwrap_or(1.0),
                 miniatuur: self.miniaturen.get(&(s.eigenaar, s.id)).cloned(),
+                tekening: s.tekening.clone(),
             })
             .collect();
 

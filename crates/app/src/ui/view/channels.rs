@@ -11,7 +11,7 @@ use super::super::icons::Icon;
 use super::super::state::{ChannelState, PeerState, UiState};
 use super::super::theme::{self, c, Dither};
 use super::widgets::{
-    avatar, badge, focus_ring, icon_btn, meter_view, pointer, tooltip, tracked, Dot,
+    avatar, badge, focus_ring, icon_btn, meter_view, pointer, tooltip, tracked, Btn, BtnKind, Dot,
 };
 use super::{AppHandle, AppSnapshot, Dialog, PaneInit, View};
 use gpui_kit::{
@@ -372,6 +372,13 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
         .filter(|st| !st.is_audio && !st.is_camera)
         .map(|st| (st.stream_id, st.title.clone()))
         .collect();
+    let screens = || {
+        s.own_streams
+            .iter()
+            .filter(|st| !st.is_audio && !st.is_camera)
+    };
+    let drawing = screens().any(|st| st.drawing);
+    let has_drawing = screens().any(|st| st.has_drawing);
 
     let panel = div()
         .flex_none()
@@ -444,6 +451,7 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
                     title,
                     &format!("{more} \u{00b7} desktop audio follows automatically"),
                 ))
+                .child(draw_row(snap, &sharing, drawing, has_drawing))
             })
             .when_some(snap.own_camera(), |d, cam| {
                 d.child(share_line(Icon::Cam, "Camera on \u{00b7} ", &cam.title, ""))
@@ -577,6 +585,42 @@ fn share_line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
                     },
                 )])),
         )
+}
+
+/// Under "Sharing": whether viewers may draw on your screen, and wiping what they drew
+/// (decision 45). One switch for every screen you share; blocking also wipes.
+fn draw_row(snap: &AppSnapshot, sharing: &[(u32, String)], on: bool, has_lines: bool) -> Div {
+    let streams: Vec<u32> = sharing.iter().map(|(id, _)| *id).collect();
+    let (ui, ui_clear) = (snap.ui.clone(), snap.ui.clone());
+    let clear_streams = streams.clone();
+    let toggle = Btn::new(
+        "btn-drawing",
+        if on { "Block drawing" } else { "Allow drawing" },
+    )
+    .kind(BtnKind::Ghost)
+    .icon(Icon::Edit)
+    .full_width()
+    .on_click(move |_, _, _| {
+        for stream in &streams {
+            commands::set_drawing(&ui, *stream, !on);
+        }
+    });
+    let clear = Btn::new("btn-clear-drawing", "Clear drawing")
+        .kind(BtnKind::Ghost)
+        .icon(Icon::Trash)
+        .full_width()
+        .disabled(!has_lines)
+        .on_click(move |_, _, _| {
+            for stream in &clear_streams {
+                commands::clear_drawing(&ui_clear, *stream);
+            }
+        });
+    div()
+        .flex()
+        .gap(px(6.))
+        .mt(px(7.))
+        .child(div().flex_1().min_w_0().child(toggle))
+        .child(div().flex_1().min_w_0().child(clear))
 }
 
 /// `.join`: the one saturated fill in the resting window, magenta in a paper frame on the

@@ -194,6 +194,13 @@ pub struct OwnStreamState {
     /// Our shared Spotify (also `is_audio`); the title is what plays now.
     #[serde(default)]
     pub is_music: bool,
+    /// Viewers may draw on this screen (decision 45). Only ever true for a screen.
+    #[serde(default)]
+    pub drawing: bool,
+    /// Something is drawn on it right now. Flips only at the first line and when the last
+    /// one goes, never per point; the lines themselves reach the tile via the thumbnails.
+    #[serde(default)]
+    pub has_drawing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -780,6 +787,8 @@ impl UiState {
                     is_audio: s.is_geluid,
                     is_camera: s.is_camera,
                     is_music: s.is_muziek,
+                    drawing: s.tekening.aan,
+                    has_drawing: !s.tekening.is_leeg(),
                 })
                 .collect(),
             streams: snap

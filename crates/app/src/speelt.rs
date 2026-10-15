@@ -242,10 +242,7 @@ mod win {
     use std::collections::HashMap;
     use std::ffi::c_void;
     use windows::core::{PCWSTR, PWSTR};
-    use windows::Win32::Foundation::{CloseHandle, RECT};
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::FileSystem::{
         GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
     };
@@ -253,43 +250,14 @@ mod win {
         GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-        GWL_STYLE, WS_CAPTION,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
     pub fn voorgrond_spel(namen: &mut HashMap<String, Option<String>>) -> Option<String> {
+        // Wat "schermvullend vooraan" is staat op één plek; de tekenlaag bij een gedeeld
+        // scherm wijkt voor precies hetzelfde (beslissing 45).
+        let (hwnd, _) = fitcom_video::tekenlaag::schermvullend_vooraan()?;
         // SAFETY: kale Win32-aanroepen met uitsluitend eigen, correct gegroeide buffers.
         unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_invalid() || IsIconic(hwnd).as_bool() {
-                return None;
-            }
-            // Een titelbalk betekent een gewoon (zelfs gemaximaliseerd) venster; een spel
-            // dat schermvullend draait heeft hem niet.
-            let stijl = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            if stijl & WS_CAPTION.0 == WS_CAPTION.0 {
-                return None;
-            }
-            let mut venster = RECT::default();
-            GetWindowRect(hwnd, &mut venster).ok()?;
-            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                ..Default::default()
-            };
-            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-                return None;
-            }
-            let m = info.rcMonitor;
-            if venster.left > m.left
-                || venster.top > m.top
-                || venster.right < m.right
-                || venster.bottom < m.bottom
-            {
-                return None;
-            }
-
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
             if pid == 0 || pid == GetCurrentProcessId() {

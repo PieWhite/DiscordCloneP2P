@@ -20,8 +20,11 @@ use crate::d3d::D3dContext;
 use crate::fragment::Reassembler;
 use crate::venster::Venster;
 use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use fitcom_net::MediaSocket;
+use fitcom_proto::teken::Tekening;
+use fitcom_proto::ControlMsg;
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -58,6 +61,9 @@ pub enum KijkerEvent {
     /// Een verkleind beeld voor het overzicht in het hoofdvenster. BGRA, net als de
     /// textuur waar het uit komt — de UI zet dat zelf om naar wat egui verwacht.
     Miniatuur(Miniatuur),
+    /// De gebruiker tekende of wiste iets in het venster: een `Draw` of `DrawClear` voor de
+    /// deler (beslissing 45).
+    Teken(ControlMsg),
 }
 
 #[derive(Debug, Clone)]
@@ -97,9 +103,17 @@ pub struct KijkerHandle {
     /// De poort waarop deze kijker beeld verwacht; hoort in `StreamSubscribe`.
     pub poort: u16,
     pub events: Receiver<KijkerEvent>,
+    /// Naar het venster: de tekening van de deler, na elke wijziging. Het venster pakt
+    /// alleen de laatste, op zijn eigen tempo, dus nooit een slot op het videopad.
+    tekening: Sender<Arc<Tekening>>,
 }
 
 impl KijkerHandle {
+    /// De tekening op deze stream is veranderd (of het mag-tekenen van de deler).
+    pub fn zet_tekening(&self, t: Arc<Tekening>) {
+        let _ = self.tekening.send(t);
+    }
+
     /// Aantal getoonde beelden en het aantal dat onderweg sneuvelde. Voor `StreamStats`
     /// en om in de UI te kunnen zien of de verbinding het aankan.
     pub fn tellers(&self) -> (u64, u64) {
@@ -147,6 +161,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
     // plaats van een venster dat er nooit komt.
     let (klaar_tx, klaar_rx) = bounded::<Result<()>>(1);
     let (event_tx, events) = bounded(16);
+    let (tekening, tekening_rx) = unbounded();
 
     let d3d = d3d.clone();
     let staat = gedeeld.clone();
@@ -156,7 +171,16 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
         .spawn(move || match opzetten(&d3d, &cfg) {
             Ok((venster, decoder)) => {
                 let _ = klaar_tx.send(Ok(()));
-                kijk_lus(venster, decoder, &d3d, socket, &cfg, &staat, &event_tx);
+                kijk_lus(
+                    venster,
+                    decoder,
+                    &d3d,
+                    socket,
+                    &cfg,
+                    &staat,
+                    &event_tx,
+                    &tekening_rx,
+                );
                 let _ = event_tx.send(KijkerEvent::Gesloten);
             }
             Err(e) => {
@@ -175,6 +199,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
         gedeeld,
         poort,
         events,
+        tekening,
     })
 }
 
@@ -184,6 +209,7 @@ fn opzetten(d3d: &D3dContext, cfg: &KijkerConfig) -> Result<(Venster, Decoder)> 
     Ok((venster, decoder))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn kijk_lus(
     mut venster: Venster,
     mut decoder: Decoder,
@@ -192,7 +218,12 @@ fn kijk_lus(
     cfg: &KijkerConfig,
     gedeeld: &Arc<Gedeeld>,
     events: &Sender<KijkerEvent>,
+    tekening: &Receiver<Arc<Tekening>>,
 ) {
+    // Tekenwerk voor de deler dat nog niet in `events` paste. Een stuk lijn overslaan
+    // zou de rest van die lijn bij iedereen laten verdwijnen (een gat), dus het wacht.
+    let mut tekenwerk: VecDeque<ControlMsg> = VecDeque::new();
+    let mut laatste_tekening = Instant::now();
     let mut samensteller = Reassembler::new();
     let mut buf = [0u8; fitcom_net::MAX_PAKKET];
     // De codec waar de huidige decoder voor gebouwd is; begint als de gok uit de
@@ -301,8 +332,25 @@ fn kijk_lus(
         // duizenden per seconde en dan doen we niets anders meer.
         if laatste_pomp.elapsed() >= Duration::from_millis(8) {
             laatste_pomp = Instant::now();
+            // Tekenen loopt mee op dit tempo en niet per pakket: een nieuwe tekening alleen
+            // als de motor er een stuurde, en dan alleen de laatste.
+            if laatste_tekening.elapsed() >= crate::penseel::MIN_HERTEKEN {
+                if let Some(t) = tekening.try_iter().last() {
+                    venster.zet_tekening(t);
+                    laatste_tekening = Instant::now();
+                }
+            }
             if !venster.pomp() {
                 break;
+            }
+            tekenwerk.extend(venster.tekenwerk(cfg.stream_id));
+            while let Some(msg) = tekenwerk.pop_front() {
+                if let Err(TrySendError::Full(KijkerEvent::Teken(msg))) =
+                    events.try_send(KijkerEvent::Teken(msg))
+                {
+                    tekenwerk.push_front(msg);
+                    break;
+                }
             }
         }
 

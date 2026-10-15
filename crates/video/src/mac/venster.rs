@@ -171,6 +171,15 @@ impl Venster {
         !self.gesloten.load(Ordering::Relaxed)
     }
 
+    /// Tekenen in het kijkvenster is op macOS niet gebouwd (beslissing 45): de lijnen van
+    /// anderen staan op de tegel in de app, zelf tekenen kan hier niet.
+    pub fn zet_tekening(&mut self, _t: Arc<fitcom_proto::teken::Tekening>) {}
+
+    /// Zie [`Venster::zet_tekening`]: er wordt hier nooit getekend.
+    pub fn tekenwerk(&mut self, _stream_id: u32) -> Vec<fitcom_proto::ControlMsg> {
+        Vec::new()
+    }
+
     /// Zet één beeld in de weergavewachtrij. Thread-veilig vanaf de kijk-thread.
     pub fn toon(&mut self, beeld: &Beeld) -> Result<()> {
         let maat = afmetingen(beeld);

@@ -175,6 +175,97 @@ control_messages! {
     // 47: het spel dat bij de afzender vooraan staat (2026-10-15, beslissing 43). Vluchtig
     // en single-hop zoals 44-45; een oudere peer slaat de tag stil over en toont niets.
     47 => Activity(Activity),
+
+    // 48-50: tekenen op een gedeeld scherm (2026-10-15, beslissing 45). Vluchtig zoals
+    // 44-47: geen op, geen geschiedenis. De deler is het middelpunt van zijn eigen scherm:
+    // een kijker stuurt zijn lijnen (48) en wisverzoeken (49) alleen naar de deler; de deler
+    // controleert ze en geeft lijnen door aan al zijn kijkers (48, tekenaar ingevuld), en
+    // stuurt na elk wissen en bij elke nieuwe kijker de hele tekening (50). Of er getekend
+    // mag worden staat op `StreamAnnounce::drawing`. Een oudere peer slaat de tags stil over;
+    // een oudere deler kondigt `drawing` niet aan, dus bij hem verschijnt er geen pen.
+    48 => Draw(Draw),
+    49 => DrawClear(DrawClear),
+    50 => DrawState(DrawState),
+}
+
+/// Punten erbij aan één lijn op een gedeeld scherm. Coördinaten zijn genormaliseerd op het
+/// beeld van de stream: `[0, 0]` linksboven, `[65535, 65535]` rechtsonder, dus elke waarde
+/// is geldig en de resolutie van deler en kijker doet er niet toe. Zie `crate::teken` voor
+/// het palet, de grenzen en hoe een ontvanger dit toepast.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Draw {
+    pub stream_id: u32,
+    /// Wie er tekent. Leeg van kijker naar deler: de deler neemt de afzender van de
+    /// verbinding, nooit een claim uit het bericht. Van deler naar kijker verplicht.
+    #[serde(default)]
+    pub author: Option<PeerId>,
+    /// Per tekenaar uniek; samen met de tekenaar de sleutel van de lijn. Het venster laat de
+    /// nummers per proces op een tijdgebonden plek beginnen, zodat een herstarte kijker
+    /// niet verder tekent op een oude lijn die de deler nog van hem heeft.
+    pub line: u32,
+    /// Index in `teken::KLEUREN`. Onbekend (van een nieuwere peer): bericht genegeerd.
+    pub color: u8,
+    /// Index in `teken::DIKTES`. Onbekend: bericht genegeerd.
+    pub width: u8,
+    /// Plek van het eerste punt van dit bericht in de lijn. Maakt toepassen idempotent en
+    /// een gat zichtbaar.
+    pub start: u32,
+    pub points: Vec<[u16; 2]>,
+}
+
+/// Wat een kijker wil wissen, als `u8` op de draad zodat een onbekende soort van een
+/// nieuwere peer als "onbekend" doorkomt en genegeerd wordt.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DrawClearScope(pub u8);
+
+impl DrawClearScope {
+    /// Mijn laatste lijn (ongedaan maken).
+    pub const LAST: Self = Self(1);
+    /// Al mijn lijnen.
+    pub const MINE: Self = Self(2);
+
+    pub fn is_known(self) -> bool {
+        matches!(self, Self::LAST | Self::MINE)
+    }
+}
+
+impl std::fmt::Debug for DrawClearScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::LAST => write!(f, "Last"),
+            Self::MINE => write!(f, "Mine"),
+            Self(n) => write!(f, "Unknown({n})"),
+        }
+    }
+}
+
+/// "Wis mijn lijnen op dit scherm." Alleen van kijker naar deler, en alleen over de eigen
+/// lijnen van de afzender; alles wissen kan alleen de deler zelf, en die stuurt dan een
+/// lege [`DrawState`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrawClear {
+    pub stream_id: u32,
+    pub scope: DrawClearScope,
+}
+
+/// De hele tekening op een scherm, van deler naar kijker: vervangt wat de kijker had. Bij
+/// een nieuwe kijker en na elk wissen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrawState {
+    pub stream_id: u32,
+    #[serde(default)]
+    pub lines: Vec<DrawLine>,
+}
+
+/// Eén complete lijn in een [`DrawState`]. Dezelfde velden als [`Draw`] met `start == 0`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrawLine {
+    pub author: PeerId,
+    pub line: u32,
+    pub color: u8,
+    pub width: u8,
+    pub points: Vec<[u16; 2]>,
 }
 
 /// Wat een luisteraar met de gedeelde Spotify wil, als `u8` op de draad: een onbekende
@@ -366,6 +457,11 @@ pub struct StreamAnnounce {
     pub title: String,
     pub width: u32,
     pub height: u32,
+    /// Mogen kijkers op dit scherm tekenen (beslissing 45). Een wissel gaat als nieuwe
+    /// aankondiging de draad op, net als een nieuwe titel. Een oudere deler stuurt dit veld
+    /// niet en is dus `false`: bij hem verschijnt geen pen, want hij kent `Draw` niet.
+    #[serde(default)]
+    pub drawing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -562,6 +658,23 @@ mod tests {
             ControlMsg::Activity(Activity {
                 name: "Spel".into(),
             }),
+            ControlMsg::Draw(Draw {
+                stream_id: 0,
+                author: None,
+                line: 1,
+                color: 0,
+                width: 0,
+                start: 0,
+                points: vec![],
+            }),
+            ControlMsg::DrawClear(DrawClear {
+                stream_id: 0,
+                scope: DrawClearScope::LAST,
+            }),
+            ControlMsg::DrawState(DrawState {
+                stream_id: 0,
+                lines: vec![],
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -629,6 +742,7 @@ mod tests {
             title: "iets nieuws".into(),
             width: 1920,
             height: 1080,
+            drawing: false,
         });
         let bytes = msg.encode().unwrap();
         let back = ControlMsg::decode(&bytes).unwrap().unwrap();
@@ -716,6 +830,130 @@ mod tests {
             let bytes = msg.encode().unwrap();
             assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
         }
+    }
+
+    #[test]
+    fn aankondiging_van_een_oudere_deler_tekent_niet() {
+        // Een 1.9.0-deler kent `drawing` niet en kent `Draw` ook niet: geen pen tonen.
+        #[derive(Serialize)]
+        struct OudeAankondiging {
+            stream_id: u32,
+            kind: StreamKind,
+            title: String,
+            width: u32,
+            height: u32,
+        }
+        let mut body = 30u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &OudeAankondiging {
+                stream_id: 1,
+                kind: StreamKind::MONITOR,
+                title: "Scherm".into(),
+                width: 1920,
+                height: 1080,
+            },
+            &mut ser,
+        )
+        .unwrap();
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::StreamAnnounce(a) => assert!(!a.drawing),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tekenberichten_roundtrip_met_hun_tags() {
+        let wie = PeerId::new_random();
+        let lijn = ControlMsg::Draw(Draw {
+            stream_id: 2,
+            author: Some(wie),
+            line: 7,
+            color: 3,
+            width: 1,
+            start: 12,
+            points: vec![[0, 0], [65535, 65535], [100, 40000]],
+        });
+        let wis = ControlMsg::DrawClear(DrawClear {
+            stream_id: 2,
+            scope: DrawClearScope::MINE,
+        });
+        let toestand = ControlMsg::DrawState(DrawState {
+            stream_id: 2,
+            lines: vec![DrawLine {
+                author: wie,
+                line: 7,
+                color: 3,
+                width: 1,
+                points: vec![[1, 2], [3, 4]],
+            }],
+        });
+        for (msg, tag) in [(lijn, 48u16), (wis, 49), (toestand, 50)] {
+            let bytes = msg.encode().unwrap();
+            assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), tag);
+            assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+        }
+    }
+
+    #[test]
+    fn een_lijn_van_kijker_naar_deler_draagt_geen_tekenaar() {
+        // De deler neemt de afzender van de verbinding; een veld dat ontbreekt is `None`.
+        #[derive(Serialize)]
+        struct ZonderAuteur {
+            stream_id: u32,
+            line: u32,
+            color: u8,
+            width: u8,
+            start: u32,
+            points: Vec<[u16; 2]>,
+        }
+        let mut body = 48u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &ZonderAuteur {
+                stream_id: 1,
+                line: 1,
+                color: 0,
+                width: 0,
+                start: 0,
+                points: vec![[5, 5], [6, 6]],
+            },
+            &mut ser,
+        )
+        .unwrap();
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::Draw(d) => assert_eq!(d.author, None),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn onbekende_wissoort_decodeert_zonder_fout() {
+        let msg = ControlMsg::DrawClear(DrawClear {
+            stream_id: 1,
+            scope: DrawClearScope(200),
+        });
+        let bytes = msg.encode().unwrap();
+        match ControlMsg::decode(&bytes).unwrap().unwrap() {
+            ControlMsg::DrawClear(c) => assert!(!c.scope.is_known()),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn een_tekenbericht_blijft_klein() {
+        // Zo groot wordt een batch op zijn hoogst: ruim onder één QUIC-pakket.
+        let msg = ControlMsg::Draw(Draw {
+            stream_id: 1,
+            author: Some(PeerId::new_random()),
+            line: u32::MAX,
+            color: 5,
+            width: 2,
+            start: 500,
+            points: vec![[65535, 65535]; crate::teken::MAX_PUNTEN_PER_BERICHT],
+        });
+        let len = msg.encode().unwrap().len();
+        assert!(len < 600, "{len} bytes");
     }
 
     #[test]

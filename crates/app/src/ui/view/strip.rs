@@ -203,6 +203,8 @@ mod tests {
             is_audio,
             is_camera,
             is_music: false,
+            drawing: false,
+            has_drawing: false,
         }
     }
 

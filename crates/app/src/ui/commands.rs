@@ -246,6 +246,16 @@ pub fn stop_sharing(ui: &Ui, stream: u32) {
     send(ui, UiCommand::StopDelen(stream));
 }
 
+/// May viewers draw on this screen of ours (decision 45). Off also wipes what is there.
+pub fn set_drawing(ui: &Ui, stream: u32, on: bool) {
+    send(ui, UiCommand::ZetTekenen(stream, on));
+}
+
+/// Wipe every line on this screen of ours, whoever drew it.
+pub fn clear_drawing(ui: &Ui, stream: u32) {
+    send(ui, UiCommand::WisTekening(stream));
+}
+
 /// The camera on or off. The engine picks the device and reports through the usual error
 /// banner if there is none, so the button needs no knowledge of what is plugged in.
 pub fn set_camera(ui: &Ui, on: bool) {

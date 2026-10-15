@@ -59,7 +59,16 @@ pub mod mf;
 /// WASAPI-loopback en dat heeft geen mac-tegenhanger in deze crate.
 #[cfg(windows)]
 pub mod opname;
+/// Lijnen op een BGRA-doek, voor de tekenlagen en de tegels (beslissing 45).
+pub mod penseel;
 pub mod spoor;
+/// Het doorklikbare venster met de lijnen erop: over een kijkvenster en over een gedeelde
+/// monitor. Op macOS alleen een lege `Deellaag`.
+#[cfg(windows)]
+pub mod tekenlaag;
+#[cfg(target_os = "macos")]
+#[path = "mac/tekenlaag.rs"]
+pub mod tekenlaag;
 
 pub use capture::{beschikbare_bronnen, Bron, BronSoort};
 pub use codec::{Codec, Decoder, Encoder, EncoderConfig};

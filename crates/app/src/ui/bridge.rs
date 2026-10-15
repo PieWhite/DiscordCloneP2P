@@ -256,8 +256,8 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
     ui.runtime.spawn(async move {
         let mut ticker = tokio::time::interval(THUMBNAIL_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Which frame each tile shows, so an unchanged tile costs nothing.
-        let mut last: HashMap<String, usize> = HashMap::new();
+        // Which frame and which drawing each tile shows, so an unchanged tile costs nothing.
+        let mut last: HashMap<String, (usize, usize)> = HashMap::new();
         let mut images: Arc<ThumbMap> = Arc::new(ThumbMap::new());
         loop {
             ticker.tick().await;
@@ -266,11 +266,13 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
             // Wat wij zelf uitsturen hoort in dezelfde strook als wat we van een ander
             // bekijken, dus het loopt door dezelfde pomp. Alleen de sleutel verschilt: een
             // eigen stream heeft geen eigenaar, dus `self-` in plaats van een peer-id.
-            let eigen = snap
-                .eigen_streams
-                .iter()
-                .filter(|s| !s.is_geluid)
-                .map(|s| (Thumbnails::own_key(s.stream_id), s.miniatuur.as_ref()));
+            let eigen = snap.eigen_streams.iter().filter(|s| !s.is_geluid).map(|s| {
+                (
+                    Thumbnails::own_key(s.stream_id),
+                    s.miniatuur.as_ref(),
+                    &s.tekening,
+                )
+            });
             let vreemd = snap
                 .streams
                 .iter()
@@ -279,22 +281,27 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
                     (
                         Thumbnails::peer_key(&s.eigenaar.to_string(), s.stream_id),
                         s.miniatuur.as_ref(),
+                        &s.tekening,
                     )
                 });
 
             let mut next: Option<ThumbMap> = None;
             let mut alive: Vec<String> = Vec::new();
-            for (key, thumb) in eigen.chain(vreemd) {
+            for (key, thumb, drawing) in eigen.chain(vreemd) {
                 alive.push(key.clone());
                 let Some(thumb) = thumb else { continue };
-                let frame = Arc::as_ptr(&thumb.data) as *const u8 as usize;
-                if last.get(&key) == Some(&frame) {
+                // A new frame or a changed drawing: either one makes a new image.
+                let shown = (
+                    Arc::as_ptr(&thumb.data) as *const u8 as usize,
+                    Arc::as_ptr(drawing) as usize,
+                );
+                if last.get(&key) == Some(&shown) {
                     continue;
                 }
-                let Some(image) = render_image(thumb) else {
+                let Some(image) = render_image(thumb, drawing) else {
                     continue;
                 };
-                last.insert(key.clone(), frame);
+                last.insert(key.clone(), shown);
                 next.get_or_insert_with(|| (*images).clone())
                     .insert(key, Arc::new(image));
             }
@@ -325,7 +332,13 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
 /// no PNG, no channel swap. Only the alpha byte is fixed: it means nothing on the way here
 /// (Media Foundation's RGB32 leaves it at 0), and an image honours it, so a camera tile
 /// came out transparent. A thumbnail is opaque by definition.
-fn render_image(thumb: &fitcom_video::Miniatuur) -> Option<RenderImage> {
+///
+/// Lines drawn on the screen (decision 45) go onto this local copy with the same brush as
+/// the overlays: never into the video, and only when the frame or the drawing changed.
+fn render_image(
+    thumb: &fitcom_video::Miniatuur,
+    drawing: &fitcom_proto::teken::Tekening,
+) -> Option<RenderImage> {
     let needed = thumb.breedte as usize * thumb.hoogte as usize * 4;
     if thumb.data.len() < needed {
         return None;
@@ -333,6 +346,14 @@ fn render_image(thumb: &fitcom_video::Miniatuur) -> Option<RenderImage> {
     let mut bgra = thumb.data[..needed].to_vec();
     for px in bgra.chunks_exact_mut(4) {
         px[3] = 255;
+    }
+    if !drawing.is_leeg() {
+        fitcom_video::penseel::Doek {
+            px: &mut bgra,
+            breedte: thumb.breedte,
+            hoogte: thumb.hoogte,
+        }
+        .teken_alles(drawing);
     }
     let buffer = image::RgbaImage::from_raw(thumb.breedte, thumb.hoogte, bgra)?;
     Some(RenderImage::new(vec![image::Frame::new(buffer)]))
@@ -351,7 +372,7 @@ mod tests {
             hoogte: 1,
             data: Arc::from(vec![10u8, 20, 30, 0, 40, 50, 60, 0]),
         };
-        let image = render_image(&thumb).expect("image");
+        let image = render_image(&thumb, &Default::default()).expect("image");
         assert_eq!(
             image.as_bytes(0).unwrap(),
             &[10, 20, 30, 255, 40, 50, 60, 255]
@@ -365,6 +386,35 @@ mod tests {
             hoogte: 4,
             data: Arc::from(vec![0u8; 8]),
         };
-        assert!(render_image(&thumb).is_none());
+        assert!(render_image(&thumb, &Default::default()).is_none());
+    }
+
+    /// Lines land on the tile and the tile stays opaque. Dropping the drawing pass, or
+    /// drawing before the alpha fix, makes this fail.
+    #[test]
+    fn lines_are_drawn_onto_the_tile_and_it_stays_opaque() {
+        use fitcom_proto::control::Draw;
+        let mut drawing = fitcom_proto::teken::Tekening::nieuw(true);
+        drawing.teken(
+            fitcom_proto::PeerId::new_random(),
+            &Draw {
+                stream_id: 1,
+                author: None,
+                line: 1,
+                color: 0,
+                width: 2,
+                start: 0,
+                points: vec![[0, 32767], [65535, 32767]],
+            },
+        );
+        let thumb = fitcom_video::Miniatuur {
+            breedte: 32,
+            hoogte: 18,
+            data: Arc::from(vec![0u8; 32 * 18 * 4]),
+        };
+        let image = render_image(&thumb, &drawing).expect("image");
+        let bytes = image.as_bytes(0).unwrap();
+        assert!(bytes.chunks_exact(4).all(|p| p[3] == 255));
+        assert!(bytes.chunks_exact(4).any(|p| p[2] > 200), "a red line");
     }
 }
