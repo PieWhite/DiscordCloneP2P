@@ -186,6 +186,31 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   samengesteld. Via `ShellExecuteW`/`open` als één argument, nooit een opdrachtregel.
 >   `open_link` blijft alleen `http(s)` doorlaten.
 
+> **Addendum 2026-10-15 (tekenen op een gedeeld scherm, beslissing 45).** Drie berichten erbij
+> (`Draw`, `DrawClear`, `DrawState`, tags 48-50) en een veld (`StreamAnnounce::drawing`). Wat
+> er van buiten komt en hoe het begrensd is:
+>
+> - **Wie mag:** de deler neemt lijnen en wisverzoeken alleen aan van een peer die nu op dat
+>   eigen scherm ingetekend is, terwijl tekenen aan staat; de tekenaar is de afzender van de
+>   verbinding, nooit een veld uit het bericht. Een wisverzoek raakt alleen de eigen lijnen
+>   van de afzender. Een kijker neemt tekenwerk alleen aan van de eigenaar van een stream
+>   waar hij naar kijkt. Binnen B-05 (een `PeerId` is een claim) betekent dat: wie een peer
+>   kan nadoen kan ook namens hem tekenen, niets meer.
+> - **Wat het kost:** coördinaten zijn `u16` op een vast raster, dus elke waarde is geldig;
+>   kleur en dikte zijn indexen en een onbekende laat het bericht vallen. Grenzen in
+>   `fitcom_proto::teken`: 64 punten per bericht, 512 per lijn, 32 lijnen per tekenaar, 256
+>   per scherm. Een volle `DrawState` is ~0,9 MB, onder de framinglimiet; groter wordt hij niet.
+>   Tekenen gebeurt alleen bij een wijziging en hooguit eens per 30 ms (`MIN_HERTEKEN`), dus
+>   een overspoelende peer kost de deler begrensde CPU. **Geen rem op de draad zelf**: een
+>   peer kan blijven sturen, en elk geaccepteerd bericht gaat door naar de andere kijkers.
+>   Zelfde afweging als bij `MusicControl`: binnen het vriendenmodel.
+> - **Een venster bovenop alles.** De laag bij de deler is doorklikbaar
+>   (`WS_EX_TRANSPARENT`), pakt nooit de focus (`WS_EX_NOACTIVATE`) en staat buiten de
+>   schermopname (`WDA_EXCLUDEFROMCAPTURE`; lukt dat niet, dan is er geen laag). Een peer kan
+>   er dus geen klik mee onderscheppen of iets mee in het beeld van een ander zetten; hij kan
+>   wel lijnen over het scherm van de deler leggen, en dat is de functie. Tekst bestaat niet,
+>   alleen lijnen in zes kleuren.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35

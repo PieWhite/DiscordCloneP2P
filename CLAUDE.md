@@ -387,6 +387,56 @@ nieuwe pijplijn en geen protocolwijziging. Wat je niet mag omdraaien:
 - **De view noemt nooit het pad.** `DeelLaatsteClip` draagt niets; de motor kent
   `ClipsBeheer::laatste()`. Dezelfde clip gaat niet tweemaal de chat in (`clip_aangeboden`).
 
+## Tekenen op een gedeeld scherm (2026-10-15)
+Beslissing 45 in `docs/OVERDRACHT.md`. Kijkers tekenen in het kijkvenster; de deler en alle
+kijkers van dat scherm zien het. `crates/proto/src/teken.rs` is het model, `streams.rs` de
+routering, `crates/video/src/tekenlaag.rs` de lagen, `penseel.rs` het tekenen. Wat je niet
+mag omdraaien:
+
+- **Lijnen zijn berichten, nooit beeld en nooit een op.** `Draw`/`DrawClear`/`DrawState`
+  (tags 48-50) zijn vluchtig; het videobeeld en de opname van de deler bevatten geen lijn.
+  Een lijn in de log of in het beeld bakken is de fout die dit ontwerp vermijdt.
+- **De deler is het middelpunt van zijn eigen scherm.** Een kijker stuurt alleen naar de
+  deler; de deler neemt alleen aan van wie nu intekende (`kijkers`), met de tekenaar uit de
+  verbinding en nooit uit het bericht, en geeft door aan al zijn kijkers in de volgorde
+  waarin hij zelf toepaste. Een kijker neemt tekenwerk alleen aan van de eigenaar van een
+  stream waar hij naar kijkt. Geen broadcast naar iedereen met filteren achteraf: dan is er
+  geen plek meer waar de schakelaar en de grenzen gelden.
+- **Geen lokale echo.** Ook je eigen lijn komt terug via de deler. Eén weg, dus iedereen ziet
+  hetzelfde; de prijs is één rondgang (een paar tientallen ms). Een `Draw` zónder tekenaar is
+  "op jouw scherm", mét tekenaar "op het scherm van de afzender": stream-id's zijn alleen per
+  eigenaar uniek, en dat veld is het onderscheid.
+- **Deler en kijker passen dezelfde `Tekening` toe**, met dezelfde grenzen (64 punten per
+  bericht, 512 per lijn, 32 lijnen per tekenaar met de oudste eraf, 256 per scherm). Twee
+  sets regels lopen uit elkaar. Een kopie met een gat (`heeft_gat`) tekent opnieuw in op
+  dezelfde poort, hooguit eens per 2 s, en de deler antwoordt op elke intekening van een
+  scherm met de hele `DrawState`, ook als die leeg is.
+- **Of het mag staat op `StreamAnnounce::drawing`** (`#[serde(default)]`), en uit wist alles.
+  Een oudere deler stuurt het niet en krijgt dus geen pen. Geen apart bericht voor de
+  schakelaar.
+- **Lijnen leven zolang de tekenaar kijkt.** Uittekenen of wegvallen wist ze bij de deler
+  (`vergeet_tekenaar`), en stoppen met delen of intrekken neemt alles mee.
+- **Tekenen kost niets per beeld.** De lagen zijn layered vensters die alleen bij een
+  wijziging opnieuw tekenen (alleen het stuk dat erbij kwam, `penseel::aanvulling`), hooguit
+  eens per 30 ms (`MIN_HERTEKEN`). De swapchain en het videopad van het kijkvenster weten er
+  niets van; het venster pakt de tekening op zijn bestaande pomptempo, nooit per pakket.
+- **De laag bij de deler wijkt voor alles wat schermvullend vooraan staat op die monitor**
+  (`tekenlaag::schermvullend_vooraan`, dezelfde regel als "Speelt X"). Een venster bovenop
+  een schermvullend spel kost beelden of een alt-tab (invariant 4). De lijnen staan dan nog
+  bij de kijkers en op de eigen tegel. Maak hem niet "slim genoeg om toch te tonen".
+- **De laag bij de deler blijft buiten de opname** (`WDA_EXCLUDEFROMCAPTURE`). Lukt dat niet,
+  dan is er geen laag; anders staan de lijnen dubbel bij de kijkers en in elke clip.
+- **Alleen een gedeelde monitor krijgt een laag.** Een venster delen heeft er geen: een laag
+  die een ander venster volgt is een tweede bouwwerk. Daar staan de lijnen op de tegel.
+- **De pen begint neer.** Slepen tekent pas na D of het menu onder de rechterknop; een klik in
+  het beeld is nooit per ongeluk een streep op het scherm van een ander. Een lijn van één
+  punt gaat niet weg (de eerste klik van een dubbelklik).
+- **In `UiState` alleen `drawing` en `has_drawing`**, die wisselen bij de schakelaar en bij
+  de eerste of laatste lijn. De lijnen zelf gaan via de miniaturenpomp de tegels in (2 Hz),
+  nooit via `UiState`.
+- **macOS:** alleen de tegels. Geen pen in het kijkvenster en geen laag bij de deler
+  (`mac/tekenlaag.rs` is een lege `Deellaag`).
+
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het
 manifest live gaat**. De volgorde staat in `docs/OVERDRACHT.md` § "Een release uitgeven";

@@ -1355,3 +1355,60 @@ je er een hebt.
     stuurtekens of een heel lange naam: B ziet de opgeschoonde, ingekorte versie (max 48 tekens).
 12. **macOS** (alleen te zien): de schakelaar staat er, doet niets; een Mac onder een Windows-peer
     toont wel diens "Playing"-regel.
+
+## Tekenen op een gedeeld scherm (2026-10-15, beslissing 45)
+
+Op deze pc geverifieerd: het model, de routering en het penseel met unit-tests; de laag bij
+de deler op het echte bureaublad (BitBlt en Windows.Graphics.Capture zien hem niet, 0 tegen
+450 rode pixels zonder uitsluiting); de pen in een echt kijkvenster met berichten in zijn
+wachtrij (geen echte muis); de knoppen in de fixturemodus. **Nooit met twee machines, nooit
+met een spel ernaast.** Doe dit met A (deelt een monitor), B en C (kijken), alle drie op deze
+versie, en een peer op 1.9.0 als je er een hebt.
+
+1. **Eerste lijn.** A deelt een monitor, B kijkt. B's venstertitel eindigt op "— right-click
+   to draw". B drukt D (of rechtsklik > "Draw on the stream"): de cursor wordt een kruisje.
+   B sleept een cirkel. Bij A verschijnt hij op de monitor, op de juiste plek ten opzichte
+   van wat B ziet, terwijl B nog tekent (hij groeit mee). Bij B zelf verschijnt hij ook, een
+   fractie later (via A). Meet hoe ver de lijn achter de muis aanloopt; noteer het.
+2. **Iedereen ziet iedereen.** C kijkt ook en tekent in een andere kleur; A, B en C zien
+   beide lijnen. C begint pas te kijken nadat B al tekende: C ziet B's lijnen meteen.
+3. **Pen neer.** Zonder D: klikken en slepen in B's venster tekent niets. Dubbelklik
+   (beeldvullend) laat geen stip achter, ook niet met de pen op.
+4. **Kleur en dikte.** Rechtsklik: zes kleuren, drie diktes, een vinkje bij de huidige. Een
+   keuze zet de pen op. Een nieuw kijkvenster houdt de laatst gekozen pen.
+5. **Ongedaan en wissen.** B: Ctrl+Z haalt zijn laatste lijn weg, bij iedereen; Delete al
+   zijn lijnen; C's lijnen blijven staan. Hetzelfde via het menu.
+6. **De deler wist.** A: "Clear" onder "Sharing" wist alles bij iedereen. "Block drawing":
+   alles weg, B's titel verliest de hint, het menu zegt "Drawing is off for this stream",
+   slepen doet niets. "Allow drawing" zet het terug. Stop en deel opnieuw: de laatste stand
+   geldt nog (tot A de app herstart).
+7. **Vertrek.** B sluit zijn venster: B's lijnen verdwijnen bij A en C. C verliest de
+   verbinding (Tailscale uit): C's lijnen verdwijnen. A stopt met delen: alles weg.
+8. **Spel vooraan (invariant 4, het belangrijkste punt).** Er staan lijnen op A's monitor.
+   A start een spel in *exclusieve volle-schermmodus* op die monitor: de lijnen verdwijnen
+   bij A (niet bij B en C), het spel verliest geen beelden en schiet niet naar de
+   achtergrond. Kijk met een frametijdgrafiek (RTSS of de prestatie-overlay van de
+   GPU-driver) of er een piek is op het moment van alt-tabben naar het spel, en of het spel
+   in "Hardware: Independent Flip" blijft (PresentMon). Herhaal met *venster zonder rand*.
+   Alt-tab terug naar het bureaublad: de lijnen komen terug. Teken terwijl A speelt: geen
+   enkele hapering bij A.
+9. **Niet in het beeld.** Er staan lijnen bij A. B ziet elke lijn één keer (niet dubbel, niet
+   verschoven). Een clip die A tijdens het tekenen bewaart (F9) bevat geen lijnen.
+10. **Ander scherm.** A heeft twee monitoren en deelt de tweede; de lijnen staan op de tweede.
+    Een spel schermvullend op de *eerste* monitor laat de laag op de tweede staan.
+11. **Venster delen.** A deelt een venster: B en C kunnen tekenen en zien het, A ziet de lijnen
+    alleen op zijn eigen tegel in de app (geen laag; zo bedoeld).
+12. **Tegels.** In de streamstrook staan de lijnen op B's tegel van A's scherm en op A's eigen
+    tegel, binnen een halve seconde.
+13. **DPI.** Kijkvenster op een monitor met 150% schaal, A op 100% (en andersom): de lijn
+    staat bij A op dezelfde plek in het beeld als bij B. Ook beeldvullend (F11) bij B.
+14. **Oudere peer.** A op 1.9.0 deelt: B krijgt geen hint en het menu zegt "Drawing is off".
+    B op 1.9.0 kijkt naar A: hij ziet geen lijnen, verder werkt alles; A logt niets
+    vreemds.
+15. **Herstart van een kijker.** B tekent, sluit de app hard af (Taakbeheer) en start binnen
+    15 s opnieuw, kijkt weer en tekent: de nieuwe lijn tekent niet door op een oude. Oude
+    lijnen van B kunnen bij A blijven staan tot B "Clear my lines" doet of de verbinding
+    echt wegvalt.
+16. **macOS** (alleen te zien): een Mac die kijkt kan niet tekenen (geen menu, geen hint) maar
+    ziet de lijnen op zijn tegel; een Mac die deelt heeft geen laag, zijn kijkers tekenen en
+    zien elkaar, hij ziet het op zijn eigen tegel.

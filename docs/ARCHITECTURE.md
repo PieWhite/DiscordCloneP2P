@@ -161,7 +161,8 @@ enum ControlMsg {
     // media
     VoiceJoin  { media_port: u16 },
     VoiceLeave,
-    StreamAnnounce   { stream_id: u32, kind: StreamKind, title: String },
+    StreamAnnounce   { stream_id: u32, kind: StreamKind, title: String, width: u32,
+                       height: u32, drawing: bool },   // drawing: #[serde(default)]
     StreamRevoke     { stream_id: u32 },
     StreamSubscribe  { stream_id: u32, media_port: u16 },
     StreamUnsubscribe{ stream_id: u32 },
@@ -180,6 +181,12 @@ enum ControlMsg {
     UserStatus   { status: UserStatusValue },                // 45
     MusicControl { stream_id: u32, action: MusicAction },    // 46, luisteraar → DJ
     Activity     { name: String },                           // 47, spel vooraan; "" = geen
+
+    // tekenen op een gedeeld scherm — via de deler, zie hieronder
+    Draw      { stream_id: u32, author: Option<PeerId>, line: u32, color: u8, width: u8,
+                start: u32, points: Vec<[u16; 2]> },        // 48
+    DrawClear { stream_id: u32, scope: DrawClearScope },     // 49, kijker → deler
+    DrawState { stream_id: u32, lines: Vec<DrawLine> },      // 50, deler → kijker
 }
 ```
 
@@ -190,6 +197,24 @@ huidige muziekstream en voor een afzender in het gesprek; er komt geen antwoord.
 `Activity` (beslissing 43): de naam is onbetrouwbare tekst (max 48 tekens, geen stuurtekens;
 `speelt::schoon`), alleen verstuurd bij een bevestigde wissel en bij het opkomen van een
 verbinding. Een oudere peer slaat de tag stil over.
+
+`Draw`/`DrawClear`/`DrawState` (beslissing 45): tekenen op een gedeeld scherm. Vluchtig,
+nooit een op, en niet single-hop zoals 44-47 maar **via de deler**: een kijker stuurt zijn
+lijnen (`Draw` zonder `author`) en wisverzoeken (`DrawClear`, `u8`: `LAST = 1`, `MINE = 2`)
+alleen naar de eigenaar van de stream. Die neemt ze alleen aan van een huidige kijker van een
+eigen scherm terwijl tekenen aan staat, vult `author` in met de afzender van de verbinding,
+past ze toe en geeft ze in die volgorde door aan al zijn kijkers (de tekenaar inbegrepen: er is
+geen lokale echo). Na elk wissen, bij elke intekening en na een vertrokken tekenaar stuurt hij
+de hele tekening (`DrawState`), die bij de kijker alles vervangt. Een kijker neemt tekenwerk
+alleen aan van de eigenaar van een stream waar hij naar kijkt. Stream-id's zijn per eigenaar
+uniek, dus `author` is ook het onderscheid tussen "op jouw scherm" (`None`) en "op het scherm
+van de afzender" (`Some`). Coördinaten zijn genormaliseerd op het beeld (`[0, 0]` tot
+`[65535, 65535]`, elke waarde geldig); kleur en dikte zijn indexen in de tabellen van
+`fitcom_proto::teken`, en een onbekende index laat het bericht vallen. Grenzen: 64 punten
+per bericht, 512 per lijn, 32 lijnen per tekenaar (de oudste valt eraf), 256 per scherm; een
+volle `DrawState` is dan ~0,9 MB, onder de 2 MiB van `framing::MAX_FRAME_LEN`. Of er getekend
+mag worden staat op `StreamAnnounce::drawing`; een oudere deler stuurt het niet en krijgt dus
+geen pen, een oudere kijker slaat de tags stil over.
 
 `StreamKind` is een `u8` op de draad met vijf bekende waarden: `MONITOR = 1`,
 `WINDOW = 2`, `DESKTOP_AUDIO = 3`, `CAMERA = 4` en `MUSIC = 5` (alleen Spotify, voor

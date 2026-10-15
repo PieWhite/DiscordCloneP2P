@@ -2209,6 +2209,176 @@ extra plek in de composer: de hotkey is de snelle route, de knop de terugval.
 
 **Wat je niet mag omdraaien:** zie de sectie "Clip delen" in `CLAUDE.md`.
 
+### 45. Tekenen op een gedeeld scherm: berichten via de deler, een laag die wijkt voor het spel (2026-10-15)
+
+Uit `TODO.md`: kijkers tekenen op de stream ("ga daarheen") en de deler ziet het; lijnen als
+kleine control-berichten, niet in het beeld gebakken; bij de deler een doorklikbaar venster
+bovenop, met invariant 4 als het gevoeligste punt. Ricks antwoorden, die de TODO-tekst over
+vervagen vervangen: **iedereen die naar dat scherm kijkt mag tekenen**; **niets vervaagt
+vanzelf**, lijnen blijven tot ze gewist worden; de tekenaar heeft **"wis mijn lijnen"** en
+**"maak mijn laatste lijn ongedaan"**; de deler kan **alles wissen** en heeft een
+**schakelaar** waarmee tekenen uit gaat (kijkers kunnen niet meer tekenen, wat er staat
+verdwijnt, binnenkomend tekenwerk wordt genegeerd); gereedschap: **vrije pen, zes kleuren,
+dun/middel/dik**, verder niets; iedereen ziet ieders lijnen. En letterlijk: als een laag over
+een spel in exclusive fullscreen niet kan of beelden kost, bouw wat werkt en meld de grens.
+
+**Wat het werd.**
+
+- **Kijker (Windows):** in het kijkvenster zet D (of het menu onder de rechterknop) de pen
+  op; de cursor wordt een kruisje en slepen met de linkerknop is een lijn. Het menu heeft de
+  zes kleuren, de drie diktes, "Undo my last line" (Ctrl+Z) en "Clear my lines" (Delete). De
+  pen begint neer, per venster; kleur en dikte onthoudt het proces. Mag de deler niet
+  getekend worden, dan zegt het menu "Drawing is off for this stream" en doet slepen niets.
+  Zolang tekenen mag staat "— right-click to draw" achter de venstertitel: dat is de enige
+  aanwijzing dat het bestaat.
+- **Deler:** onder "Sharing …" in het voicepaneel **Block drawing / Allow drawing** en
+  **Clear**. Eén schakelaar voor elk scherm dat je deelt; de laatste stand geldt deze sessie
+  ook voor het volgende scherm (niet in `config.toml`, zie de vervolgpunten). Bij een
+  gedeelde **monitor** staan de lijnen in een doorklikbaar venster over die monitor.
+- **Overal:** de lijnen staan ook op de tegels in de streamstrook, de eigen tegel van de deler
+  inbegrepen.
+
+**Het protocol: drie tags erbij, en één veld.** `Draw` (48), `DrawClear` (49), `DrawState`
+(50), plus `StreamAnnounce::drawing` (`#[serde(default)]`). Geen bump: een 1.9.0-peer slaat
+de tags stil over (`Ok(None)`), en een 1.9.0-deler kondigt `drawing` niet aan, dus bij hem
+verschijnt geen pen. De `protocol-reviewer` vond het additief en compatibel in beide
+richtingen; zijn twee echte bevindingen staan hieronder bij het herstel en de lijnnummers.
+
+**Via de deler, niet naar iedereen.** Een kijker stuurt alleen naar de eigenaar van de stream.
+De deler neemt alleen aan van een huidige kijker van een eigen scherm (`EigenStream::kijkers`)
+terwijl tekenen aan staat, met de tekenaar uit de verbinding, past het toe en geeft het in
+die volgorde door aan al zijn kijkers. Een kijker neemt tekenwerk alleen aan van de eigenaar
+van een stream waar hij naar kijkt. Afgewezen: elke kijker stuurt naar alle peers en de
+ontvanger filtert. Dat is één hop korter voor de andere kijkers, maar dan kan een kijker niet
+controleren of de afzender echt kijkt, gelden de schakelaar en de grenzen niet op één plek,
+en moet iemand die later gaat kijken tóch de hele tekening van de deler krijgen. Invariant 2
+blijft staan: de deler is alleen het middelpunt van zijn *eigen* scherm, en zonder hem is er
+toch niets om op te tekenen.
+
+**Geen lokale echo.** Je eigen lijn verschijnt pas als hij via de deler terugkomt: één weg,
+dus iedereen ziet precies hetzelfde, en er is geen afstemming tussen een lokale en een
+teruggekomen versie. De prijs is één rondgang plus de batch van 40 ms; op een direct tailnet
+ruim onder de 100 ms, via een DERP-relay meer. Omdat stream-id's alleen per eigenaar uniek
+zijn, is `author` het onderscheid: zonder tekenaar is het "op jouw scherm", mét tekenaar "op
+het scherm van de afzender" (een peer kan naar jouw scherm 1 kijken en zelf een scherm 1
+delen; een test bewaakt dat).
+
+**Eén model voor beide kanten** (`fitcom_proto::teken::Tekening`). Coördinaten genormaliseerd
+op het beeld (`u16`, `[0, 0]` tot `[65535, 65535]`: elke waarde is geldig, er valt niets te
+controleren of te klemmen). Kleur en dikte zijn indexen; een onbekende laat het bericht
+vallen. Grenzen: 64 punten per bericht, 512 per lijn (het venster begint dan naadloos een
+nieuwe), 32 lijnen per tekenaar (de oudste valt eraf), 256 per scherm. Geen grens op het
+aantal tekenaars: 256 lijnen begrenzen dat al, voor elke N. Een volle `DrawState` is ~0,9 MB,
+onder de 2 MiB van de framing; een test bewaakt dat. `start` in `Draw` maakt toepassen
+idempotent en een gat zichtbaar.
+
+**Herstel als er onderweg iets verloren gaat.** De reviewer wees erop dat "over een geordende
+verbinding kan dat niet" niet klopt: `MeshCommand::Send` laat een bericht vallen bij een volle
+verzendwachtrij, en een verbinding die door een nieuwe vervangen wordt neemt zijn wachtrij
+mee. Dan heeft een kijker een lijn met een gat, en zonder herstel blijft die bevroren tot het
+volgende wissen. Nu: ziet een kijker een gat (`Tekening::heeft_gat`), dan tekent hij opnieuw
+in op dezelfde poort, hooguit eens per 2 s (`HERSYNC_PAUZE`). De deler werkt dan alleen zijn
+kijkerslijst bij met hetzelfde adres en antwoordt, zoals op elke intekening van een scherm,
+met de hele `DrawState`, **ook als die leeg is**. Geen nieuw bericht. Een verloren
+`DrawState` na een wisbeurt is niet te zien en blijft staan tot de volgende; dat is bewust.
+
+**Lijnnummers beginnen op de klok.** Ook van de reviewer: een kijker die herstart terwijl de
+deler zijn oude verbinding nog vasthoudt (tot 15 s) heeft daar nog lijnen, en met nummers
+vanaf 1 tekent hij op een oude lijn verder. Het venster begint de teller per proces bij de
+milliseconden van de klok (`volgende_lijn`).
+
+**Lijnen leven zolang de tekenaar kijkt.** Uittekenen of wegvallen wist ze bij de deler, die
+de anderen de nieuwe tekening stuurt; stoppen met delen of intrekken neemt alles mee. Wie
+het venster dichtdoet kan zijn lijnen niet meer ongedaan maken, dus ze laten staan zou de
+deler met andermans krabbels opzadelen.
+
+**Het kijkvenster: een eigen laag, niets in het videopad.** Afgewezen: de lijnen met Direct2D
+op de backbuffer van de swapchain tekenen. Dat vraagt `D3D11_CREATE_DEVICE_BGRA_SUPPORT` op
+het gedeelde apparaat en werk bij elk getoond beeld zolang er lijnen staan. Nu staat er een
+*layered* venster (`tekenlaag::Laag`) met het kijkvenster als eigenaar boven het clientgebied:
+het blijft er vanzelf boven, gaat mee bij minimaliseren en bij F11, en is doorklikbaar, dus de
+muis komt gewoon bij het kijkvenster. Het tekent alleen als de tekening verandert, met
+`UpdateLayeredWindowIndirect` en alleen het stuk dat erbij kwam (`penseel::aanvulling`);
+alleen wissen, ongedaan maken of een andere maat tekent alles opnieuw. De kijk-thread pakt
+een nieuwe tekening op zijn bestaande pomptempo van 8 ms, en hooguit eens per 30 ms
+(`MIN_HERTEKEN`), nooit per pakket. De muis levert een punt per 3 pixels beweging, en wat
+erbij kwam gaat elke 40 ms naar de deler, of meteen bij loslaten. Tekenwerk dat niet in het
+volle kanaal naar de motor past wacht in een rij in plaats van te vallen: een overgeslagen
+stuk zou een gat zijn.
+
+**Het menu is modaal.** `TrackPopupMenu` houdt de kijk-thread vast zolang het open staat, net
+als het slepen van het venster aan zijn titelbalk dat al deed. Het beeld staat dan even stil
+en komt daarna via een keyframe terug. Geaccepteerd; de sneltoetsen (D, Ctrl+Z, Delete) gaan
+er buiten om.
+
+**De laag bij de deler, en invariant 4.** Een doorklikbaar, doorzichtig venster bovenop de
+gedeelde monitor (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+WS_EX_TOOLWINDOW`), op een eigen thread, **alleen zolang er lijnen staan**. Drie regels:
+
+1. **Buiten de opname.** `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`. Windows.Graphics.
+   Capture zag de laag anders gewoon, en dan stonden de lijnen dubbel bij elke kijker (een
+   keer in het beeld, een keer op hun eigen laag) en in elke clip. Lukt het niet (Windows
+   ouder dan 10 2004), dan komt er geen laag; de lijnen staan dan alleen in de app.
+2. **Hij wijkt.** Zolang er op die monitor een venster vooraan staat dat de hele monitor
+   bedekt zonder titelbalk, en dat niet het bureaublad is, is de laag verborgen. Een venster
+   bovenop een spel dat schermvullend draait haalt het uit independent flip (of, bij echte
+   exclusive fullscreen, mogelijk uit de modus zelf): de compositor moet dan elk beeld
+   samenstellen, en dat kost beelden of latentie. Dat is niet aan te tonen dat het gratis is,
+   dus het gebeurt niet. De regel staat op één plek (`tekenlaag::schermvullend_vooraan`) en
+   "Speelt X" gebruikt hem nu ook; `speelt.rs` legde daarna alleen nog zijn programmalijst
+   eroverheen. De laag kijkt elke 50 ms; alt-tabben naar het spel zet hem dus binnen die tijd
+   weg. Bewust breed: een schermvullende browser of filmspeler laat de laag ook wijken.
+3. **Alleen bij een wijziging tekenen, en begrensd.** Zelfde aanvulling als bij de kijker,
+   hooguit eens per 30 ms, ook als een peer de deler overspoelt. Zolang hij verborgen is wordt
+   er niets getekend.
+
+**Alleen een gedeelde monitor.** Een venster delen krijgt geen laag: die zou het venster
+moeten volgen (verplaatsen, minimaliseren, bedekt door andere vensters) en bovenop alles
+staan op plekken waar het venster niet eens zichtbaar is. Daar staan de lijnen op de tegel.
+
+**De tegels.** De miniaturenpomp in `ui/bridge.rs` tekent de lijnen met dezelfde `penseel`
+op de lokale kopie van de miniatuur (2 Hz, en alleen als beeld of tekening veranderde). Dat
+is de terugval waar de deler zijn lijnen ziet als de laag wijkt, en de enige plek op macOS.
+In `UiState` staan alleen `drawing` en `has_drawing`; die wisselen bij de schakelaar en bij
+de eerste of laatste lijn, nooit per punt.
+
+**macOS: alleen de tegels.** Het kijkvenster daar is een NSWindow met
+`AVSampleBufferVideoRenderer`; muisinvoer en een laag erbovenop zijn een eigen bouwwerk en
+niet gebouwd (`mac/venster.rs` heeft lege `zet_tekening`/`tekenwerk`). Een laag bij de deler
+evenmin (`mac/tekenlaag.rs`, een lege `Deellaag`). Een mac-deler staat tekenen gewoon toe:
+zijn kijkers tekenen en zien elkaar, hij ziet het op zijn tegel.
+
+**Geverifieerd, op deze Windows 11-pc.**
+
+- Unit-tests: het model (groeien, idempotent, gat, grenzen, ongedaan/wissen, uit wist,
+  toestand heen en terug), de routering in `streams.rs` (doorgeven met tekenaar, alleen van
+  kijkers, alleen van de eigenaar, nieuwe kijker krijgt alles, vertrek wist, schakelaar,
+  hetzelfde stream-id bij twee eigenaren, herstel bij een gat), het penseel (plek,
+  voorvermenigvuldigd, rand, aanvulling) en de tegel.
+- `tekenlaag::tests::de_laag_tekent_en_blijft_buiten_de_opname` (handmatig, `--ignored`): de
+  laag bij de deler op het echte bureaublad, gemeten met BitBlt én Windows.Graphics.Capture:
+  **0 rode pixels met uitsluiting, 450 zonder**.
+- `venster::tests::slepen_met_de_pen_wordt_een_lijn_voor_de_deler` (handmatig): berichten in
+  de wachtrij van een echt kijkvenster, zonder de muis aan te raken. Pen uit doet niets, D en
+  een sleep geven één `Draw` met drie genormaliseerde punten, Delete een `DrawClear`, en een
+  tekening met lijnen geeft een laag.
+- De knoppen in het voicepaneel in de fixturemodus (PrintWindow), aan en uit.
+
+**Niet geverifieerd, en dat kon hier niet:** twee echte machines (de hele rondgang, de
+vertraging van de echo via een relay), een spel in exclusive fullscreen of randloos met de
+laag erbij (of de wijkregel het altijd op tijd ziet, en of de 50 ms tussen alt-tab en wijken
+iets kost), meerdere monitoren met verschillende DPI, een kijker die echt herstart terwijl de
+deler zijn oude verbinding nog heeft, en macOS. Zie `docs/TESTPLAN.md`, "Tekenen op een gedeeld
+scherm".
+
+**Bekende grenzen.** De laag wijkt voor élk schermvullend venster, ook een film of een
+browser op F11. Een spel in venstermodus mét titelbalk telt niet als schermvullend; daar komt
+de laag er gewoon overheen, en of dat iets kost is niet gemeten. Een venster delen heeft geen
+laag. Geen rem op de draad: een peer kan de deler blijven bestoken; wat dat op zijn PC kost
+is begrensd door `MIN_HERTEKEN` en de grenzen van het model, wat het het netwerk kost niet.
+
+**Wat je niet mag omdraaien:** zie de sectie "Tekenen op een gedeeld scherm" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
