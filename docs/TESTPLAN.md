@@ -1307,7 +1307,8 @@ Instellingen > Clips: "Post clips in the chat automatically" staat standaard aan
 5. **Nieuwe clip, nieuwe kaart.** F9 opnieuw in het gesprek: een tweede kaart, de knop weer uit.
 6. **Instelling uit.** Zet de schakelaar uit (blijft na herstart staan), in het gesprek F9:
    geen kaart; de knop werkt wel.
-7. **Clip weg.** Verwijder de laatste clip uit de clipmap buiten de app: de knop staat uit.
+7. **Clip weg.** Verwijder de laatste clip uit de clipmap buiten de app: de knop blijft aan,
+   een klik geeft de melding dat de clip niet meer op schijf staat.
 8. **Grote clip.** Clipvenster op 30+ minuten, F9: de app blijft bruikbaar tijdens het hashen,
    en een spel op de voorgrond merkt niets (invariant 4). Kaart komt zodra de hash klaar is.
 9. **Geen verse clip, geen gesprek.** Net opgestart, zonder clip: de knop staat uit.

@@ -2184,14 +2184,15 @@ gigabytes, en de grens zou willekeurig zijn.
 
 **De knop noemt geen pad** (B-52, zelfde regel als `open_file`): `UiCommand::DeelLaatsteClip`
 draagt niets, de motor pakt `ClipsBeheer::laatste()`. De UI krijgt alleen `can_share`
-(`ClipsState`) in de momentopname: er is een clip, hij staat nog op schijf (`is_file`, bij elke
-publicatie gecontroleerd) en hij is nog niet aangeboden.
+(`ClipsState`) in de momentopname: er is een clip en hij is nog niet aangeboden. De momentopname
+raakt de schijf niet aan; is de clip weg, dan meldt `deel_clip` dat bij de klik.
 
 **Nooit tweemaal.** De motor onthoudt het pad van de aangeboden clip (`clip_aangeboden`). Auto-
 posten gevolgd door een klik op de knop doet niets en de knop staat dan uit; een nieuwe clip is
 een nieuw pad en dus weer deelbaar. Een aanbod dat je zelf uit de chat verwijderde wordt niet
 opnieuw aangeboden door de knop: de bewaarde clip blijft in de clipmap en je kunt hem via de
-gewone bestandsknop (+) opnieuw aanbieden. Het onthouden blijft bewust alleen in het
+gewone bestandsknop (+) opnieuw aanbieden. Mislukt het hashen (`FileEvent::AanbodMislukt`), dan wordt het onthouden pad
+weer gewist en kan de knop opnieuw. Het onthouden blijft bewust alleen in het
 geheugen: na een herstart bestaat "de laatste clip" niet meer (zie `ClipsBeheer::laatste`).
 
 **Alleen in een gesprek.** De auto-post kijkt op het moment van `Klaar` naar `voice.is_some()`.

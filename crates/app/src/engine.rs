@@ -650,6 +650,10 @@ const TYPING_THROTTLE: Duration = Duration::from_millis(2500);
 /// tokio-taken raken schijf en netwerk aan; de motor zelf blijft daar los van, net als
 /// bij de kijker- en delerthreads van screenshare.
 enum FileEvent {
+    /// Hashen/aanbieden van dit pad mislukte; een clip mag dan opnieuw geprobeerd worden.
+    AanbodMislukt {
+        pad: PathBuf,
+    },
     /// Het lokale bestand is gelezen en gehasht; nu kan het als op vastgelegd worden.
     NieuwAanbod {
         pad: PathBuf,
@@ -2700,6 +2704,11 @@ impl Engine {
 
     fn op_file_event(&mut self, ev: FileEvent) {
         match ev {
+            FileEvent::AanbodMislukt { pad } => {
+                if self.clip_aangeboden.as_deref() == Some(pad.as_path()) {
+                    self.clip_aangeboden = None;
+                }
+            }
             FileEvent::NieuwAanbod {
                 pad,
                 naam,
@@ -3064,9 +3073,11 @@ impl Engine {
             niet_storen: self.niet_storen,
             clips: self.clips.aanwezig().then(|| {
                 let mut w = self.clips.weergave(&self.cfg.clips);
-                w.kan_delen = self.clips.laatste().is_some_and(|p| {
-                    self.clip_aangeboden.as_deref() != Some(p.as_path()) && p.is_file()
-                });
+                // Geen schijftoegang in een momentopname; `deel_clip` meldt een weggeraakte clip.
+                w.kan_delen = self
+                    .clips
+                    .laatste()
+                    .is_some_and(|p| self.clip_aangeboden.as_deref() != Some(p.as_path()));
                 w
             }),
             typing: self
@@ -3474,9 +3485,11 @@ async fn hash_en_bied_aan(
         }
         Ok(Err(e)) => {
             tracing::error!(error = %e, pad = %pad.display(), "bestand lezen voor aanbieden mislukt");
+            let _ = events.send(FileEvent::AanbodMislukt { pad }).await;
         }
         Err(e) => {
             tracing::error!(error = %e, "hash-taak voor aanbieden afgebroken");
+            let _ = events.send(FileEvent::AanbodMislukt { pad }).await;
         }
     }
 }
