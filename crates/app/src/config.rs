@@ -247,6 +247,11 @@ pub struct ClipsConfig {
     /// nieuwe leeg, precies zoals bij elke start (zie OVERDRACHT beslissing 33).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map: Option<PathBuf>,
+
+    /// Een net bewaarde clip meteen als bestandsaanbod in het algemene kanaal zetten,
+    /// maar alleen zolang je in een gesprek zit (beslissing 44). Standaard aan.
+    #[serde(default = "default_clips_auto_delen")]
+    pub auto_delen: bool,
 }
 
 impl Default for ClipsConfig {
@@ -257,8 +262,13 @@ impl Default for ClipsConfig {
             monitor: None,
             hotkey: default_clip_hotkey(),
             map: None,
+            auto_delen: default_clips_auto_delen(),
         }
     }
+}
+
+fn default_clips_auto_delen() -> bool {
+    true
 }
 
 fn default_clips_venster() -> u32 {
@@ -744,6 +754,17 @@ mod tests {
         )
         .expect("een config zonder clipmap hoort te laden");
         assert_eq!(oud.clips.map, None);
+        // Een config van vóór 1.7: automatisch delen staat aan, en uitzetten blijft staan.
+        assert!(oud.clips.auto_delen);
+        let uit: Config = toml::from_str(
+            "display_name = \"Rick\"
+[clips]
+auto_delen = false
+",
+        )
+        .unwrap();
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
+        assert!(!terug.clips.auto_delen);
         assert_eq!(resolve_clips_dir(&oud, data), data.join("clips"));
 
         let gezet: Config = toml::from_str(

@@ -171,6 +171,10 @@ impl SettingsPane {
         let (ui, enabled) = (snap.ui.clone(), clips.enabled);
         let toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| commands::set_clips(&ui, !enabled));
         let (ui_pick, ui_now, ui_open) = (snap.ui.clone(), snap.ui.clone(), snap.ui.clone());
+        let (ui_share, ui_auto, auto_share) = (snap.ui.clone(), snap.ui.clone(), clips.auto_share);
+        let auto_toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| {
+            commands::set_clips_auto_share(&ui_auto, !auto_share)
+        });
 
         let mut body = Body::new()
             .h2("Clips")
@@ -227,6 +231,23 @@ impl SettingsPane {
             )
             .field(
                 div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(label("Post clips in the chat automatically").mb(px(2.)))
+                            .child(help(concat!(
+                                "Only while you are in a voice call. A saved clip is offered in the ",
+                                "general channel; nobody downloads it unless they click. Outside a ",
+                                "call nothing is posted, but \"Share last clip\" always works."
+                            ))),
+                    )
+                    .child(switch("clips-auto-share", auto_share, Some(auto_toggle))),
+            )
+            .field(
+                div()
                     .child(label("Clips folder"))
                     .child(help(concat!(
                         "Where saved clips land. Clips already saved stay where they are; the ",
@@ -254,6 +275,13 @@ impl SettingsPane {
                                     .icon(Icon::Play)
                                     .disabled(!clips.enabled)
                                     .on_click(move |_, _, _| commands::clip_now(&ui_now)),
+                            )
+                            .child(
+                                Btn::new("clip-share", "Share last clip")
+                                    .kind(BtnKind::Ghost)
+                                    .icon(Icon::Clip)
+                                    .disabled(!clips.can_share)
+                                    .on_click(move |_, _, _| commands::share_last_clip(&ui_share)),
                             )
                             .child(
                                 Btn::new("open-clips-folder", "Open folder")

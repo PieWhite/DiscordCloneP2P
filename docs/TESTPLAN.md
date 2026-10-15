@@ -1289,6 +1289,34 @@ talk".
     available on macOS yet" en een bestaande `mode = "talk"` in de config doet niets: de
     microfoon blijft op spraakdetectie en de log meldt het één keer.
 
+## Laatste clip delen (2026-10-15, beslissing 44)
+
+Windows met clips aan, plus minstens één andere peer (liefst twee, waarvan één op macOS).
+Instellingen > Clips: "Post clips in the chat automatically" staat standaard aan.
+
+1. **Auto-post in een gesprek.** A zit in het gesprek, drukt F9. Binnen een paar seconden
+   (hashen duurt bij een grote clip langer) staat in het algemene kanaal een bestandskaart
+   `clip-<tijd>.mp4` bij B en C. Er wordt bij B/C niets automatisch gedownload (kijk in de
+   downloadmap en in de kaart: knop "Download", geen voortgang).
+2. **Downloaden werkt.** B klikt Download, opent de clip: hij speelt af met beeld en geluid.
+   De clip van A blijft in A's clipmap staan.
+3. **Niet tweemaal.** Na stap 1 staat de knop "Share last clip" bij A uit. Er komt geen
+   tweede kaart.
+4. **Buiten een gesprek.** A verlaat het gesprek, drukt F9: er komt niets in de chat. "Share
+   last clip" staat nu aan; klik: de kaart verschijnt, daarna staat de knop uit.
+5. **Nieuwe clip, nieuwe kaart.** F9 opnieuw in het gesprek: een tweede kaart, de knop weer uit.
+6. **Instelling uit.** Zet de schakelaar uit (blijft na herstart staan), in het gesprek F9:
+   geen kaart; de knop werkt wel.
+7. **Clip weg.** Verwijder de laatste clip uit de clipmap buiten de app: de knop staat uit.
+8. **Grote clip.** Clipvenster op 30+ minuten, F9: de app blijft bruikbaar tijdens het hashen,
+   en een spel op de voorgrond merkt niets (invariant 4). Kaart komt zodra de hash klaar is.
+9. **Geen verse clip, geen gesprek.** Net opgestart, zonder clip: de knop staat uit.
+10. **Offline peer.** C is offline bij het posten: C ziet de kaart bij het verbinden, nog steeds
+    zonder automatische download.
+11. **Oude config.** Een `config.toml` zonder `auto_delen` start met de schakelaar aan.
+12. **macOS:** de Clips-tab bestaat daar niet; een Mac downloadt en opent de clip van een
+    Windows-peer als elk ander bestand.
+
 ## "Speelt X" naast je naam (2026-10-15, beslissing 43)
 
 Nooit met een echt spel of een tweede machine geprobeerd: de wisselbewaking en het

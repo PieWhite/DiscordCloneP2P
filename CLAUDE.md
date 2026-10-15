@@ -373,6 +373,20 @@ Beslissing 27 en 28.
 - **Gekozen set en volume staan in `config.toml` onder `[sound]`**, met `#[serde(default)]`
   op alles: een config van vóór 1.0.1 hoort gewoon te starten. Eigen test.
 
+## Clip delen (2026-10-15)
+Beslissing 44 in `docs/OVERDRACHT.md`. De koppeling tussen clips en bestandsdeling; geen
+nieuwe pijplijn en geen protocolwijziging. Wat je niet mag omdraaien:
+
+- **Een clip is alleen een aanbod.** Nooit automatisch downloaden, ook niet onder een
+  grootteplafond zoals bij afbeeldingen: `files::is_afbeelding` blijft onwaar voor een mp4.
+- **Aanbieden pas na `ClipGebeurtenis::Klaar`**, nooit eerder; dat event komt na het sluiten
+  van het bestand.
+- **Automatisch posten alleen terwijl je in een gesprek zit** (`voice.is_some()` op het
+  moment van `Klaar`), in het algemene kanaal, en uit te zetten met `clips.auto_delen`.
+  De knop werkt altijd.
+- **De view noemt nooit het pad.** `DeelLaatsteClip` draagt niets; de motor kent
+  `ClipsBeheer::laatste()`. Dezelfde clip gaat niet tweemaal de chat in (`clip_aangeboden`).
+
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het
 manifest live gaat**. De volgorde staat in `docs/OVERDRACHT.md` § "Een release uitgeven";

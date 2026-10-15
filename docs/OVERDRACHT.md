@@ -2161,6 +2161,53 @@ bewust. Een exe met een nietszeggende `FileDescription` ("Unreal Engine") laat d
 
 **Wat je niet mag omdraaien:** zie de sectie "Speelt X" in `CLAUDE.md`.
 
+### 44. Laatste clip delen: de koppeling tussen clips en bestandsdeling, geen nieuwe pijplijn (2026-10-15)
+
+Rick wilde een clip in één klik in de chat. Zijn antwoorden: een knop **Share last clip**, plus
+een instelling "post clips in the chat automatically", **standaard aan**; het landt in het
+algemene kanaal; automatisch posten gebeurt **alleen terwijl je in een gesprek zit**; en het
+is alleen een *aanbod*, ook voor kleine clips.
+
+**Geen protocolwijziging.** Een clip is een gewoon `FileMeta`-aanbod: `Engine::deel_clip` roept
+dezelfde `hash_en_bied_aan` aan als de bestandsdialoog en de sleepzone, met `Channel::GENERAL`.
+Hashen van een clip van gigabytes gebeurt dus op de losse taak en niet in de motorlus.
+
+**Wanneer is het bestand af?** `ClipGebeurtenis::Klaar` wordt pas verstuurd nadat `plak_clip`
+is teruggekeerd; het bestand is dan geschreven en gesloten. De motor (`clips.tik()`) is de
+enige die dat event ziet, dus er wordt nooit een half bestand aangeboden. Een clip mislukt:
+`Mislukt`, geen aanbod.
+
+**Geen automatische download, voor niemand.** De auto-downloadregel in de motor (B-22) geldt
+alleen voor `files::is_afbeelding` (png/jpg/jpeg/gif/bmp); een mp4 staat achter de gewone
+downloadknop. Er is geen uitzondering voor "kleine" clips: een clipvenster tot twee uur is
+gigabytes, en de grens zou willekeurig zijn.
+
+**De knop noemt geen pad** (B-52, zelfde regel als `open_file`): `UiCommand::DeelLaatsteClip`
+draagt niets, de motor pakt `ClipsBeheer::laatste()`. De UI krijgt alleen `can_share`
+(`ClipsState`) in de momentopname: er is een clip, hij staat nog op schijf (`is_file`, bij elke
+publicatie gecontroleerd) en hij is nog niet aangeboden.
+
+**Nooit tweemaal.** De motor onthoudt het pad van de aangeboden clip (`clip_aangeboden`). Auto-
+posten gevolgd door een klik op de knop doet niets en de knop staat dan uit; een nieuwe clip is
+een nieuw pad en dus weer deelbaar. Een aanbod dat je zelf uit de chat verwijderde wordt niet
+opnieuw aangeboden door de knop: de bewaarde clip blijft in de clipmap en je kunt hem via de
+gewone bestandsknop (+) opnieuw aanbieden. Het onthouden blijft bewust alleen in het
+geheugen: na een herstart bestaat "de laatste clip" niet meer (zie `ClipsBeheer::laatste`).
+
+**Alleen in een gesprek.** De auto-post kijkt op het moment van `Klaar` naar `voice.is_some()`.
+Een clip die klaarkomt terwijl je niet in een gesprek zit wordt niet achteraf alsnog gepost
+als je later joint; dan is de knop er. De instelling staat in `config.toml` onder `[clips]`
+als `auto_delen` (standaard `true`, `#[serde(default)]`, een test bewaakt een oude config).
+
+**Platform.** Clips bestaan alleen op Windows (macOS-stub, `aanwezig() == false`), dus de knop
+en de schakelaar zijn alleen daar te zien. Een Mac kan een aangeboden clip wel downloaden en
+openen als elk ander bestand.
+
+**Waar de knop zit.** In het Clips-tabblad, naast "Save last 60 s" en "Open folder". Geen
+extra plek in de composer: de hotkey is de snelle route, de knop de terugval.
+
+**Wat je niet mag omdraaien:** zie de sectie "Clip delen" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

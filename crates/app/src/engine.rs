@@ -362,6 +362,10 @@ pub enum UiCommand {
     /// Nú de laatste `venster_sec` seconden als clip wegschrijven. Ook via de globale
     /// hotkey, die hier op hetzelfde kanaal uitkomt.
     ClipseNu,
+    /// De laatste clip als bestandsaanbod in het algemene kanaal (beslissing 44).
+    DeelLaatsteClip,
+    /// Clips automatisch delen (alleen in een gesprek) aan of uit.
+    ZetClipsAutoDelen(bool),
     /// Welk scherm er voor clips opgenomen wordt (naam uit de bronlijst). Leeg =
     /// automatisch het eerste.
     ZetClipMonitor(String),
@@ -498,6 +502,7 @@ pub fn spawn(
         clips: clips_beheer,
         clip_hotkey_verzender,
         clip_hotkey_ontvanger,
+        clip_aangeboden: None,
         typing_tot: HashMap::new(),
         typing_verzonden: HashMap::new(),
         peer_status: HashMap::new(),
@@ -607,6 +612,11 @@ struct Engine {
     /// dezelfde weg als het ClipseNu-commando.
     clip_hotkey_verzender: std::sync::mpsc::Sender<()>,
     clip_hotkey_ontvanger: std::sync::mpsc::Receiver<()>,
+    /// De clip die al als bestandsaanbod de chat in is gegaan (beslissing 44). Eén pad,
+    /// want alleen "de laatste clip" is deelbaar; een nieuwe clip is een ander pad en
+    /// dus weer deelbaar. Bewust niet bewaard over herstarts: na een herstart is er
+    /// geen "laatste clip" meer.
+    clip_aangeboden: Option<PathBuf>,
     /// Vluchtige typindicaties: tot wanneer deze peer in dit kanaal aan het typen is.
     /// Geen oplog, geen doorgifte — na een paar seconden stilte of een verbreking is de
     /// betekenis weg en mag de administratie dat ook zijn.
@@ -748,8 +758,13 @@ impl Engine {
                     // keten signaleren. Een klaargekomen clip krijgt hetzelfde
                     // geluidje als een stream die start — het is ook een "er wordt
                     // nu iets voor je opgenomen/geleverd"-moment.
-                    if let Some(_pad) = self.clips.tik() {
+                    if let Some(pad) = self.clips.tik() {
                         self.geluid(crate::geluid::Geluid::StreamAan);
+                        // `Klaar` komt pas na het sluiten van het bestand, dus het is
+                        // compleet. Buiten een gesprek niets: dan is de clip van jou.
+                        if self.cfg.clips.auto_delen && self.voice.is_some() {
+                            self.deel_clip(&pad);
+                        }
                     }
                     if let Some(f) = self.clips.fout() {
                         if self.fout.is_none() {
@@ -2030,6 +2045,18 @@ impl Engine {
                     self.fout = Some("Clips staan uit (instellingen → clips).".into());
                 }
             }
+            UiCommand::DeelLaatsteClip => match self.clips.laatste() {
+                Some(pad) => self.deel_clip(&pad),
+                None => self.fout = Some("Er is nog geen clip bewaard in deze sessie.".into()),
+            },
+            UiCommand::ZetClipsAutoDelen(aan) => {
+                if self.cfg.clips.auto_delen != aan {
+                    self.cfg.clips.auto_delen = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+            }
             UiCommand::ZetClipMonitor(naam) => {
                 let gekozen = if naam.trim().is_empty() {
                     None
@@ -2733,6 +2760,29 @@ impl Engine {
         }
     }
 
+    /// Biedt een bewaarde clip aan in het algemene kanaal, via dezelfde weg als elk ander
+    /// bestand (hashen op een losse taak, dan `FileMeta`). Alleen aanbieden: niemand haalt
+    /// een clip vanzelf op, want `is_afbeelding` is onwaar voor een mp4.
+    /// Dezelfde clip tweemaal aanbieden doet niets, ook niet na een klik op de knop.
+    fn deel_clip(&mut self, pad: &Path) {
+        if self.clip_aangeboden.as_deref() == Some(pad) {
+            return;
+        }
+        if !pad.is_file() {
+            self.fout = Some("De clip staat niet meer op schijf.".into());
+            return;
+        }
+        self.clip_aangeboden = Some(pad.to_path_buf());
+        let tx = self.file_tx.clone();
+        let pictures_dir = self.pictures_dir.clone();
+        tokio::spawn(hash_en_bied_aan(
+            pad.to_path_buf(),
+            Channel::GENERAL,
+            pictures_dir,
+            tx,
+        ));
+    }
+
     fn stuur_alles(&mut self, cmds: Vec<MeshCommand>) {
         for cmd in cmds {
             if let Err(e) = self.mesh.commands.try_send(cmd) {
@@ -3012,10 +3062,13 @@ impl Engine {
             ongelezen_dm: self.chat.ongelezen_dm().clone(),
             ongelezen_topic: self.chat.ongelezen_topic().clone(),
             niet_storen: self.niet_storen,
-            clips: self
-                .clips
-                .aanwezig()
-                .then(|| self.clips.weergave(&self.cfg.clips)),
+            clips: self.clips.aanwezig().then(|| {
+                let mut w = self.clips.weergave(&self.cfg.clips);
+                w.kan_delen = self.clips.laatste().is_some_and(|p| {
+                    self.clip_aangeboden.as_deref() != Some(p.as_path()) && p.is_file()
+                });
+                w
+            }),
             typing: self
                 .typing_tot
                 .iter()

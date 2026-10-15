@@ -26,6 +26,11 @@ pub struct ClipsWeergave {
     pub map: String,
     pub laatste: Option<String>,
     pub fout: Option<String>,
+    /// De instelling "clips meteen in de chat zetten".
+    pub auto_delen: bool,
+    /// De knop "Share last clip" mag werken: er is een clip, hij staat nog op schijf en
+    /// is niet al aangeboden. Door de motor ingevuld; het beheer weet het niet.
+    pub kan_delen: bool,
 }
 
 /// Ontleedt een sneltoets zoals `F9`, `ctrl+alt+c` of `shift+f2` naar
@@ -279,7 +284,14 @@ mod backend {
                 map: self.map.display().to_string(),
                 laatste: self.laatste.as_ref().map(|p| p.display().to_string()),
                 fout: self.fout.clone(),
+                auto_delen: cfg.auto_delen,
+                kan_delen: false,
             }
+        }
+
+        /// De laatste clip van deze sessie die klaar (volledig geschreven) is.
+        pub fn laatste(&self) -> Option<PathBuf> {
+            self.laatste.clone()
         }
     }
 
@@ -511,7 +523,12 @@ mod backend {
                 map: self.map.display().to_string(),
                 laatste: None,
                 fout: None,
+                auto_delen: cfg.auto_delen,
+                kan_delen: false,
             }
+        }
+        pub fn laatste(&self) -> Option<std::path::PathBuf> {
+            None
         }
     }
 

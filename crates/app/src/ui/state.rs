@@ -163,6 +163,12 @@ pub struct ClipsState {
     pub folder: String,
     /// The most recent clip, if any was saved this session.
     pub last_clip: Option<String>,
+    /// Post a freshly saved clip in the chat on its own (only while in a call).
+    #[serde(default)]
+    pub auto_share: bool,
+    /// "Share last clip" can work: a clip exists, is still on disk and not offered yet.
+    #[serde(default)]
+    pub can_share: bool,
     /// Last clip error that has not been replaced yet.
     pub error: Option<String>,
 }
@@ -823,6 +829,8 @@ impl UiState {
                 hotkey: c.hotkey.clone(),
                 folder: c.map.clone(),
                 last_clip: c.laatste.clone(),
+                auto_share: c.auto_delen,
+                can_share: c.kan_delen,
                 error: c.fout.clone(),
             }),
             wordle: wordle_state(snap, c.me, &hues),

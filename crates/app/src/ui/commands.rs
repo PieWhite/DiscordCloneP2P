@@ -564,6 +564,17 @@ pub fn clip_now(ui: &Ui) {
     send(ui, UiCommand::ClipseNu);
 }
 
+/// Offers the last saved clip in the general channel. No path: the engine knows which
+/// file that is (same rule as `open_file`).
+pub fn share_last_clip(ui: &Ui) {
+    send(ui, UiCommand::DeelLaatsteClip);
+}
+
+/// "Post clips in the chat automatically" on or off.
+pub fn set_clips_auto_share(ui: &Ui, on: bool) {
+    send(ui, UiCommand::ZetClipsAutoDelen(on));
+}
+
 /// Opent de clipmap in de verkenner. Het pad komt uit de snapshot, nooit uit een
 /// view: zelfde regel als `open_file`.
 pub fn open_clips_folder(ui: &Ui) {
