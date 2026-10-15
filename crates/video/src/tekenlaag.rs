@@ -479,3 +479,162 @@ fn deel_lus(monitor: HMONITOR, rx: Receiver<Arc<Tekening>>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fitcom_proto::control::Draw;
+    use fitcom_proto::PeerId;
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, GetDC, GetDIBits, ReleaseDC, CAPTUREBLT, SRCCOPY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::WDA_NONE;
+
+    /// Wat een schermopname op `kader` ziet, als BGRA.
+    fn opname(kader: RECT) -> Vec<u8> {
+        let (b, h) = (kader.right - kader.left, kader.bottom - kader.top);
+        // SAFETY: eigen DC's en bitmap, opgeruimd voor we terugkeren.
+        unsafe {
+            let scherm = GetDC(None);
+            let dc = CreateCompatibleDC(Some(scherm));
+            let bitmap = CreateCompatibleBitmap(scherm, b, h);
+            let oud = SelectObject(dc, bitmap.into());
+            BitBlt(
+                dc,
+                0,
+                0,
+                b,
+                h,
+                Some(scherm),
+                kader.left,
+                kader.top,
+                SRCCOPY | CAPTUREBLT,
+            )
+            .unwrap();
+            SelectObject(dc, oud);
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: b,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut px = vec![0u8; (b * h * 4) as usize];
+            GetDIBits(
+                dc,
+                bitmap,
+                0,
+                h as u32,
+                Some(px.as_mut_ptr().cast()),
+                &mut info,
+                DIB_RGB_COLORS,
+            );
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+            ReleaseDC(None, scherm);
+            px
+        }
+    }
+
+    /// Pixels waar rood duidelijk de boventoon voert. Niet "puur rood": een testproces zonder
+    /// DPI-bewustzijn krijgt op een geschaalde monitor een verkleinde opname, en dan is een
+    /// dunne lijn half gemengd met wat eronder staat.
+    fn rode_pixels(px: &[u8]) -> usize {
+        px.chunks_exact(4)
+            .filter(|p| {
+                i32::from(p[2]) > i32::from(p[1]) + 60 && i32::from(p[2]) > i32::from(p[0]) + 60
+            })
+            .count()
+    }
+
+    /// Op een echt bureaublad: de laag bij de deler tekent, en een schermopname ziet hem
+    /// niet (`WDA_EXCLUDEFROMCAPTURE`) — anders stonden de lijnen dubbel bij de kijkers en
+    /// in elke clip. Daarna dezelfde laag zonder uitsluiting, als bewijs dat er wél iets te
+    /// zien was. Een strook van 240 bij 90 pixels linksboven, een seconde of twee,
+    /// doorklikbaar en zonder focus; overgeslagen als er iets schermvullend vooraan staat.
+    #[test]
+    #[ignore = "toont kort een venster op het bureaublad"]
+    fn de_laag_tekent_en_blijft_buiten_de_opname() {
+        if schermvullend_vooraan().is_some() {
+            eprintln!("iets schermvullend vooraan; overgeslagen");
+            return;
+        }
+        let kader = RECT {
+            left: 0,
+            top: 0,
+            right: 240,
+            bottom: 90,
+        };
+        let mut t = Tekening::nieuw(true);
+        t.teken(
+            PeerId::new_random(),
+            &Draw {
+                stream_id: 1,
+                author: None,
+                line: 1,
+                color: 0,
+                width: 2,
+                start: 0,
+                points: vec![[2000, 32767], [63000, 32767]],
+            },
+        );
+        let t = Arc::new(t);
+
+        // Ook met de opname die de deler echt gebruikt: Windows.Graphics.Capture op de
+        // monitor, de linkerbovenhoek in fysieke pixels (ruim genomen voor DPI-schaling).
+        let d3d = crate::d3d::D3dContext::new().expect("D3D11");
+        // SAFETY: een punt opzoeken; geen eigendom.
+        let monitor = unsafe {
+            windows::Win32::Graphics::Gdi::MonitorFromPoint(
+                POINT { x: 0, y: 0 },
+                MONITOR_DEFAULTTONEAREST,
+            )
+        };
+        let wgc = || {
+            let bron = crate::capture::Bron {
+                naam: "test".into(),
+                soort: crate::capture::BronSoort::Monitor,
+                handle: monitor.0 as isize,
+            };
+            let mut c = crate::capture::Capture::start(&d3d, &bron).expect("opname");
+            let beeld = c.volgende_frame(Duration::from_secs(2)).expect("een beeld");
+            let (b, _, px) = d3d.lees_bgra(&beeld.textuur).expect("uitlezen");
+            let hoek: Vec<u8> = px
+                .chunks_exact(b as usize * 4)
+                .take(300)
+                .flat_map(|rij| rij[..600 * 4].to_vec())
+                .collect();
+            rode_pixels(&hoek)
+        };
+
+        let mut laag = Laag::nieuw(None).expect("laag buiten de opname");
+        laag.toon(&t, kader);
+        std::thread::sleep(Duration::from_millis(250));
+        let buiten = rode_pixels(&opname(kader));
+        let buiten_wgc = wgc();
+
+        // SAFETY: eigen venster, eigen thread.
+        unsafe { SetWindowDisplayAffinity(laag.hwnd, WDA_NONE) }.unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        let binnen = rode_pixels(&opname(kader));
+        let binnen_wgc = wgc();
+        drop(laag);
+        eprintln!(
+            "rode pixels, met uitsluiting / zonder: BitBlt {buiten} / {binnen}, WGC {buiten_wgc} / {binnen_wgc}"
+        );
+
+        assert!(
+            binnen > 100 && binnen_wgc > 100,
+            "de lijn hoort te zien te zijn zonder uitsluiting: {binnen}, {binnen_wgc}"
+        );
+        assert!(
+            buiten < binnen / 10 && buiten_wgc < binnen_wgc / 10,
+            "met uitsluiting ziet de opname de lijn toch: {buiten}, {buiten_wgc}"
+        );
+    }
+}

@@ -605,7 +605,7 @@ fn draw_row(snap: &AppSnapshot, sharing: &[(u32, String)], on: bool, has_lines: 
             commands::set_drawing(&ui, *stream, !on);
         }
     });
-    let clear = Btn::new("btn-clear-drawing", "Clear drawing")
+    let clear = Btn::new("btn-clear-drawing", "Clear")
         .kind(BtnKind::Ghost)
         .icon(Icon::Trash)
         .full_width()

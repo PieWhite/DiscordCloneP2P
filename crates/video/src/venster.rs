@@ -996,4 +996,74 @@ mod tests {
             std::thread::sleep(Duration::from_millis(16));
         }
     }
+
+    /// De invoer van het kijkvenster zonder echte muis: berichten rechtstreeks in de
+    /// wachtrij van het venster, dus de cursor van de gebruiker blijft waar hij is. Pen op
+    /// met D, een sleep met de linkerknop, Delete; daarna moet er een lijn en een
+    /// wisverzoek voor de deler klaarliggen, en een tekening met lijnen geeft een laag.
+    #[test]
+    #[ignore = "opent een echt venster"]
+    fn slepen_met_de_pen_wordt_een_lijn_voor_de_deler() {
+        use fitcom_proto::PeerId;
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+        let d3d = D3dContext::new().expect("D3D11");
+        let mut venster = Venster::open(&d3d, "FitCom — tekentest", 640, 360).expect("venster");
+        let hwnd = venster.hwnd;
+        let post = |msg: u32, wparam: usize, x: i32, y: i32| {
+            let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
+            // SAFETY: eigen venster; de berichten komen in onze eigen wachtrij.
+            unsafe { PostMessageW(Some(hwnd), msg, WPARAM(wparam), lparam) }.unwrap();
+        };
+        let pomp_even = |v: &mut Venster| {
+            let tot = Instant::now() + Duration::from_millis(100);
+            while Instant::now() < tot {
+                v.pomp();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        // Zonder toestemming van de deler doet de pen niets.
+        post(WM_KEYDOWN, VK_D.0 as usize, 0, 0);
+        post(WM_LBUTTONDOWN, 1, 10, 10);
+        post(WM_MOUSEMOVE, 1, 300, 180);
+        post(WM_LBUTTONUP, 0, 300, 180);
+        pomp_even(&mut venster);
+        assert!(venster.tekenwerk(7).is_empty(), "tekenen staat uit");
+
+        venster.zet_tekening(Arc::new(Tekening::nieuw(true)));
+        post(WM_KEYDOWN, VK_D.0 as usize, 0, 0);
+        post(WM_LBUTTONDOWN, 1, 0, 0);
+        post(WM_MOUSEMOVE, 1, 1, 1); // te klein: geen punt
+        post(WM_MOUSEMOVE, 1, 320, 180);
+        post(WM_MOUSEMOVE, 1, 639, 359);
+        post(WM_LBUTTONUP, 0, 639, 359);
+        post(WM_KEYDOWN, VK_DELETE.0 as usize, 0, 0);
+        pomp_even(&mut venster);
+
+        let werk = venster.tekenwerk(7);
+        match werk.as_slice() {
+            [ControlMsg::Draw(d), ControlMsg::DrawClear(c)] => {
+                assert_eq!((d.stream_id, d.author, d.start), (7, None, 0));
+                assert_eq!(d.points.len(), 3, "{:?}", d.points);
+                assert!(d.points[0][0] < 200 && d.points[0][1] < 200, "linksboven");
+                assert!(
+                    d.points[2][0] > 65000 && d.points[2][1] > 65000,
+                    "rechtsonder"
+                );
+                assert_eq!(c.scope, DrawClearScope::MINE);
+            }
+            andere => panic!("verwachtte een lijn en een wisverzoek: {andere:?}"),
+        }
+
+        // Wat de deler terugstuurt komt op een laag boven het beeld.
+        let Some(ControlMsg::Draw(d)) = werk.first().cloned() else {
+            unreachable!()
+        };
+        let mut t = Tekening::nieuw(true);
+        assert!(t.teken(PeerId::new_random(), &d));
+        venster.zet_tekening(Arc::new(t));
+        assert!(venster.teken().is_some_and(|t| t.laag.is_some()));
+        pomp_even(&mut venster);
+    }
 }
