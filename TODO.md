@@ -2,40 +2,31 @@
 
 Bewust niet in v1. De architectuur moet deze items kunnen opnemen zonder herontwerp.
 
-## Gekozen door Rick, nog te bouwen (2026-10-15)
-Volgorde is een voorstel: 1 bouwt voort op Spotify delen, 2 is wat je tijdens het gamen
-het meest gebruikt. Per item eerst de context dichttimmeren, dan pas bouwen.
+## Nagekomen bij 1.10.0 (2026-10-15)
+De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewust liggen.
 
-1. **Luisteraars bedienen de muziek.** Pauze/volgende-knoppen bij de luisteraars, en een
-   Spotify-link in de chat die de DJ in zijn wachtrij kan zetten. Pauze en volgende gaan
-   lokaal bij de DJ via dezelfde mediabediening waar `muziek.rs` de titel al uit leest
-   (`TryTogglePlayPauseAsync`, `TrySkipNextAsync`); een `open.spotify.com/track/…`-link
-   opent bij de DJ als `spotify:track:…`. Geen Web API, invariant 1 blijft heel. Nieuw
-   control-bericht (additief) van luisteraar naar DJ; de DJ voert alleen uit voor wie in
-   het gesprek zit, en het track-id gaat net als het YouTube-id eerst door een strikte
-   controle (B-03-klasse). Open vraag: mag iedereen meteen skippen, of eerst stemmen?
-2. **Push-to-talk en push-to-mute.** Een globale toets, ook terwijl een spel vooraan
-   staat. Twee standen: ingedrukt = praten (push-to-talk), of ingedrukt = stil
-   (push-to-mute). De clip-hotkey laat al zien hoe een globale toets binnenkomt. Toets en
-   stand in `config.toml`, `#[serde(default)]`. Raakt de VAD-poort in `opname_lus`: de toets
-   gaat vóór de VAD, en de spreekring moet blijven volgen wat er echt verstuurd wordt.
-3. **"Speelt X" naast je naam.** Het spel dat vooraan staat, als regel onder je naam bij de
-   anderen. Lokaal bepaald (vensternaam of exe van het voorgrondvenster, alleen als hij
-   schermvullend is, en een korte lijst bekende niet-spellen eruit), meegestuurd zoals de
-   eigen status. Nooit vaker dan bij een echte wissel over de draad, en niet in `UiState`
-   als hij elke tik kan veranderen. Uit te zetten in de instellingen.
-4. **Laatste clip in één klik delen.** Een knop "Share last clip" (en eventueel een
-   instelling "clip meteen in de chat zetten") die de net bewaarde clip via de gewone
-   bestandsdeling aanbiedt. Clips en bestandsdeling bestaan allebei al; dit is de koppeling,
-   geen nieuwe pijplijn. Let op de grootte: een clip van 120 minuten is gigabytes, dus
-   alleen aanbieden, nooit automatisch downloaden zoals bij afbeeldingen.
-5. **Tekenen op een gedeeld scherm.** Kijkers tekenen op de stream ("ga daarheen") en de
-   deler ziet het. Lijnen als kleine control-berichten (punten, kleur, wie), niet in het
-   videobeeld gebakken. Bij de kijker tekent het kijkvenster ze zelf over het beeld. Bij de
-   deler is een doorklikbaar, transparant venster bovenop het scherm nodig. Dat is het
-   grootste werk en het gevoeligste punt voor invariant 4: een spel in exclusive fullscreen
-   laat geen venster bovenop toe, en het mag geen frames kosten. Lijnen vervagen vanzelf na
-   een paar seconden.
+- **De mac-code van 1.10.0 is nooit gecompileerd.** Alle vijf de features hebben
+  mac-takken of lege stubs achter `#[cfg]`, en vanaf Windows is de workspace niet voor mac
+  te typechecken (`ring` wil een C-compiler). Eerst `cargo build` op de Mac vóór een
+  mac-zip, en een manier om mac-code vanaf Windows te typechecken zou dit voorkomen.
+- **Muziek (beslissing 41).** Geen rem op herhaald skippen: elke geldige klik start een
+  korte thread bij de DJ. Luisteraars zien niet of de muziek speelt (één wisselknop, bewust).
+  Geen pauze/volgende-knoppen voor de DJ zelf in de app.
+- **Push-to-talk (beslissing 42).** Op macOS niet gebouwd (`CGEventSourceKeyState`; de
+  muisknoppen vragen daar een ander pad). Een "druk een toets"-vak in plaats van de
+  keuzelijst, door de toetsentabel in de motor af te tasten. Een waarschuwing als een spel
+  dat als administrator draait het pollen blokkeert.
+- **Speelt X (beslissing 43).** Geen spellendatabase: een schermvullend programma dat niet
+  op `GEEN_SPEL` staat toont als "Playing …". Geen naam-override per spel. Op macOS niet
+  gebouwd (vraagt Accessibility- of schermopnamerechten).
+- **Clip delen (beslissing 44).** Een clip die buiten een gesprek klaarkomt wordt niet
+  alsnog gepost als je later een gesprek ingaat (de knop dekt dat). De knop staat alleen op
+  het Clips-tabblad; een plek bij de gespreksknoppen ligt meer voor de hand. Geen
+  voortgang tijdens het hashen van een grote clip.
+- **Tekenen (beslissing 45).** De aan/uit-schakelaar van de deler staat niet in
+  `config.toml`. Geen laag over een gedeeld *venster*, alleen over een monitor. Pen en
+  laag op macOS. Geen limiet per kijker op tekenberichten. Meten wat de laag kost boven een
+  venstergame met titelbalk.
 
 ## Overig
 - **Camera-opname op macOS.** De camera is op Windows gebouwd (Media Foundation, zie
