@@ -615,7 +615,8 @@ stap staan in `docs/PLAN-ZONDER-TAILSCALE.md`. Kort:
 - **Fase A, release 1 (protocol 5 → 6):** Ed25519-sleutel per installatie met een getekende
   handshake (B-05) en versleutelde, geauthenticeerde media (B-18). Plus een meting van de
   router van elke pc (alleen lezen). Verbinden blijft over Tailscale; iedereen werkt tegelijk
-  bij.
+  bij. **Gebouwd op 2026-10-19, nog niet uitgegeven en nog niet met echte peers getest**
+  (`docs/OVERDRACHT.md` beslissing 46, `docs/TESTPLAN.md` "Protocol 6").
 - **Fase B, release 2 (additief):** uitnodigingscodes, automatische port mapping
   (UPnP/PCP/NAT-PMP), adressen uitwisselen via de mesh, één mediasocket per proces met
   roaming. Daarna verbinden twee peers zonder Tailscale.

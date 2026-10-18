@@ -1415,3 +1415,79 @@ versie, en een peer op 1.9.0 als je er een hebt.
 16. **macOS** (alleen te zien): een Mac die kijkt kan niet tekenen (geen menu, geen hint) maar
     ziet de lijnen op zijn tegel; een Mac die deelt heeft geen laag, zijn kijkers tekenen en
     zien elkaar, hij ziet het op zijn eigen tegel.
+
+## Protocol 6: sleutels, getekende handshake, versleutelde media (2026-10-19, beslissing 46)
+
+Fase A van `docs/PLAN-ZONDER-TAILSCALE.md`. **Nog niets hiervan tussen twee machines.**
+
+Op deze pc geverifieerd:
+- Met tests in `crates/net`: een doorgestuurde handtekening krijgt geen `HelloAck`; een
+  onbekende sleutel krijgt een stille close; een `Hello` op 5 krijgt alleen de versie; een peer
+  op 5 die sluit met "protocolversie" verschijnt als versieverschil; een andere sleutel voor
+  dezelfde `PeerId` wordt geweigerd met `IdentityChanged` zonder belstorm; twee echte meshes
+  leiden dezelfde mediasleutels af en een derde gaat niet open; de AEAD weigert een vervalste
+  tag, een herhaling, een te oud pakket en een onbekende index (zonder ontsleutelpoging); het
+  venster klopt met een referentiemodel.
+- Drie motoren op loopback met echte `identity.toml`/`config.toml` (zonder venster): verse
+  installaties pinnen elkaars sleutel vanzelf, na een herstart wordt niets opnieuw geleerd,
+  en een peer met dezelfde `peer_id` maar een nieuwe sleutel wordt door de andere twee
+  geweigerd terwijl die twee verbonden blijven.
+- De routerprobe op Ricks router: PCP yes, NAT-PMP yes, UPnP no, publiek IPv4, geen IPv6 —
+  hetzelfde als `tailscale netcheck` op 2026-10-18.
+- De stoottest op loopback is niet slechter geworden (beslissing 46, "Gemeten").
+
+**Vóór de release:**
+- **A-vooraf:** kijk in Settings → Network (versie achter elk adres) of beide vrienden echt op
+  1.10.1 zitten. Hun auto-update faalde stil zolang `fitcom-updater.exe` niet met de hand
+  vervangen was. Wie op 5 blijft valt na deze release uit de mesh.
+- **De configs:** staat in alle drie de `config.toml`'s bij elke peer het tailnet-adres
+  (`100.x`) of de MagicDNS-naam? Een sleutel wordt alleen op het tailnet geleerd, dus een peer
+  op een LAN- of Radmin-adres (peer-3 stond op een Radmin-IP) komt er na de update niet meer
+  in, met "No key known for this peer".
+
+**Bij de release: alle drie tegelijk bijwerken.**
+
+1. **Eerste start na de update.** Alle drie op deze versie. Binnen een minuut staat iedereen
+   online, zonder dat iemand iets deed. In elke `config.toml` staat nu bij elke peer een
+   `public_key = "…"` naast `known_id`, en in `identity.toml` een `private_key`. In de log
+   eenmaal per peer "sleutel vastgepind".
+2. **Tweede start.** Alle drie herstarten: weer online, geen nieuwe "sleutel vastgepind".
+3. **Iemand blijft achter.** Eén peer start nog 1.10.1. De anderen zien bij hem "Runs an older
+   protocol, this build speaks 6"; hij ziet bij hen "Runs protocol 6, this build speaks 5".
+   Niet "offline".
+4. **Andere sleutel, zelfde peer.** Kopieer bij C `identity.toml` weg en zet er een voor in de
+   plaats met dezelfde `peer_id` maar zonder `private_key` (C maakt dan een nieuwe sleutel).
+   A en B tonen bij C "A different identity answered at this address." en C komt er niet in.
+   Zet het origineel terug: C is weer welkom. (Echt herstellen na een herinstallatie: bij A en
+   B de `known_id` en `public_key` van C uit `config.toml` halen.)
+5. **Voice.** Gesprek met z'n drieën, tien minuten. Klinkt als 1.10.1: geen tikken, geen
+   extra vertraging. Spreekringen kloppen.
+6. **Schermdelen op 12 Mbit/s.** A deelt 1080p60, B en C kijken vijf minuten, met
+   `FITCOM_SPOOR` op een map gezet (de sporen van de kijker). Vergelijk met een spoor van
+   1.10.1: verlies (`verlies-<id>.csv`) en aankomst → getoond (`kijker-<id>.csv`) niet hoger.
+   Let op: de meter van de deler telt nu de 28 bytes van de versleuteling mee, dus zijn
+   bitrate staat ~2,5% hoger voor hetzelfde beeld. Een slechter resultaat is een blokkade voor
+   de release, geen afweging.
+7. **Bureaubladgeluid en Spotify.** A deelt beide; B en C horen het, met eigen volume.
+8. **Camera.** Een Windows-peer deelt zijn camera; de anderen zien hem.
+9. **mac ↔ Windows.** De Mac (bouwt uit de broncode) en een Windows-pc verbinden, pinnen
+   elkaars sleutel, voice beide kanten op, de Mac kijkt naar een gedeeld scherm van Windows
+   en Windows naar de Mac. Dit is de handshake die nog nooit op echte machines liep; de
+   mac-code is vanaf Windows niet eens gecompileerd (`crates/video/examples/mac_keten.rs`
+   alleen nagelezen).
+10. **Herverbinden.** Tailscale bij B even uit en weer aan: B komt terug, voice en beeld
+    lopen weer zonder opnieuw intekenen. In de log van A geen "verbinding geweigerd".
+11. **Opnieuw deelnemen en kijken.** Verlaat het gesprek en kom terug, sluit een kijkvenster
+    en open het opnieuw: geluid en beeld komen meteen terug.
+12. **Peer op een niet-tailnetadres.** Zet bij één peer tijdelijk een LAN-adres in
+    `config.toml` (en haal zijn `public_key` weg). Hij komt niet binnen, met "No key known for
+    this peer. Keys are only learned over the tailnet." Zet het tailnetadres terug.
+13. **Routerregel (A0).** Settings → Network → Reachability toont na ~10 s een regel als
+    "Router: PCP yes · NAT-PMP yes · UPnP no · public IPv4 · no IPv6". **Beide vrienden sturen
+    hier een screenshot van**, met het netwerk op en **zonder Tailscale-exitnode** (met een
+    exitnode vindt hij de router niet). Staat er "Router: not found", wacht dan een minuut:
+    hij probeert het één keer opnieuw. Kijk in de router of er na een minuut geen mapping van
+    FitCom meer staat; en nog eens na de app 11 s na het starten hard af te sluiten (dan mag
+    hij blijven staan tot zijn lease verloopt, hooguit twee uur).
+14. **macOS:** vraagt de Mac bij de eerste start om toegang tot het lokale netwerk (UPnP zoekt
+    met een multicast)? Dat is nieuw; noteer het, en of de regel daarna klopt.

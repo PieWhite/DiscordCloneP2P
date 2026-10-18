@@ -125,7 +125,8 @@ Zelfde codebase, cfg-geselecteerde siblingmodules onder `crates/video/src/mac/`
   (Windows: `ID3D11Texture2D`-alias, mac: `CVPixelBuffer`-houder). Introduceer geen
   tweede platformtype in gedeelde code.
 - **Op de draad staat H.264 in Annex-B** met SPS/PPS op elk keyframe; de mac-codec
-  vertaalt van/naar AVCC. Protocol 5, geen bump — mac↔Windows interop is de eis.
+  vertaalt van/naar AVCC. Geen bump bij de port (toen protocol 5) — mac↔Windows interop is
+  de eis.
 - **Geen automatische update op mac**: `fitcom-updater` is daar een lege stub, dus
   `engine.rs::zoek_update` slaat de release-feed over. Versies blijven per werkafspraak
   gelijk; de mac bouwt uit de broncode.
@@ -443,6 +444,53 @@ mag omdraaien:
   nooit via `UiState`.
 - **macOS:** alleen de tegels. Geen pen in het kijkvenster en geen laag bij de deler
   (`mac/tekenlaag.rs` is een lege `Deellaag`).
+
+## Sleutels en versleutelde media (protocol 6, 2026-10-19)
+Beslissing 46 in `docs/OVERDRACHT.md`, fase A van `docs/PLAN-ZONDER-TAILSCALE.md`. Tailscale is
+niet langer de beveiligingsgrens: de handshake bewijst wie er belt en alle media is versleuteld.
+Wat je niet mag omdraaien:
+
+- **De `PeerId` blijft de UUID; de sleutel staat ernaast** (`identity.toml`, en per peer
+  `known_id` + `public_key` in `config.toml`). Nooit `PeerId = hash(sleutel)`: elke op in de
+  store draagt een UUID-auteur, en een nieuwe `PeerId` maakt de hele geschiedenis wees.
+- **TLS blijft anoniem; de handtekening over de exporter is de controle**
+  (`fitcom_proto::control::Handtekening`, rol `client`/`server`). Ga niet "voor de zekerheid"
+  ook certificaten pinnen: één plek voor vertrouwen, en die is getest.
+- **Geen `HelloAck` vóór het oordeel van de actor** (B-05a). Wie niet binnenkomt krijgt een
+  stille close, zonder reden — ook bij een `Hello` met onze eigen `PeerId`. Alleen een peer op
+  een andere protocolversie krijgt iets: `HelloAck::alleen_versie()`, met niets erin dan de
+  versie.
+- **Eén beoordeling voor bellen en opnemen** (`Actor::beoordeel`). Twee sets regels lopen uit
+  elkaar, en dan is één van de twee paden de achterdeur.
+- **Een sleutel leren gebeurt alleen op een tailnet- of loopbackadres** (`mesh::mag_leren`),
+  inkomend bovendien alleen vanaf het opgezochte IP van dat target. Verruim dat nooit naar een
+  LAN- of publiek adres: daar is de eerste die zich meldt de eigenaar. Een sleutel voor een
+  publiek adres komt in fase B uit een uitnodigingscode.
+- **Adressen zijn hints, nooit toegang.** Een gepinde sleutel komt binnen vanaf elk adres; een
+  ongepinde nergens buiten het tailnet.
+- **Een korte sessie is een afwijzing** (`KORTE_SESSIE`, B-40): anders belt een peer met een
+  verkeerde pin elke seconde, met bij de ander elke seconde een online/offline-ronde.
+- **Media gaat altijd door de AEAD, zonder onversleutelde terugval** (`mediasleutel.rs`). De
+  teller zit in de nonce: een sleutel krijgt nooit een verse teller (`MediaSleutels::zet`
+  vervangt een zendsleutel van dezelfde verbinding niet), en twee richtingen delen nooit een
+  sleutel (de context is de `PeerId` van de afzender).
+- **Sleutels leven alleen in de tabel van de mesh-actor.** Nooit in `PeerStatus`, `Snapshot`,
+  `UiState` of een logregel; `MediaSleutels` en `Identity` hebben bewust geen `Debug` die
+  sleutels toont. `MediaSleutels::koppel` is voor tests en voorbeelden, nooit naast een mesh.
+- **Pas markeren ná geslaagd ontsleutelen**, en een onbekende index kost geen cryptografie.
+  Het replayvenster is per ontvangende socket, plus een hoogste-tellermerk per sleutel over
+  alle sockets; haal dat merk niet weg "omdat er al een venster is": dan neemt een nieuwe
+  socket (opnieuw deelnemen, opnieuw kijken) elk oud pakket nog eens aan.
+- **Een consument vertrouwt de `PeerId` uit `MediaSocket::ontvang`, nooit een bronadres.**
+  Breng geen bronadres- of bronpoortcontrole terug als "extra" laag; dat was B-28.
+- **`MAX_MEDIA_PAYLOAD` blijft 1100** zolang het grootste pakket met envelop, IPv6 en UDP
+  onder de 1280 blijft; een test in `proto/src/media.rs` bewaakt dat.
+- **De routerprobe (A0) meet één keer, 10 s na het starten, op een eigen runtime op een
+  blokkeerthread** (portmapper zoekt de gateway synchroon), nooit op de mesh-threads of een
+  mediathread. De tijdelijke mapping gaat er meteen weer af, met een tweede probe als
+  wachtpost (anders breekt het weggooien van de client het vrijgeven af). "Geen router
+  gevonden" is een eigen uitkomst met één nieuwe poging, nooit "router kan niets". Geen
+  interfacelijst via netwatch (WMI op Windows) en geen ✓/✗ in de UI-regel (niet in de fonts).
 
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het

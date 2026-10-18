@@ -72,7 +72,9 @@ presenteren; het venster bewaakt zelf de beeldverhouding.
 Video kan niet over de voice-poort: die is bezet zodra je in een gesprek zit. De kijker
 bindt daarom per stream zijn eigen poort en zet die in `StreamSubscribe.media_port`.
 Daardoor is er niets te demultiplexen — één socket, één stream, één thread, één venster —
-en botsen video en voice nergens.
+en botsen video en voice nergens. *(Fase B5 van `docs/PLAN-ZONDER-TAILSCALE.md` gaat naar één
+mediasocket per proces, omdat achter een NAT elke socket een eigen gat is; sinds protocol 6
+draagt elk pakket al de sleutel van zijn afzender, dus demultiplexen wordt dan veilig.)*
 
 ### NV12 naar BGRA
 De decoder levert NV12, een swapchain wil BGRA. Die omzetting gaat via
@@ -148,8 +150,10 @@ bij een botsing wint de verbinding waarvan de initiator de laagste UUID heeft.
 
 ```rust
 enum ControlMsg {
-    Hello { protocol_version: u32, peer_id: Uuid, display_name: String, app_version: String },
-    HelloAck { protocol_version: u32, peer_id: Uuid, display_name: String, app_version: String },
+    Hello { protocol_version: u32, peer_id: Uuid, display_name: String, media_port: u16,
+            app_version: String,
+            public_key: Vec<u8>, signature: Vec<u8>, media_index: u32 },  // protocol 6
+    HelloAck { /* dezelfde velden */ },
     Ping { nonce: u64 },
     Pong { nonce: u64 },
 
@@ -227,6 +231,30 @@ niet kent ziet `is_known() == false`, logt de aankondiging en tekent er niet op 
 precies het gedrag dat bij een onbekende soort hoort, dus een oude peer verliest alleen de
 camera en blijft voor al het andere werken.
 
+### De handshake (protocol 6, beslissing 46)
+
+De TLS-laag van QUIC is anoniem: beide kanten accepteren elk certificaat. Wat een verbinding
+aan een identiteit bindt staat in `Hello`/`HelloAck`:
+
+- `public_key`: de Ed25519-sleutel van deze installatie (32 bytes, uit `identity.toml`).
+- `signature`: Ed25519 over `export_keying_material(32, "fitcom/hello/v6", rol)` van déze
+  TLS-sessie, met rol `client` (wie belt) of `server` (wie opneemt). Een man-in-the-middle
+  heeft twee sessies met twee exporters, dus een doorgestuurde handtekening klopt nooit; de
+  rol voorkomt dat een handtekening als antwoord terug te kaatsen is.
+- `media_index`: de sessie-index waarop de afzender media van de ontvanger verwacht (zie
+  "Media" hieronder). De ontvanger van media kiest hem, nooit 0.
+
+Wie opneemt leest de `Hello`, controleert de handtekening en vraagt de mesh-actor of deze
+sleutel met deze `PeerId` binnen mag (zie "Inkomende verbindingen koppelen"). Pas dan gaat de
+`HelloAck` weg; wie niet binnenkomt krijgt een stille close. Een `Hello` met een andere
+`protocol_version` krijgt een `HelloAck` met alleen de versie (nil-`PeerId`, lege naam, poort
+0, geen sleutel), zodat de ander "update nodig" ziet. Wie belt controleert de handtekening van
+de `HelloAck` en laat de actor de pins beoordelen.
+
+De `PeerId` blijft de UUID: hij staat niet in de handtekening en is gebonden via de pin in
+`config.toml` (`known_id` + `public_key`). Een sleutel leren (trust-on-first-use) mag alleen op
+een tailnet- of loopbackadres (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `127/8`, `::1`).
+
 Regels voor uitbreiding:
 - Alleen **toevoegen** aan het eind van enums en structs. Nooit varianten hernummeren of verwijderen.
 - Nieuwe struct-velden krijgen `#[serde(default)]`.
@@ -234,7 +262,33 @@ Regels voor uitbreiding:
 - Onbekende varianten worden gelogd en genegeerd, niet als fout behandeld.
 
 ### Media (UDP, onbetrouwbaar)
-Vaste 16-byte header, daarna payload. Handgeschreven, geen serde — per-pakket overhead telt.
+Sinds protocol 6 is elk pakket een AEAD-envelop om de oude header en payload heen
+(`crates/net/src/mediasleutel.rs`, beslissing 46):
+
+```
+offset  size  veld
+0       4     sessie-index  u32 BE   gekozen door de ontvanger (`media_index` uit zijn Hello)
+4       8     teller        u64 BE   per sleutel, begint bij 1
+12      n     AES-256-GCM(mediaheader 16 + payload)
+12+n    16    tag
+```
+
+- AAD = de eerste 12 bytes (index en teller). Nonce = 4 nul-bytes, dan de teller (BE).
+- Sleutel per richting per verbinding: `export_keying_material(32, "fitcom/media/v6", 16 bytes
+  van de PeerId van de afzender)` op de QUIC-verbinding. Beide kanten rekenen beide uit.
+- De mesh-actor zet de sleutels bij verbinden (alleen voor de verbinding die de botsing won),
+  laat de ontvangstsleutel van een verbroken verbinding nog 5 s staan en ruimt daarna op. De
+  tabel is een `ArcSwap`; mediathreads lezen hem zonder lock.
+- Een onbekende index is één tabelopzoeking, geen cryptografie. Teller en index 0 zijn
+  gereserveerd.
+- Replayvenster van 2048 tellers per (ontvangende socket, index), plus een hoogste-tellermerk
+  per sleutel over alle sockets; pas gemarkeerd ná geslaagd ontsleutelen.
+- Wat niet opengaat (onbekende index, foute tag, herhaling, te oud) wordt stil weggegooid,
+  net als rommel die te kort is. `MediaSocket::ontvang` levert de bewezen afzender (`PeerId`),
+  geen bronadres.
+
+Binnen die envelop de vaste 16-byte header, daarna payload. Handgeschreven, geen serde —
+per-pakket overhead telt.
 
 ```
 offset  size  veld
@@ -246,7 +300,9 @@ offset  size  veld
 14      2     frag_index  u16
 ```
 
-Videoframes worden gefragmenteerd op 1100 byte payload (onder Tailscale's MTU).
+Videoframes worden gefragmenteerd op 1100 byte payload: met header, envelop, IPv6 en UDP
+1192 bytes (1194 voor een pariteitsfragment), onder de 1280 die elk IPv6-pad haalt. Een test
+in `crates/proto/src/media.rs` pint dat vast.
 Een frame is compleet als alle fragmenten 0..n binnen zijn met bit1 gezet op de laatste.
 Incomplete frames worden gedropt; bij verlies van een keyframe vraagt de ontvanger via
 control om een nieuwe IDR.
@@ -421,7 +477,7 @@ bericht, want elke peer mag een subkanaal aanmaken/hernoemen en dus ook verwijde
 een latere `SetTopicTitle` alsnog van de `DeleteTopic`, dan komt het subkanaal terug — net
 zo'n gewone laatste-schrijver-wint-uitkomst als bij een bijnaam.
 
-### Protocolversie: 1 → 2, 2 → 3, 3 → 4, 4 → 5
+### Protocolversie: 1 → 2, 2 → 3, 3 → 4, 4 → 5, 5 → 6
 
 **1 → 2**, bij de kanalen-uitbreiding (DM's): `VersionVector` en de bestandsoverdracht-
 header (`crates/net/src/filestream.rs`) veranderden allebei van vorm om het kanaal mee te
@@ -465,6 +521,16 @@ dan op één stuk *te veel* uit — waarna `Reassembler::compleet()` nooit meer 
 er van die deler helemaal geen beeld meer verschijnt. Stilzwijgend kapot in plaats van een
 nette `VersionMismatch`, precies de klasse fout die de eerdere bumps ook moesten
 voorkomen.
+
+**5 → 6**, bij de cryptografische identiteit en de versleutelde media (beslissing 46, fase A
+van `docs/PLAN-ZONDER-TAILSCALE.md`). De nieuwe velden in `Hello`/`HelloAck` zijn op zichzelf
+additief (een peer op 5 decodeert ze en negeert ze), maar een peer op 6 laat niemand meer
+binnen zonder geldige handtekening, en elk mediapakket heeft een andere vorm op de draad. Dat
+is met defaults niet op te vangen. Een peer op 5 krijgt de versie-alleen-`HelloAck` en ziet
+een nette `VersionMismatch`; andersom sluit een peer op 5 met de reden "protocolversie" voordat
+zijn antwoord aankomt, en die reden telt bij 6 ook als versieverschil (versie onbekend).
+Geverifieerd door de `protocol-reviewer`-agent vóór het committen, in twee stappen
+(handshake en media).
 
 ### Waarom `seq` per (auteur, kanaal) telt, niet per auteur
 
@@ -831,13 +897,16 @@ Het triggert alleen niets meer.
 
 ## Verbindingsbeheer
 - Bij start verbindt elke peer met alle geconfigureerde adressen.
-- Falende verbindingen: exponentiële backoff, 1s → 30s cap, oneindig doorproberen.
+- Falende verbindingen: exponentiële backoff, 1s → 30s cap, oneindig doorproberen. Een
+  sessie die korter dan 10 s duurde telt als afwijzing en zet de backoff niet terug (B-40):
+  anders belde een peer met een verkeerde pin elke seconde opnieuw.
 - Liveness via QUIC keep-alive (5s) en idle timeout (15s); RTT komt uit `Connection::rtt()`.
   `Ping`/`Pong` bestaat in het protocol en wordt beantwoord, maar we sturen zelf niets —
   de transportlaag doet dit beter dan wij op applicatieniveau kunnen.
 - Dialen krijgt een eigen deadline van 4s. QUIC loopt over UDP, dus een peer die uit staat
   weigert niets maar zwijgt; zonder deadline blijft de UI 15s op "verbinden…" staan.
-- Peer-status in de UI: `Offline` / `Connecting` / `Online` / `VersionMismatch` / `IdentityChanged`.
+- Peer-status in de UI: `Offline` / `Connecting` / `Online` / `VersionMismatch` /
+  `IdentityChanged` / `UnknownKey` (geen sleutel vastgepind en een adres buiten het tailnet).
 - Eén of twee peers offline is een normale toestand, geen foutpad.
 
 ### Botsende verbindingen
@@ -854,23 +923,35 @@ idempotent en worden bij elke (her)verbinding opnieuw gesynchroniseerd. Bouw hie
 aparte hertransmissie voor — de oplog ís het herstelmechanisme.
 
 ### Inkomende verbindingen koppelen
-Een inkomende verbinding wordt in deze volgorde aan een geconfigureerde peer gekoppeld:
+Een inkomende beller met een geldige handtekening wordt, nog vóór de `HelloAck`, in deze
+volgorde aan een geconfigureerde peer gekoppeld (`Actor::koppel_inkomend`):
 
-1. Op `PeerId`, als we die al kennen (trust-on-first-use uit een eerdere sessie).
-2. Op het volledige bronadres, **ip én poort**. Peers dialen vanaf dezelfde socket
-   waarop ze luisteren, dus de bronpoort is hun `control_port`.
-3. Op alleen het IP, maar uitsluitend als dat ondubbelzinnig één peer aanwijst. Dit vangt
-   het geval af waarin een NAT onderweg de bronpoort herschrijft.
+1. Op de vastgepinde sleutel. Wie hem heeft is die peer, vanaf welk adres ook: adressen zijn
+   hints, nooit toegang.
+2. Op dezelfde `PeerId` bij een target met een *andere* vastgepinde sleutel. Dat target, zodat
+   de beoordeling `IdentityChanged` kan melden in plaats van de beller als vreemde te zien.
+3. Alleen bij targets zonder sleutel (dan wordt hij geleerd), en alleen vanaf hun eigen
+   opgezochte IP:
+   1. op een al bekende `PeerId` (een installatie van vóór protocol 6);
+   2. op het volledige bronadres, **ip én poort** (peers dialen vanaf de socket waarop ze
+      luisteren, dus de bronpoort is hun `control_port`);
+   3. op alleen het IP, maar uitsluitend als dat ondubbelzinnig één peer aanwijst (een NAT
+      die de bronpoort herschrijft).
 
 Matchen op alleen het IP is niet genoeg: draaien er meerdere peers achter hetzelfde adres —
 drie instanties op één PC tijdens het testen, of peers achter dezelfde exit node — dan
 wordt de verbinding aan de verkeerde peer toegewezen en slaat de identiteitscontrole
 daarna ten onrechte alarm.
 
-Lukt geen van de drie, dan wordt de verbinding **geparkeerd, niet geweigerd**: het adres
-van een target kennen we pas nadat onze eigen dialer het heeft opgezocht, en de ander kan
-sneller zijn. Pas na 5 seconden zonder match volgt afwijzing. Zonder dit worden bij het
-opstarten willekeurig legitieme verbindingen geweigerd.
+Daarna beoordeelt `Actor::beoordeel` (dezelfde functie als voor een uitgaande verbinding):
+klopt de sleutel met de pin, hoort deze identiteit of sleutel niet al bij een ander target
+(B-24), en mag hier geleerd worden. Komt hij niet binnen, dan stille close.
+
+Kan er nog niets gekoppeld worden omdat een target zonder sleutel nog geen opgezocht adres
+heeft, dan wordt de beller **geparkeerd, niet geweigerd**: onze eigen dialer kan trager zijn
+dan de ander. Zijn `HelloAck` wacht zolang. Pas na 3 seconden zonder match volgt afwijzing:
+korter dan de 4 s die de beller op zijn `HelloAck` wacht, want langer parkeren kan nooit meer
+slagen.
 
 ### Afsluiten
 `MeshHandle` zet bij `drop` alle taken stil, maar keert terug voordat de UDP-poort vrij is.

@@ -66,6 +66,10 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
   `docs/OVERDRACHT.md`.
 
 ## Beveiliging
-- QUIC gebruikt nu self-signed certs die niet geverifieerd worden; authenticatie gebeurt
-  op de UUID-allowlist ná de handshake. Het tailnet is de echte beveiligingsgrens.
-  Certificaat-pinning per peer zou dat kunnen aanscherpen als dat ooit nodig is.
+- ~~QUIC gebruikt self-signed certs die niet geverifieerd worden; het tailnet is de echte
+  beveiligingsgrens.~~ Sinds protocol 6 (2026-10-19, beslissing 46) bewijst de handshake met
+  een getekende TLS-exporter wie er belt, en alleen de vastgepinde sleutel komt binnen.
+  Certificaat-pinning is daarmee overbodig en hoort er niet bij.
+- Nog niet gebouwd: een knop om de pin van een peer te wissen na een herinstallatie bij hem.
+  Nu gaat dat met de hand (`known_id` en `public_key` uit `config.toml`). Bewust nog niet: de
+  app kan een herinstallatie niet van een gestolen identiteit onderscheiden.

@@ -7,6 +7,13 @@ Laatst bijgewerkt: 2026-10-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m
 de UI-stack van egui naar Tauri v2), en de weergavelaag is daarna nog één keer gewisseld:
 van Tauri naar GPUI (beslissing 39).
 
+**Wat er op 2026-10-19 bijkwam (nog niet uitgegeven):** protocol 6. Elke installatie heeft een
+vaste sleutel, de handshake is getekend, de sleutels van de peers staan vast in `config.toml`,
+en alle media is versleuteld. Fase A van `docs/PLAN-ZONDER-TAILSCALE.md`; lees beslissing 46
+vóór je iets aan `crates/net/src/mesh.rs`, `media.rs` of `mediasleutel.rs` doet. Verbinden gaat
+nog over het tailnet. **Alle drie moeten tegelijk bijwerken**, en niets hiervan is al tussen
+twee machines getest (`docs/TESTPLAN.md`, "Protocol 6").
+
 **Wat er op 2026-10-04 bijkwam:** de webview is weg. De weergave is nu GPUI via gpui-kit
 0.7, in Rust, met Metal op macOS en DirectX 11 op Windows; motor en de vijf andere crates
 zijn niet aangeraakt. Lees beslissing 39 vóór je iets in `crates/app/src/ui/` doet: daar
@@ -58,6 +65,7 @@ crates/app/src/ui/view/        AppView en één bestand per gebied
 | 11 — Automatische updates tussen peers | ✅ af, **nog niet met een echt versieverschil getest** | volledige testsuite blijft groen (nieuwe tests in `crates/proto`: `Hello`-veld, `is_newer`, `UpdateRequest`/`UpdateResponse`-roundtrip; `crates/app/src/updates.rs`: 12 unit-tests op de pure beslislogica) + `protocol-reviewer`-agent vóór het committen (protocolversie 3→4) + twee lokale instanties starten en verbinden schoon; een echt versieverschil, het bevestigingsvenster en het toepassen door `fitcom-updater.exe` kan alleen met een tweede, oudere build getest worden — zie `docs/TESTPLAN.md`, fase 11 |
 | 12 — UI-stack naar Tauri v2 | ✅ af, **de media- en sleep/plak-paden nog niet met echte hardware getest** | volledige testsuite blijft groen (de vier `hoort_bij_kanaal`-tests zijn meeverhuisd naar `ui/state.rs` als `belongs_to_channel`); app gebouwd, gestart en gescreenshot tegen `design/shots/` op 1440×900; `cargo clippy --all-targets` schoon; idle-CPU gemeten, zie fase 12 in `ROADMAP.md` |
 | UI-stack naar GPUI (2026-10-04) | ✅ af op macOS, **op Windows nog door niemand gestart** | 200 unit-tests plus de integratietests groen, `clippy` schoon; 97 referentietoestanden van de oude frontend naast GPUI-screenshots uit de fixturemodus gelegd; 13+ headless venstertests (toetsenbord, plakken, slepen); Windows alleen vanaf de Mac getypecheckt (gnu en msvc) en voor gnu gelinkt. Zie beslissing 39 en `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)" |
+| 16A — Sleutels en versleutelde media (protocol 6, 2026-10-19) | ✅ gebouwd, **nog niet uitgegeven en nog niet met echte peers getest** | unit- en integratietests in `crates/net` (handtekening, pins, stille close, versie-alleen-antwoord, belstorm, AEAD, replay, venster tegen een referentiemodel, twee meshes die dezelfde mediasleutels afleiden); `protocol-reviewer` vóór beide protocolcommits; stootmeting op loopback vóór en na. Zie beslissing 46 en `docs/TESTPLAN.md`, "Protocol 6" |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -2406,6 +2414,173 @@ is begrensd door `MIN_HERTEKEN` en de grenzen van het model, wat het het netwerk
 
 **Wat je niet mag omdraaien:** zie de sectie "Tekenen op een gedeeld scherm" in `CLAUDE.md`.
 
+### 46. Een sleutel per installatie, een getekende handshake en versleutelde media (protocol 6, 2026-10-19)
+
+Fase A van `docs/PLAN-ZONDER-TAILSCALE.md` (fase 16 in `ROADMAP.md`). Tot nu toe deed
+Tailscale twee dingen: peers bereikbaar maken én de hele beveiligingsgrens zijn. TLS
+accepteerde alles, een `PeerId` was een onbewezen claim (B-05) en media was kale UDP (B-18).
+Fase B zet de app op publieke adressen, en daarvoor moest dit eerst dicht. Verbinden gaat in
+deze release nog gewoon over het tailnet. **Iedereen moet tegelijk bijwerken**: een peer op 5
+komt er niet meer in.
+
+**Identiteit = een Ed25519-sleutel per installatie; de `PeerId` blijft de UUID.** De sleutel
+(PKCS#8, hex) staat naast `peer_id` in `identity.toml`; een oude `identity.toml` krijgt er bij
+het starten een bij, een kapotte is een startfout. Afwijking van BEVEILIGING blok 4
+(`PeerId = blake3(pubkey)`): elke op in de store draagt een UUID-auteur, en een nieuwe `PeerId`
+maakt de hele geschiedenis wees. De koppeling `PeerId ↔ sleutel` staat vast in `config.toml`
+(`public_key`, hex, naast `known_id`); een onleesbare waarde telt als niet vastgepind.
+
+**TLS blijft anoniem; beide kanten tekenen de exporter.** Elke kant tekent
+`export_keying_material(32, "fitcom/hello/v6", rol)` met rol `client`/`server`, en stuurt
+sleutel plus handtekening mee in `Hello`/`HelloAck` (`fitcom_proto::control::Handtekening`).
+Een man-in-the-middle heeft twee TLS-sessies met twee exporters, dus zijn doorgestuurde
+handtekening klopt nooit. Kleiner en testbaarder dan raw public keys in rustls.
+
+**Aan de opnemende kant beslist de actor vóór de `HelloAck`** (B-05a). `accept_one` leest de
+`Hello`, controleert de handtekening en vraagt de actor (`Internal::Inkomend` met een
+oneshot) welk target dit is en of hij erin mag. Pas dan gaat de `HelloAck` weg. Wie niet
+binnenkomt hoort niets: stille close, ook bij een `Hello` met onze eigen `PeerId` (anders kon
+iedereen vragen "is deze `PeerId` van jou?"), en hooguit één logregel per bron-IP per minuut
+(`Logrem`). Eén beoordeling (`Actor::beoordeel`) voor bellen en opnemen:
+
+- de vastgepinde sleutel moet kloppen; dezelfde `PeerId` met een andere sleutel is
+  `IdentityChanged` (met `expected == got`);
+- een vastgepinde sleutel zonder `PeerId` legt de `PeerId` bij het eerste contact vast;
+- een identiteit of sleutel die al bij een ander target hoort: weigeren (B-24);
+- nog niets vastgepind: leren, maar **alleen op een tailnet- of loopbackadres**
+  (`mesh::mag_leren`: `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `127/8`, `::1`). Daarbuiten
+  `PeerStatus::UnknownKey`. Op het inkomende pad bovendien alleen vanaf het opgezochte IP van
+  dat target, niet "ergens van het tailnet".
+
+Loopback staat erbij voor meerdere instanties op één pc en alle integratietests; een publiek
+of LAN-adres nooit, want daar kaapt de eerste die zich meldt de identiteit. Zo pinnen de
+bestaande installaties na de update elkaars sleutel vanzelf. Een sleutel voor een publiek
+adres komt in fase B uit een uitnodigingscode. `koppel_inkomend` (vervangt `match_inbound`)
+zoekt eerst op de gepinde sleutel, vanaf welk adres ook — adressen zijn hints, geen toegang —
+en daarna op dezelfde `PeerId` met een *andere* gepinde sleutel, zodat het alarm op het
+inkomende pad nu echt vuurt (B-05b). **Strenger dan vroeger:** een `known_id` zonder sleutel
+koppelt inkomend alleen nog als het bronadres het opgezochte adres van dat target is. Een
+config met een adres dat niet het echte tailnet-IP van de peer is (een LAN-adres, een
+Radmin-adres zoals bij peer-3) verbindt dus niet meer inkomend, en buiten het tailnet ook niet
+uitgaand: die peer staat op "No key known". Controleer de drie echte configs vóór de release.
+
+**Parkeren blijft, maar korter.** Leren vanaf het eigen adres van een target kan pas als onze
+dialer dat adres heeft opgezocht. Belt de ander eerder, dan wacht zijn `HelloAck` in
+`pending`. `PENDING_GRACE` ging van 5 naar 3 s: de beller wacht maar 4 s (`CONNECT_TIMEOUT`,
+en die dekt nu ook de Retry-rondgang), dus langer parkeren kan nooit meer slagen. Bij een RTT
+boven ~300 ms wordt die marge krap, maar alleen bij parkeren tijdens het opstarten; de beller
+probeert het gewoon opnieuw. De opnemende taak wacht zelf ook begrensd, en stopt zodra de
+verbinding sluit: een `quinn::Connection` houdt de UDP-socket vast, en een taak die bleef
+hangen hield na het afsluiten de poort bezet (gevonden doordat de herstarttest één keer de
+poort niet kon binden).
+
+**Een afgewezen sessie zet de backoff niet terug** (B-40, gevonden door de
+`protocol-reviewer`). Weigert de actor een verbinding die de beller zelf opzette (een pin die
+niet klopt), dan sluit hij hem meteen; telde dat als sessie, dan ging de backoff terug naar
+één seconde en zag de ander elke seconde een volledige online/offline-ronde. Een sessie
+korter dan 10 s (`KORTE_SESSIE`) telt nu als afwijzing.
+
+**Versieverschil in beide richtingen.** Een `Hello` met een andere versie krijgt
+`HelloAck::alleen_versie()`: nil-`PeerId`, lege naam, poort 0, geen sleutel. Daarmee vuurt bij
+de ander het bestaande `VersionMismatch`-pad. Dat geldt voor elke afwijkende versie, ook een
+nieuwere. Andersom (6 belt 5) werkte het niet, anders dan het plan aannam: de peer op 5 schrijft
+zijn `HelloAck` en sluit in dezelfde tik, en het antwoord komt (in 60 van de 60 metingen van de
+reviewer) nooit aan. Wel zijn sluitreden "protocolversie"; `try_dial` herkent die
+(`gesloten_om_versie`) en meldt `VersionMismatch { theirs: 0 }`, in de UI "Runs an older
+protocol".
+
+**De rand (A3).** In `accept_loop` eerst `retry()` voor een adres dat nog niet gevalideerd
+is, en pas daarna tellen: hooguit 8 gevalideerde pogingen per bron-IP per seconde. In die
+volgorde, zodat een gespoofde afzender geen versterking krijgt en het budget van een echt IP
+niet opmaakt. De grenzen van B-17 en B-26 blijven.
+
+**Media: eigen AEAD op de bestaande UDP-sockets, niet naar QUIC-datagrams.** QUIC-datagrams
+vallen onder quinn's congestiecontrole en pacing, en die smoort precies de stoot van 200+
+fragmenten van een keyframe. Zonder WireGuard is versleuteling ook nodig, niet alleen een
+MAC (daarin wijkt dit af van de oplossing bij B-18). Zie `crates/net/src/mediasleutel.rs`:
+
+```text
+[sessie-index 4][teller 8][AES-256-GCM: mediaheader 16 + payload][tag 16]
+```
+
+- Sleutels per richting: `export_keying_material(32, "fitcom/media/v6", PeerId afzender)`.
+- **De sessie-index kiest de ontvanger** en zet hij als `media_index` in zijn `Hello` of
+  `HelloAck` (het derde nieuwe veld; het plan noemde alleen sleutel en handtekening). Uniek
+  per proces, willekeurige start, nooit 0. Een onbekende index is één tabelopzoeking en geen
+  cryptografie (invariant 4).
+- **De teller** is één `AtomicU64` per sleutel, gedeeld door alle threads die naar die peer
+  sturen; geen lock. De nonce is vier nul-bytes plus de teller, dus een verbinding die al
+  sleutels heeft krijgt nooit een verse teller (`MediaSleutels::zet`).
+- **Replayvenster van 2048 per (ontvangende socket, index)**, pas gemarkeerd ná geslaagd
+  ontsleutelen, **plus een hoogste-tellermerk per sleutel** over alle sockets. Per socket en
+  niet per sleutel, omdat er in fase A nog meerdere sockets zijn (voice, één per kijker) en
+  een gedeeld venster een lock op het hete pad zou vragen; een pakket naar een *andere*
+  socket herhalen levert niets op, want de `stream_id` zit in het versleutelde deel. Het
+  merk is er voor een *nieuwe* socket van dezelfde stream (opnieuw deelnemen, opnieuw kijken,
+  gevonden door de reviewer): die begint met een leeg venster, en zou anders elk eerder
+  opgevangen pakket van die verbinding nog één keer aannemen. Nu alleen de laatste ~2048
+  (ruim een seconde). Bij B5 (één socket) verdwijnt ook dat, als die socket en zijn vensters
+  niet opnieuw opgebouwd worden bij opnieuw deelnemen of intekenen.
+- **De mesh-actor werkt de sleuteltabel bij, niet de motor** (het plan zei "de motor"). Hij
+  ziet verbinden, botsing en verbreken als eerste en per `conn_id`, en zo komen sleutels
+  nooit in `PeerStatus`, dat gelogd en vergeleken wordt. De tabel is een `ArcSwap`; de
+  mediathreads lezen hem zonder lock. De ontvangstsleutel van een verbroken verbinding geldt
+  nog 5 s, voor wat er onderweg was. Een peer die geen `media_index` stuurt geeft een
+  waarschuwing in de log (anders bleef zijn media stil zonder spoor).
+- `MediaSocket::stuur` neemt een `PeerAdres` (id en adres) in plaats van een kaal adres;
+  `ontvang` levert de afzender als `PeerId`. De bronpoort-heuristiek van B-28 in de kijker is
+  weg: "ontsleuteld met de sleutel van de deler" is de controle. De deler telt de 28 bytes
+  van de envelop mee in zijn tempo en zijn meter.
+- `MAX_MEDIA_PAYLOAD` blijft 1100: 1144 bytes UDP-payload, 1146 voor een pariteitsfragment,
+  met IPv6 en UDP erbij 1194, onder 1280. De ruimte die WireGuard innam is vrij.
+
+**Gemeten op loopback** (`crates/net/tests/burst.rs` en een losse stootmeting, 10 rondes per
+grootte): een keyframe (242 fragmenten) en ook 900 fragmenten in één stoot komen vóór en na
+volledig aan. De ontvangbuffer van 1 MB hield 940 pakketten vast vóór de AEAD en 917 erna,
+omdat elk pakket 28 bytes groter is; `ONTVANGBUFFER` is daarom 1100 kB, en houdt er 985 vast.
+Verzenden kost per pakket vóór en na hetzelfde (11–29 µs op deze machine, de systeemaanroep
+overheerst; AES-GCM met AES-NI is een fractie daarvan).
+
+**Bereikbaarheid meten (A0).** `crates/net/src/bereik.rs`, met `portmapper` van n0. Eén keer,
+10 s na het starten (niet tijdens het opstarten zelf, en zo raakt een integratietest de router
+van de testmachine nooit aan): probe, één tijdelijke mapping op de control-poort om het externe
+adres te leren, meteen weer weg, plus of er een globaal IPv6-adres is. Het vrijgeven van de
+mapping wordt afgewacht met een tweede probe, want de dienst handelt berichten op volgorde af
+en zou anders halverwege het vrijgeven gestopt worden. IPv6 komt uit het bronadres dat het
+systeem kiest voor een documentatieadres (er gaat geen pakket heen), niet uit netwatch: dat
+opent daarvoor op Windows WMI; Teredo en 6to4 tellen niet. In de log en als één regel in
+Settings → Network: "Router: PCP yes · NAT-PMP yes · UPnP no · public IPv4 · no IPv6"
+(woorden, want de ingebedde fonts hebben geen ✓ en ✗). De vrienden sturen een screenshot; zo
+is bekend of fase C nodig is. Op Ricks router gemeten: PCP en NAT-PMP ja, UPnP nee, publiek
+IPv4, geen IPv6, zoals `tailscale netcheck` al zei.
+
+Na de review van de `protocol-reviewer`:
+- **"Geen router gevonden" is een eigen uitkomst** ("Router: not found (offline, or a VPN exit
+  node?)"), met één nieuwe poging na 60 s. Anders zag een vriend met autostart vóór de wifi,
+  of met een Tailscale-exitnode, er precies zo uit als een router die niets kan, en op die
+  regel rust de keuze voor fase C.
+- **Een eigen kleine runtime op een blokkeerthread.** portmapper zoekt de gateway synchroon op
+  (op Windows `SendARP` per netwerkkaart), en dat hoort niet op een van de twee threads van de
+  mesh en de motor. Als die runtime weg is, is ook elke taak van portmapper weg.
+- **Wie er gevraagd wordt:** de router (PCP en NAT-PMP, UDP 5351) en, voor UPnP, het LAN: een
+  SSDP-multicast en daarna HTTP naar het adres in het eerste antwoord. Niets op internet.
+- **Weggehaald is niet gegarandeerd weg.** PCP en NAT-PMP geven een mapping vrij met één
+  UDP-pakket zonder antwoord; wie de app sluit tijdens de meting (10 tot hooguit ~30 s na het
+  starten) of een mapping die nét na de time-out van 10 s klaar is, laat hem staan tot zijn
+  lease verloopt (PCP een uur, NAT-PMP en UPnP twee). In die tijd staat de control-poort open
+  naar internet, achter de getekende handshake en de A3-rand.
+- **Geen terugval tussen protocollen:** antwoordt de router op PCP maar weigert hij de mapping,
+  dan staat er "outside address unknown", ook als NAT-PMP het had gekund.
+**Prijs:** `portmapper` brengt 49 regels in de lockfile, waarvan op Windows zo'n twintig echt
+nieuwe crates (`igd-next`, `netwatch`, `netdev`, `wmi`, `n0-*`, `iroh-metrics`...); de rest is
+alleen voor Linux, macOS of Android. Na de meting draait er niets meer van.
+
+**Twee commits op 6.** `e4e5add` (handshake) en de commit met de media-AEAD melden allebei
+`protocol_version = 6` maar zijn op het mediapad onderling onverenigbaar. Er is tussen die twee
+niets uitgegeven, en dat mag ook nooit.
+
+**Wat je niet mag omdraaien:** zie de sectie "Sleutels en versleutelde media" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
@@ -2567,6 +2742,16 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
   voice-sessie heeft het goed (`open_apparaten` geeft beide streams terug); een tap die dat
   niet doet ziet er van buiten identiek uit. Test hierop door de chunks écht op te vangen,
   niet door te kijken of het starten lukte.
+- **`crates/net/tests/leestimeout.rs` valt om als de machine druk is** (een build ernaast,
+  een spel): de mediaan van een leestimeout van 1 ms liep op 2026-10-19 tussen 1,5 en 24 ms
+  in drie runs vlak na elkaar. Dat is CPU-tekort, geen timerresolutie. Opnieuw draaien op een
+  rustige machine voordat je in `media.rs` gaat zoeken.
+- **`peer_die_wegvalt_komt_vanzelf_terug` (`crates/net/tests/mesh.rs`) faalt ongeveer één op
+  de tien keer**: direct na `MeshHandle::shutdown()` lukt het opnieuw binden van dezelfde poort
+  niet. Gemeten op 2026-10-19: 5 van 50 vóór fase A, 6 van 50 erna, dus niet nieuw.
+  `shutdown` wacht op `wait_idle`, maar een `quinn::Connection` die nog in een taak of in de
+  actor ligt houdt de UDP-socket vast tot hij gedropt is. Dat breekt de belofte in
+  `docs/ARCHITECTURE.md` ("Afsluiten") voor wie op dezelfde poort herstart. Nog niet opgelost.
 - **Een paniek in een spawned thread staat níét in het logbestand.** Hij gaat naar stderr,
   en de app schrijft zijn log ergens anders heen — dus een draad die meteen omvalt ziet er
   van buiten uit als een draad die niets te doen heeft. Dat kostte een avond bij de clips

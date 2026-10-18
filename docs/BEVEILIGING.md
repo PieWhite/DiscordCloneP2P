@@ -211,6 +211,50 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   wel lijnen over het scherm van de deler leggen, en dat is de functie. Tekst bestaat niet,
 >   alleen lijnen in zes kleuren.
 
+> **Addendum 2026-10-19 (protocol 6: sleutels en versleutelde media, beslissing 46).** Fase A
+> van `docs/PLAN-ZONDER-TAILSCALE.md`. Daarmee zijn **B-05, B-18 en B-28 opgelost**, de grootste
+> openstaande post van het addendum van 2026-08-13. Nog niet uitgegeven en nog niet tussen twee
+> machines getest (zie `docs/TESTPLAN.md`).
+>
+> - **B-05 (identiteit).** Elke installatie heeft een vaste Ed25519-sleutel (`identity.toml`).
+>   Beide kanten tekenen de TLS-exporter van de verbinding; een doorgestuurde `Hello` klopt
+>   daardoor nooit op een andere verbinding. De sleutel staat per peer vast in `config.toml`
+>   naast `known_id`, en alleen wie hem bezit komt binnen. **Afwijking van blok 4 punt 16:** de
+>   `PeerId` blijft de UUID en wordt niet `blake3(pubkey)`, want elke op draagt een
+>   UUID-auteur; de binding `PeerId ↔ sleutel` loopt via de pin. Leren (trust-on-first-use)
+>   gebeurt alleen op een tailnet- of loopbackadres, inkomend bovendien alleen vanaf het
+>   opgezochte IP van dat target. Wie op het tailnet eerder is dan de echte peer na de update,
+>   kan diens `PeerId` met een eigen sleutel claimen; dat is precies het oude vertrouwen in het
+>   tailnet, één keer, en daarna niet meer.
+> - **B-05a.** De opnemende kant stuurt zijn `HelloAck` pas nadat de actor de beller heeft
+>   goedgekeurd. Wie niet binnenkomt krijgt een stille close (ook bij een `Hello` met onze
+>   eigen `PeerId`); een peer op een andere protocolversie krijgt alleen het versienummer.
+> - **B-05b.** Dezelfde `PeerId` met een andere sleutel gaat inkomend naar het target van die
+>   `PeerId` en geeft `IdentityChanged`. Het alarm is daarmee van elk bronadres te bereiken,
+>   met een geldige zelfgemaakte sleutel en een bekende `PeerId`: hooguit een melding bij een
+>   vriend die offline is, geen toegang. Logregels daarover: één per IP per minuut.
+> - **B-18 (media).** Elk mediapakket is AES-256-GCM met een sleutel per richting per
+>   verbinding, afgeleid van de TLS-exporter (`crates/net/src/mediasleutel.rs`). **Afwijking
+>   van de oplossing hier:** versleuteling en niet alleen een MAC, want zonder WireGuard is
+>   vertrouwelijkheid ook nodig. Replaybescherming: een venster van 2048 per ontvangende
+>   socket plus een hoogste-tellermerk per sleutel over alle sockets. Een nieuwe socket op
+>   dezelfde verbinding (opnieuw deelnemen, opnieuw kijken) neemt daardoor alleen een
+>   herhaling uit de laatste ~2048 pakketten nog één keer aan; met één mediasocket (fase B5)
+>   verdwijnt ook dat.
+> - **B-28 (fragmentinjectie).** De bronpoort-heuristiek in de kijker is weg: alleen wat met de
+>   sleutel van de deler opengaat komt bij de samensteller.
+> - **Nieuw aan de rand (A3).** QUIC `retry()` voor een ongevalideerd bronadres, daarna hooguit
+>   8 gevalideerde pogingen per bron-IP per seconde. Dat sluit versterking via een gespoofde
+>   afzender en het opmaken van het budget van een echt IP.
+> - **Nog open, en waarom.** Een vriend met een **nieuwe installatie** (nieuwe `identity.toml`)
+>   komt er pas weer in als de anderen zijn `known_id` en `public_key` met de hand uit hun
+>   `config.toml` halen; er is geen knop voor. Dat is bewust: de app kan een gestolen
+>   identiteit niet van een herinstallatie onderscheiden. Een `PeerId` staat niet in de
+>   handtekening en is alleen zo betrouwbaar als de pin. De TLS-sessie zelf blijft anoniem; de
+>   handtekening doet het werk dat een certificaatcontrole elders doet. B-09 (binden op
+>   `0.0.0.0`) is met dit alles minder erg, maar het dreigingsmodel hieronder gaat opnieuw bij
+>   fase B, als de app bewust aan internet staat.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
@@ -292,7 +336,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-02 | ~~KRITIEK~~ | **Opgelost (fase 13)** — versie komt uit het getekende manifest en is begrensd | `app/release.rs::controleer` |
 | B-03 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Padtraversal via `FileMeta.name` → willekeurig bestand schrijven | `app/engine.rs:1631-1632` |
 | B-04 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Ongevraagde bulkstreams worden geaccepteerd; de afzender wordt weggegooid | `app/engine.rs:537` |
-| B-05 | KRITIEK | `PeerId` is een onbewezen claim → volledige impersonatie | `net/mesh.rs:598-604` |
+| B-05 | KRITIEK | **Opgelost (2026-10-19, protocol 6)** — `PeerId` is een onbewezen claim → volledige impersonatie | `net/mesh.rs:598-604` |
 | B-06 | KRITIEK | **Deels (2026-08-13)** — `op.author` wordt nooit tegen de afzender gecontroleerd | `store/lib.rs:240`, `app/chat.rs:293` |
 | B-07 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Seq-squatting: `INSERT OR IGNORE` + oplopende VV vernietigt stil echte berichten | `store/lib.rs:429-444` |
 | B-08 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Misvormd `Channel` aliast op de opslagsleutel van het algemene kanaal | `store/lib.rs:499-509` |
@@ -305,7 +349,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-15 | ~~HOOG~~ | **Opgelost (2026-08-13)** — MAX_OP_LEN plus bytebudget in de store, en de schrijflus in `net` slaat over i.p.v. af te breken | `store/lib.rs:63`, `net/mesh.rs:985` |
 | B-16 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde oplog-groei; hele store per wijziging opnieuw in RAM | `store/lib.rs:383-390`, `app/chat.rs:243` |
 | B-17 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Pre-auth geheugenuitputting: 16 MiB per frame × onbegrensd aantal verbindingen | `net/framing.rs:39`, `net/mesh.rs:865` |
-| B-18 | HOOG | Het UDP-mediapad kent geen authenticatie en geen replaybescherming | `net/media.rs:64-156` |
+| B-18 | HOOG | **Opgelost (2026-10-19, protocol 6)** — Het UDP-mediapad kent geen authenticatie en geen replaybescherming | `net/media.rs:64-156` |
 | B-19 | ~~HOOG~~ | **Opgelost (2026-08-13)** — `UpdateSubresource` met genegeerde bufferlengte en gestript stride-teken | `video/codec.rs:741-765` |
 | B-52 | ~~HOOG~~ | **Opgelost (2026-08-13)**: `offer_files` accepteert willekeurige paden uit de webview, een exfiltratieprimitief. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de indexregel blijft | `app/ui/commands.rs:241-246` |
 | B-53 | ~~HOOG~~ | **Opgelost (2026-08-13)**: `offer_pasted_image`: extensie is niet begrensd → schrijven buiten `%TEMP%`. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)**; de allowlist blijft | `app/ui/commands.rs:255-271` |
@@ -317,7 +361,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-25 | ~~MIDDEL~~ | **Deels (2026-08-13)** — `?msg` weg en rate-limited; het vroeg sluiten van een niet-koppelbare verbinding blijft bewust achterwege (parkeren is by design) | `net/mesh.rs:632-640` |
 | B-26 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Onbegrensde `pending`-lijst voor niet-koppelbare verbindingen | `net/mesh.rs:380,476-480` |
 | B-27 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Te groot UDP-datagram is een fout i.p.v. rommel → logstorm op de mediathreads | `net/media.rs:153` |
-| B-28 | MIDDEL | **Deels (2026-08-13)** — Fragmentinjectie: bronpoort genegeerd en geen index-validatie | `video/kijker.rs:300`, `video/fragment.rs:154` |
+| B-28 | MIDDEL | **Opgelost (2026-10-19, protocol 6; index-validatie 2026-08-13)** — Fragmentinjectie: bronpoort genegeerd en geen index-validatie | `video/kijker.rs:300`, `video/fragment.rs:154` |
 | B-29 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Geen maximum framegrootte richting de OS-H.264-decoder | `video/kijker.rs:420` |
 | B-30 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — De tijdstempel-unwrapper is onbereikbaar; beeld bevriest na 13 u 15 m | `video/kijker.rs:589-599` |
 | B-31 | ~~MIDDEL~~ | **Opgelost (2026-08-13)** — Onbegrensde stream-aankondigingen en afdwingbare encoderbelasting | `app/streams.rs:342-350,372-388` |
@@ -535,6 +579,9 @@ Gebruik daarnaast `create_new(true)` of een unieke tijdelijke naam per overdrach
 streams nooit in hetzelfde bestand kunnen schrijven.
 
 ## B-05 — `PeerId` is een onbewezen claim
+
+> **Opgelost op 2026-10-19 (protocol 6, beslissing 46):** getekende exporter en vastgepinde
+> sleutels. Zie het addendum van die datum bovenaan; de tekst hieronder beschrijft de oude toestand.
 
 **Waar:** `crates/net/src/mesh.rs:598-604` (matchen), `:884-926` (accepteren), `:508-536`
 (installeren), `crates/net/src/tls.rs:52,67`.
@@ -969,6 +1016,9 @@ zodat die grens nooit benaderd wordt, dus 256 KiB is ruim.
 
 ## B-18 — Het mediapad kent geen authenticatie en geen replaybescherming
 
+> **Opgelost op 2026-10-19 (protocol 6, beslissing 46):** AES-256-GCM per richting, sleutels
+> uit de TLS-exporter, replayvenster. Zie het addendum van die datum bovenaan.
+
 **Waar:** `crates/net/src/media.rs:64-156`; consumenten in `crates/audio/src/session.rs:953-958`
 en `crates/video/src/kijker.rs:300`.
 
@@ -1168,6 +1218,9 @@ invariant 4 beschermt.
 **Oplossing:** behandel `raw_os_error() == Some(10040)` net als een te kort pakket: `Ok(None)`.
 
 ## B-28 — Fragmentinjectie
+
+> **Opgelost op 2026-10-19:** een fragment komt alleen nog bij de samensteller als het met de
+> sleutel van de deler opengaat (B-18); de poort-pinning is weg.
 `crates/video/src/kijker.rs:300`, `crates/video/src/fragment.rs:154-157`. `compleet()` telt
 alleen het *aantal* stukken, niet of de indices 0..n er ook echt zijn, en het beeld wordt in
 `BTreeMap`-sleutelvolgorde aan elkaar geplakt. Omdat de bronpoort niet meetelt, kan wie het

@@ -1,7 +1,11 @@
 # Verbinden zonder Tailscale — bouwplan
 
-Opgesteld 2026-10-18 met Rick. **Status: gepland, er is nog niets van gebouwd.** In
-`ROADMAP.md` is dit fase 16.
+Opgesteld 2026-10-18 met Rick. In `ROADMAP.md` is dit fase 16.
+
+**Status 2026-10-19:** fase A is gebouwd (A1 t/m A6), nog niet uitgegeven en nog niet tussen
+twee machines getest. Wat er bij het bouwen anders uitviel dan hieronder staat, staat in
+`docs/OVERDRACHT.md` beslissing 46; de open punten met echte machines in `docs/TESTPLAN.md`,
+"Protocol 6". Fase B en C: nog niets gebouwd.
 
 ## Waarom
 
@@ -166,7 +170,8 @@ uit de mesh.
 - Uitkomst:
   - in de log
   - één regel in Settings → Network: "Router: PCP ✓ · NAT-PMP ✓ · UPnP ✗ · public IPv4 ·
-    no IPv6", of "CGNAT", als het externe adres in `100.64.0.0/10` of een privéreeks valt
+    no IPv6", of "CGNAT", als het externe adres in `100.64.0.0/10` of een privéreeks valt.
+    *(Gebouwd met "yes"/"no" in plaats van ✓/✗: de ingebedde fonts hebben die tekens niet.)*
 - De vrienden sturen een screenshot; zij hoeven verder niets te doen. Daarmee is bekend of
   fase C nodig is vóórdat B gebouwd wordt.
 
@@ -195,7 +200,9 @@ uit de mesh.
     `VersionMismatch`-pad.
   - Alleen een `Hello` op 6 met een foute handtekening of een onbekende sleutel krijgt de
     stille close.
-  - Andersom (6 belt 5) werkt al via de bestaande controle in `try_dial`.
+  - Andersom (6 belt 5) werkte níét via de bestaande controle: een peer op 5 sluit in dezelfde
+    tik als zijn `HelloAck`, die dus nooit aankomt. Wel zijn sluitreden "protocolversie", en
+    die telt nu ook als versieverschil (zie beslissing 46).
 - `tls.rs`: de moduledoc herschrijven. De verifier blijft "accepteer alles", maar de reden
   is nu de getekende exporter, niet WireGuard.
 
@@ -320,6 +327,10 @@ fase verbinden twee peers met elkaars code, zonder Tailscale.
   open voordat iemand praat of deelt.
 - Ontvangbuffer naar 2 MB: twee delers tegelijk moeten er allebei een keyframe in kwijt
   kunnen.
+- **De vensters horen bij deze ene socket en worden niet opnieuw opgebouwd** bij opnieuw
+  deelnemen aan het gesprek of opnieuw intekenen. Zolang er per stream een eigen socket is,
+  vangt een hoogste-tellermerk per sleutel een herhaling naar een nieuwe socket maar ten dele
+  op (de laatste ~2048 pakketten); met één vaste socket is dat gat dicht (beslissing 46).
 - **Dit is de riskantste stap**, want hij raakt het hete pad van de kijker, en daar zit de
   geschiedenis van de hapering. Meet vóór en na met `spoor` (aankomst → getoond, verlies)
   en `tests/burst.rs`. Een slechter resultaat is een blokkade, geen afweging.
