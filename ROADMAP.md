@@ -606,3 +606,19 @@ taal). Op Ricks verzoek. Onderbouwing en kosten: `docs/OVERDRACHT.md`, beslissin
 referentietoestand van de oude weergave is naast de nieuwe gelegd, en het idle-verbruik is
 gemeten (beslissing 39, "Gemeten"). **Op Windows nog niet:** niemand heeft de GPUI-build
 daar gestart. Zie `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)".
+
+### Fase 16 — Verbinden zonder Tailscale (gepland, 2026-10-18)
+De vrienden installeren geen extra app en zetten geen poorten open; ze willen één code
+plakken. Het volledige plan, de beslissingen met onderbouwing en wat "klaar" betekent per
+stap staan in `docs/PLAN-ZONDER-TAILSCALE.md`. Kort:
+
+- **Fase A, release 1 (protocol 5 → 6):** Ed25519-sleutel per installatie met een getekende
+  handshake (B-05) en versleutelde, geauthenticeerde media (B-18). Plus een meting van de
+  router van elke pc (alleen lezen). Verbinden blijft over Tailscale; iedereen werkt tegelijk
+  bij.
+- **Fase B, release 2 (additief):** uitnodigingscodes, automatische port mapping
+  (UPnP/PCP/NAT-PMP), adressen uitwisselen via de mesh, één mediasocket per proces met
+  roaming. Daarna verbinden twee peers zonder Tailscale.
+- **Fase C:** alleen als de meting uit fase A een paar laat zien dat B niet direct krijgt.
+
+Geen server, geen STUN, geen DHT, geen relay: invariant 1 wordt er eenvoudiger van.
