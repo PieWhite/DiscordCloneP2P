@@ -3,7 +3,7 @@
 Bedoeld om in een nieuwe sessie snel weer op snelheid te komen. Wat er staat, waarom
 het zo staat, waar ik tegenaan gelopen ben, en wat er nog moet.
 
-Laatst bijgewerkt: 2026-10-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
+Laatst bijgewerkt: 2026-10-19 (protocol 6, zie hieronder); daarvoor 2026-10-04. Alle geplande fasen uit `ROADMAP.md` zijn af (t/m fase 12,
 de UI-stack van egui naar Tauri v2), en de weergavelaag is daarna nog één keer gewisseld:
 van Tauri naar GPUI (beslissing 39).
 
@@ -2478,7 +2478,11 @@ poort niet kon binden).
 `protocol-reviewer`). Weigert de actor een verbinding die de beller zelf opzette (een pin die
 niet klopt), dan sluit hij hem meteen; telde dat als sessie, dan ging de backoff terug naar
 één seconde en zag de ander elke seconde een volledige online/offline-ronde. Een sessie
-korter dan 10 s (`KORTE_SESSIE`) telt nu als afwijzing.
+korter dan 10 s (`KORTE_SESSIE`) telt nu als afwijzing. Bijwerking: ook de bellende kant
+die een botsing verliest (zijn verbinding wordt meteen gesloten) telt dat als afwijzing en
+houdt zijn backoff. Valt de winnende verbinding later weg, dan belt hij met die backoff
+opnieuw en leunt het herverbinden iets meer op de dialer van de ander. Voor een handvol
+peers onschuldig.
 
 **Versieverschil in beide richtingen.** Een `Hello` met een andere versie krijgt
 `HelloAck::alleen_versie()`: nil-`PeerId`, lege naam, poort 0, geen sleutel. Daarmee vuurt bij
@@ -2696,7 +2700,12 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
 ## Valkuilen in deze omgeving
 
 - **Een draaiende `fitcom.exe` blokkeert `cargo build`** met "Toegang geweigerd
-  (os error 5)". Altijd eerst `.\scripts\run-peers.ps1 -Stop`.
+  (os error 5)". Altijd eerst `.\scripts\run-peers.ps1 -Stop`. *Dat doodt elke `fitcom.exe`
+  op de pc*, ook je eigen echte instantie (`Get-Process fitcom | Stop-Process -Force`), en
+  `run-peers.ps1` zonder `-Stop` doet dat ook bij het starten. Draait je echte app en wil je
+  hem laten staan: bouw in een worktree (eigen `target`, eigen exe-pad), start instanties met
+  de hand met `--data-dir`, stop ze op PID, en gebruik andere poorten dan 41650/41651: de
+  eerste instantie van het script zit op dezelfde poort als de standaardconfig.
 - **Een Windows-releasebuild vraagt `fxc.exe`** (Windows SDK, komt met de C++-workload van
   de VS Build Tools). `gpui-pre-windows` zoekt hem via `GPUI_FXC_PATH`, `PATH` of het
   register en paniekt met "Failed to find fxc.exe" als hij er niet is. Een debug-build
