@@ -10,16 +10,27 @@
 //! initiator het laagste `PeerId` heeft wint**, de andere wordt gesloten. Omdat de
 //! regel deterministisch en symmetrisch is komen beide kanten op dezelfde uitkomst uit,
 //! zonder onderhandeling.
+//!
+//! # Identiteit (protocol 6, beslissing 46)
+//!
+//! Elke installatie heeft een vaste Ed25519-sleutel. Bij het verbinden tekent elke kant de
+//! TLS-exporter van déze verbinding (`fitcom_proto::control::Handtekening`), en een peer
+//! komt alleen binnen met de sleutel die bij zijn target vastgepind staat. Een sleutel
+//! leren (trust-on-first-use) gebeurt alleen op een tailnet- of loopbackadres
+//! ([`mag_leren`]); een publiek adres krijgt zijn sleutel straks uit een uitnodigingscode.
+//! Aan de opnemende kant gaat de `HelloAck` pas de deur uit als de actor de beller heeft
+//! goedgekeurd (B-05a): wie niet binnenkomt hoort niets terug, ook geen naam of versie.
 
 use crate::{framing, tls};
 use anyhow::{bail, Context, Result};
-use fitcom_proto::control::{Hello, HelloAck};
+use fitcom_proto::control::{Handtekening, Hello, HelloAck};
 use fitcom_proto::{ControlMsg, PeerId, PROTOCOL_VERSION};
+use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
@@ -50,6 +61,17 @@ fn max_inkomend(targets: usize) -> usize {
     targets.saturating_mul(16).max(32)
 }
 
+/// Hoeveel gevalideerde verbindingspogingen één bron-IP per seconde mag doen (A3).
+///
+/// Ruim: drie instanties op één pc delen 127.0.0.1, en bij het opstarten en tijdens een
+/// botsing bellen ze elkaar kort na elkaar. Wie erboven zit krijgt `refuse()` en probeert
+/// het met zijn eigen backoff opnieuw. Alleen gevalideerde adressen tellen mee (zie
+/// [`accept_loop`]), dus een gespoofde afzender kan het budget van een echt IP niet opmaken.
+const MAX_POGINGEN_PER_IP: u32 = 8;
+
+/// Hoogstens één logregel per bron-IP per zoveel tijd over een geweigerde poging (B-25).
+const LOGREM: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
     pub me: PeerId,
@@ -60,6 +82,9 @@ pub struct MeshConfig {
     /// `env!("CARGO_PKG_VERSION")` van deze build. Gaat mee in `Hello`/`HelloAck`, zodat
     /// de app-laag (fase 11: automatische updates) kan zien wanneer een peer verder is.
     pub app_version: String,
+    /// De vaste sleutel van deze installatie (`identity.toml`). Bewijst bij elke
+    /// verbinding dat wij `me` zijn.
+    pub sleutel: Arc<Ed25519KeyPair>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +95,54 @@ pub struct PeerTarget {
     /// Bekend uit eerdere sessies (trust-on-first-use).
     pub known_id: Option<PeerId>,
     pub control_port: u16,
+    /// De vastgepinde Ed25519-sleutel van deze peer. Zodra die er is komt alleen wie hem
+    /// bezit nog binnen, vanaf welk adres dan ook.
+    pub public_key: Option<[u8; 32]>,
+}
+
+/// Een vers sleutelpaar, voor tests en hulpprogramma's zonder `identity.toml`.
+pub fn wegwerpsleutel() -> Arc<Ed25519KeyPair> {
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .expect("het besturingssysteem levert willekeur");
+    Arc::new(Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("net gemaakt"))
+}
+
+/// Of we op dit adres een sleutel mogen leren (trust-on-first-use, beslissing 46).
+///
+/// Alleen het tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`): daar is WireGuard nog de
+/// grens, dus zo pinnen de bestaande installaties na de update elkaars sleutel vanzelf. En
+/// loopback, voor meerdere instanties op één pc en de tests. Nooit een publiek of LAN-adres:
+/// daar zou de eerste die zich meldt de identiteit kapen.
+pub fn mag_leren(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback() || (o[0] == 100 && o[1] & 0xc0 == 64)
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
+/// De exporter van deze TLS-sessie voor de gegeven rol: wat een kant tekent.
+fn exporter(conn: &quinn::Connection, rol: &[u8]) -> Result<[u8; 32]> {
+    let mut uit = [0u8; 32];
+    conn.export_keying_material(&mut uit, Handtekening::LABEL, rol)
+        .map_err(|_| anyhow::anyhow!("TLS-exporter niet beschikbaar"))?;
+    Ok(uit)
+}
+
+fn teken(sleutel: &Ed25519KeyPair, conn: &quinn::Connection, rol: &[u8]) -> Result<Vec<u8>> {
+    Ok(sleutel.sign(&exporter(conn, rol)?).as_ref().to_vec())
+}
+
+/// De sleutel van de ander als zijn handtekening over `exporter` klopt, anders niets.
+/// Los van de verbinding zodat het zonder netwerk te testen is.
+fn bewezen_sleutel(exporter: &[u8; 32], sleutel: &[u8], handtekening: &[u8]) -> Option<[u8; 32]> {
+    let sleutel: [u8; 32] = sleutel.try_into().ok()?;
+    UnparsedPublicKey::new(&ED25519, &sleutel)
+        .verify(exporter, handtekening)
+        .ok()?;
+    Some(sleutel)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,16 +163,21 @@ pub enum PeerStatus {
         app_version: String,
     },
     /// De peer draait een andere protocolversie. Geen crash, wel onbruikbaar tot
-    /// één van beiden update.
+    /// één van beiden update. `theirs == 0`: onbekend, maar ouder (een peer op 5 sluit
+    /// voordat zijn antwoord aankomt, zie `gesloten_om_versie`).
     VersionMismatch {
         theirs: u32,
         ours: u32,
     },
-    /// Vanaf een bekend adres meldde zich een andere identiteit dan we eerder zagen.
+    /// Vanaf een bekend adres meldde zich een andere identiteit dan we eerder zagen, of
+    /// dezelfde `PeerId` met een andere sleutel dan vastgepind (dan is `expected == got`).
     IdentityChanged {
         expected: PeerId,
         got: PeerId,
     },
+    /// Er staat voor deze peer nog geen sleutel vast, en zijn adres ligt buiten het
+    /// tailnet, waar we er geen leren ([`mag_leren`]).
+    UnknownKey,
 }
 
 #[derive(Debug)]
@@ -108,11 +186,12 @@ pub enum MeshEvent {
         target: usize,
         status: PeerStatus,
     },
-    /// Eerste keer dat we de identiteit achter een adres leren. De app hoort dit in
-    /// de config vast te leggen zodat we het adres later kunnen verifiëren.
+    /// Eerste keer dat we de identiteit en de sleutel achter een adres leren. De app hoort
+    /// beide in de config vast te leggen: vanaf dan komt alleen deze sleutel nog binnen.
     LearnedIdentity {
         target: usize,
         peer_id: PeerId,
+        public_key: [u8; 32],
     },
     Message {
         from: PeerId,
@@ -228,9 +307,12 @@ async fn cancelled(rx: &mut watch::Receiver<bool>) {
 
 struct Established {
     conn_id: u64,
-    /// `None` voor een inkomende verbinding die nog aan een target gekoppeld moet worden.
-    target: Option<usize>,
+    /// Bij een uitgaande verbinding het target dat we belden, bij een inkomende het target
+    /// dat de actor vóór de `HelloAck` aanwees.
+    target: usize,
     peer_id: PeerId,
+    /// Bewezen met een handtekening over de exporter van deze verbinding.
+    sleutel: [u8; 32],
     display_name: String,
     media_port: u16,
     app_version: String,
@@ -251,6 +333,14 @@ enum Internal {
         target: usize,
     },
     Established(Box<Established>),
+    /// Een inkomende beller met een geldige handtekening wacht op ons oordeel.
+    Inkomend(Wachtend),
+    /// Een opnemende taak weigerde een poging vóór de actor eraan te pas kwam (foute
+    /// handtekening). Hier en niet daar gelogd, zodat er één logrem is.
+    Geweigerd {
+        ip: IpAddr,
+        reden: &'static str,
+    },
     Rejected {
         target: usize,
         status: PeerStatus,
@@ -366,6 +456,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
                     connected: flag,
                     resolved: None,
                     known_id: None,
+                    public_key: None,
                     bound: None,
                     last_status: None,
                 })
@@ -373,6 +464,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
             events: event_tx,
             pending: Vec::new(),
             gemelde_frames: HashSet::new(),
+            logrem: Logrem::default(),
         }
         .run(int_rx),
     );
@@ -394,8 +486,95 @@ struct TargetState {
     connected: watch::Sender<bool>,
     resolved: Option<SocketAddr>,
     known_id: Option<PeerId>,
+    public_key: Option<[u8; 32]>,
     bound: Option<u64>,
     last_status: Option<PeerStatus>,
+}
+
+/// Een inkomende verbinding die haar handtekening al bewees en nu wacht op het oordeel van
+/// de actor, vóór de `HelloAck` (B-05a). De opnemende taak houdt de verbinding vast; hier
+/// staat alleen wat nodig is om te beslissen, plus waar het antwoord heen moet.
+struct Wachtend {
+    sinds: Instant,
+    peer_id: PeerId,
+    sleutel: [u8; 32],
+    remote: SocketAddr,
+    /// `Some(target)` = welkom, `None` = stille close.
+    antwoord: oneshot::Sender<Option<usize>>,
+}
+
+/// Bij welk target een inkomende beller hoort, of dat we nog moeten wachten.
+#[derive(Debug, PartialEq)]
+enum Koppeling {
+    Target(usize),
+    /// Hij kan bij een target horen waarvan we het adres nog niet opgezocht hebben.
+    Wacht,
+    Geen,
+}
+
+/// Waarom een bewezen sleutel toch niet binnenkomt.
+#[derive(Debug, PartialEq)]
+enum Weigering {
+    /// Deze identiteit of sleutel hoort al bij een ander target (B-24).
+    Dubbel(usize),
+    /// Andere `PeerId` dan vastgelegd, of dezelfde met een andere sleutel.
+    Identiteit { expected: PeerId, got: PeerId },
+    /// Nog niets vastgepind, en het adres ligt buiten het tailnet.
+    NietTeLeren,
+}
+
+impl Weigering {
+    fn reden(&self) -> &'static str {
+        match self {
+            Self::Dubbel(_) => "dubbele identiteit in config",
+            Self::Identiteit { .. } => "identiteit veranderd",
+            Self::NietTeLeren => "sleutel onbekend buiten het tailnet",
+        }
+    }
+
+    fn status(&self) -> PeerStatus {
+        match *self {
+            Self::Dubbel(_) => PeerStatus::Offline {
+                reason: "zelfde peer als een ander adres".to_string(),
+            },
+            Self::Identiteit { expected, got } => PeerStatus::IdentityChanged { expected, got },
+            Self::NietTeLeren => PeerStatus::UnknownKey,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Oordeel {
+    /// De vastgepinde sleutel.
+    Bekend,
+    /// Nog niets vastgepind en het adres mag: nu vastleggen.
+    Leer,
+}
+
+/// Eén logregel per bron-IP per [`LOGREM`] (B-25). Een vreemde die blijft aankloppen is
+/// één regel per minuut, geen regel per poging.
+#[derive(Default)]
+struct Logrem(HashMap<IpAddr, Instant>);
+
+impl Logrem {
+    fn mag(&mut self, ip: IpAddr) -> bool {
+        let nu = Instant::now();
+        if self.0.len() > 1024 {
+            self.0.retain(|_, t| nu.duration_since(*t) < LOGREM);
+            // Nog steeds vol: dan is dit een stortvloed en vergeten we liever dan dat we
+            // bij elke poging de hele kaart nalopen.
+            if self.0.len() > 1024 {
+                self.0.clear();
+            }
+        }
+        match self.0.get(&ip) {
+            Some(t) if nu.duration_since(*t) < LOGREM => false,
+            _ => {
+                self.0.insert(ip, nu);
+                true
+            }
+        }
+    }
 }
 
 struct Active {
@@ -413,30 +592,35 @@ struct Actor {
     active: HashMap<PeerId, Active>,
     targets: Vec<TargetState>,
     events: mpsc::Sender<MeshEvent>,
-    /// Inkomende verbindingen die we nog niet aan een target konden koppelen.
+    /// Inkomende bellers die we nog niet aan een target konden koppelen.
     ///
-    /// Koppelen gebeurt op het geresolvede IP van een target, en dat weten we pas
-    /// zodra onze eigen dialer dat adres heeft opgezocht. Belt de ander eerder dan dat,
-    /// dan zouden we een volstrekt legitieme verbinding weigeren. Daarom parkeren we
-    /// hem kort in plaats van hem weg te gooien.
+    /// Een sleutel leren gebeurt alleen vanaf het opgezochte adres van een target, en dat
+    /// weten we pas zodra onze eigen dialer het heeft opgezocht. Belt de ander eerder dan
+    /// dat, dan zouden we een volstrekt legitieme verbinding weigeren. Daarom parkeren we
+    /// hem kort; zijn `HelloAck` wacht zolang.
     ///
-    /// Begrensd op [`Actor::max_pending`] (B-26): elke wachtende verbinding houdt een
-    /// levende `quinn::Connection` met zijn taken vast, en `retry_pending` loopt de lijst
-    /// bij elke tik helemaal na.
-    pending: Vec<(std::time::Instant, Box<Established>)>,
+    /// Begrensd op [`Actor::max_pending`] (B-26): achter elke wachtende staat een opnemende
+    /// taak met een levende `quinn::Connection`, en `retry_pending` loopt de lijst bij elke
+    /// tik helemaal na.
+    pending: Vec<Wachtend>,
     /// Verbindingen waarover we al een regel schreven over een frame dat nergens bij
     /// hoorde (B-25). Eén regel per verbinding, niet één per frame.
     gemelde_frames: HashSet<u64>,
+    logrem: Logrem,
 }
 
-/// Hoe lang een niet te koppelen inkomende verbinding blijft wachten voordat we
-/// concluderen dat hij echt niet in de config staat.
-const PENDING_GRACE: Duration = Duration::from_secs(5);
+/// Hoe lang een niet te koppelen inkomende beller blijft wachten voordat we concluderen
+/// dat hij echt niet in de config staat.
+///
+/// Korter dan [`CONNECT_TIMEOUT`]: zolang hij geparkeerd staat wacht de beller op zijn
+/// `HelloAck`, en na die 4 s geeft hij het op. Langer parkeren kan dus nooit meer slagen.
+const PENDING_GRACE: Duration = Duration::from_secs(3);
 
 impl Actor {
     async fn run(mut self, mut rx: mpsc::Receiver<Internal>) {
         for (idx, t) in self.cfg.targets.iter().enumerate() {
             self.targets[idx].known_id = t.known_id;
+            self.targets[idx].public_key = t.public_key;
         }
 
         while let Some(msg) = rx.recv().await {
@@ -451,7 +635,12 @@ impl Actor {
                 Internal::Connecting { target } => {
                     self.set_status(target, PeerStatus::Connecting).await;
                 }
-                Internal::Established(e) => self.on_established(*e).await,
+                Internal::Established(e) => {
+                    let target = e.target;
+                    self.install(*e, target).await
+                }
+                Internal::Inkomend(w) => self.on_inkomend(w).await,
+                Internal::Geweigerd { ip, reden } => self.meld_weigering(ip, reden),
                 Internal::Rejected { target, status } => self.set_status(target, status).await,
                 Internal::Frame { conn_id, msg } => self.on_frame(conn_id, msg).await,
                 Internal::IncomingFileStream { conn_id, stream } => {
@@ -526,104 +715,187 @@ impl Actor {
         self.cfg.targets.len().saturating_mul(4).max(8)
     }
 
-    async fn on_established(&mut self, e: Established) {
-        // Koppel een inkomende verbinding aan een geconfigureerde target.
-        match e.target.or_else(|| self.match_inbound(&e)) {
-            Some(target) => self.install(e, target).await,
-            None => {
+    /// Beslist over een inkomende beller die zijn handtekening al bewees, vóór de
+    /// `HelloAck` (B-05a): welk target, en mag hij erin. Kan dat nog niet, dan parkeren.
+    async fn on_inkomend(&mut self, w: Wachtend) {
+        match self.koppel_inkomend(w.peer_id, &w.sleutel, w.remote) {
+            Koppeling::Target(t) => match self.beoordeel(t, w.peer_id, &w.sleutel, w.remote.ip()) {
+                Ok(_) => {
+                    let _ = w.antwoord.send(Some(t));
+                }
+                Err(weigering) => {
+                    self.meld_weigering(w.remote.ip(), weigering.reden());
+                    // Alleen zonder verbinding: anders zou een vreemde met een geclaimde
+                    // `PeerId` een peer die gewoon online is als "kapot" in beeld kunnen
+                    // zetten. Zonder verbinding is het alarm wél waar.
+                    if self.targets[t].bound.is_none() {
+                        self.set_status(t, weigering.status()).await;
+                    }
+                    let _ = w.antwoord.send(None);
+                }
+            },
+            Koppeling::Wacht if w.sinds.elapsed() < PENDING_GRACE => {
                 // B-26: de **oudste** wijkt, niet de nieuwste. Andersom zou een stroom
-                // verbindingen van een vreemde precies die ene legitieme peer buiten de
-                // deur houden die als eerste belde en nog op zijn adres wacht.
+                // pogingen van een vreemde precies die ene legitieme peer buiten de deur
+                // houden die als eerste belde en nog op zijn adres wacht.
                 while self.pending.len() >= self.max_pending() {
-                    let (_, oud) = self.pending.remove(0);
+                    let oud = self.pending.remove(0);
                     tracing::debug!(
                         peer = ?oud.peer_id, remote = %oud.remote,
-                        "wachtrij vol: oudste ongekoppelde verbinding losgelaten"
+                        "wachtrij vol: oudste ongekoppelde beller losgelaten"
                     );
-                    oud.conn.close(1u32.into(), b"wachtrij vol");
-                    self.gemelde_frames.remove(&oud.conn_id);
+                    let _ = oud.antwoord.send(None);
                 }
                 tracing::debug!(
-                    peer = ?e.peer_id, remote = %e.remote,
-                    "inkomende verbinding nog niet te koppelen, geparkeerd"
+                    peer = ?w.peer_id, remote = %w.remote,
+                    "inkomende beller nog niet te koppelen, geparkeerd"
                 );
-                self.pending.push((std::time::Instant::now(), Box::new(e)));
+                self.pending.push(w);
+            }
+            Koppeling::Wacht | Koppeling::Geen => {
+                self.meld_weigering(w.remote.ip(), "onbekende sleutel");
+                let _ = w.antwoord.send(None);
             }
         }
     }
 
-    /// Probeert geparkeerde verbindingen opnieuw te koppelen en gooit weg wat te oud is.
+    /// Probeert geparkeerde bellers opnieuw en wijst af wat te lang wacht.
     async fn retry_pending(&mut self) {
-        if self.pending.is_empty() {
-            return;
+        for w in std::mem::take(&mut self.pending) {
+            self.on_inkomend(w).await;
         }
-
-        let mut still_waiting = Vec::new();
-        for (since, e) in std::mem::take(&mut self.pending) {
-            match self.match_inbound(&e) {
-                Some(target) => self.install(*e, target).await,
-                None if since.elapsed() < PENDING_GRACE => still_waiting.push((since, e)),
-                None => {
-                    tracing::warn!(
-                        peer = ?e.peer_id, remote = %e.remote,
-                        "verbinding geweigerd: deze peer staat niet in de config"
-                    );
-                    e.conn.close(1u32.into(), b"onbekende peer");
-                    self.gemelde_frames.remove(&e.conn_id);
-                }
-            }
-        }
-        self.pending = still_waiting;
     }
 
-    async fn install(&mut self, e: Established, target: usize) {
+    fn meld_weigering(&mut self, ip: IpAddr, reden: &str) {
+        if self.logrem.mag(ip) {
+            tracing::info!(%ip, reden, "inkomende verbinding geweigerd");
+        }
+    }
+
+    /// Bij welk target een inkomende beller hoort.
+    ///
+    /// Eerst op de vastgepinde sleutel: wie hem heeft is die peer, vanaf welk adres ook
+    /// (adressen zijn hints, nooit toegang). Daarna dezelfde `PeerId` met een *andere*
+    /// vastgepinde sleutel: dat target, zodat [`Actor::beoordeel`] het alarm geeft (B-05b;
+    /// vroeger kon dat op dit pad nooit vuren). Pas dan leren, en alleen bij targets
+    /// zonder sleutel, vanaf hun eigen opgezochte IP.
+    fn koppel_inkomend(
+        &self,
+        peer_id: PeerId,
+        sleutel: &[u8; 32],
+        remote: SocketAddr,
+    ) -> Koppeling {
+        let zoek = |pred: &dyn Fn(&TargetState) -> bool| self.targets.iter().position(pred);
+        if let Some(i) = zoek(&|t| t.public_key == Some(*sleutel)) {
+            return Koppeling::Target(i);
+        }
+        if let Some(i) = zoek(&|t| t.public_key.is_some() && t.known_id == Some(peer_id)) {
+            return Koppeling::Target(i);
+        }
+
+        let ongepind = |t: &TargetState| t.public_key.is_none();
+        let zelfde_ip = |t: &TargetState| t.resolved.map(|a| a.ip()) == Some(remote.ip());
+
+        // Een installatie van vóór protocol 6: de `PeerId` kenden we al, de sleutel nog niet.
+        if let Some(i) = zoek(&|t| ongepind(t) && t.known_id == Some(peer_id) && zelfde_ip(t)) {
+            return Koppeling::Target(i);
+        }
+
+        let nieuw = |t: &TargetState| ongepind(t) && t.known_id.is_none();
+
+        // Exact adres inclusief poort. Peers dialen vanaf de socket waarop ze zelf
+        // luisteren, dus de bronpoort is hun `control_port`.
+        if let Some(i) = zoek(&|t| nieuw(t) && t.resolved == Some(remote)) {
+            return Koppeling::Target(i);
+        }
+
+        // Alleen het IP, maar uitsluitend als dat ondubbelzinnig één peer aanwijst. Vangt
+        // het geval af waarin een NAT onderweg de bronpoort herschrijft.
+        let mut hits = self
+            .targets
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| nieuw(t) && zelfde_ip(t));
+        if let (Some((i, _)), None) = (hits.next(), hits.next()) {
+            return Koppeling::Target(i);
+        }
+
+        if self
+            .targets
+            .iter()
+            .any(|t| ongepind(t) && t.resolved.is_none())
+        {
+            Koppeling::Wacht
+        } else {
+            Koppeling::Geen
+        }
+    }
+
+    /// Mag deze bewezen sleutel met deze `PeerId` bij dit target, en moeten we hem leren?
+    /// Eén regel voor bellen en opnemen, zodat de twee paden niet uit elkaar lopen.
+    fn beoordeel(
+        &self,
+        target: usize,
+        peer_id: PeerId,
+        sleutel: &[u8; 32],
+        ip: IpAddr,
+    ) -> std::result::Result<Oordeel, Weigering> {
         // B-24: dezelfde identiteit mag nooit aan twee targets hangen. Lossen twee
         // adressen uit de config naar dezelfde peer op, dan verhuisde `active` naar het
         // laatste target terwijl `bound` en `connected` van het eerste bleven staan: die
         // peer stond daarna voorgoed "online" op een verbinding die al dicht was, en werd
         // nooit meer gebeld. Het eerste target dat de identiteit leerde houdt hem.
-        if let Some(ander) = self.identiteit_op_ander_target(target, e.peer_id) {
-            tracing::warn!(
-                peer = ?e.peer_id, remote = %e.remote, target, ander,
-                "verbinding geweigerd: deze identiteit hoort al bij een ander target in de config"
-            );
-            e.conn.close(1u32.into(), b"dubbele identiteit in config");
-            self.set_status(
-                target,
-                PeerStatus::Offline {
-                    reason: "zelfde peer als een ander adres".to_string(),
-                },
-            )
-            .await;
-            return;
+        if let Some(ander) = self.identiteit_op_ander_target(target, peer_id, sleutel) {
+            return Err(Weigering::Dubbel(ander));
         }
+        let t = &self.targets[target];
+        if let Some(verwacht) = t.known_id.filter(|&k| k != peer_id) {
+            return Err(Weigering::Identiteit {
+                expected: verwacht,
+                got: peer_id,
+            });
+        }
+        match t.public_key {
+            // Een vastgepinde sleutel zonder `PeerId` (een met de hand bewerkte config, straks
+            // een code zonder id): de id nu vastleggen, anders kon wie de sleutel heeft bij
+            // elke verbinding een andere `PeerId` opgeven.
+            Some(k) if k == *sleutel && t.known_id.is_none() => Ok(Oordeel::Leer),
+            Some(k) if k == *sleutel => Ok(Oordeel::Bekend),
+            Some(_) => Err(Weigering::Identiteit {
+                expected: peer_id,
+                got: peer_id,
+            }),
+            None if mag_leren(ip) => Ok(Oordeel::Leer),
+            None => Err(Weigering::NietTeLeren),
+        }
+    }
 
-        // Identiteitscontrole: hetzelfde adres hoort dezelfde peer te zijn.
-        match self.targets[target].known_id {
-            Some(known) if known != e.peer_id => {
-                tracing::error!(
-                    expected = ?known, got = ?e.peer_id, remote = %e.remote,
-                    "identiteit achter dit adres is veranderd"
-                );
-                e.conn.close(1u32.into(), b"identiteit veranderd");
-                self.set_status(
-                    target,
-                    PeerStatus::IdentityChanged {
-                        expected: known,
-                        got: e.peer_id,
-                    },
-                )
-                .await;
+    async fn install(&mut self, e: Established, target: usize) {
+        match self.beoordeel(target, e.peer_id, &e.sleutel, e.remote.ip()) {
+            Err(weigering) => {
+                if self.logrem.mag(e.remote.ip()) {
+                    tracing::warn!(
+                        peer = ?e.peer_id, remote = %e.remote, target, ?weigering,
+                        "verbinding geweigerd"
+                    );
+                }
+                e.conn.close(1u32.into(), weigering.reden().as_bytes());
+                if self.targets[target].bound.is_none() {
+                    self.set_status(target, weigering.status()).await;
+                }
                 return;
             }
-            Some(_) => {}
-            None => {
+            Ok(Oordeel::Bekend) => {}
+            Ok(Oordeel::Leer) => {
+                tracing::info!(peer = ?e.peer_id, remote = %e.remote, target, "sleutel vastgepind");
                 self.targets[target].known_id = Some(e.peer_id);
+                self.targets[target].public_key = Some(e.sleutel);
                 let _ = self
                     .events
                     .send(MeshEvent::LearnedIdentity {
                         target,
                         peer_id: e.peer_id,
+                        public_key: e.sleutel,
                     })
                     .await;
             }
@@ -694,55 +966,18 @@ impl Actor {
         self.set_status(target, status).await;
     }
 
-    /// Of deze identiteit al bij een *ander* target hoort (B-24). Levert dat andere
+    /// Of deze identiteit of sleutel al bij een *ander* target hoort (B-24). Levert dat andere
     /// target op, zodat het log kan vertellen welke twee regels in de config botsen.
-    fn identiteit_op_ander_target(&self, target: usize, peer_id: PeerId) -> Option<usize> {
+    fn identiteit_op_ander_target(
+        &self,
+        target: usize,
+        peer_id: PeerId,
+        sleutel: &[u8; 32],
+    ) -> Option<usize> {
         self.targets
             .iter()
-            .position(|t| t.known_id == Some(peer_id))
+            .position(|t| t.known_id == Some(peer_id) || t.public_key == Some(*sleutel))
             .filter(|&i| i != target)
-    }
-
-    /// Bepaalt bij welke geconfigureerde peer een inkomende verbinding hoort.
-    ///
-    /// Matchen op alleen het IP is niet genoeg: draaien er meerdere peers achter
-    /// hetzelfde adres — drie instanties op één PC, of straks peers achter dezelfde
-    /// exit node — dan wijzen we de verbinding aan de verkeerde toe en slaat de
-    /// identiteitscontrole daarna ten onrechte alarm.
-    fn match_inbound(&self, e: &Established) -> Option<usize> {
-        // 1. Kennen we deze identiteit al, dan is het adres niet interessant.
-        if let Some(i) = self
-            .targets
-            .iter()
-            .position(|t| t.known_id == Some(e.peer_id))
-        {
-            return Some(i);
-        }
-
-        let unclaimed = |t: &&TargetState| t.known_id.is_none();
-
-        // 2. Exact adres inclusief poort. Peers dialen vanaf de socket waarop ze zelf
-        //    luisteren, dus de bronpoort is hun `control_port`.
-        if let Some(i) = self
-            .targets
-            .iter()
-            .position(|t| unclaimed(&t) && t.resolved == Some(e.remote))
-        {
-            return Some(i);
-        }
-
-        // 3. Alleen het IP, maar uitsluitend als dat ondubbelzinnig één peer aanwijst.
-        //    Vangt het geval af waarin een NAT onderweg de bronpoort herschrijft.
-        let mut hits = self
-            .targets
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| unclaimed(t) && t.resolved.map(|a| a.ip()) == Some(e.remote.ip()));
-
-        match (hits.next(), hits.next()) {
-            (Some((i, _)), None) => Some(i),
-            _ => None,
-        }
     }
 
     async fn on_frame(&mut self, conn_id: u64, msg: ControlMsg) {
@@ -804,10 +1039,6 @@ impl Actor {
             tracing::info!(peer = ?peer, %reason, "verbinding verbroken");
         }
 
-        // Een geparkeerde verbinding kan ook sluiten voordat hij ooit gekoppeld werd;
-        // zonder dit bleef hij tot `PENDING_GRACE` een plek in de wachtrij bezet houden
-        // (B-26).
-        self.pending.retain(|(_, e)| e.conn_id != conn_id);
         self.gemelde_frames.remove(&conn_id);
     }
 
@@ -943,7 +1174,7 @@ async fn try_dial(
     let _ = int.send(Internal::Resolved { target, addr }).await;
 
     // Alleen het opzetten krijgt een deadline. De sessie erna mag uren duren.
-    let (conn, send, recv, ack) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+    let opgezet = tokio::time::timeout(CONNECT_TIMEOUT, async {
         let conn = endpoint
             .connect(addr, tls::SERVER_NAME)?
             .await
@@ -959,6 +1190,9 @@ async fn try_dial(
                 display_name: cfg.display_name.clone(),
                 media_port: cfg.media_port,
                 app_version: cfg.app_version.clone(),
+                public_key: cfg.sleutel.public_key().as_ref().to_vec(),
+                signature: teken(&cfg.sleutel, &conn, Handtekening::BELLER)?,
+                media_index: 0,
             }),
         )
         .await?;
@@ -972,7 +1206,27 @@ async fn try_dial(
         Ok::<_, anyhow::Error>((conn, send, recv, ack))
     })
     .await
-    .map_err(|_| anyhow::anyhow!("peer reageert niet"))??;
+    .map_err(|_| anyhow::anyhow!("peer reageert niet"))?;
+
+    let (conn, send, recv, ack) = match opgezet {
+        Ok(v) => v,
+        // Een peer op protocol 5 schrijft zijn `HelloAck` en sluit in dezelfde tik, dus het
+        // antwoord komt nooit aan; alleen zijn sluitreden wel. Zonder dit zag wie al
+        // bijgewerkt is de ander als "offline" in plaats van "update nodig".
+        Err(e) if gesloten_om_versie(&e) => {
+            let _ = int
+                .send(Internal::Rejected {
+                    target,
+                    status: PeerStatus::VersionMismatch {
+                        theirs: 0,
+                        ours: PROTOCOL_VERSION,
+                    },
+                })
+                .await;
+            return Ok(Dialresultaat::Afgewezen);
+        }
+        Err(e) => return Err(e),
+    };
 
     if ack.protocol_version != PROTOCOL_VERSION {
         conn.close(1u32.into(), b"protocolversie");
@@ -989,16 +1243,38 @@ async fn try_dial(
         return Ok(Dialresultaat::Afgewezen);
     }
 
+    // Wie hier antwoordt moet bewijzen dat hij de sleutel heeft die hij noemt, over déze
+    // verbinding. Of het de goede sleutel is beslist de actor (`install`): alleen die kent
+    // de pins zoals ze nu zijn; `peer` is een kopie van bij het starten.
+    let Some(sleutel) = bewezen_sleutel(
+        &exporter(&conn, Handtekening::OPNEMER)?,
+        &ack.public_key,
+        &ack.signature,
+    ) else {
+        conn.close(1u32.into(), b"identiteit niet bewezen");
+        let _ = int
+            .send(Internal::Rejected {
+                target,
+                status: PeerStatus::Offline {
+                    reason: "identiteit niet bewezen".to_string(),
+                },
+            })
+            .await;
+        return Ok(Dialresultaat::Afgewezen);
+    };
+
     if ack.peer_id == cfg.me {
         bail!("dit adres wijst naar onszelf; controleer de config");
     }
 
+    let begin = Instant::now();
     run_session(
         conn,
         send,
         recv,
-        Some(target),
+        target,
         ack.peer_id,
+        sleutel,
         ack.display_name,
         ack.media_port,
         ack.app_version,
@@ -1007,7 +1283,39 @@ async fn try_dial(
     )
     .await;
 
-    Ok(Dialresultaat::Sessie)
+    // B-40, opnieuw: weigert de actor de verbinding (een pin die niet klopt, een identiteit
+    // die al bij een ander target hoort), dan sluit hij hem meteen, en dan was dit geen
+    // sessie. Telde het wél als sessie, dan ging de backoff terug naar één seconde en belden
+    // we elke seconde opnieuw, met bij de ander elke seconde een volle online/offline-ronde.
+    // Met sleutels is dat de gewone foutvorm geworden (een oude pin, een vriend met een
+    // nieuwe sleutel), dus een korte sessie telt als afwijzing.
+    Ok(if begin.elapsed() < KORTE_SESSIE {
+        Dialresultaat::Afgewezen
+    } else {
+        Dialresultaat::Sessie
+    })
+}
+
+/// Een sessie korter dan dit was geen sessie maar een afwijzing (zie `try_dial`).
+const KORTE_SESSIE: Duration = Duration::from_secs(10);
+
+/// Of de ander de verbinding sloot met de reden "protocolversie": zo antwoordt een peer op
+/// protocol 5 (of ouder) op iedereen met een andere versie.
+fn gesloten_om_versie(e: &anyhow::Error) -> bool {
+    let om_versie = |c: &quinn::ConnectionError| matches!(c, quinn::ConnectionError::ApplicationClosed(a) if &a.reason[..] == b"protocolversie");
+    e.chain().any(|c| {
+        if let Some(c) = c.downcast_ref::<quinn::ConnectionError>() {
+            return om_versie(c);
+        }
+        let Some(lezen) = c
+            .downcast_ref::<std::io::Error>()
+            .and_then(|io| io.get_ref())
+            .and_then(|i| i.downcast_ref::<quinn::ReadError>())
+        else {
+            return false;
+        };
+        matches!(lezen, quinn::ReadError::ConnectionLost(c) if om_versie(c))
+    })
 }
 
 // B-41 (mediapoort 0 weigeren) staat hier bewust **niet**. Zie de uitleg bij `install`:
@@ -1023,6 +1331,10 @@ async fn accept_loop(
 ) {
     let grens = max_inkomend(cfg.targets.len());
     let lopend = Arc::new(AtomicUsize::new(0));
+    // A3: pogingen per bron-IP in de lopende seconde. Lokaal in deze ene lus, dus geen lock.
+    let mut pogingen: HashMap<IpAddr, u32> = HashMap::new();
+    let mut seconde = Instant::now();
+    let mut logrem = Logrem::default();
 
     loop {
         let incoming = tokio::select! {
@@ -1032,6 +1344,29 @@ async fn accept_loop(
                 None => break,
             },
         };
+
+        // A3: eerst het bronadres laten bewijzen. Een Retry kost ons één klein pakket en
+        // geen toestand, en is kleiner dan wat de afzender stuurde, dus wie een adres
+        // vervalst krijgt geen versterking en verbruikt het budget van dat adres niet.
+        if !incoming.remote_address_validated() && incoming.may_retry() {
+            let _ = incoming.retry();
+            continue;
+        }
+
+        let ip = incoming.remote_address().ip();
+        if seconde.elapsed() >= Duration::from_secs(1) {
+            pogingen.clear();
+            seconde = Instant::now();
+        }
+        let n = pogingen.entry(ip).or_insert(0);
+        *n += 1;
+        if *n > MAX_POGINGEN_PER_IP {
+            if logrem.mag(ip) {
+                tracing::info!(%ip, "inkomende verbindingen geweigerd: te veel pogingen per seconde");
+            }
+            incoming.refuse();
+            continue;
+        }
 
         // B-17: pas op hoeveel er tegelijk lopen. Elke inkomende verbinding kost een taak,
         // een lezer en een framebuffer, van iemand die nog niets bewezen heeft.
@@ -1081,13 +1416,15 @@ async fn accept_one(
     cfg: MeshConfig,
     int: mpsc::Sender<Internal>,
 ) -> Result<()> {
+    let remote = incoming.remote_address();
+
     // B-17: alleen het opzetten krijgt een deadline, net als bij `try_dial`. De sessie
     // erna mag uren duren, dus de timeout kan niet om deze hele functie heen: een peer die
     // niets stuurt hield anders een taak, een verbinding en een leesbuffer bezet tot de
     // idle-timeout, en niets belette hem dat duizend keer tegelijk te doen.
-    let (conn, send, recv, hello) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+    let (conn, mut send, recv, hello) = tokio::time::timeout(CONNECT_TIMEOUT, async {
         let conn = incoming.await.context("inkomende QUIC-handshake")?;
-        let (mut send, mut recv) = conn
+        let (send, mut recv) = conn
             .accept_bi()
             .await
             .context("control-stream accepteren")?;
@@ -1098,25 +1435,25 @@ async fn accept_one(
             None => bail!("verbinding sloot voor de Hello"),
         };
 
-        framing::write_frame(
-            &mut send,
-            &ControlMsg::HelloAck(HelloAck {
-                protocol_version: PROTOCOL_VERSION,
-                peer_id: cfg.me,
-                display_name: cfg.display_name.clone(),
-                media_port: cfg.media_port,
-                app_version: cfg.app_version.clone(),
-            }),
-        )
-        .await?;
-
         Ok::<_, anyhow::Error>((conn, send, recv, hello))
     })
     .await
     .map_err(|_| anyhow::anyhow!("peer maakte de handshake niet af"))??;
 
+    // B-05a: tot hier heeft de beller niets van ons gehoord, en dat blijft zo tot de
+    // controles hieronder klaar zijn.
     if hello.protocol_version != PROTOCOL_VERSION {
-        // De ander ziet dit ook en meldt het aan zijn gebruiker; wij sluiten netjes.
+        // Alleen de versie, zodat hij "update nodig" ziet en niet "offline". Hij sluit
+        // zelf zodra hij het leest; wacht daar kort op, want wie meteen sluit gooit het
+        // antwoord weg dat nog onderweg is.
+        let _ = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            framing::write_frame(&mut send, &ControlMsg::HelloAck(HelloAck::alleen_versie()))
+                .await?;
+            let _ = send.finish();
+            conn.closed().await;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
         conn.close(1u32.into(), b"protocolversie");
         bail!(
             "protocolversie {} van peer wijkt af van {}",
@@ -1125,17 +1462,84 @@ async fn accept_one(
         );
     }
 
+    let Some(sleutel) = bewezen_sleutel(
+        &exporter(&conn, Handtekening::BELLER)?,
+        &hello.public_key,
+        &hello.signature,
+    ) else {
+        // Stil: wie zijn sleutel niet kan bewijzen krijgt niets terug.
+        conn.close(0u32.into(), b"");
+        let _ = int
+            .send(Internal::Geweigerd {
+                ip: remote.ip(),
+                reden: "handtekening klopt niet",
+            })
+            .await;
+        return Ok(());
+    };
+
+    // Stil, net als elke andere weigering vóór de actor: met een reden erbij kon iedereen
+    // met een zelfgemaakte sleutel vragen "is PeerId X van jou?".
     if hello.peer_id == cfg.me {
-        conn.close(1u32.into(), b"zelfverbinding");
+        conn.close(0u32.into(), b"");
         bail!("peer meldde onze eigen identiteit");
     }
+
+    // De actor kent de pins en de targets. Hij antwoordt binnen `PENDING_GRACE`, ook als
+    // het antwoord "nee" is; daarom staat dit buiten de deadline hierboven.
+    //
+    // Toch zelf begrensd, en weg zodra de verbinding sluit: een `quinn::Connection` houdt de
+    // UDP-socket vast. Een taak die hier bleef hangen terwijl de mesh afsloot (geen tik
+    // meer die de wachtrij afhandelt) hield de poort bezet, en dan start de mesh niet
+    // opnieuw op dezelfde poort.
+    let (antwoord, oordeel) = oneshot::channel();
+    let gevraagd = int
+        .send(Internal::Inkomend(Wachtend {
+            sinds: Instant::now(),
+            peer_id: hello.peer_id,
+            sleutel,
+            remote,
+            antwoord,
+        }))
+        .await;
+    let oordeel = tokio::select! {
+        o = tokio::time::timeout(CONNECT_TIMEOUT, oordeel) => o,
+        _ = conn.closed() => return Ok(()),
+    };
+    let target = match (gevraagd, oordeel) {
+        (Ok(()), Ok(Ok(Some(t)))) => t,
+        _ => {
+            conn.close(0u32.into(), b"");
+            return Ok(());
+        }
+    };
+
+    tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        framing::write_frame(
+            &mut send,
+            &ControlMsg::HelloAck(HelloAck {
+                protocol_version: PROTOCOL_VERSION,
+                peer_id: cfg.me,
+                display_name: cfg.display_name.clone(),
+                media_port: cfg.media_port,
+                app_version: cfg.app_version.clone(),
+                public_key: cfg.sleutel.public_key().as_ref().to_vec(),
+                signature: teken(&cfg.sleutel, &conn, Handtekening::OPNEMER)?,
+                media_index: 0,
+            }),
+        ),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("HelloAck kwam niet weg"))??;
 
     run_session(
         conn,
         send,
         recv,
-        None, // target volgt uit de koppeling in de actor
+        target,
         hello.peer_id,
+        sleutel,
         hello.display_name,
         hello.media_port,
         hello.app_version,
@@ -1178,8 +1582,9 @@ async fn run_session(
     conn: quinn::Connection,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
-    target: Option<usize>,
+    target: usize,
     peer_id: PeerId,
+    sleutel: [u8; 32],
     display_name: String,
     media_port: u16,
     app_version: String,
@@ -1200,6 +1605,7 @@ async fn run_session(
         conn_id,
         target,
         peer_id,
+        sleutel,
         display_name,
         media_port,
         app_version,
@@ -1325,6 +1731,7 @@ mod tests {
                 label: format!("peer{i}"),
                 known_id: None,
                 control_port: 41000,
+                public_key: None,
             })
             .collect();
         let (tx, rx) = mpsc::channel(32);
@@ -1337,6 +1744,7 @@ mod tests {
                 connected: vlag_tx,
                 resolved: None,
                 known_id: None,
+                public_key: None,
                 bound: None,
                 last_status: None,
             });
@@ -1349,12 +1757,14 @@ mod tests {
                 media_port: 41700,
                 targets: targets.clone(),
                 app_version: "1.0.0".into(),
+                sleutel: wegwerpsleutel(),
             },
             active: HashMap::new(),
             targets: target_state,
             events: tx,
             pending: Vec::new(),
             gemelde_frames: HashSet::new(),
+            logrem: Logrem::default(),
         };
         (actor, rx, vlaggen)
     }
@@ -1406,10 +1816,20 @@ mod tests {
         let (mut actor, _events, _vlaggen) = kale_actor(3);
         actor.targets[0].known_id = Some(peer(1));
 
-        assert_eq!(actor.identiteit_op_ander_target(1, peer(1)), Some(0));
+        actor.targets[2].public_key = Some([7; 32]);
+
+        assert_eq!(
+            actor.identiteit_op_ander_target(1, peer(1), &[0; 32]),
+            Some(0)
+        );
         // Op zijn eigen target is het geen botsing maar een herverbinding.
-        assert_eq!(actor.identiteit_op_ander_target(0, peer(1)), None);
-        assert_eq!(actor.identiteit_op_ander_target(1, peer(2)), None);
+        assert_eq!(actor.identiteit_op_ander_target(0, peer(1), &[0; 32]), None);
+        assert_eq!(actor.identiteit_op_ander_target(1, peer(2), &[0; 32]), None);
+        // En een sleutel die al bij een ander target hoort is net zo goed een botsing.
+        assert_eq!(
+            actor.identiteit_op_ander_target(1, peer(2), &[7; 32]),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1444,5 +1864,381 @@ mod tests {
 
         assert_eq!(kant_a_houdt, kant_b_houdt);
         assert_eq!(kant_a_houdt, a, "laagste PeerId wint als initiator");
+    }
+
+    // -- identiteit (beslissing 46) -------------------------------------------------
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn alleen_tailnet_en_loopback_mogen_een_sleutel_leren() {
+        for ja in [
+            "100.64.0.0",
+            "100.100.1.2",
+            "100.127.255.255",
+            "127.0.0.1",
+            "::1",
+            "fd7a:115c:a1e0::1",
+            "fd7a:115c:a1e0:ffff::9",
+            "::ffff:100.64.0.7",
+        ] {
+            assert!(mag_leren(ip(ja)), "{ja} hoort te mogen");
+        }
+        for nee in [
+            "100.63.255.255",
+            "100.128.0.0",
+            "192.168.1.10",
+            "10.0.0.2",
+            "26.1.2.3", // Radmin VPN: geen tailnet, dus geen vertrouwen op eerste gezicht
+            "8.8.8.8",
+            "fd7a:115c:a1e1::1",
+            "2a02:a46b::1",
+        ] {
+            assert!(!mag_leren(ip(nee)), "{nee} hoort niet te mogen");
+        }
+    }
+
+    #[test]
+    fn een_handtekening_geldt_alleen_voor_haar_eigen_exporter() {
+        use ring::signature::KeyPair;
+        let sleutel = wegwerpsleutel();
+        let publiek = sleutel.public_key().as_ref().to_vec();
+        let deze = [1u8; 32];
+        let andere = [2u8; 32];
+        let handtekening = sleutel.sign(&deze);
+
+        assert_eq!(
+            bewezen_sleutel(&deze, &publiek, handtekening.as_ref()),
+            Some(publiek.clone().try_into().unwrap())
+        );
+        // De man-in-the-middle: dezelfde handtekening, doorgestuurd naar een verbinding met
+        // een andere exporter.
+        assert_eq!(
+            bewezen_sleutel(&andere, &publiek, handtekening.as_ref()),
+            None
+        );
+        // Een andere sleutel noemen dan waarmee getekend is.
+        let vreemd = wegwerpsleutel().public_key().as_ref().to_vec();
+        assert_eq!(bewezen_sleutel(&deze, &vreemd, handtekening.as_ref()), None);
+        // Een peer op protocol 5 stuurt niets.
+        assert_eq!(bewezen_sleutel(&deze, &[], &[]), None);
+    }
+
+    #[test]
+    fn beoordeling_volgt_de_pins() {
+        let (mut actor, _events, _vlaggen) = kale_actor(3);
+        let tailnet = ip("100.64.0.1");
+        let publiek = ip("84.84.1.2");
+        actor.targets[0].known_id = Some(peer(1));
+        actor.targets[0].public_key = Some([1; 32]);
+
+        assert_eq!(
+            actor.beoordeel(0, peer(1), &[1; 32], publiek),
+            Ok(Oordeel::Bekend)
+        );
+        assert_eq!(
+            actor.beoordeel(0, peer(1), &[9; 32], tailnet),
+            Err(Weigering::Identiteit {
+                expected: peer(1),
+                got: peer(1)
+            }),
+            "zelfde PeerId met een andere sleutel komt er nooit in, ook niet op het tailnet"
+        );
+        assert_eq!(
+            actor.beoordeel(0, peer(2), &[1; 32], tailnet),
+            Err(Weigering::Identiteit {
+                expected: peer(1),
+                got: peer(2)
+            })
+        );
+
+        // Een installatie van vóór 6: de PeerId bekend, de sleutel nog niet.
+        actor.targets[1].known_id = Some(peer(2));
+        assert_eq!(
+            actor.beoordeel(1, peer(2), &[2; 32], tailnet),
+            Ok(Oordeel::Leer)
+        );
+        assert_eq!(
+            actor.beoordeel(1, peer(2), &[2; 32], publiek),
+            Err(Weigering::NietTeLeren)
+        );
+
+        // Een sleutel die al bij een ander target hoort (B-24).
+        assert_eq!(
+            actor.beoordeel(2, peer(3), &[1; 32], tailnet),
+            Err(Weigering::Dubbel(0))
+        );
+        assert_eq!(
+            actor.beoordeel(2, peer(3), &[3; 32], tailnet),
+            Ok(Oordeel::Leer)
+        );
+
+        // Een sleutel zonder PeerId (met de hand in de config gezet): de id wordt bij de
+        // eerste verbinding vastgelegd, ook buiten het tailnet, want de sleutel is al bewezen.
+        actor.targets[2].public_key = Some([3; 32]);
+        assert_eq!(
+            actor.beoordeel(2, peer(3), &[3; 32], publiek),
+            Ok(Oordeel::Leer)
+        );
+    }
+
+    #[test]
+    fn inkomend_koppelen_gaat_op_sleutel_en_leert_alleen_vanaf_het_eigen_adres() {
+        let (mut actor, _events, _vlaggen) = kale_actor(2);
+        let a: SocketAddr = "100.64.0.1:41000".parse().unwrap();
+        let b: SocketAddr = "100.64.0.2:41000".parse().unwrap();
+        actor.targets[0].known_id = Some(peer(1));
+        actor.targets[0].public_key = Some([1; 32]);
+        actor.targets[0].resolved = Some(a);
+
+        // Nog geen adres voor het ongepinde target: wachten, niet weigeren.
+        assert_eq!(
+            actor.koppel_inkomend(peer(2), &[2; 32], b),
+            Koppeling::Wacht
+        );
+        actor.targets[1].resolved = Some(b);
+        assert_eq!(
+            actor.koppel_inkomend(peer(2), &[2; 32], b),
+            Koppeling::Target(1)
+        );
+        // Vanaf een ander adres leren we niets.
+        let elders: SocketAddr = "100.64.0.9:41000".parse().unwrap();
+        assert_eq!(
+            actor.koppel_inkomend(peer(2), &[2; 32], elders),
+            Koppeling::Geen
+        );
+
+        // De gepinde sleutel wint, vanaf welk adres ook.
+        assert_eq!(
+            actor.koppel_inkomend(peer(1), &[1; 32], elders),
+            Koppeling::Target(0)
+        );
+        // Zelfde PeerId, andere sleutel: naar dat target, zodat het alarm kan vuren.
+        assert_eq!(
+            actor.koppel_inkomend(peer(1), &[9; 32], b),
+            Koppeling::Target(0)
+        );
+    }
+
+    /// Een vrije poort, onthouden zodat parallelle tests hem niet dubbel krijgen.
+    fn vrije_poort() -> u16 {
+        use std::sync::{Mutex, OnceLock};
+        static UITGEDEELD: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+        let uitgedeeld = UITGEDEELD.get_or_init(Default::default);
+        loop {
+            let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let p = s.local_addr().unwrap().port();
+            if uitgedeeld.lock().unwrap().insert(p) {
+                return p;
+            }
+        }
+    }
+
+    /// Een peer met één target op 127.0.0.1:`ander`, zoals de app hem zou starten.
+    fn peer_met_target(poort: u16, ander: u16, pin: Option<(PeerId, [u8; 32])>) -> MeshHandle {
+        spawn(MeshConfig {
+            me: PeerId::new_random(),
+            display_name: "B".into(),
+            control_port: poort,
+            media_port: 0,
+            app_version: "1.0.0".into(),
+            sleutel: wegwerpsleutel(),
+            targets: vec![PeerTarget {
+                address: "127.0.0.1".into(),
+                label: "A".into(),
+                known_id: pin.map(|(id, _)| id),
+                control_port: ander,
+                public_key: pin.map(|(_, k)| k),
+            }],
+        })
+        .unwrap()
+    }
+
+    /// Een kale QUIC-client die zelf bepaalt wat er in de `Hello` staat.
+    fn rauwe_client(poort: u16) -> quinn::Endpoint {
+        let mut ep = quinn::Endpoint::client(SocketAddr::from(([127, 0, 0, 1], poort))).unwrap();
+        ep.set_default_client_config(tls::client_config().unwrap());
+        ep
+    }
+
+    fn hello(
+        peer_id: PeerId,
+        versie: u32,
+        sleutel: &Ed25519KeyPair,
+        handtekening: Vec<u8>,
+    ) -> ControlMsg {
+        ControlMsg::Hello(Hello {
+            protocol_version: versie,
+            peer_id,
+            display_name: "A".into(),
+            media_port: 0,
+            app_version: "1.0.0".into(),
+            public_key: sleutel.public_key().as_ref().to_vec(),
+            signature: handtekening,
+            media_index: 0,
+        })
+    }
+
+    /// Stuurt een `Hello` en levert wat er terugkomt: `Some` met de `HelloAck`, of `None`
+    /// als de ander zonder antwoord sloot.
+    async fn vraag(conn: &quinn::Connection, msg: &ControlMsg) -> Option<HelloAck> {
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        framing::write_frame(&mut send, msg).await.unwrap();
+        let antwoord = tokio::time::timeout(Duration::from_secs(8), framing::read_frame(&mut recv))
+            .await
+            .expect("een stille close moet de verbinding sluiten, niet laten hangen");
+        match antwoord {
+            Ok(Some(Some(ControlMsg::HelloAck(a)))) => Some(a),
+            _ => None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn een_doorgestuurde_handtekening_krijgt_geen_hello_ack() {
+        let (pa, pb) = (vrije_poort(), vrije_poort());
+        let _b = peer_met_target(pb, pa, None);
+        let doel = SocketAddr::from(([127, 0, 0, 1], pb));
+        let ep = rauwe_client(pa);
+        let echt = ep.connect(doel, tls::SERVER_NAME).unwrap().await.unwrap();
+        let mitm = ep.connect(doel, tls::SERVER_NAME).unwrap().await.unwrap();
+
+        let a = PeerId::new_random();
+        let sleutel = wegwerpsleutel();
+        let handtekening = teken(&sleutel, &echt, Handtekening::BELLER).unwrap();
+
+        // Dezelfde handtekening over een andere verbinding: de exporter klopt niet.
+        let doorgestuurd = hello(a, PROTOCOL_VERSION, &sleutel, handtekening.clone());
+        assert!(
+            vraag(&mitm, &doorgestuurd).await.is_none(),
+            "een HelloAck vóór (of zonder) een geldige handtekening lekt wie we zijn (B-05a)"
+        );
+
+        // Controle op de opzet: op de eigen verbinding komt hij wél binnen (TOFU op
+        // loopback, vanaf het adres van het target).
+        let ack = vraag(&echt, &doorgestuurd)
+            .await
+            .expect("eigen verbinding hoort te lukken");
+        assert_eq!(ack.public_key.len(), Handtekening::SLEUTEL_LEN);
+        assert!(bewezen_sleutel(
+            &exporter(&echt, Handtekening::OPNEMER).unwrap(),
+            &ack.public_key,
+            &ack.signature
+        )
+        .is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn een_onbekende_sleutel_krijgt_een_stille_close() {
+        let (pa, pb, vreemd) = (vrije_poort(), vrije_poort(), vrije_poort());
+        let a = PeerId::new_random();
+        let a_sleutel = wegwerpsleutel();
+        let pin = a_sleutel.public_key().as_ref().try_into().unwrap();
+        let _b = peer_met_target(pb, pa, Some((a, pin)));
+
+        let ep = rauwe_client(vreemd);
+        let conn = ep
+            .connect(SocketAddr::from(([127, 0, 0, 1], pb)), tls::SERVER_NAME)
+            .unwrap()
+            .await
+            .unwrap();
+        // Een geldige handtekening, maar met een sleutel die nergens vastgepind staat, en
+        // vanaf een adres waar we niets leren.
+        let sleutel = wegwerpsleutel();
+        let handtekening = teken(&sleutel, &conn, Handtekening::BELLER).unwrap();
+        let msg = hello(
+            PeerId::new_random(),
+            PROTOCOL_VERSION,
+            &sleutel,
+            handtekening,
+        );
+        assert!(vraag(&conn, &msg).await.is_none());
+
+        // En wie A's PeerId claimt met een andere sleutel evenmin.
+        let conn = ep
+            .connect(SocketAddr::from(([127, 0, 0, 1], pb)), tls::SERVER_NAME)
+            .unwrap()
+            .await
+            .unwrap();
+        let handtekening = teken(&sleutel, &conn, Handtekening::BELLER).unwrap();
+        assert!(
+            vraag(&conn, &hello(a, PROTOCOL_VERSION, &sleutel, handtekening))
+                .await
+                .is_none()
+        );
+    }
+
+    /// Zo antwoordt een peer op protocol 5 (de code van 1.10.1): `HelloAck` met zijn versie
+    /// erin, en in dezelfde tik dicht met "protocolversie". Het antwoord komt meestal niet
+    /// aan; wie al op 6 zit moet toch "update nodig" zien en niet "offline".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn een_peer_op_protocol_5_aan_de_andere_kant_is_een_versieverschil() {
+        let (pa, pb) = (vrije_poort(), vrije_poort());
+        let oud = quinn::Endpoint::server(
+            tls::server_config().unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], pb)),
+        )
+        .unwrap();
+        tokio::spawn(async move {
+            while let Some(inkomend) = oud.accept().await {
+                let Ok(conn) = inkomend.await else { continue };
+                let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                    continue;
+                };
+                let _ = framing::read_frame(&mut recv).await;
+                let mut ack = HelloAck::alleen_versie();
+                ack.protocol_version = 5;
+                let _ = framing::write_frame(&mut send, &ControlMsg::HelloAck(ack)).await;
+                conn.close(1u32.into(), b"protocolversie");
+            }
+        });
+
+        let mut a = peer_met_target(pa, pb, None);
+        let status = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(ev) = a.events.recv().await {
+                if let MeshEvent::Status {
+                    status: s @ (PeerStatus::VersionMismatch { .. } | PeerStatus::Online { .. }),
+                    ..
+                } = ev
+                {
+                    return s;
+                }
+            }
+            panic!("kanaal dicht");
+        })
+        .await
+        .expect("de oude peer had als versieverschil moeten verschijnen");
+        assert!(
+            matches!(
+                status,
+                PeerStatus::VersionMismatch {
+                    theirs: 0 | 5,
+                    ours: PROTOCOL_VERSION
+                }
+            ),
+            "{status:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn een_peer_op_protocol_5_hoort_alleen_de_versie() {
+        let (pa, pb) = (vrije_poort(), vrije_poort());
+        let _b = peer_met_target(pb, pa, None);
+        let ep = rauwe_client(pa);
+        let conn = ep
+            .connect(SocketAddr::from(([127, 0, 0, 1], pb)), tls::SERVER_NAME)
+            .unwrap()
+            .await
+            .unwrap();
+        let mut oud = hello(PeerId::new_random(), 5, &wegwerpsleutel(), Vec::new());
+        if let ControlMsg::Hello(h) = &mut oud {
+            h.public_key.clear();
+        }
+
+        let ack = vraag(&conn, &oud)
+            .await
+            .expect("hij moet 'update nodig' kunnen zien in plaats van 'offline'");
+        assert_eq!(ack, HelloAck::alleen_versie());
     }
 }

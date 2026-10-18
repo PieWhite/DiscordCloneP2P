@@ -902,9 +902,14 @@ impl Engine {
                 self.werk_voice_peers_bij();
             }
 
-            MeshEvent::LearnedIdentity { target, peer_id } => {
+            MeshEvent::LearnedIdentity {
+                target,
+                peer_id,
+                public_key,
+            } => {
                 if let Some(p) = self.cfg.peers.get_mut(target) {
                     p.known_id = Some(peer_id);
+                    p.public_key = Some(crate::release::bytes_naar_hex(&public_key));
                     if let Err(e) = self.cfg.save(&self.config_path) {
                         self.fout = Some(format!("config opslaan: {e:#}"));
                     }

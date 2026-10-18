@@ -113,6 +113,7 @@ fn start() -> Result<()> {
         control_port: cfg.control_port,
         media_port: cfg.media_port,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        sleutel: std::sync::Arc::new(identity.sleutelpaar()?),
         targets: cfg
             .peers
             .iter()
@@ -125,6 +126,7 @@ fn start() -> Result<()> {
                 },
                 known_id: p.known_id,
                 control_port: p.control_port,
+                public_key: p.vastgepinde_sleutel(),
             })
             .collect(),
     };

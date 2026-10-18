@@ -1,15 +1,17 @@
-//! QUIC vereist TLS. Wij gebruiken het niet voor vertrouwen.
+//! QUIC vereist TLS. Wij laten TLS versleutelen, maar niet zeggen wie er aan de andere
+//! kant zit.
 //!
-//! Het verkeer loopt al door WireGuard (Tailscale), dus vertrouwelijkheid en
-//! integriteit zijn daar al geregeld. Deze laag bestaat puur omdat QUIC niet zonder
-//! kan. Elke peer genereert bij het starten een wegwerp-certificaat en accepteert dat
-//! van de ander zonder verificatie.
+//! Elke peer genereert bij het starten een wegwerp-certificaat en accepteert dat van de
+//! ander zonder verificatie. Dat mag, omdat de identiteit er daarna bovenop gebonden wordt
+//! (beslissing 46, `mesh.rs`): elke kant tekent met zijn vaste Ed25519-sleutel de
+//! TLS-exporter van déze sessie, en de ander laat hem alleen binnen met de sleutel die bij
+//! zijn target vastgepind staat. Een man-in-the-middle heeft twee TLS-sessies met twee
+//! verschillende exporters, dus zijn doorgestuurde handtekening klopt nooit. Zo blijft
+//! TLS anoniem en zit alle vertrouwen in één plek die we zelf testen, in plaats van in
+//! raw public keys in rustls.
 //!
-//! Authenticatie gebeurt daarna op applicatieniveau: alleen peers waarvan het `PeerId`
-//! overeenkomt met de configuratie, of die vanaf een geconfigureerd tailnet-adres
-//! komen, worden toegelaten. Het tailnet is de echte beveiligingsgrens.
-//!
-//! Zie `TODO.md` als je dit ooit wilt aanscherpen met certificaat-pinning.
+//! Tot protocol 6 stond hier dat WireGuard (Tailscale) de grens was. Dat is niet meer zo:
+//! fase B van `docs/PLAN-ZONDER-TAILSCALE.md` verbindt zonder tailnet.
 
 use anyhow::{Context, Result};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
@@ -19,7 +21,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Vaste SNI-naam. Betekenisloos omdat we niets verifiëren, maar QUIC eist een naam.
+/// Vaste SNI-naam. Betekenisloos omdat TLS hier niets verifieert, maar QUIC eist een naam.
 pub const SERVER_NAME: &str = "fitcom";
 
 /// Sneller dan wachten op een TCP-achtige timeout, maar ruim genoeg om een korte
@@ -73,7 +75,8 @@ pub fn client_config() -> Result<quinn::ClientConfig> {
     Ok(cfg)
 }
 
-/// Accepteert elk certificaat. Zie de moduledocumentatie voor waarom dat hier mag.
+/// Accepteert elk certificaat. Zie de moduledocumentatie voor waarom dat hier mag: de
+/// handtekening over de exporter doet het werk dat certificaatcontrole elders doet.
 #[derive(Debug)]
 struct AcceptAnyCertificate;
 

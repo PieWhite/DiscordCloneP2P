@@ -58,11 +58,13 @@ fn start(id: PeerId, naam: &str, eigen: u16, ander: u16, dir: &std::path::Path) 
         control_port: eigen,
         media_port: 0,
         app_version: "0.1.0".to_string(),
+        sleutel: fitcom_net::wegwerpsleutel(),
         targets: vec![PeerTarget {
             address: "127.0.0.1".into(),
             label: "ander".into(),
             known_id: None,
             control_port: ander,
+            public_key: None,
         }],
     })
     .unwrap();

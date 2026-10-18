@@ -59,7 +59,16 @@ pub use op::{Op, OpKind, VersionVector};
 /// helemaal geen beeld meer verschijnt. Dat is precies de klasse fout die de eerdere bumps
 /// ook moesten voorkomen: stilzwijgend kapot in plaats van een nette `VersionMismatch`.
 /// Zie `docs/ARCHITECTURE.md`, sectie "Media (UDP, onbetrouwbaar)".
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// 5 → 6 bij de cryptografische identiteit en versleutelde media (beslissing 46, fase A van
+/// `docs/PLAN-ZONDER-TAILSCALE.md`). `Hello`/`HelloAck` kregen een sleutel, een
+/// handtekening en een media-index; die velden zijn op zichzelf additief, maar een peer op
+/// 6 laat niemand meer binnen zonder geldige handtekening, en elk mediapakket is voortaan
+/// AEAD-versleuteld in een andere vorm op de draad. Een peer op 5 kan dus niets meer
+/// zinnigs met een peer op 6. Hij krijgt een `HelloAck` met alleen de versie
+/// (`HelloAck::alleen_versie`) en ziet zo een nette `VersionMismatch` in plaats van
+/// "offline".
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Bovengrens voor een control-frame. Grote sync-antwoorden worden opgeknipt door de
 /// netwerklaag, zodat we hier bij normaal gebruik nooit tegenaan lopen.

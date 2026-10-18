@@ -384,6 +384,40 @@ pub struct Hello {
     /// `"0.0.0"`, wat nooit een update triggert.
     #[serde(default = "onbekende_app_versie")]
     pub app_version: String,
+    /// Protocol 6: de Ed25519-publieke sleutel van de afzender (32 bytes). Leeg bij een
+    /// peer van vóór 6. Zie [`Handtekening`] voor wat hij bewijst.
+    #[serde(default, with = "serde_bytes")]
+    pub public_key: Vec<u8>,
+    /// Protocol 6: Ed25519 (64 bytes) over de TLS-exporter van déze verbinding, zie
+    /// [`Handtekening`].
+    #[serde(default, with = "serde_bytes")]
+    pub signature: Vec<u8>,
+    /// Protocol 6: de sessie-index waarop de afzender media van de ontvanger verwacht. De
+    /// ontvanger van media kiest hem (zoals bij WireGuard), zodat hij een binnenkomend
+    /// pakket zonder te proberen aan een sleutel koppelt.
+    #[serde(default)]
+    pub media_index: u32,
+}
+
+/// Wat elke kant bij het verbinden tekent (protocol 6, beslissing 46).
+///
+/// De TLS-laag is anoniem: beide kanten accepteren elk certificaat. Wat een verbinding aan
+/// een identiteit bindt is deze handtekening: elke kant tekent
+/// `export_keying_material(32, LABEL, rol)` van zijn eigen TLS-sessie met zijn vaste
+/// sleutel. Een man-in-the-middle heeft twee TLS-sessies met twee verschillende exporters,
+/// dus een doorgestuurde handtekening klopt aan de andere kant nooit. De rol zit in de
+/// context, zodat een handtekening van de bellende kant niet als antwoord terug te kaatsen
+/// is.
+pub struct Handtekening;
+
+impl Handtekening {
+    pub const LABEL: &'static [u8] = b"fitcom/hello/v6";
+    /// Context voor wie belde.
+    pub const BELLER: &'static [u8] = b"client";
+    /// Context voor wie opnam.
+    pub const OPNEMER: &'static [u8] = b"server";
+    pub const SLEUTEL_LEN: usize = 32;
+    pub const LEN: usize = 64;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -394,6 +428,32 @@ pub struct HelloAck {
     pub media_port: u16,
     #[serde(default = "onbekende_app_versie")]
     pub app_version: String,
+    /// Zie [`Hello::public_key`]. Leeg in de versie-alleen-`HelloAck` die een peer op een
+    /// andere protocolversie krijgt.
+    #[serde(default, with = "serde_bytes")]
+    pub public_key: Vec<u8>,
+    #[serde(default, with = "serde_bytes")]
+    pub signature: Vec<u8>,
+    #[serde(default)]
+    pub media_index: u32,
+}
+
+impl HelloAck {
+    /// Het antwoord aan een peer op een andere protocolversie: alleen de versie, verder
+    /// niets. Bij hem vuurt dan het bestaande `VersionMismatch`-pad, zodat hij "update
+    /// nodig" ziet in plaats van "offline", en hij leert niets over ons (B-05a).
+    pub fn alleen_versie() -> Self {
+        Self {
+            protocol_version: crate::PROTOCOL_VERSION,
+            peer_id: PeerId::from_bytes([0; 16]),
+            display_name: String::new(),
+            media_port: 0,
+            app_version: onbekende_app_versie(),
+            public_key: Vec::new(),
+            signature: Vec::new(),
+            media_index: 0,
+        }
+    }
 }
 
 fn onbekende_app_versie() -> String {
@@ -579,9 +639,58 @@ mod tests {
             display_name: "Rick".into(),
             media_port: 41700,
             app_version: "0.1.0".into(),
+            public_key: vec![7; Handtekening::SLEUTEL_LEN],
+            signature: vec![9; Handtekening::LEN],
+            media_index: 0xdead_beef,
         });
         let bytes = msg.encode().unwrap();
         assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+    }
+
+    /// Een `Hello` van een peer op protocol 5 moet nog decoderen, anders kan de kant op 6
+    /// hem niet eens de versie-alleen-`HelloAck` sturen en ziet de ander "offline" in
+    /// plaats van "update nodig".
+    #[test]
+    fn hello_van_protocol_5_decodeert_zonder_sleutel() {
+        #[derive(Serialize)]
+        struct HelloV5 {
+            protocol_version: u32,
+            peer_id: PeerId,
+            display_name: String,
+            media_port: u16,
+            app_version: String,
+        }
+        let mut body = 1u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &HelloV5 {
+                protocol_version: 5,
+                peer_id: PeerId::new_random(),
+                display_name: "Rick".into(),
+                media_port: 41700,
+                app_version: "1.10.1".into(),
+            },
+            &mut ser,
+        )
+        .unwrap();
+
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::Hello(h) => {
+                assert_eq!(h.protocol_version, 5);
+                assert!(h.public_key.is_empty() && h.signature.is_empty());
+                assert_eq!(h.media_index, 0);
+            }
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn versie_alleen_ack_zegt_niets_behalve_de_versie() {
+        let a = HelloAck::alleen_versie();
+        assert_eq!(a.protocol_version, crate::PROTOCOL_VERSION);
+        assert_eq!(a.peer_id, PeerId::from_bytes([0; 16]));
+        assert!(a.display_name.is_empty() && a.public_key.is_empty() && a.signature.is_empty());
+        assert_eq!((a.media_port, a.media_index), (0, 0));
     }
 
     #[test]

@@ -39,6 +39,7 @@ fn config_multi(me: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> MeshConf
         control_port: eigen,
         media_port: 0,
         app_version: "0.1.0".to_string(),
+        sleutel: fitcom_net::wegwerpsleutel(),
         targets: anderen
             .iter()
             .map(|&ander| PeerTarget {
@@ -46,6 +47,7 @@ fn config_multi(me: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> MeshConf
                 label: naam.to_string(),
                 known_id: None,
                 control_port: ander,
+                public_key: None,
             })
             .collect(),
     }

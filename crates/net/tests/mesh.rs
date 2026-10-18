@@ -4,7 +4,9 @@
 //! herverbinden — met de hand testen betekent: twee vensters openen, er eentje
 //! afschieten en naar logs turen. Dat is te traag om elke wijziging mee te controleren.
 
-use fitcom_net::{spawn, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget};
+use fitcom_net::{
+    spawn, wegwerpsleutel, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget,
+};
 use fitcom_proto::control::OpBroadcast;
 use fitcom_proto::{Channel, ControlMsg, Op, OpKind, PeerId};
 use std::time::Duration;
@@ -53,6 +55,7 @@ fn config_multi(me: PeerId, name: &str, my_port: u16, peer_ports: &[u16]) -> Mes
         control_port: my_port,
         media_port: 0,
         app_version: "0.1.0".to_string(),
+        sleutel: wegwerpsleutel(),
         targets: peer_ports
             .iter()
             .map(|&p| PeerTarget {
@@ -60,6 +63,7 @@ fn config_multi(me: PeerId, name: &str, my_port: u16, peer_ports: &[u16]) -> Mes
                 label: format!("peer-{p}"),
                 known_id: None,
                 control_port: p,
+                public_key: None,
             })
             .collect(),
     }
@@ -176,7 +180,8 @@ async fn peer_die_wegvalt_komt_vanzelf_terug() {
     let (pa, pb) = (free_port().await, free_port().await);
     let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
 
-    let a = spawn(config(ida, "A", pa, pb)).unwrap();
+    let cfg_a = config(ida, "A", pa, pb);
+    let a = spawn(cfg_a.clone()).unwrap();
     let mut b = spawn(config(idb, "B", pb, pa)).unwrap();
 
     wait_for(&mut b, "eerste verbinding", 15, online).await;
@@ -185,8 +190,9 @@ async fn peer_die_wegvalt_komt_vanzelf_terug() {
     a.shutdown().await;
     wait_for(&mut b, "B merkt dat A weg is", 20, offline).await;
 
-    // A komt terug op dezelfde poort met dezelfde identiteit. Niemand hoeft iets te doen.
-    let _a2 = spawn(config(ida, "A", pa, pb)).unwrap();
+    // A komt terug op dezelfde poort met dezelfde identiteit — en dus dezelfde sleutel, die
+    // B inmiddels vastgepind heeft. Niemand hoeft iets te doen.
+    let _a2 = spawn(cfg_a).unwrap();
     let terug = wait_for(&mut b, "B verbindt vanzelf opnieuw", 40, online).await;
     assert_eq!(terug, ida, "B moet dezelfde peer terugzien");
 }
@@ -270,4 +276,84 @@ async fn peer_zonder_tegenhanger_blijft_proberen_zonder_te_crashen() {
     // En blijft daarna gewoon leven.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!a.commands.is_closed(), "mesh mag niet omvallen");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn een_andere_sleutel_voor_dezelfde_peer_komt_er_niet_in() {
+    // Klaar-als van fase A: B heeft de PeerId van A vastgepind met een sleutel die A niet
+    // heeft. Wat A ook doet, bellen of gebeld worden, bij B komt hij niet online, en B
+    // meldt waarom.
+    init_tracing();
+    let (pa, pb) = (free_port().await, free_port().await);
+    let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+
+    let mut a = spawn(config(ida, "A", pa, pb)).unwrap();
+    let mut cfg_b = config(idb, "B", pb, pa);
+    cfg_b.targets[0].known_id = Some(ida);
+    cfg_b.targets[0].public_key = Some([0x42; 32]);
+    let mut b = spawn(cfg_b).unwrap();
+
+    let found = timeout(Duration::from_secs(12), async {
+        while let Some(ev) = b.events.recv().await {
+            match ev {
+                MeshEvent::Status {
+                    status: PeerStatus::Online { .. },
+                    ..
+                } => return Err("B liet A met een andere sleutel binnen"),
+                MeshEvent::Status {
+                    status: PeerStatus::IdentityChanged { expected, got },
+                    ..
+                } => {
+                    assert_eq!((expected, got), (ida, ida));
+                    return Ok(());
+                }
+                MeshEvent::LearnedIdentity { .. } => {
+                    return Err("B leerde een sleutel over een pin heen")
+                }
+                _ => {}
+            }
+        }
+        Err("kanaal dicht")
+    })
+    .await
+    .expect("B had de identiteitswissel moeten melden");
+    found.unwrap();
+
+    // En ook daarna niet, terwijl A blijft proberen.
+    let later = timeout(Duration::from_secs(4), async {
+        while let Some(ev) = b.events.recv().await {
+            if online(&ev).is_some() {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert!(!matches!(later, Ok(true)), "A kwam alsnog online");
+
+    // A heeft B intussen wél geleerd en laat hem binnen; B gooit hem er bij elke poging
+    // meteen weer uit. Dat mag geen belstorm worden (B-40): telde zo'n afgewezen sessie als
+    // sessie, dan begon B's backoff steeds opnieuw bij één seconde en zag A elke seconde
+    // een volledige online/offline-ronde.
+    let mut rondes = 0;
+    let _ = timeout(Duration::from_secs(10), async {
+        // Alleen de overgangen naar online: zolang een verbinding staat stuurt de mesh elke
+        // seconde een verse RTT mee, en dat is geen nieuwe ronde.
+        let mut was_online = false;
+        while let Some(ev) = a.events.recv().await {
+            if let MeshEvent::Status { status, .. } = ev {
+                let nu = matches!(status, PeerStatus::Online { .. });
+                rondes += usize::from(nu && !was_online);
+                was_online = nu;
+            }
+        }
+    })
+    .await;
+    // A's events stonden sinds de start in de rij, dus dit telt de hele test (~14 s). Met
+    // een oplopende backoff belt B op 0, 1, 3, 7 en 15 s; zonder belde hij elke seconde.
+    eprintln!("A zag B {rondes} keer online");
+    assert!(
+        rondes <= 6,
+        "A zag B {rondes} keer online in ~14 s: B belt te vaak"
+    );
 }

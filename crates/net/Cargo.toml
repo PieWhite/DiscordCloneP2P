@@ -13,6 +13,9 @@ quinn = { version = "0.11.11", default-features = false, features = ["runtime-to
 # Moet overeenkomen met quinn's "rustls-ring" feature, anders krijg je twee
 # crypto-providers en een panic op "no process-level CryptoProvider available".
 rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "pem", "ring"] }
+# Ed25519 voor de identiteit in de handshake (beslissing 46). Zat er al in via rustls en
+# rcgen; dit maakt hem alleen direct bruikbaar.
+ring = "0.17.14"
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # Alleen voor SO_RCVBUF op de mediasocket; std kan dat niet. Zat hier al in via quinn.
 socket2 = "0.6.5"

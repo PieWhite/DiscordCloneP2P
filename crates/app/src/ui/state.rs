@@ -657,6 +657,13 @@ fn peer_presence(view: &PeerView) -> (Presence, Option<String>, Option<String>) 
         // attempt. For the window that is still just offline: showing it made an absent
         // friend look like a fault, and flipped the state push on every retry.
         PeerStatus::Connecting | PeerStatus::Offline { .. } => (Presence::Offline, None, None),
+        PeerStatus::VersionMismatch { theirs: 0, ours } => (
+            Presence::Broken,
+            Some(format!(
+                "Runs an older protocol, this build speaks {ours}. One of you has to update."
+            )),
+            None,
+        ),
         PeerStatus::VersionMismatch { theirs, ours } => (
             Presence::Broken,
             Some(format!(
@@ -667,6 +674,11 @@ fn peer_presence(view: &PeerView) -> (Presence, Option<String>, Option<String>) 
         PeerStatus::IdentityChanged { .. } => (
             Presence::Broken,
             Some("A different identity answered at this address.".into()),
+            None,
+        ),
+        PeerStatus::UnknownKey => (
+            Presence::Broken,
+            Some("No key known for this peer. Keys are only learned over the tailnet.".into()),
             None,
         ),
     }

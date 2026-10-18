@@ -181,6 +181,9 @@ mod tests {
             display_name: ruim_te_groot,
             media_port: 41700,
             app_version: "1.0.0".into(),
+            public_key: Vec::new(),
+            signature: Vec::new(),
+            media_index: 0,
         });
         assert!(frame_bytes(&msg).is_err());
     }

@@ -53,8 +53,8 @@ impl SettingsPane {
         Body::new()
             .h2("Network")
             .p(concat!(
-                "Peers are addressed over the tailnet. Identities are learned on first contact, so ",
-                "there is nothing to exchange by hand."
+                "Peers are addressed over the tailnet. A peer's key is pinned the first time it ",
+                "connects over the tailnet; after that, only that key gets in."
             ))
             .field(
                 div()

@@ -1,7 +1,8 @@
 //! Netwerklaag: QUIC-mesh over het tailnet.
 //!
-//! Zie `docs/ARCHITECTURE.md`. Tailscale doet de encryptie en de bereikbaarheid;
-//! deze crate gaat alleen over verbindingen opzetten, in stand houden en herstellen.
+//! Zie `docs/ARCHITECTURE.md`. Tailscale doet de bereikbaarheid; wie er aan de andere kant
+//! zit bewijst de handshake zelf (beslissing 46). Deze crate gaat over verbindingen
+//! opzetten, in stand houden en herstellen.
 
 pub mod filestream;
 pub mod framing;
@@ -11,7 +12,8 @@ mod tls;
 
 pub use media::{MediaSocket, MAX_PAKKET};
 pub use mesh::{
-    spawn, MeshCommand, MeshConfig, MeshEvent, MeshHandle, MeshSluiter, PeerStatus, PeerTarget,
+    mag_leren, spawn, wegwerpsleutel, MeshCommand, MeshConfig, MeshEvent, MeshHandle, MeshSluiter,
+    PeerStatus, PeerTarget,
 };
 // De ruwe quinn-streamtypes, zodat `fitcom-app` een bestandsoverdracht kan lezen/schrijven
 // zonder zelf een directe afhankelijkheid op `quinn` te hoeven opnemen.
