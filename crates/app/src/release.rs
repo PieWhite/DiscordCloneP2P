@@ -310,11 +310,20 @@ pub fn hex_naar_bytes<const N: usize>(s: &str) -> Result<[u8; N]> {
         s.len()
     );
     let mut uit = [0u8; N];
-    for (i, paar) in s.as_bytes().chunks(2).enumerate() {
-        let tekst = std::str::from_utf8(paar).context("niet-ascii in een hex-veld")?;
-        uit[i] = u8::from_str_radix(tekst, 16).context("geen geldig hex-teken")?;
-    }
+    uit.copy_from_slice(&hex_naar_vec(s)?);
     Ok(uit)
+}
+
+/// Als [`hex_naar_bytes`], voor een veld zonder vaste lengte (een PKCS#8-sleutel).
+pub fn hex_naar_vec(s: &str) -> Result<Vec<u8>> {
+    ensure!(s.len().is_multiple_of(2), "oneven aantal hex-tekens");
+    s.as_bytes()
+        .chunks(2)
+        .map(|paar| {
+            let tekst = std::str::from_utf8(paar).context("niet-ascii in een hex-veld")?;
+            u8::from_str_radix(tekst, 16).context("geen geldig hex-teken")
+        })
+        .collect()
 }
 
 pub fn bytes_naar_hex(b: &[u8]) -> String {

@@ -40,6 +40,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
             label: "ander".into(),
             known_id: None,
             control_port: ander,
+            public_key: None,
         }],
         video: VideoConfig::default(),
         sound: Default::default(),

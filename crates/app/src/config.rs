@@ -4,7 +4,8 @@
 //!
 //! - `config.toml` — door de gebruiker te bewerken. Adressen van de andere peers,
 //!   poorten, weergavenaam. Mag je kopiëren tussen machines.
-//! - `identity.toml` — door de app gegenereerd. Bevat de `PeerId` van deze installatie.
+//! - `identity.toml` — door de app gegenereerd. Bevat de `PeerId` en het sleutelpaar van
+//!   deze installatie.
 //!   Mag je **niet** kopiëren; twee peers met dezelfde id breken de oplog-sync,
 //!   want dan botsen hun seq-nummers.
 
@@ -438,6 +439,29 @@ pub struct PeerConfig {
 
     #[serde(default = "default_control_port")]
     pub control_port: u16,
+
+    /// De Ed25519-sleutel van deze peer, 32 bytes hex. Vastgepind bij het eerste contact
+    /// over het tailnet, net als `known_id`, en daarna de echte identiteitscontrole: wie
+    /// met deze `known_id` een andere sleutel toont komt er niet in (B-05, beslissing 46).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+}
+
+impl PeerConfig {
+    /// De vastgepinde sleutel. Een kapotte waarde telt als niet vastgepind, met een
+    /// waarschuwing: de config is van de gebruiker, en een tikfout mag de app niet laten
+    /// weigeren te starten. Leren gebeurt dan opnieuw, en alleen over het tailnet.
+    pub fn vastgepinde_sleutel(&self) -> Option<[u8; 32]> {
+        let hex = self.public_key.as_deref()?;
+        match crate::release::hex_naar_bytes::<32>(hex) {
+            Ok(k) => Some(k),
+            Err(e) => {
+                tracing::warn!(peer = %self.address, error = %format!("{e:#}"),
+                    "public_key in config.toml is onleesbaar; behandeld als niet vastgepind");
+                None
+            }
+        }
+    }
 }
 
 impl Config {
@@ -457,12 +481,14 @@ impl Config {
                     label: "peer-2".into(),
                     known_id: None,
                     control_port: DEFAULT_CONTROL_PORT,
+                    public_key: None,
                 },
                 PeerConfig {
                     address: "100.64.0.3".into(),
                     label: "peer-3".into(),
                     known_id: None,
                     control_port: DEFAULT_CONTROL_PORT,
+                    public_key: None,
                 },
             ],
             video: VideoConfig::default(),
@@ -503,27 +529,54 @@ impl Config {
 }
 
 /// De identiteit van déze installatie.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Geen `Debug`: de privésleutel hoort in geen enkele logregel terecht te komen.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub peer_id: PeerId,
+    /// Ed25519-sleutelpaar als PKCS#8, hex. Bewijst bij elke verbinding dat wij deze
+    /// `peer_id` zijn (beslissing 46). Leeg in een `identity.toml` van vóór 1.11: dan
+    /// komt er een bij en blijft de `peer_id`, want daar hangt de hele chatgeschiedenis aan.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub private_key: String,
 }
 
 impl Identity {
     pub fn load_or_create(path: &Path) -> Result<Self> {
-        if path.exists() {
+        let mut me = if path.exists() {
             let text = std::fs::read_to_string(path)?;
-            Ok(toml::from_str(&text)?)
+            toml::from_str(&text)
+                .with_context(|| format!("identiteit lezen uit {}", path.display()))?
         } else {
-            let me = Self {
+            tracing::info!("nieuwe identiteit aangemaakt");
+            Self {
                 peer_id: PeerId::new_random(),
-            };
+                private_key: String::new(),
+            }
+        };
+        if me.private_key.is_empty() {
+            let pkcs8 =
+                ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                    .map_err(|_| anyhow::anyhow!("sleutelpaar genereren mislukt"))?;
+            me.private_key = crate::release::bytes_naar_hex(pkcs8.as_ref());
+            tracing::info!(peer_id = %me.peer_id, "sleutelpaar aangemaakt");
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            std::fs::write(path, toml::to_string_pretty(&me)?)?;
-            tracing::info!(peer_id = %me.peer_id, "nieuwe identiteit aangemaakt");
-            Ok(me)
+            std::fs::write(path, toml::to_string_pretty(&me)?)
+                .with_context(|| format!("identiteit schrijven naar {}", path.display()))?;
         }
+        // Meteen controleren: een kapotte sleutel is hier een duidelijke startfout, en niet
+        // pas bij de eerste verbinding een raadselachtig "offline".
+        me.sleutelpaar()
+            .with_context(|| format!("sleutel in {} is onbruikbaar", path.display()))?;
+        Ok(me)
+    }
+
+    pub fn sleutelpaar(&self) -> Result<ring::signature::Ed25519KeyPair> {
+        let pkcs8 = crate::release::hex_naar_vec(&self.private_key)?;
+        ring::signature::Ed25519KeyPair::from_pkcs8(&pkcs8)
+            .map_err(|e| anyhow::anyhow!("geen geldig Ed25519-sleutelpaar: {e}"))
     }
 }
 
@@ -847,6 +900,53 @@ mod tests {
         let (modus, vk) = terug.push_to_talk.voor_audio();
         assert_eq!(modus, fitcom_audio::Spreekmodus::PushToMute);
         assert_eq!(vk, 0x05);
+    }
+
+    /// Een `identity.toml` van vóór de sleutels houdt zijn `peer_id` — daar hangt elke op
+    /// in de store aan — en krijgt er één sleutelpaar bij dat daarna vast blijft.
+    #[test]
+    fn oude_identiteit_houdt_haar_id_en_krijgt_een_vaste_sleutel() {
+        let dir = std::env::temp_dir().join(format!("fitcom-id-{}", PeerId::new_random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pad = dir.join("identity.toml");
+        let id = PeerId::new_random();
+        std::fs::write(&pad, format!("peer_id = \"{id}\"\n")).unwrap();
+
+        let eerste = Identity::load_or_create(&pad).unwrap();
+        assert_eq!(eerste.peer_id, id);
+        assert!(!eerste.private_key.is_empty());
+
+        let tweede = Identity::load_or_create(&pad).unwrap();
+        assert_eq!(tweede.peer_id, id);
+        assert_eq!(
+            tweede.private_key, eerste.private_key,
+            "de sleutel moet vast blijven"
+        );
+        use ring::signature::KeyPair;
+        assert_eq!(
+            tweede.sleutelpaar().unwrap().public_key().as_ref(),
+            eerste.sleutelpaar().unwrap().public_key().as_ref()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn een_kapotte_sleutel_in_de_config_telt_als_niet_vastgepind() {
+        let cfg: Config = toml::from_str(&format!(
+            r#"
+            display_name = "Rick"
+            [[peers]]
+            address = "a"
+            public_key = "{}"
+            [[peers]]
+            address = "b"
+            public_key = "geen hex"
+            "#,
+            "ab".repeat(32)
+        ))
+        .unwrap();
+        assert_eq!(cfg.peers[0].vastgepinde_sleutel(), Some([0xab; 32]));
+        assert_eq!(cfg.peers[1].vastgepinde_sleutel(), None);
     }
 
     #[test]
