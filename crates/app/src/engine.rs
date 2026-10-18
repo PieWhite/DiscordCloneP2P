@@ -80,6 +80,10 @@ const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Niet meteen bij het starten: eerst moet de mesh staan en moet de gebruiker zijn
 /// venster zien. Een feed-check die de start vertraagt is een check te vroeg.
 const UPDATE_EERSTE_CHECK: Duration = Duration::from_secs(60);
+/// Wanneer de routerprobe (A0) loopt: kort na het starten, zie `Engine::run`.
+const BEREIK_NA: Duration = Duration::from_secs(10);
+/// En nog één keer zo veel later als er de eerste keer geen router te vinden was.
+const BEREIK_OPNIEUW: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct PeerView {
@@ -230,6 +234,9 @@ pub struct Snapshot {
     /// leidt het pad van elke afbeelding er zelf uit af — zie
     /// `config::resolve_pictures_dir` en `files::hash_bestandsnaam`.
     pub pictures_dir: PathBuf,
+    /// A0: wat de router en de interfaces over onze bereikbaarheid zeggen, één keer gemeten
+    /// kort na het starten. `None` zolang die meting loopt.
+    pub bereik: Option<fitcom_net::bereik::Bereik>,
     pub files: Vec<FileView>,
     pub ongelezen: usize,
     /// Ongelezen DM-berichten per gesprekspartner. Los van `ongelezen` (het algemene
@@ -503,6 +510,7 @@ pub fn spawn(
         gebruik: Gebruik::nieuw(&data_dir),
         overzicht: Arc::new(gebruik::Overzicht::default()),
         overzicht_van: None,
+        bereik: None,
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -601,6 +609,8 @@ struct Engine {
     /// keer. Geen `Instant` in het verleden als beginwaarde: op een pc die net opgestart
     /// is loopt de monotone klok nog geen minuut, en dan paniekt die aftrekking.
     overzicht_van: Option<Instant>,
+    /// Zie [`Snapshot::bereik`].
+    bereik: Option<fitcom_net::bereik::Bereik>,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -723,6 +733,8 @@ enum FileEvent {
     /// Een *handmatige* poging is misgegaan; de reden hoort in het venster. Een
     /// automatische poging meldt niets — zie `wordle_taak`.
     WordleMislukt(String),
+    /// A0: de routerprobe is klaar (`fitcom_net::bereik`).
+    Bereik(fitcom_net::bereik::Bereik),
 }
 
 impl Engine {
@@ -737,6 +749,26 @@ impl Engine {
             self.zet_clips_motor(true);
         }
         self.publiceer();
+
+        // A0: één keer meten wat de router doet, alleen lezen (`fitcom_net::bereik`). Niet
+        // meteen: het opstarten heeft dan genoeg te doen. En zo raakt een integratietest,
+        // die korter loopt, de router van de testmachine nooit aan. Was er nog geen router
+        // te vinden (autostart vóór de wifi, of een VPN), dan één keer opnieuw: anders lijkt
+        // die screenshot op een router die niets kan, en op die regel rust de keuze voor fase C.
+        {
+            let tx = self.file_tx.clone();
+            let poort = self.cfg.control_port;
+            tokio::spawn(async move {
+                tokio::time::sleep(BEREIK_NA).await;
+                let mut bereik = fitcom_net::bereik::meet(poort).await;
+                if !bereik.gateway {
+                    let _ = tx.send(FileEvent::Bereik(bereik)).await;
+                    tokio::time::sleep(BEREIK_OPNIEUW).await;
+                    bereik = fitcom_net::bereik::meet(poort).await;
+                }
+                let _ = tx.send(FileEvent::Bereik(bereik)).await;
+            });
+        }
 
         let mut ticker = tokio::time::interval(TIK);
         let mut update_ticker = tokio::time::interval_at(
@@ -2874,6 +2906,10 @@ impl Engine {
                     self.kondig_wordle_aan();
                 }
             }
+            FileEvent::Bereik(b) => {
+                tracing::info!(bereik = %b, "bereikbaarheid gemeten");
+                self.bereik = Some(b);
+            }
             FileEvent::WordleMislukt(reden) => {
                 self.wordle_aankondigen = false;
                 self.wordle.fout = Some(reden);
@@ -3180,6 +3216,7 @@ impl Engine {
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),
             pictures_dir: self.pictures_dir.clone(),
+            bereik: self.bereik.clone(),
             files,
             ongelezen: self.chat.ongelezen,
             ongelezen_dm: self.chat.ongelezen_dm().clone(),

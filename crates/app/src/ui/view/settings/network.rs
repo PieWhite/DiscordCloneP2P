@@ -80,6 +80,26 @@ impl SettingsPane {
                             .child(port("port-media", "Media (UDP)", s.media_port)),
                     ),
             )
+            .field(
+                div()
+                    .child(label("Reachability"))
+                    .child(help_rich(&[Piece::Text(
+                        "Measured once, shortly after start: which port-mapping protocols the \
+                         router speaks and what kind of address it shows outside. The test \
+                         mapping is taken down again right after.",
+                    )]))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(c::SILVER)
+                            .font_family(theme::MONO_FONT)
+                            .child(
+                                s.router
+                                    .clone()
+                                    .unwrap_or_else(|| "Router: checking...".to_string()),
+                            ),
+                    ),
+            )
     }
 }
 

@@ -608,6 +608,10 @@ pub struct UiState {
     pub protocol_version: u32,
     pub control_port: u16,
     pub media_port: u16,
+    /// The line about the router and the outside address (A0), once it is measured. Changes
+    /// once, a few seconds after start.
+    #[serde(default)]
+    pub router: Option<String>,
     pub download_dir: String,
     pub pictures_dir: String,
     pub autostart: bool,
@@ -644,6 +648,29 @@ fn display_name(snap: &Snapshot, peer: PeerId, fallback: &str) -> String {
         .cloned()
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| fallback.to_string())
+}
+
+/// "Router: PCP yes · NAT-PMP yes · UPnP no · public IPv4 · no IPv6" (A0 of
+/// `docs/PLAN-ZONDER-TAILSCALE.md`). The friends send a screenshot of this line. Words and not
+/// check marks: neither embedded font has a glyph for them.
+fn router_line(b: &fitcom_net::bereik::Bereik) -> String {
+    use fitcom_net::bereik::Soort;
+    if !b.gateway {
+        return "Router: not found (offline, or a VPN exit node?)".to_string();
+    }
+    let yes = |on: bool| if on { "yes" } else { "no" };
+    let outside = match b.soort() {
+        Soort::Publiek => "public IPv4",
+        Soort::Cgnat => "CGNAT",
+        Soort::Onbekend => "outside address unknown",
+    };
+    format!(
+        "Router: PCP {} \u{b7} NAT-PMP {} \u{b7} UPnP {} \u{b7} {outside} \u{b7} {}",
+        yes(b.pcp),
+        yes(b.nat_pmp),
+        yes(b.upnp),
+        if b.ipv6 { "IPv6" } else { "no IPv6" }
+    )
 }
 
 /// RTT is deliberately not here: it moves every tick and lives in the `meters` event, so
@@ -888,6 +915,7 @@ impl UiState {
             protocol_version: fitcom_proto::PROTOCOL_VERSION,
             control_port: c.control_port,
             media_port: c.media_port,
+            router: snap.bereik.as_ref().map(router_line),
             download_dir: snap.download_dir.display().to_string(),
             pictures_dir: snap.pictures_dir.display().to_string(),
             autostart: c.autostart,
@@ -1288,6 +1316,44 @@ pub fn belongs_to_channel(open: Channel, me: PeerId, channel: Channel, author: P
             None => false,
         },
         None => channel == open,
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use super::router_line;
+    use fitcom_net::bereik::Bereik;
+
+    #[test]
+    fn the_router_line_says_what_was_measured() {
+        // Ricks pc on 2026-10-18 (`tailscale netcheck`): PCP and NAT-PMP, public IPv4.
+        let rick = Bereik {
+            gateway: true,
+            upnp: false,
+            pcp: true,
+            nat_pmp: true,
+            extern_v4: Some("84.84.84.84".parse().unwrap()),
+            ipv6: false,
+        };
+        assert_eq!(
+            router_line(&rick),
+            "Router: PCP yes \u{b7} NAT-PMP yes \u{b7} UPnP no \u{b7} public IPv4 \u{b7} no IPv6"
+        );
+        let cgnat = Bereik {
+            gateway: true,
+            upnp: true,
+            extern_v4: Some("100.70.1.2".parse().unwrap()),
+            ipv6: true,
+            ..Bereik::default()
+        };
+        assert!(router_line(&cgnat).ends_with("UPnP yes \u{b7} CGNAT \u{b7} IPv6"));
+        let zwijgt = Bereik {
+            gateway: true,
+            ..Bereik::default()
+        };
+        assert!(router_line(&zwijgt).contains("outside address unknown"));
+        // Geen router gevonden is iets anders dan een router die niets kan.
+        assert!(router_line(&Bereik::default()).contains("not found"));
     }
 }
 

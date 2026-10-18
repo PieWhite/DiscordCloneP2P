@@ -4,6 +4,7 @@
 //! zit bewijst de handshake zelf (beslissing 46). Deze crate gaat over verbindingen
 //! opzetten, in stand houden en herstellen.
 
+pub mod bereik;
 pub mod filestream;
 pub mod framing;
 pub mod media;
