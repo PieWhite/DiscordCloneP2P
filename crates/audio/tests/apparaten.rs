@@ -8,15 +8,41 @@
 //! cargo test -p fitcom-audio --test apparaten -- --ignored --nocapture
 //! ```
 
-use fitcom_audio::{VoiceConfig, VoiceHandle};
+use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
+use fitcom_net::MediaSleutels;
+use fitcom_proto::PeerId;
 use std::time::Duration;
 
 fn config() -> VoiceConfig {
+    config_met(MediaSleutels::default())
+}
+
+fn config_met(sleutels: MediaSleutels) -> VoiceConfig {
     VoiceConfig {
         media_port: 0, // laat het systeem een vrije poort kiezen
         input_device: None,
         output_device: None,
+        sleutels,
     }
+}
+
+/// Een sessie en een luisterpoort met gekoppelde sleutels, en het adres van die poort.
+fn sessie_met_luisteraar() -> (VoiceHandle, fitcom_net::MediaSocket, PeerAdres) {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    let sleutels = MediaSleutels::default();
+    let (ik, luisteraar_id) = (PeerId::new_random(), PeerId::new_random());
+    MediaSleutels::koppel((&sleutels, ik), (&sleutels, luisteraar_id));
+    let sessie =
+        fitcom_audio::start(config_met(sleutels.clone())).expect("voice moet kunnen starten");
+    let luisteraar = fitcom_net::MediaSocket::bind(0, sleutels).expect("luisterpoort");
+    let doel = PeerAdres {
+        id: luisteraar_id,
+        addr: SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            luisteraar.local_addr().unwrap().port(),
+        ),
+    };
+    (sessie, luisteraar, doel)
 }
 
 #[test]
@@ -25,15 +51,7 @@ fn bureaubladgeluid_kan_worden_afgetapt() {
     // De aanname onder desktop-audio: `cpal` zet loopback aan zodra je een invoerstroom
     // op een uitvoerapparaat bouwt. Klopt dat niet op deze machine, dan valt dit hier
     // om in plaats van pas als er iemand meeluistert.
-    use fitcom_net::MediaSocket;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    let sessie = fitcom_audio::start(config()).expect("voice moet kunnen starten");
-    let luisteraar = MediaSocket::bind(0).expect("luisterpoort");
-    let doel = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        luisteraar.local_addr().unwrap().port(),
-    );
+    let (sessie, mut luisteraar, doel) = sessie_met_luisteraar();
 
     sessie
         .deel_bureaublad(7, vec![doel])
@@ -164,18 +182,10 @@ fn spotify_geluid_kan_worden_afgetapt() {
     // Spotify hoeft niet te spelen: dit bewijst dat de bovenste `Spotify.exe` gevonden
     // wordt en dat de proces-inclusieve loopback op zijn boom opengaat. Speelt hij wél,
     // dan komen er stereopakketten binnen.
-    use fitcom_net::MediaSocket;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
     let pid = fitcom_audio::spotify::pid().expect("start eerst de Spotify-desktopapp");
     println!("spotify-pid: {pid}");
 
-    let sessie = fitcom_audio::start(config()).expect("voice moet kunnen starten");
-    let luisteraar = MediaSocket::bind(0).expect("luisterpoort");
-    let doel = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        luisteraar.local_addr().unwrap().port(),
-    );
+    let (sessie, mut luisteraar, doel) = sessie_met_luisteraar();
     sessie
         .deel_muziek(9, vec![doel])
         .expect("spotify-geluid moet te delen zijn");

@@ -29,7 +29,7 @@
 //! tekening. Stream-id's zijn alleen per eigenaar uniek, dus een `Draw` zonder tekenaar is
 //! altijd "op jouw scherm" en een `Draw` mét tekenaar altijd "op het scherm van de afzender".
 
-use fitcom_net::MeshCommand;
+use fitcom_net::{MeshCommand, PeerAdres};
 use fitcom_proto::control::{
     Draw, DrawClear, DrawClearScope, DrawState, RequestKeyframe, StreamAnnounce, StreamKind,
     StreamRevoke, StreamSubscribe, StreamUnsubscribe,
@@ -53,12 +53,12 @@ pub enum Actie {
     /// Begin met opnemen en coderen: er kijkt nu iemand.
     StartDelen {
         stream_id: u32,
-        kijkers: Vec<SocketAddr>,
+        kijkers: Vec<PeerAdres>,
     },
     /// Dezelfde stream, andere kijkers.
     ZetKijkers {
         stream_id: u32,
-        kijkers: Vec<SocketAddr>,
+        kijkers: Vec<PeerAdres>,
     },
     /// Stop met opnemen en coderen.
     StopDelen { stream_id: u32, is_geluid: bool },
@@ -105,8 +105,12 @@ impl EigenStream {
         !self.kijkers.is_empty()
     }
 
-    fn doelen(&self) -> Vec<SocketAddr> {
-        self.kijkers.values().copied().collect()
+    /// Waar het beeld heen moet, met wie het is: elk pakket gaat versleuteld voor die peer.
+    pub fn doelen(&self) -> Vec<PeerAdres> {
+        self.kijkers
+            .iter()
+            .map(|(&id, &addr)| PeerAdres { id, addr })
+            .collect()
     }
 
     fn aankondiging(&self) -> ControlMsg {
@@ -926,7 +930,10 @@ mod tests {
             acties,
             vec![Actie::StartDelen {
                 stream_id: id,
-                kijkers: vec![SocketAddr::new(ip(), 41000)],
+                kijkers: vec![PeerAdres {
+                    id: a,
+                    addr: SocketAddr::new(ip(), 41000)
+                }],
             }]
         );
 
@@ -1316,7 +1323,10 @@ mod tests {
             acties,
             vec![Actie::ZetKijkers {
                 stream_id: id,
-                kijkers: vec![SocketAddr::new(ip(), 41005)],
+                kijkers: vec![PeerAdres {
+                    id: a,
+                    addr: SocketAddr::new(ip(), 41005)
+                }],
             }],
             "de oude poort mag geen beeld meer krijgen"
         );

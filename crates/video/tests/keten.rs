@@ -26,6 +26,8 @@
 //! MTU van 1280, geen jitter en geen verlies op de lijn. Verlies dat je hier ziet komt
 //! van buffers aan deze kant, niet van het netwerk.
 
+use fitcom_net::{MediaSleutels, PeerAdres};
+use fitcom_proto::PeerId;
 use fitcom_video::capture::{afmeting_van, BronSoort};
 use fitcom_video::{beschikbare_bronnen, deel, kijk, Codec, D3dContext, DelerConfig, KijkerConfig};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -58,6 +60,11 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
 
     // Eerst de kijker: in zijn abonnement staat de poort waarop hij luistert, en pas
     // daarna mag de deler beginnen. Precies de volgorde die de motor ook aanhoudt.
+    // Deler en kijker als twee verbonden peers: zonder gekoppelde sleutels gaat er
+    // geen pakket open (protocol 6).
+    let sleutels = MediaSleutels::default();
+    let (deler_id, kijker_id) = (PeerId::new_random(), PeerId::new_random());
+    MediaSleutels::koppel((&sleutels, deler_id), (&sleutels, kijker_id));
     let kijker = kijk(
         &d3d,
         KijkerConfig {
@@ -66,13 +73,17 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             breedte,
             hoogte,
             codec: Codec::H264,
-            afzender: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            afzender: deler_id,
+            sleutels: sleutels.clone(),
         },
     )
     .expect("kijker starten");
 
-    let doel = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kijker.poort);
-    println!("kijker luistert op {doel}");
+    let doel = PeerAdres {
+        id: kijker_id,
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kijker.poort),
+    };
+    println!("kijker luistert op {}", doel.addr);
 
     let deler = deel(
         &d3d,
@@ -85,6 +96,7 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             // Geen terugblik: deze test meet de keten, en een miniatuur per halve
             // seconde ernaast zou meten wat er niet gemeten wordt.
             voorbeeld: false,
+            sleutels,
         },
         vec![doel],
     )

@@ -26,8 +26,7 @@ use crate::codec::{Codec, Encoder, EncoderConfig, HNS_PER_SEC};
 use crate::d3d::D3dContext;
 use crate::fragment::headers_voor;
 use anyhow::{Context, Result};
-use fitcom_net::MediaSocket;
-use std::net::SocketAddr;
+use fitcom_net::{MediaSleutels, MediaSocket, PeerAdres};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -91,10 +90,13 @@ pub struct DelerConfig {
     /// decoder aan te pas — dat is ook het enige dat kán, want Media Foundation geeft een
     /// camera niet twee keer uit.
     pub voorbeeld: bool,
+    /// De mediasleutels van de mesh (`MeshHandle::media`): elk fragment gaat versleuteld
+    /// naar elke kijker.
+    pub sleutels: MediaSleutels,
 }
 
 struct Gedeeld {
-    kijkers: Mutex<Vec<SocketAddr>>,
+    kijkers: Mutex<Vec<PeerAdres>>,
     keyframe_gevraagd: AtomicBool,
     stop: AtomicBool,
     /// De deel-lus is klaar: gestopt op verzoek, of eruit geklapt op een fout. Zonder dit
@@ -125,7 +127,7 @@ pub struct DelerHandle {
 impl DelerHandle {
     /// Waar het beeld heen moet. Mag op elk moment wijzigen: een kijker die erbij komt
     /// of wegvalt is de normale gang van zaken.
-    pub fn zet_kijkers(&self, doelen: Vec<SocketAddr>) {
+    pub fn zet_kijkers(&self, doelen: Vec<PeerAdres>) {
         if let Ok(mut k) = self.gedeeld.kijkers.lock() {
             *k = doelen;
         }
@@ -192,7 +194,7 @@ impl Drop for DelerHandle {
 }
 
 /// Start opnemen en coderen. De thread stopt zodra de handle wordt losgelaten.
-pub fn deel(d3d: &D3dContext, cfg: DelerConfig, kijkers: Vec<SocketAddr>) -> Result<DelerHandle> {
+pub fn deel(d3d: &D3dContext, cfg: DelerConfig, kijkers: Vec<PeerAdres>) -> Result<DelerHandle> {
     let afmeting = crate::capture::afmeting_van(&cfg.bron)?;
     let exclusieve_bron = cfg.bron.soort == crate::capture::BronSoort::Camera;
 
@@ -232,7 +234,7 @@ pub fn deel(d3d: &D3dContext, cfg: DelerConfig, kijkers: Vec<SocketAddr>) -> Res
 }
 
 fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Result<()> {
-    let socket = MediaSocket::bind(0).context("uitgaande mediapoort")?;
+    let socket = MediaSocket::bind(0, cfg.sleutels.clone()).context("uitgaande mediapoort")?;
     let mut capture = Capture::start(d3d, &cfg.bron)?;
     let (breedte, hoogte) = capture.afmeting();
 
@@ -396,7 +398,12 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
             ) {
                 seq = seq.wrapping_add(1);
                 meter.fragmenten += 1;
-                let op_de_draad = fitcom_proto::MEDIA_HEADER_LEN + stuk.len();
+                // Met de sessie-index, de teller en de tag van de AEAD erbij (protocol 6):
+                // zo telt het tempo en de meter wat er echt de draad op gaat.
+                let op_de_draad = fitcom_proto::MEDIA_KOP_LEN
+                    + fitcom_proto::MEDIA_HEADER_LEN
+                    + stuk.len()
+                    + fitcom_proto::MEDIA_TAG_LEN;
                 meter.bytes += op_de_draad as u64;
 
                 // Spreiden in plaats van stoten: zie `Verzendtempo`. Een gewoon beeld
@@ -410,7 +417,7 @@ fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Resu
                 for &kijker in &kijkers {
                     if let Err(e) = socket.stuur(kijker, &header, &stuk) {
                         meter.niet_verstuurd += 1;
-                        tracing::debug!(%kijker, error = %e, "videofragment niet verstuurd");
+                        tracing::debug!(peer = ?kijker.id, error = %e, "videofragment niet verstuurd");
                     }
                 }
             }

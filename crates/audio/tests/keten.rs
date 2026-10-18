@@ -8,9 +8,23 @@
 use fitcom_audio::codec::{Decoder, Encoder, MAX_PAYLOAD};
 use fitcom_audio::jitter::{Frame, JitterBuffer};
 use fitcom_audio::{FRAME_SAMPLES, SAMPLE_RATE};
-use fitcom_net::{MediaSocket, MAX_PAKKET};
-use fitcom_proto::{MediaHeader, PayloadType, VOICE_STREAM_ID};
+use fitcom_net::{MediaSleutels, MediaSocket, PeerAdres, MAX_PAKKET};
+use fitcom_proto::{MediaHeader, PayloadType, PeerId, VOICE_STREAM_ID};
 use std::net::SocketAddr;
+
+/// Een zender en een ontvanger met gekoppelde mediasleutels, zoals twee verbonden peers.
+fn verbonden_paar() -> (MediaSocket, MediaSocket, PeerAdres) {
+    let sleutels = MediaSleutels::default();
+    let (ik, jij) = (PeerId::new_random(), PeerId::new_random());
+    MediaSleutels::koppel((&sleutels, ik), (&sleutels, jij));
+    let zender = MediaSocket::bind(0, sleutels.clone()).unwrap();
+    let ontvanger = MediaSocket::bind(0, sleutels).unwrap();
+    let doel = PeerAdres {
+        id: jij,
+        addr: SocketAddr::from(([127, 0, 0, 1], ontvanger.local_addr().unwrap().port())),
+    };
+    (zender, ontvanger, doel)
+}
 
 /// Een zuivere toon, zodat we aan de andere kant kunnen meten of er iets zinnigs
 /// uitkomt in plaats van ruis of stilte.
@@ -36,9 +50,7 @@ fn energie(samples: &[i16]) -> f64 {
 /// Verstuurt frames en levert op wat er aan de andere kant uitkomt.
 /// `verlies` en `omdraaien` bootsen een slecht netwerk na.
 fn stuur_en_ontvang(frames: &[Vec<i16>], verlies: &[usize], omdraaien: bool) -> Vec<Vec<i16>> {
-    let zender = MediaSocket::bind(0).unwrap();
-    let ontvanger = MediaSocket::bind(0).unwrap();
-    let doel = SocketAddr::from(([127, 0, 0, 1], ontvanger.local_addr().unwrap().port()));
+    let (zender, mut ontvanger, doel) = verbonden_paar();
 
     let mut enc = Encoder::new().unwrap();
     let mut pakket = [0u8; MAX_PAYLOAD];
@@ -135,9 +147,7 @@ fn omgedraaide_pakketten_worden_hersteld() {
 fn pakket_van_een_vreemde_stream_wordt_genegeerd() {
     // Straks deelt er iemand zijn scherm over dezelfde poort. Die pakketten mogen
     // niet in de audio-jitterbuffer belanden.
-    let zender = MediaSocket::bind(0).unwrap();
-    let ontvanger = MediaSocket::bind(0).unwrap();
-    let doel = SocketAddr::from(([127, 0, 0, 1], ontvanger.local_addr().unwrap().port()));
+    let (zender, mut ontvanger, doel) = verbonden_paar();
 
     let header = MediaHeader {
         stream_id: 7, // screenshare

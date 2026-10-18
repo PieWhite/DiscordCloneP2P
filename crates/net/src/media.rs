@@ -8,11 +8,26 @@
 //! precies het pad waar dat het meest opvalt.
 //!
 //! Blokkerende sockets met een korte timeout zijn hier eenvoudiger én voorspelbaarder.
+//!
+//! # Versleuteld (protocol 6)
+//!
+//! Elk pakket is AES-256-GCM met een sleutel per richting en per verbinding; zie
+//! [`crate::mediasleutel`]. Een socket kent de sleuteltabel van zijn mesh en houdt zijn
+//! eigen replayvensters bij, dus versturen gaat naar een [`PeerAdres`] en ontvangen levert
+//! de bewezen afzender op in plaats van een bronadres.
 
+use crate::mediasleutel::{MediaSleutels, Vensters};
 use anyhow::{Context, Result};
-use fitcom_proto::{MediaHeader, MEDIA_HEADER_LEN};
+use fitcom_proto::{MediaHeader, PeerId, MEDIA_HEADER_LEN, MEDIA_KOP_LEN, MEDIA_TAG_LEN};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
+
+/// Wie een pakket krijgt: de peer, voor de sleutel, en waar zijn socket luistert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerAdres {
+    pub id: PeerId,
+    pub addr: SocketAddr,
+}
 
 /// Ruim boven het grootste pakket dat we versturen; een Opus-frame is enkele honderden
 /// bytes en videofragmenten zitten onder de MTU.
@@ -25,9 +40,13 @@ pub const MAX_PAKKET: usize = 1500;
 /// onderweg niets kwijt kan raken. Eén gemist fragment maakt het hele keyframe
 /// onbruikbaar, de kijker vraagt een nieuw keyframe, en de volgende stoot sneuvelt net zo.
 ///
-/// 1 MB is ruim vier keyframes. Groter is geen gratis winst: wat hier in de rij staat is
+/// 1 MB was ruim vier keyframes. Groter is geen gratis winst: wat hier in de rij staat is
 /// beeld dat al te laat is, en de samensteller gooit oude frames toch weg.
-const ONTVANGBUFFER: usize = 1024 * 1024;
+///
+/// Sinds protocol 6 is elk pakket 28 bytes groter (sessie-index, teller, tag). Gemeten op
+/// loopback hield 1 MB daardoor 917 pakketten vast in plaats van 940; 1100 kB houdt er
+/// weer minstens evenveel vast, zodat een stoot niet eerder sneuvelt dan vóór de AEAD.
+const ONTVANGBUFFER: usize = 1100 * 1024;
 
 /// Zet de timerresolutie van dit proces op één milliseconde.
 ///
@@ -114,12 +133,15 @@ fn is_te_groot(e: &std::io::Error) -> bool {
 
 pub struct MediaSocket {
     sock: UdpSocket,
+    sleutels: MediaSleutels,
+    /// Per socket en niet per sleutel: zie de moduledoc van [`crate::mediasleutel`].
+    vensters: Vensters,
 }
 
 impl MediaSocket {
     /// Bindt op alle interfaces. Poort 0 laat het besturingssysteem kiezen, wat handig
-    /// is voor tests.
-    pub fn bind(port: u16) -> Result<Self> {
+    /// is voor tests. `sleutels` is de tabel van de mesh (`MeshHandle::media`).
+    pub fn bind(port: u16, sleutels: MediaSleutels) -> Result<Self> {
         // Vóór de timeout hieronder: anders is die 15,6 ms in plaats van 200.
         zorg_voor_fijne_timer();
 
@@ -135,7 +157,11 @@ impl MediaSocket {
             tracing::warn!(error = %e, "ontvangbuffer vergroten mislukt");
         }
 
-        Ok(Self { sock })
+        Ok(Self {
+            sock,
+            sleutels,
+            vensters: Vensters::default(),
+        })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -157,40 +183,55 @@ impl MediaSocket {
     ///
     /// De kloon is op Windows erfelijk waar het origineel dat niet is; zie
     /// [`niet_doorgeven_aan_kindproces`] voor wat dat kost als je het laat staan.
+    /// Een kloon heeft eigen replayvensters: gebruik er één per ontvangende thread.
     pub fn probeer_clone(&self) -> Result<Self> {
         let sock = self.sock.try_clone().context("mediasocket klonen")?;
         niet_doorgeven_aan_kindproces(&sock);
-        Ok(Self { sock })
+        Ok(Self {
+            sock,
+            sleutels: self.sleutels.clone(),
+            vensters: Vensters::default(),
+        })
     }
 
-    pub fn stuur(&self, naar: SocketAddr, header: &MediaHeader, payload: &[u8]) -> Result<()> {
+    /// Versleutelt en verstuurt. Een fout als er voor die peer (nog of niet meer) geen
+    /// sleutel is: dan is hij niet verbonden, en wat er dan nog gestuurd wordt kan weg.
+    pub fn stuur(&self, naar: PeerAdres, header: &MediaHeader, payload: &[u8]) -> Result<()> {
         let mut buf = [0u8; MAX_PAKKET];
-        let einde = MEDIA_HEADER_LEN + payload.len();
-        if einde > MAX_PAKKET {
-            anyhow::bail!("mediapakket van {einde} bytes is te groot");
+        let klaar = MEDIA_HEADER_LEN + payload.len();
+        if MEDIA_KOP_LEN + klaar + MEDIA_TAG_LEN > MAX_PAKKET {
+            anyhow::bail!("mediapakket van {klaar} bytes is te groot");
         }
         header.write_to(
-            (&mut buf[..MEDIA_HEADER_LEN])
+            (&mut buf[MEDIA_KOP_LEN..MEDIA_KOP_LEN + MEDIA_HEADER_LEN])
                 .try_into()
                 .expect("vaste lengte"),
         );
-        buf[MEDIA_HEADER_LEN..einde].copy_from_slice(payload);
-        self.sock.send_to(&buf[..einde], naar)?;
+        buf[MEDIA_KOP_LEN + MEDIA_HEADER_LEN..MEDIA_KOP_LEN + klaar].copy_from_slice(payload);
+        let lengte = self
+            .sleutels
+            .verzegel(naar.id, &mut buf, klaar)
+            .context("geen mediasleutel voor deze peer")?;
+        self.sock.send_to(&buf[..lengte], naar.addr)?;
         Ok(())
     }
 
     /// `Ok(None)` bij een timeout — dat is de normale gang van zaken als niemand praat,
     /// geen fout.
     ///
-    /// Pakketten die te kort zijn voor een header worden stil genegeerd: op een open
-    /// UDP-poort komt vroeg of laat rommel binnen en daar mag niets van omvallen.
+    /// Alles wat niet opengaat wordt stil genegeerd: te kort, een onbekende sessie-index,
+    /// een vervalste tag, een herhaling. Op een open UDP-poort komt vroeg of laat rommel
+    /// binnen en daar mag niets van omvallen. De afzender is wie de sleutel had, niet een
+    /// bronadres.
     pub fn ontvang<'a>(
-        &self,
+        &mut self,
         buf: &'a mut [u8; MAX_PAKKET],
-    ) -> Result<Option<(SocketAddr, MediaHeader, &'a [u8])>> {
+    ) -> Result<Option<(PeerId, MediaHeader, &'a [u8])>> {
         match self.sock.recv_from(buf) {
-            Ok((n, van)) => match MediaHeader::parse(&buf[..n]) {
-                Some((header, payload)) => Ok(Some((van, header, payload))),
+            Ok((n, _)) => match self.sleutels.open(&mut self.vensters, &mut buf[..n]) {
+                Some((van, klaar)) => {
+                    Ok(MediaHeader::parse(klaar).map(|(header, payload)| (van, header, payload)))
+                }
                 None => Ok(None),
             },
             Err(e)
@@ -221,6 +262,32 @@ mod tests {
     use super::*;
     use fitcom_proto::PayloadType;
 
+    /// Twee sockets met gekoppelde sleutels, zoals twee verbonden peers ze hebben. Levert
+    /// ook het adres op waaronder `b` voor `a` bereikbaar is.
+    fn paar() -> (MediaSocket, MediaSocket, PeerAdres, PeerId) {
+        let sleutels = MediaSleutels::default();
+        let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+        MediaSleutels::koppel((&sleutels, ida), (&sleutels, idb));
+        let a = MediaSocket::bind(0, sleutels.clone()).unwrap();
+        let b = MediaSocket::bind(0, sleutels).unwrap();
+        let naar_b = PeerAdres {
+            id: idb,
+            addr: SocketAddr::from(([127, 0, 0, 1], b.local_addr().unwrap().port())),
+        };
+        (a, b, naar_b, ida)
+    }
+
+    fn header(seq: u32) -> MediaHeader {
+        MediaHeader {
+            stream_id: 0,
+            seq,
+            timestamp: 960,
+            payload_type: PayloadType::OPUS,
+            flags: 0,
+            frag_index: 0,
+        }
+    }
+
     /// De kloon van een mediasocket mag niet meegaan naar een kindproces.
     ///
     /// Zonder dit hield de app die de updater startte zijn eigen mediapoort vast via de
@@ -233,7 +300,7 @@ mod tests {
         use std::os::windows::io::AsRawSocket;
         use windows::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
 
-        let sock = MediaSocket::bind(0).unwrap();
+        let sock = MediaSocket::bind(0, MediaSleutels::default()).unwrap();
         let kloon = sock.probeer_clone().unwrap();
 
         for (wat, s) in [("origineel", &sock), ("kloon", &kloon)] {
@@ -249,41 +316,82 @@ mod tests {
     }
 
     #[test]
-    fn pakket_komt_heelhuids_aan() {
-        let a = MediaSocket::bind(0).unwrap();
-        let b = MediaSocket::bind(0).unwrap();
-        let doel = SocketAddr::from(([127, 0, 0, 1], b.local_addr().unwrap().port()));
-
-        let header = MediaHeader {
-            stream_id: 0,
-            seq: 42,
-            timestamp: 960,
-            payload_type: PayloadType::OPUS,
-            flags: 0,
-            frag_index: 0,
-        };
-        a.stuur(doel, &header, b"spraak").unwrap();
+    fn pakket_komt_heelhuids_aan_met_de_afzender_erbij() {
+        let (a, mut b, naar_b, ida) = paar();
+        a.stuur(naar_b, &header(42), b"spraak").unwrap();
 
         let mut buf = [0u8; MAX_PAKKET];
-        let (_, terug, payload) = b.ontvang(&mut buf).unwrap().expect("pakket verwacht");
-        assert_eq!(terug, header);
+        let (van, terug, payload) = b.ontvang(&mut buf).unwrap().expect("pakket verwacht");
+        assert_eq!(van, ida, "de afzender is wie de sleutel had");
+        assert_eq!(terug, header(42));
         assert_eq!(payload, b"spraak");
+    }
+
+    #[test]
+    fn een_opgevangen_of_vervalst_pakket_komt_er_niet_door() {
+        // Wat B-18 en B-28 open lieten: wie een pakket op de draad zag of een bronadres
+        // kon vervalsen, kon stem of beeld injecteren. Nu niet meer, ook niet over een
+        // echte socket: een herhaling, een omgedraaid bit en kale bytes gaan niet open.
+        let (a, mut b, naar_b, _) = paar();
+        let afluisteraar = UdpSocket::bind("127.0.0.1:0").unwrap();
+        afluisteraar
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let tap = PeerAdres {
+            addr: afluisteraar.local_addr().unwrap(),
+            ..naar_b
+        };
+        a.stuur(tap, &header(7), b"echt").unwrap();
+        let mut opgevangen = [0u8; MAX_PAKKET];
+        let n = afluisteraar.recv(&mut opgevangen).unwrap();
+        let opgevangen = &opgevangen[..n];
+
+        let mut buf = [0u8; MAX_PAKKET];
+        afluisteraar.send_to(opgevangen, naar_b.addr).unwrap();
+        assert!(
+            b.ontvang(&mut buf).unwrap().is_some(),
+            "het origineel gaat open"
+        );
+        afluisteraar.send_to(opgevangen, naar_b.addr).unwrap();
+        assert!(b.ontvang(&mut buf).unwrap().is_none(), "de herhaling niet");
+
+        let mut omgedraaid = opgevangen.to_vec();
+        omgedraaid[MEDIA_KOP_LEN + 2] ^= 0x40;
+        afluisteraar.send_to(&omgedraaid, naar_b.addr).unwrap();
+        assert!(
+            b.ontvang(&mut buf).unwrap().is_none(),
+            "een omgedraaid bit niet"
+        );
+
+        // Een pakket in de vorm van protocol 5: een kale header met payload.
+        let mut oud = [0u8; MEDIA_HEADER_LEN + 6];
+        header(8).write_to((&mut oud[..MEDIA_HEADER_LEN]).try_into().unwrap());
+        afluisteraar.send_to(&oud, naar_b.addr).unwrap();
+        assert!(b.ontvang(&mut buf).unwrap().is_none(), "onversleuteld niet");
+    }
+
+    #[test]
+    fn zonder_sleutel_gaat_er_niets_de_deur_uit() {
+        let a = MediaSocket::bind(0, MediaSleutels::default()).unwrap();
+        let doel = PeerAdres {
+            id: PeerId::new_random(),
+            addr: SocketAddr::from(([127, 0, 0, 1], 9)),
+        };
+        assert!(a.stuur(doel, &header(1), b"x").is_err());
     }
 
     #[test]
     fn timeout_is_geen_fout() {
         // Niemand praat. Dat is de normale toestand, niet iets om op te struikelen.
-        let s = MediaSocket::bind(0).unwrap();
+        let mut s = MediaSocket::bind(0, MediaSleutels::default()).unwrap();
         let mut buf = [0u8; MAX_PAKKET];
         assert!(s.ontvang(&mut buf).unwrap().is_none());
     }
 
     #[test]
     fn rommel_op_de_poort_wordt_genegeerd() {
-        let a = MediaSocket::bind(0).unwrap();
-        let b = MediaSocket::bind(0).unwrap();
-        let doel = SocketAddr::from(([127, 0, 0, 1], b.local_addr().unwrap().port()));
-        a.sock.send_to(b"te kort", doel).unwrap();
+        let (a, mut b, naar_b, _) = paar();
+        a.sock.send_to(b"te kort", naar_b.addr).unwrap();
 
         let mut buf = [0u8; MAX_PAKKET];
         assert!(b.ontvang(&mut buf).unwrap().is_none(), "mag niet omvallen");
@@ -306,16 +414,10 @@ mod tests {
 
     #[test]
     fn te_groot_pakket_wordt_geweigerd_in_plaats_van_afgekapt() {
-        let a = MediaSocket::bind(0).unwrap();
-        let doel = SocketAddr::from(([127, 0, 0, 1], 9));
-        let header = MediaHeader {
-            stream_id: 0,
-            seq: 0,
-            timestamp: 0,
-            payload_type: PayloadType::OPUS,
-            flags: 0,
-            frag_index: 0,
-        };
-        assert!(a.stuur(doel, &header, &[0u8; MAX_PAKKET]).is_err());
+        let (a, _b, naar_b, _) = paar();
+        assert!(a.stuur(naar_b, &header(0), &[0u8; MAX_PAKKET]).is_err());
+        // Het grootste pakket dat we echt versturen (een pariteitsfragment) past wel.
+        let pariteit = [0u8; fitcom_proto::PARITEIT_PAYLOAD_LEN];
+        assert!(a.stuur(naar_b, &header(1), &pariteit).is_ok());
     }
 }

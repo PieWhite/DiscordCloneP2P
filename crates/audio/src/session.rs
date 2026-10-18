@@ -27,7 +27,8 @@ use crate::spreektoets::{self, Modus, Poort};
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use fitcom_net::MediaSocket;
+pub use fitcom_net::PeerAdres;
+use fitcom_net::{MediaSleutels, MediaSocket};
 use fitcom_proto::{MediaHeader, PayloadType, PeerId, VOICE_STREAM_ID};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -65,12 +66,8 @@ pub struct VoiceConfig {
     /// Naam zoals Windows hem toont. `None` = het standaardapparaat.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PeerAdres {
-    pub id: PeerId,
-    pub addr: SocketAddr,
+    /// De mediasleutels van de mesh (`MeshHandle::media`): zonder sleutel geen pakket.
+    pub sleutels: MediaSleutels,
 }
 
 /// Momentopname voor de spreekindicatie in de UI.
@@ -97,7 +94,7 @@ pub type Bron = (PeerId, u32);
 #[derive(Debug, Clone)]
 struct Bureaublad {
     stream_id: u32,
-    doelen: Vec<SocketAddr>,
+    doelen: Vec<PeerAdres>,
 }
 
 /// Welk geluid van deze pc we delen. Eén pijplijn, twee bronnen: bureaubladgeluid is
@@ -257,18 +254,18 @@ impl VoiceHandle {
     /// Idempotent: staat hij al aan, dan worden alleen de luisteraars bijgewerkt. Een
     /// lege lijst luisteraars stopt de opname — er wordt niets opgenomen als niemand
     /// meeluistert.
-    pub fn deel_bureaublad(&self, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
+    pub fn deel_bureaublad(&self, stream_id: u32, doelen: Vec<PeerAdres>) -> Result<()> {
         self.deel(Soort::Bureaublad, stream_id, doelen)
     }
 
     /// Als [`Self::deel_bureaublad`], maar alleen het geluid van Spotify. Draait Spotify
     /// (nog) niet, dan wacht de opname tot hij er is, en een herstarte Spotify wordt
     /// vanzelf weer opgepikt.
-    pub fn deel_muziek(&self, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
+    pub fn deel_muziek(&self, stream_id: u32, doelen: Vec<PeerAdres>) -> Result<()> {
         self.deel(Soort::Muziek, stream_id, doelen)
     }
 
-    fn deel(&self, soort: Soort, stream_id: u32, doelen: Vec<SocketAddr>) -> Result<()> {
+    fn deel(&self, soort: Soort, stream_id: u32, doelen: Vec<PeerAdres>) -> Result<()> {
         let slot = self.gedeeld.deling(soort);
         let draaide_al = slot.lock().map(|b| b.is_some()).unwrap_or(false);
 
@@ -358,7 +355,7 @@ struct Apparaten {
 }
 
 pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
-    let socket = bind_met_geduld(cfg.media_port)?;
+    let socket = bind_met_geduld(cfg.media_port, &cfg.sleutels)?;
     let media_addr = socket.local_addr()?;
     // Bureaubladgeluid komt van hetzelfde apparaat als waar jij op luistert — dat is
     // per definitie wat er te horen valt.
@@ -435,10 +432,10 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
 /// De threads van een vorige sessie merken pas na hun timeout dat ze mogen stoppen,
 /// dus vlak na "verlaten" is de poort nog even bezet. Wie meteen opnieuw deelneemt
 /// zou anders een onbegrijpelijke foutmelding krijgen.
-fn bind_met_geduld(port: u16) -> Result<MediaSocket> {
+fn bind_met_geduld(port: u16, sleutels: &MediaSleutels) -> Result<MediaSocket> {
     let mut laatste = None;
     for _ in 0..15 {
-        match MediaSocket::bind(port) {
+        match MediaSocket::bind(port, sleutels.clone()) {
             Ok(s) => return Ok(s),
             Err(e) => {
                 laatste = Some(e);
@@ -759,7 +756,7 @@ fn opname_lus(
 
             let peers = gedeeld.peers.lock().map(|p| p.clone()).unwrap_or_default();
             for peer in peers {
-                if let Err(e) = socket.stuur(peer.addr, &header, &pakket[..n]) {
+                if let Err(e) = socket.stuur(peer, &header, &pakket[..n]) {
                     tracing::debug!(peer = ?peer.id, error = %e, "audiopakket niet verstuurd");
                 }
             }
@@ -904,7 +901,7 @@ fn bureaublad_lus(
             };
             for doel in &deling.doelen {
                 if let Err(e) = socket.stuur(*doel, &header, &pakket[..n]) {
-                    tracing::debug!(%doel, error = %e, "bureaubladgeluid niet verstuurd");
+                    tracing::debug!(peer = ?doel.id, error = %e, "bureaubladgeluid niet verstuurd");
                 }
             }
         }
@@ -1508,7 +1505,7 @@ mod sck_capture {
 // Ontvangen
 // ---------------------------------------------------------------------------
 
-fn start_ontvangst(gedeeld: Arc<Gedeeld>, socket: MediaSocket) -> Result<()> {
+fn start_ontvangst(gedeeld: Arc<Gedeeld>, mut socket: MediaSocket) -> Result<()> {
     std::thread::Builder::new()
         .name("fitcom-ontvangst".into())
         .spawn(move || {
@@ -1529,14 +1526,16 @@ fn start_ontvangst(gedeeld: Arc<Gedeeld>, socket: MediaSocket) -> Result<()> {
                     continue; // video; die heeft zijn eigen poort en zijn eigen thread
                 }
 
-                // Alleen van wie in het gesprek zit. Op een open UDP-poort komt
-                // vroeg of laat iets anders binnen.
-                let afzender = gedeeld
+                // Alleen van wie in het gesprek zit. Dat `van` die peer is, is bewezen: het
+                // pakket ging open met zijn sleutel (protocol 6, B-18).
+                let in_gesprek = gedeeld
                     .peers
                     .lock()
-                    .ok()
-                    .and_then(|p| p.iter().find(|p| p.addr == van).map(|p| p.id));
-                let Some(peer) = afzender else { continue };
+                    .is_ok_and(|p| p.iter().any(|p| p.id == van));
+                if !in_gesprek {
+                    continue;
+                }
+                let peer = van;
 
                 // Elke stream van een peer is een eigen bron met een eigen
                 // jitterbuffer: zijn stem en zijn spelgeluid lopen niet gelijk op en

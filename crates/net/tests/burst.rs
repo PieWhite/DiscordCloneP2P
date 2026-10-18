@@ -9,22 +9,30 @@
 //! Dit heeft geen GPU en geen tweede machine nodig: op loopback raakt onderweg niets
 //! kwijt, dus alles wat hier sneuvelt sneuvelt in een buffer aan de ontvangkant.
 
-use fitcom_net::{MediaSocket, MAX_PAKKET};
-use fitcom_proto::{MediaHeader, PayloadType};
+use fitcom_net::{MediaSleutels, MediaSocket, PeerAdres, MAX_PAKKET};
+use fitcom_proto::{MediaHeader, PayloadType, PeerId};
 use std::net::SocketAddr;
 use std::time::Duration;
 
 /// Zo groot is een keyframe van 1080p in fragmenten. Gemeten met de meter in `deler.rs`:
-/// 260 kB gedeeld door 1100 bytes payload.
+/// 260 kB gedeeld door 1100 bytes payload. Sinds protocol 6 is elk fragment 28 bytes
+/// groter (sessie-index, teller en tag van de AEAD); ook daarmee moet het passen.
 const FRAGMENTEN: usize = 242;
 
 #[test]
 fn een_keyframe_in_een_stoot_overleeft_de_ontvangbuffer() {
-    let ontvanger = MediaSocket::bind(0).unwrap();
-    ontvanger.zet_timeout(Duration::from_millis(50)).unwrap();
-    let doel = SocketAddr::from(([127, 0, 0, 1], ontvanger.local_addr().unwrap().port()));
+    let sleutels = MediaSleutels::default();
+    let (deler, kijker) = (PeerId::new_random(), PeerId::new_random());
+    MediaSleutels::koppel((&sleutels, deler), (&sleutels, kijker));
 
-    let zender = MediaSocket::bind(0).unwrap();
+    let mut ontvanger = MediaSocket::bind(0, sleutels.clone()).unwrap();
+    ontvanger.zet_timeout(Duration::from_millis(50)).unwrap();
+    let doel = PeerAdres {
+        id: kijker,
+        addr: SocketAddr::from(([127, 0, 0, 1], ontvanger.local_addr().unwrap().port())),
+    };
+
+    let zender = MediaSocket::bind(0, sleutels).unwrap();
     let payload = [7u8; 1100];
     for i in 0..FRAGMENTEN {
         let header = MediaHeader {

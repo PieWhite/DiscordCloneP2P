@@ -21,11 +21,10 @@ use crate::fragment::Reassembler;
 use crate::venster::Venster;
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
-use fitcom_net::MediaSocket;
+use fitcom_net::{MediaSleutels, MediaSocket};
 use fitcom_proto::teken::Tekening;
-use fitcom_proto::ControlMsg;
+use fitcom_proto::{ControlMsg, PeerId};
 use std::collections::VecDeque;
-use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,9 +47,6 @@ const KEYFRAME_HERVRAAG: Duration = Duration::from_millis(100);
 pub(crate) const MINIATUUR_INTERVAL: Duration = Duration::from_millis(500);
 /// Breedte van de miniatuur; de hoogte volgt de beeldverhouding van de bron.
 const MINIATUUR_BREEDTE: u32 = 192;
-/// Zo lang moet de vastgezette bronpoort stil liggen voordat een andere poort hem mag
-/// overnemen. Zie de poortcontrole in [`kijk_lus`] (B-28).
-const BRONPOORT_VERVALT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub enum KijkerEvent {
@@ -85,9 +81,12 @@ pub struct KijkerConfig {
     pub breedte: u32,
     pub hoogte: u32,
     pub codec: Codec,
-    /// Alleen pakketten van dit adres tellen mee. Op een open UDP-poort komt vroeg of
-    /// laat iets anders binnen, en dat mag nooit in de decoder terechtkomen.
-    pub afzender: IpAddr,
+    /// Alleen pakketten van deze peer tellen mee: wat met zijn sleutel opengaat. Op een
+    /// open UDP-poort komt vroeg of laat iets anders binnen, en dat mag nooit in de decoder
+    /// terechtkomen.
+    pub afzender: PeerId,
+    /// De mediasleutels van de mesh (`MeshHandle::media`).
+    pub sleutels: MediaSleutels,
 }
 
 struct Gedeeld {
@@ -145,7 +144,7 @@ impl Drop for KijkerHandle {
 /// Opent een venster en begint te luisteren. De poort in de handle moet naar de deler,
 /// anders komt er nooit beeld.
 pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
-    let socket = MediaSocket::bind(0).context("mediapoort voor video")?;
+    let socket = MediaSocket::bind(0, cfg.sleutels.clone()).context("mediapoort voor video")?;
     socket.zet_timeout(ONTVANG_TIMEOUT)?;
     let poort = socket.local_addr()?.port();
 
@@ -214,7 +213,7 @@ fn kijk_lus(
     mut venster: Venster,
     mut decoder: Decoder,
     d3d: &D3dContext,
-    socket: MediaSocket,
+    mut socket: MediaSocket,
     cfg: &KijkerConfig,
     gedeeld: &Arc<Gedeeld>,
     events: &Sender<KijkerEvent>,
@@ -264,17 +263,6 @@ fn kijk_lus(
     );
     let mut vorige_seq: Option<u32> = None;
     let mut vorig_pakket = Instant::now();
-
-    // Alleen het IP staat in de config: de deler stuurt vanaf een efemere poort
-    // (`MediaSocket::bind(0)` in `deler.rs`), dus de motor kan die niet meegeven. We
-    // zetten hem daarom vast op de eerste poort waarvan we iets accepteren en weigeren
-    // daarna de rest — wie het IP van de deler kan spoofen moet nu ook nog die poort
-    // raken, in plaats van fragmenten met de goede tijdstempel te kunnen bijschuiven
-    // (B-28). Valt de poort stil (deler herstart, nieuwe socket), dan mag een andere hem
-    // na `BRONPOORT_VERVALT` overnemen: anders bleef het venster na een herstart aan de
-    // andere kant voorgoed zwart, en offline-en-terug is hier de normale toestand.
-    let mut bronpoort: Option<u16> = None;
-    let mut laatst_van_bronpoort = Instant::now();
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
@@ -370,23 +358,11 @@ fn kijk_lus(
         let Some((van, header, payload)) = ontvangen else {
             continue;
         };
-        if header.stream_id != cfg.stream_id || van.ip() != cfg.afzender {
+        // `van` is bewezen: het pakket ging open met de sleutel van die peer. Dat is de
+        // hele controle tegen ingeschoven fragmenten (B-28); de bronpoort-heuristiek van
+        // vóór protocol 6 is weg. De `stream_id` zit in het versleutelde deel.
+        if header.stream_id != cfg.stream_id || van != cfg.afzender {
             continue;
-        }
-        match bronpoort {
-            Some(p) if p == van.port() => laatst_van_bronpoort = Instant::now(),
-            Some(_) if laatst_van_bronpoort.elapsed() < BRONPOORT_VERVALT => continue,
-            _ => {
-                // Eén regel per wissel, en die is zeldzaam: bij het eerste beeld en na
-                // een herstart van de deler. Niets per pakket.
-                tracing::info!(
-                    stream = cfg.stream_id,
-                    %van,
-                    "bronpoort van de deler vastgezet"
-                );
-                bronpoort = Some(van.port());
-                laatst_van_bronpoort = Instant::now();
-            }
         }
 
         // De draad bepaalt de codec, niet onze eigen config: de deler encodeert met

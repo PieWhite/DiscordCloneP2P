@@ -6,8 +6,22 @@
 
 pub const MEDIA_HEADER_LEN: usize = 16;
 
-/// Payload past binnen Tailscale's MTU zonder IP-fragmentatie. WireGuard neemt 60 bytes
-/// overhead, dus we blijven ruim onder de gebruikelijke 1280.
+/// Protocol 6: wat er vóór de versleutelde header staat. `[sessie-index u32][teller u64]`,
+/// big-endian, onversleuteld maar wel geauthenticeerd (de AAD). De index kiest de
+/// ontvanger; de nonce is vier nul-bytes gevolgd door de teller. Index 0 en teller 0 komen
+/// nooit voor. Zie `crates/net/src/mediasleutel.rs`.
+pub const MEDIA_KOP_LEN: usize = 12;
+
+/// Protocol 6: de AES-256-GCM-tag achter elk pakket.
+pub const MEDIA_TAG_LEN: usize = 16;
+
+/// Protocol 6: het exporter-label voor de mediasleutels. De context is de `PeerId` van de
+/// afzender, zodat elke richting een eigen sleutel heeft.
+pub const MEDIA_SLEUTEL_LABEL: &[u8] = b"fitcom/media/v6";
+
+/// Payload past onder de 1280 bytes die elk IPv6-pad moet halen, zonder IP-fragmentatie:
+/// 1100 + header 16 + kop en tag 28 + IPv6 40 + UDP 8 = 1192 (1194 voor een
+/// pariteitsfragment). Tot protocol 6 ging de ruimte voor kop en tag naar WireGuard.
 pub const MAX_MEDIA_PAYLOAD: usize = 1100;
 
 /// Lengte van de payload van een pariteitsfragment: twee bytes voor de lengte van het
@@ -115,6 +129,17 @@ mod tests {
         assert_eq!(back, h);
         assert!(rest.is_empty());
         assert!(back.is_keyframe() && back.is_last_fragment());
+    }
+
+    #[test]
+    fn het_grootste_pakket_past_onder_de_ipv6_ondergrens() {
+        // 1280 is wat elk IPv6-pad zonder fragmentatie moet halen; daarboven kan een
+        // keyframe onderweg in stukken vallen of stil verdwijnen.
+        let grootste = MEDIA_KOP_LEN + MEDIA_HEADER_LEN + PARITEIT_PAYLOAD_LEN + MEDIA_TAG_LEN;
+        assert!(
+            grootste + 40 + 8 <= 1280,
+            "{grootste} bytes UDP-payload is te veel"
+        );
     }
 
     #[test]

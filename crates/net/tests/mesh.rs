@@ -5,7 +5,8 @@
 //! afschieten en naar logs turen. Dat is te traag om elke wijziging mee te controleren.
 
 use fitcom_net::{
-    spawn, wegwerpsleutel, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerStatus, PeerTarget,
+    spawn, wegwerpsleutel, MediaSocket, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerAdres,
+    PeerStatus, PeerTarget, MAX_PAKKET,
 };
 use fitcom_proto::control::OpBroadcast;
 use fitcom_proto::{Channel, ControlMsg, Op, OpKind, PeerId};
@@ -356,4 +357,62 @@ async fn een_andere_sleutel_voor_dezelfde_peer_komt_er_niet_in() {
         rondes <= 6,
         "A zag B {rondes} keer online in ~14 s: B belt te vaak"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verbonden_peers_delen_mediasleutels_en_niemand_anders() {
+    // De mesh-actor zet bij verbinden de sleutels per richting, uit de exporter van de
+    // verbinding en de sessie-index die elke kant in zijn Hello zette. Klopt daar één kant
+    // niet van, dan gaat er geen enkel pakket open; dat zie je alleen met twee echte meshes.
+    init_tracing();
+    let (pa, pb) = (free_port().await, free_port().await);
+    let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+    let mut a = spawn(config(ida, "A", pa, pb)).unwrap();
+    let mut b = spawn(config(idb, "B", pb, pa)).unwrap();
+    wait_for(&mut a, "A ziet B", 15, online).await;
+    wait_for(&mut b, "B ziet A", 15, online).await;
+    // Na een botsing hoort de winnende verbinding aan beide kanten even te landen.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let (ma, mb) = (a.media.clone(), b.media.clone());
+    let uitkomst = tokio::task::spawn_blocking(move || {
+        let zender = MediaSocket::bind(0, ma).unwrap();
+        let mut ontvanger = MediaSocket::bind(0, mb).unwrap();
+        ontvanger.zet_timeout(Duration::from_millis(200)).unwrap();
+        let naar_b = PeerAdres {
+            id: idb,
+            addr: std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                ontvanger.local_addr().unwrap().port(),
+            )),
+        };
+        let header = fitcom_proto::MediaHeader {
+            stream_id: 0,
+            seq: 1,
+            timestamp: 0,
+            payload_type: fitcom_proto::PayloadType::OPUS,
+            flags: 0,
+            frag_index: 0,
+        };
+        zender.stuur(naar_b, &header, b"hoi").unwrap();
+        let mut buf = [0u8; MAX_PAKKET];
+        let ontvangen = ontvanger
+            .ontvang(&mut buf)
+            .unwrap()
+            .map(|(van, h, p)| (van, h.seq, p.to_vec()));
+
+        // Een derde zonder verbinding heeft geen sleutel voor B, en wat hij met een eigen
+        // tabel stuurt gaat bij B niet open.
+        let vreemd = fitcom_net::MediaSleutels::default();
+        fitcom_net::MediaSleutels::koppel((&vreemd, PeerId::new_random()), (&vreemd, idb));
+        let indringer = MediaSocket::bind(0, vreemd).unwrap();
+        indringer.stuur(naar_b, &header, b"nep").unwrap();
+        let geweigerd = ontvanger.ontvang(&mut buf).unwrap().is_none();
+        (ontvangen, geweigerd)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(uitkomst.0, Some((ida, 1, b"hoi".to_vec())));
+    assert!(uitkomst.1, "een pakket met een vreemde sleutel ging open");
 }

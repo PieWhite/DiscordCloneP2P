@@ -15,6 +15,8 @@
 //! beide kanten. Daar is de periodieke microhapering in te dateren; de meterregels per
 //! seconde middelen hem juist weg.
 
+use fitcom_net::{MediaSleutels, PeerAdres};
+use fitcom_proto::PeerId;
 use fitcom_video::capture::{Bron, BronSoort};
 use fitcom_video::venster::Venster;
 use fitcom_video::{beschikbare_bronnen, deel, kijk, Codec, D3dContext, DelerConfig, KijkerConfig};
@@ -150,6 +152,11 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
         .expect("het bronvenster moet in de lijst verschijnen");
 
     // --- de keten ---------------------------------------------------------------------
+    // Deler en kijker als twee verbonden peers: zonder gekoppelde sleutels gaat er
+    // geen pakket open (protocol 6).
+    let sleutels = MediaSleutels::default();
+    let (deler_id, kijker_id) = (PeerId::new_random(), PeerId::new_random());
+    MediaSleutels::koppel((&sleutels, deler_id), (&sleutels, kijker_id));
     let kijker = kijk(
         &d3d,
         KijkerConfig {
@@ -158,11 +165,15 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
             breedte: b,
             hoogte: h,
             codec,
-            afzender: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            afzender: deler_id,
+            sleutels: sleutels.clone(),
         },
     )
     .expect("kijker starten");
-    let doel = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kijker.poort);
+    let doel = PeerAdres {
+        id: kijker_id,
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kijker.poort),
+    };
 
     let deler = deel(
         &d3d,
@@ -173,6 +184,7 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
             fps,
             bitrate,
             voorbeeld: false,
+            sleutels,
         },
         vec![doel],
     )

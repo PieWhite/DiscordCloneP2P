@@ -12,12 +12,12 @@
 //! gevolg — beeld dat weer op aankomsttijd getoond wordt in plaats van op opnametijd —
 //! alleen met twee machines op te merken valt.
 
-use fitcom_net::{MediaSocket, MAX_PAKKET};
+use fitcom_net::{MediaSleutels, MediaSocket, MAX_PAKKET};
 use std::time::{Duration, Instant};
 
 fn meet(gevraagd: Duration) -> (f64, f64) {
     // `bind` zet de timerresolutie; zonder die aanroep is alles hieronder 15,6 ms.
-    let sock = MediaSocket::bind(0).expect("socket");
+    let mut sock = MediaSocket::bind(0, MediaSleutels::default()).expect("socket");
     sock.zet_timeout(gevraagd).expect("timeout");
     let mut buf = [0u8; MAX_PAKKET];
 

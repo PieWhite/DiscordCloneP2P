@@ -21,10 +21,11 @@
 //! Aan de opnemende kant gaat de `HelloAck` pas de deur uit als de actor de beller heeft
 //! goedgekeurd (B-05a): wie niet binnenkomt hoort niets terug, ook geen naam of versie.
 
+use crate::mediasleutel::{self, MediaSleutels};
 use crate::{framing, tls};
 use anyhow::{bail, Context, Result};
 use fitcom_proto::control::{Handtekening, Hello, HelloAck};
-use fitcom_proto::{ControlMsg, PeerId, PROTOCOL_VERSION};
+use fitcom_proto::{ControlMsg, PeerId, MEDIA_SLEUTEL_LABEL, PROTOCOL_VERSION};
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -145,6 +146,15 @@ fn bewezen_sleutel(exporter: &[u8; 32], sleutel: &[u8], handtekening: &[u8]) -> 
     Some(sleutel)
 }
 
+/// De mediasleutel voor wat `afzender` over deze verbinding stuurt. Beide kanten rekenen
+/// hem uit; zie `mediasleutel.rs`.
+fn mediasleutel_van(conn: &quinn::Connection, afzender: PeerId) -> Option<[u8; 32]> {
+    let mut k = [0u8; 32];
+    conn.export_keying_material(&mut k, MEDIA_SLEUTEL_LABEL, afzender.as_bytes())
+        .ok()?;
+    Some(k)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PeerStatus {
     Offline {
@@ -240,6 +250,9 @@ pub struct MeshHandle {
     pub events: mpsc::Receiver<MeshEvent>,
     /// Het adres waarop we daadwerkelijk luisteren.
     pub local_addr: SocketAddr,
+    /// De mediasleutels van de verbonden peers. Geef een kloon aan elke `MediaSocket`; de
+    /// mesh houdt hem bij bij verbinden en verbreken.
+    pub media: MediaSleutels,
     endpoint: quinn::Endpoint,
     _shutdown: ShutdownGuard,
 }
@@ -313,6 +326,9 @@ struct Established {
     peer_id: PeerId,
     /// Bewezen met een handtekening over de exporter van deze verbinding.
     sleutel: [u8; 32],
+    /// De sessie-index die wij kozen voor media van hem, en die hij koos voor media van ons.
+    mijn_index: u32,
+    hun_index: u32,
     display_name: String,
     media_port: u16,
     app_version: String,
@@ -377,6 +393,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
     let (event_tx, event_rx) = mpsc::channel(1024);
     let (int_tx, int_rx) = mpsc::channel(1024);
     let (stop_tx, stop_rx) = watch::channel(false);
+    let media = MediaSleutels::default();
 
     // Commando's van de UI lopen door dezelfde interne wachtrij als netwerkgebeurtenissen,
     // zodat de actor één bron van waarheid heeft en geen locks nodig heeft.
@@ -465,6 +482,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
             pending: Vec::new(),
             gemelde_frames: HashSet::new(),
             logrem: Logrem::default(),
+            media: media.clone(),
         }
         .run(int_rx),
     );
@@ -473,6 +491,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         commands: cmd_tx,
         events: event_rx,
         local_addr,
+        media,
         endpoint,
         _shutdown: ShutdownGuard(stop_tx),
     })
@@ -607,6 +626,7 @@ struct Actor {
     /// hoorde (B-25). Eén regel per verbinding, niet één per frame.
     gemelde_frames: HashSet<u64>,
     logrem: Logrem,
+    media: MediaSleutels,
 }
 
 /// Hoe lang een niet te koppelen inkomende beller blijft wachten voordat we concluderen
@@ -942,6 +962,35 @@ impl Actor {
         // gaat vóór een LAAG-bevinding. Wie dit alsnog wil: geef die tests een echte
         // poort, of maak `media_addr` een `Option` (dat laatste raakt `crates/app`).
         let media_addr = SocketAddr::new(e.remote.ip(), e.media_port);
+
+        // De mediasleutels van deze verbinding, nu zij de botsing gewonnen heeft. Een
+        // verliezer krijgt er geen; de oude verbinding van een winnaar houdt haar
+        // ontvangstsleutel nog even (`on_closed`).
+        let (Some(zend), Some(ontvang)) = (
+            mediasleutel_van(&e.conn, self.cfg.me),
+            mediasleutel_van(&e.conn, e.peer_id),
+        ) else {
+            // Kan in de praktijk niet (32 bytes uit TLS 1.3), maar "online zonder media"
+            // zou een stil gat zijn.
+            tracing::warn!(peer = ?e.peer_id, "geen mediasleutels voor deze verbinding");
+            e.conn.close(1u32.into(), b"geen mediasleutels");
+            return;
+        };
+        if e.hun_index == 0 {
+            // Een peer op 6 zet hier altijd iets neer; 0 is de standaardwaarde van een veld
+            // dat ontbrak. Dan gaat er bij hem geen enkel pakket van ons open, zonder dat
+            // iemand het ziet. Verbinden mag, maar dan wel met een spoor in de log.
+            tracing::warn!(peer = ?e.peer_id, "peer gaf geen media-index; zijn media blijft stil");
+        }
+        self.media.zet(
+            e.conn_id,
+            e.peer_id,
+            zend,
+            e.hun_index,
+            ontvang,
+            e.mijn_index,
+        );
+
         let status = PeerStatus::Online {
             peer_id: e.peer_id,
             display_name: e.display_name.clone(),
@@ -1015,6 +1064,8 @@ impl Actor {
     }
 
     async fn on_closed(&mut self, conn_id: u64, reason: String) {
+        self.media.vergeet(conn_id);
+
         // B-24: losmaken gaat op `bound`, niet via een omgekeerde zoekactie in `active`.
         // Die zoekactie vond niets zodra de verbinding daar al door een nieuwere vervangen
         // was, en dan keerde deze functie vroeg terug — met `bound` en `connected` blijvend
@@ -1044,6 +1095,7 @@ impl Actor {
 
     async fn on_tick(&mut self) {
         self.retry_pending().await;
+        self.media.ruim_op();
 
         let updates: Vec<(usize, PeerStatus)> = self
             .active
@@ -1173,6 +1225,8 @@ async fn try_dial(
 
     let _ = int.send(Internal::Resolved { target, addr }).await;
 
+    let mijn_index = mediasleutel::nieuwe_index();
+
     // Alleen het opzetten krijgt een deadline. De sessie erna mag uren duren.
     let opgezet = tokio::time::timeout(CONNECT_TIMEOUT, async {
         let conn = endpoint
@@ -1192,7 +1246,7 @@ async fn try_dial(
                 app_version: cfg.app_version.clone(),
                 public_key: cfg.sleutel.public_key().as_ref().to_vec(),
                 signature: teken(&cfg.sleutel, &conn, Handtekening::BELLER)?,
-                media_index: 0,
+                media_index: mijn_index,
             }),
         )
         .await?;
@@ -1275,6 +1329,8 @@ async fn try_dial(
         target,
         ack.peer_id,
         sleutel,
+        mijn_index,
+        ack.media_index,
         ack.display_name,
         ack.media_port,
         ack.app_version,
@@ -1514,6 +1570,7 @@ async fn accept_one(
         }
     };
 
+    let mijn_index = mediasleutel::nieuwe_index();
     tokio::time::timeout(
         CONNECT_TIMEOUT,
         framing::write_frame(
@@ -1526,7 +1583,7 @@ async fn accept_one(
                 app_version: cfg.app_version.clone(),
                 public_key: cfg.sleutel.public_key().as_ref().to_vec(),
                 signature: teken(&cfg.sleutel, &conn, Handtekening::OPNEMER)?,
-                media_index: 0,
+                media_index: mijn_index,
             }),
         ),
     )
@@ -1540,6 +1597,8 @@ async fn accept_one(
         target,
         hello.peer_id,
         sleutel,
+        mijn_index,
+        hello.media_index,
         hello.display_name,
         hello.media_port,
         hello.app_version,
@@ -1585,6 +1644,8 @@ async fn run_session(
     target: usize,
     peer_id: PeerId,
     sleutel: [u8; 32],
+    mijn_index: u32,
+    hun_index: u32,
     display_name: String,
     media_port: u16,
     app_version: String,
@@ -1606,6 +1667,8 @@ async fn run_session(
         target,
         peer_id,
         sleutel,
+        mijn_index,
+        hun_index,
         display_name,
         media_port,
         app_version,
@@ -1765,6 +1828,7 @@ mod tests {
             pending: Vec::new(),
             gemelde_frames: HashSet::new(),
             logrem: Logrem::default(),
+            media: MediaSleutels::default(),
         };
         (actor, rx, vlaggen)
     }

@@ -23,6 +23,8 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
+    use fitcom_net::{MediaSleutels, PeerAdres};
+    use fitcom_proto::PeerId;
     use fitcom_video::capture::{afmeting_van, BronSoort};
     use fitcom_video::{
         beschikbare_bronnen, deel, kijk, Codec, D3dContext, DelerConfig, KijkerConfig,
@@ -66,6 +68,11 @@ fn main() {
             println!("bron: {} ({breedte}×{hoogte})", scherm.naam);
 
             // Eerst de kijker: in zijn abonnement staat de poort waarop hij luistert.
+            // Deler en kijker als twee verbonden peers: zonder gekoppelde sleutels gaat er
+            // geen pakket open (protocol 6).
+            let sleutels = MediaSleutels::default();
+            let (deler_id, kijker_id) = (PeerId::new_random(), PeerId::new_random());
+            MediaSleutels::koppel((&sleutels, deler_id), (&sleutels, kijker_id));
             let kijker = kijk(
                 &d3d,
                 KijkerConfig {
@@ -74,11 +81,15 @@ fn main() {
                     breedte,
                     hoogte,
                     codec: Codec::H264,
-                    afzender: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    afzender: deler_id,
+                    sleutels: sleutels.clone(),
                 },
             )?;
-            let doel = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kijker.poort);
-            println!("kijker luistert op {doel}");
+            let doel = PeerAdres {
+                id: kijker_id,
+                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), kijker.poort),
+            };
+            println!("kijker luistert op {}", doel.addr);
 
             let deler = deel(
                 &d3d,
@@ -89,6 +100,7 @@ fn main() {
                     fps: env_u32("KETEN_FPS", 60),
                     bitrate: env_u32("KETEN_BITRATE", 25_000_000),
                     voorbeeld: true,
+                    sleutels,
                 },
                 vec![doel],
             )?;

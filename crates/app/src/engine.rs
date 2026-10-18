@@ -1289,6 +1289,7 @@ impl Engine {
             media_port: self.cfg.media_port,
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
+            sleutels: self.mesh.media.clone(),
         };
         match fitcom_audio::start(cfg) {
             Ok(h) => {
@@ -1930,7 +1931,7 @@ impl Engine {
         Ok(())
     }
 
-    fn start_deler(&mut self, stream_id: u32, kijkers: Vec<SocketAddr>) -> Result<()> {
+    fn start_deler(&mut self, stream_id: u32, kijkers: Vec<PeerAdres>) -> Result<()> {
         let bron = self
             .bronnen
             .get(&stream_id)
@@ -1953,6 +1954,7 @@ impl Engine {
                 // anderen zien. Wat wél alleen voor de camera geldt is dat de deler
                 // blijft bestaan zonder kijkers — zie `heeft_voorbeeld`.
                 voorbeeld: true,
+                sleutels: self.mesh.media.clone(),
             },
             kijkers,
         )?;
@@ -1967,12 +1969,12 @@ impl Engine {
     /// Bureaubladgeluid draait niet via `delers` maar via de voice-sessie, en heeft geen
     /// codec-instelling — die blijft dus vanzelf buiten schot.
     fn herstart_lopende_delers(&mut self) {
-        let actief: Vec<(u32, Vec<SocketAddr>)> = self
+        let actief: Vec<(u32, Vec<PeerAdres>)> = self
             .streams
             .eigen()
             .iter()
             .filter(|s| self.delers.contains_key(&s.id))
-            .map(|s| (s.id, s.kijkers.values().copied().collect()))
+            .map(|s| (s.id, s.doelen()))
             .collect();
         for (id, kijkers) in actief {
             if let Err(e) = self.start_deler(id, kijkers) {
@@ -1990,11 +1992,9 @@ impl Engine {
         breedte: u32,
         hoogte: u32,
     ) -> Result<()> {
-        let ip = self
-            .verbonden
-            .get(&eigenaar)
-            .map(|a| a.ip())
-            .context("die peer is niet verbonden")?;
+        if !self.verbonden.contains_key(&eigenaar) {
+            anyhow::bail!("die peer is niet verbonden");
+        }
         let d3d = self.d3d()?;
         let naam = self
             .peers
@@ -2023,7 +2023,8 @@ impl Engine {
                 breedte,
                 hoogte,
                 codec: gok,
-                afzender: ip,
+                afzender: eigenaar,
+                sleutels: self.mesh.media.clone(),
             },
         )?;
 

@@ -7,10 +7,12 @@
 pub mod filestream;
 pub mod framing;
 pub mod media;
+pub mod mediasleutel;
 pub mod mesh;
 mod tls;
 
-pub use media::{MediaSocket, MAX_PAKKET};
+pub use media::{MediaSocket, PeerAdres, MAX_PAKKET};
+pub use mediasleutel::MediaSleutels;
 pub use mesh::{
     mag_leren, spawn, wegwerpsleutel, MeshCommand, MeshConfig, MeshEvent, MeshHandle, MeshSluiter,
     PeerStatus, PeerTarget,
