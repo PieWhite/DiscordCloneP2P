@@ -254,8 +254,14 @@ pub struct MeshHandle {
     /// mesh houdt hem bij bij verbinden en verbreken.
     pub media: MediaSleutels,
     endpoint: quinn::Endpoint,
+    /// De UDP-socket onder `endpoint`, alleen om in [`MeshHandle::shutdown`] te zien wanneer
+    /// niemand anders hem nog vasthoudt.
+    socket: Arc<dyn quinn::AsyncUdpSocket>,
     _shutdown: ShutdownGuard,
 }
+
+/// Hoe lang [`MeshHandle::shutdown`] hoogstens wacht tot de poort vrij is.
+const AFSLUIT_GRENS: Duration = Duration::from_secs(4);
 
 impl MeshHandle {
     /// Sluit netjes af en wacht tot de UDP-poort weer vrij is.
@@ -263,11 +269,33 @@ impl MeshHandle {
     /// `drop` alleen is niet genoeg: dat zet de taken stil maar keert terug voordat
     /// de socket daadwerkelijk los is. Wie op dezelfde poort opnieuw wil starten —
     /// bij een config-herlaad bijvoorbeeld — moet dit gebruiken.
+    ///
+    /// Begrensd op [`AFSLUIT_GRENS`]. Houdt iemand buiten de mesh nog iets van quinn vast
+    /// (een [`MeshSluiter`], een bestandsstream), dan keert dit toch terug, met een
+    /// waarschuwing, en is de poort nog bezet.
     pub async fn shutdown(self) {
         let endpoint = self.endpoint.clone();
+        let socket = self.socket.clone();
         drop(self); // zet alle taken stil via de ShutdownGuard
         endpoint.close(0u32.into(), b"afsluiten");
-        endpoint.wait_idle().await;
+        let los = tokio::time::timeout(AFSLUIT_GRENS, async {
+            endpoint.wait_idle().await;
+            drop(endpoint);
+            // `wait_idle` zegt alleen dat quinn's verbindingstabel leeg is. De socket gaat pas
+            // dicht als ook elke `quinn::Connection` in onze taken weg is en quinn's eigen
+            // endpoint-taak klaar is, en van die taak geeft quinn geen handvat. Dat laatste is
+            // alleen te zien aan de socket zelf: elke houder heeft er een `Arc` van.
+            while Arc::strong_count(&socket) > 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        if los.is_err() {
+            tracing::warn!(
+                houders = Arc::strong_count(&socket) - 1,
+                "UDP-poort na afsluiten nog niet vrij"
+            );
+        }
     }
 
     /// Een handvat om bij het afsluiten van de app de verbindingen te sluiten, ook nadat
@@ -383,8 +411,19 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         .parse()
         .context("luisteradres samenstellen")?;
 
-    let mut endpoint = quinn::Endpoint::server(tls::server_config()?, bind)
+    // Wat `quinn::Endpoint::server` doet, maar met de socket in de hand voor `shutdown`. Bij
+    // een quinn-update opnieuw naast `Endpoint::server` leggen.
+    let runtime = quinn::default_runtime().context("geen async-runtime")?;
+    let socket = std::net::UdpSocket::bind(bind)
+        .and_then(|s| runtime.wrap_udp_socket(s))
         .with_context(|| format!("QUIC-endpoint binden op {bind}"))?;
+    let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        Some(tls::server_config()?),
+        socket.clone(),
+        runtime,
+    )
+    .with_context(|| format!("QUIC-endpoint opzetten op {bind}"))?;
     endpoint.set_default_client_config(tls::client_config()?);
     let local_addr = endpoint.local_addr().context("luisteradres opvragen")?;
     tracing::info!(%local_addr, me = %cfg.me, "mesh luistert");
@@ -397,11 +436,22 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
 
     // Commando's van de UI lopen door dezelfde interne wachtrij als netwerkgebeurtenissen,
     // zodat de actor één bron van waarheid heeft en geen locks nodig heeft.
+    //
+    // Ook deze stopt op het stopsignaal: de motor houdt klonen van `commands`, en zolang deze
+    // taak leeft stopt de actor niet en houden de verbindingen in `active` de poort bezet.
     {
         let int_tx = int_tx.clone();
+        let mut stop = stop_rx.clone();
         tokio::spawn(async move {
             let mut cmd_rx = cmd_rx;
-            while let Some(c) = cmd_rx.recv().await {
+            loop {
+                let c = tokio::select! {
+                    _ = cancelled(&mut stop) => break,
+                    c = cmd_rx.recv() => match c {
+                        Some(c) => c,
+                        None => break,
+                    },
+                };
                 if int_tx.send(Internal::Command(c)).await.is_err() {
                     break;
                 }
@@ -493,6 +543,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         local_addr,
         media,
         endpoint,
+        socket,
         _shutdown: ShutdownGuard(stop_tx),
     })
 }

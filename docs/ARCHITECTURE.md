@@ -958,6 +958,21 @@ slagen.
 Wie op dezelfde poort opnieuw wil starten — config herladen bijvoorbeeld — moet
 `shutdown().await` gebruiken.
 
+`shutdown` wacht tot de socket echt dicht is, niet tot `wait_idle`. Elke `quinn::Connection`
+(en elke stream) houdt de UDP-socket vast, en quinn's eigen endpoint-taak ook; van die taak
+geeft quinn geen handvat. Daarom bindt `spawn` de socket zelf (precies wat
+`Endpoint::server` doet) en houdt de handle er een `Arc` van: `shutdown` wacht tot dat de
+laatste is, hoogstens `AFSLUIT_GRENS` (4 s). Dat lukt alleen als alles wat een verbinding
+vasthoudt na het stopsignaal eindigt: de lussen kijken er zelf naar, de sessie- en opnemende
+taken eindigen doordat de endpoint dan dichtgaat, en de schrijftaak van een sessie pas als de
+actor stopt en `active` loslaat. De actor stopt pas als elke kloon van zijn interne zender weg
+is. Daarom stopt ook de doorgever van `commands` op het signaal (de motor houdt klonen van
+`commands`), en een nieuwe taak met zo'n kloon moet dat ook. De test
+`shutdown_geeft_de_poort_vrij` draait op één thread en ziet een lek hier elke keer. Wat
+buiten de mesh nog iets van quinn vasthoudt (een
+`MeshSluiter`, een bestandsstream) houdt de poort bezet; dan keert `shutdown` na de grens
+terug met een waarschuwing in het log, en mislukt het opnieuw binden zoals voorheen.
+
 ## Crate-layout
 ```
 crates/

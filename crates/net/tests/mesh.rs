@@ -198,6 +198,24 @@ async fn peer_die_wegvalt_komt_vanzelf_terug() {
     assert_eq!(terug, ida, "B moet dezelfde peer terugzien");
 }
 
+/// `shutdown` keert pas terug als de poort vrij is. Op één thread is dat deterministisch te
+/// zien: quinn's endpoint-taak en onze sessietaken ruimen pas op als `shutdown` zelf wacht.
+/// Met alleen `wait_idle` was de poort hier elke keer nog bezet; met vier threads liet de test
+/// hierboven dat maar af en toe zien.
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_geeft_de_poort_vrij() {
+    let (pa, pb) = (free_port().await, free_port().await);
+    let a = spawn(config(PeerId::new_random(), "A", pa, pb)).unwrap();
+    let mut b = spawn(config(PeerId::new_random(), "B", pb, pa)).unwrap();
+    wait_for(&mut b, "verbinding", 15, online).await;
+
+    a.shutdown().await;
+    assert!(
+        std::net::UdpSocket::bind(("0.0.0.0", pa)).is_ok(),
+        "poort {pa} nog bezet na shutdown"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn drie_peers_vormen_een_volledige_mesh() {
     // De echte doeltopologie. Met twee peers blijft verborgen dat het koppelen van een

@@ -2755,12 +2755,6 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
   een spel): de mediaan van een leestimeout van 1 ms liep op 2026-10-19 tussen 1,5 en 24 ms
   in drie runs vlak na elkaar. Dat is CPU-tekort, geen timerresolutie. Opnieuw draaien op een
   rustige machine voordat je in `media.rs` gaat zoeken.
-- **`peer_die_wegvalt_komt_vanzelf_terug` (`crates/net/tests/mesh.rs`) faalt ongeveer één op
-  de tien keer**: direct na `MeshHandle::shutdown()` lukt het opnieuw binden van dezelfde poort
-  niet. Gemeten op 2026-10-19: 5 van 50 vóór fase A, 6 van 50 erna, dus niet nieuw.
-  `shutdown` wacht op `wait_idle`, maar een `quinn::Connection` die nog in een taak of in de
-  actor ligt houdt de UDP-socket vast tot hij gedropt is. Dat breekt de belofte in
-  `docs/ARCHITECTURE.md` ("Afsluiten") voor wie op dezelfde poort herstart. Nog niet opgelost.
 - **Een paniek in een spawned thread staat níét in het logbestand.** Hij gaat naar stderr,
   en de app schrijft zijn log ergens anders heen — dus een draad die meteen omvalt ziet er
   van buiten uit als een draad die niets te doen heeft. Dat kostte een avond bij de clips
