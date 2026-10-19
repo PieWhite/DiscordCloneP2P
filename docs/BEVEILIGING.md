@@ -289,6 +289,11 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   volgende echte pakket van de peer (bij een stille peer hooguit 15 s, de keepalive). Dat
 >   breekt de eigenschap van vóór B5 dat media alleen naar het IP van de QUIC-verbinding ging.
 >   WireGuard heeft hetzelfde gedrag; wie op het pad zit kan het verkeer ook gewoon tegenhouden.
+> - **Port mapping staat standaard aan, ook bij een bestaande installatie die tot nu toe alleen
+>   Tailscale gebruikte**: na de update vraagt de app de router om UDP 41650 en 41651 open te
+>   zetten, en is de QUIC-poort van internet te bereiken. De bescherming is die van fase A
+>   (vastgepinde sleutels, `retry()`, 8 pogingen per IP per seconde). Wie dat niet wil zet
+>   `port_mapping = false`.
 > - **Port mapping** praat alleen met de eigen router (PCP en NAT-PMP op UDP 5351) en, voor UPnP,
 >   het LAN (een SSDP-multicast en HTTP naar wie antwoordt). Niets op internet (invariant 1). De
 >   mapping gaat bij netjes afsluiten weer weg; na hard afsluiten blijft hij tot zijn lease

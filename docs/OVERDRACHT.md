@@ -2751,6 +2751,15 @@ bytes vooraan zoals een mediapakket): op de control-poort 0,42% van één kern, 
 runs geen logregel erbij (4 regels, allemaal van het opstarten). Gewone achtergrondruis van
 internet is een paar pakketten per seconde; daarvan is het onmeetbaar.
 
+**Na de laatste review over heel fase B** (geen blokkades): een kandidaat die nu het bronadres
+van een andere verbonden peer is wordt niet gebeld (`Bezet`; anders kon een verkeerd adres een
+peer met alleen fase A, die `voor` niet kent, zijn echte verbinding laten verliezen), het
+opzoeken van een MagicDNS-naam wacht hooguit 1 s als er kandidaten zijn, een te snel gekomen
+`Addresses` wordt op de volgende tik verwerkt in plaats van weggegooid, `you_are` komt uit het
+huidige bronadres (na een QUIC-padmigratie), en de mediapoort krijgt bij het starten 1,5 s om
+vrij te komen voor er een andere gekozen wordt. Bewust gelaten: meer dan ~15 kandidaten passen
+niet in één belronde van 4 s (in de praktijk 10 tot 13).
+
 **Niet gebouwd:** B7 (IPv6; wacht op de A0-regels van de vrienden, zie `TODO.md`) en fase C.
 De "Bekende grenzen" uit het plan gelden onverkort. Nieuw gevonden en niet aangeraakt:
 `bind_address` in `config.toml` wordt nergens gelezen (ouder dan fase B; `TODO.md`).

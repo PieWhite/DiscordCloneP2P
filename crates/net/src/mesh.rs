@@ -507,7 +507,16 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
     //
     // Is de poort bezet, dan een vrije in plaats van niet starten (invariant 7): de handshake
     // noemt de echte poort, dus de anderen vinden hem toch.
-    let post = match Verdeler::start(cfg.media_port, media.clone()) {
+    let mut gestart = Verdeler::start(cfg.media_port, media.clone());
+    // Net na een herstart (een update) kan de vorige instantie de poort nog even vasthouden.
+    for _ in 0..15 {
+        if gestart.is_ok() || cfg.media_port == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        gestart = Verdeler::start(cfg.media_port, media.clone());
+    }
+    let post = match gestart {
         Ok(p) => p,
         Err(e) if cfg.media_port != 0 => {
             tracing::warn!(poort = cfg.media_port, error = %format!("{e:#}"),
@@ -613,6 +622,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
             int: int_tx.downgrade(),
             stop: stop_rx.clone(),
         }),
+        bezet: Bezet::default(),
         eigen: Vec::new(),
         tikken: 0,
         mapping: None,
@@ -621,6 +631,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         gezien_media: Vec::new(),
         adressen_verstuurd: HashMap::new(),
         adressen_ontvangen: HashMap::new(),
+        adressen_wachtend: HashMap::new(),
     };
     for t in &cfg.targets {
         actor.voeg_toe(t.clone());
@@ -760,6 +771,13 @@ struct Spawner {
     stop: watch::Receiver<bool>,
 }
 
+/// De bronadressen van de verbindingen die nu open staan. Een kandidaat die daarbij hoort is van
+/// een andere peer (een verouderd of verkeerd adres) en wordt niet gebeld: een peer zonder
+/// `Hello.voor` (alleen fase A) zou de nieuwe verbinding als botsing zien en de echte sluiten
+/// (gevonden door de reviewer). De actor schrijft, de dialers lezen; geen meldingen, zodat een
+/// verbinding erbij geen enkele dialer wekt.
+type Bezet = Arc<arc_swap::ArcSwap<Vec<SocketAddr>>>;
+
 /// Een inkomende verbinding die haar handtekening al bewees en nu wacht op het oordeel van
 /// de actor, vóór de `HelloAck` (B-05a). De opnemende taak houdt de verbinding vast; hier
 /// staat alleen wat nodig is om te beslissen, plus waar het antwoord heen moet.
@@ -895,6 +913,11 @@ struct Actor {
     adressen_verstuurd: HashMap<PeerId, Addresses>,
     /// B4: wanneer elke peer ons laatst `Addresses` stuurde (zie [`ADRESSEN_PAUZE`]).
     adressen_ontvangen: HashMap<PeerId, Instant>,
+    /// B4: een `Addresses` dat te snel na het vorige kwam; verwerkt op de volgende tik in plaats
+    /// van weggegooid, want de afzender stuurt het niet opnieuw.
+    adressen_wachtend: HashMap<PeerId, Addresses>,
+    /// Zie [`Bezet`].
+    bezet: Bezet,
 }
 
 /// Hoe lang een niet te koppelen inkomende beller blijft wachten voordat we concluderen
@@ -967,6 +990,7 @@ impl Actor {
             self.cfg.clone(),
             target,
             doel_rx,
+            self.bezet.clone(),
             int,
             connected_rx,
             s.stop.clone(),
@@ -1377,6 +1401,7 @@ impl Actor {
                 out: e.out,
             },
         );
+        self.werk_bezet_bij();
 
         self.set_status(target, status).await;
     }
@@ -1444,13 +1469,15 @@ impl Actor {
             return;
         };
         // Een peer die blijft sturen kost ons per bericht een tabelkopie en een schrijfactie
-        // naar schijf; meer dan een eerlijke peer stuurt nemen we niet aan.
+        // naar schijf; meer dan een eerlijke peer stuurt nemen we niet aan. Het laatste bericht
+        // bewaren we wel: de afzender stuurt het niet opnieuw.
         let nu = Instant::now();
         if self
             .adressen_ontvangen
             .get(&from)
             .is_some_and(|t| nu.duration_since(*t) < ADRESSEN_PAUZE)
         {
+            self.adressen_wachtend.insert(from, a);
             return;
         }
         self.adressen_ontvangen.insert(from, nu);
@@ -1509,6 +1536,14 @@ impl Actor {
                     })
                     .await;
             }
+        }
+    }
+
+    /// Zie [`Bezet`]. Alleen een nieuwe lijst als er iets veranderde.
+    fn werk_bezet_bij(&self) {
+        let nu: Vec<SocketAddr> = self.active.values().map(|a| a.remote).collect();
+        if !zelfde_set(&nu, &self.bezet.load()) {
+            self.bezet.store(Arc::new(nu));
         }
     }
 
@@ -1575,6 +1610,8 @@ impl Actor {
             self.active.remove(&peer);
             self.adressen_verstuurd.remove(&peer);
             self.adressen_ontvangen.remove(&peer);
+            self.adressen_wachtend.remove(&peer);
+            self.werk_bezet_bij();
             tracing::info!(peer = ?peer, %reason, "verbinding verbroken");
         }
 
@@ -1584,6 +1621,15 @@ impl Actor {
     async fn on_tick(&mut self) {
         self.retry_pending().await;
         self.media.ruim_op();
+        for (from, a) in std::mem::take(&mut self.adressen_wachtend) {
+            self.on_adressen(from, a).await;
+        }
+        // Na een padmigratie van QUIC is het bronadres anders; `you_are`, `others` en het pad in
+        // Settings horen het huidige te noemen.
+        for a in self.active.values_mut() {
+            a.remote = a.conn.remote_address();
+        }
+        self.werk_bezet_bij();
         self.tikken = self.tikken.wrapping_add(1);
         if self.tikken.is_multiple_of(EIGEN_ELKE) {
             self.meld_eigen_adressen().await;
@@ -1634,13 +1680,14 @@ async fn dial_loop(
     cfg: MeshConfig,
     target: usize,
     doel: watch::Receiver<Doel>,
+    bezet: Bezet,
     int: mpsc::Sender<Internal>,
     connected: watch::Receiver<bool>,
     mut stop: watch::Receiver<bool>,
 ) {
     tokio::select! {
         _ = cancelled(&mut stop) => {}
-        _ = dial_forever(endpoint, cfg, target, doel, int, connected) => {}
+        _ = dial_forever(endpoint, cfg, target, doel, bezet, int, connected) => {}
     }
 }
 
@@ -1649,6 +1696,7 @@ async fn dial_forever(
     cfg: MeshConfig,
     target: usize,
     mut doel: watch::Receiver<Doel>,
+    bezet: Bezet,
     int: mpsc::Sender<Internal>,
     mut connected: watch::Receiver<bool>,
 ) {
@@ -1665,7 +1713,7 @@ async fn dial_forever(
         let d = doel.borrow_and_update().clone();
         let _ = int.send(Internal::Connecting { target }).await;
 
-        match try_dial(&endpoint, &cfg, target, &d, &int).await {
+        match try_dial(&endpoint, &cfg, target, &d, &bezet, &int).await {
             // B-40: alleen een sessie die er echt geweest is verdient een verse backoff.
             // `VersionMismatch` keerde ook als `Ok` terug en zette hem daarmee terug op
             // één seconde, dus tegen een peer die altijd een afwijkende versie meldt deden
@@ -1717,6 +1765,8 @@ enum Dialresultaat {
 /// dat een werkend adres achteraan in de lijst snel aan de beurt is, lang genoeg dat een
 /// adres dat meteen antwoordt (het LAN, het tailnet) de rest niet eens laat starten.
 const STAFFEL: Duration = Duration::from_millis(250);
+/// Hoe lang het opzoeken van het configadres mag duren als er ook kandidaten zijn.
+const OPZOEKEN_MET_KANDIDATEN: Duration = Duration::from_secs(1);
 
 /// Wat de dialer probeert (B3). De actor houdt hem bij; de dialer leest hem bij elke poging
 /// opnieuw, zodat een geplakte code of een geleerd adres meteen meedoet.
@@ -1762,14 +1812,23 @@ async fn try_dial(
     cfg: &MeshConfig,
     target: usize,
     doel: &Doel,
+    bezet: &Bezet,
     int: &mpsc::Sender<Internal>,
 ) -> Result<Dialresultaat> {
     let mut adressen = Vec::new();
     let mut configadres = None;
     if !doel.address.is_empty() {
         let host = format!("{}:{}", doel.address, doel.control_port);
-        let opgezocht = tokio::net::lookup_host(&host)
+        // Zonder Tailscale kan een MagicDNS-naam op Windows seconden duren om te mislukken
+        // (LLMNR, NetBIOS); met kandidaten wachten we daar niet op.
+        let wacht = if doel.kandidaten.is_empty() {
+            CONNECT_TIMEOUT
+        } else {
+            OPZOEKEN_MET_KANDIDATEN
+        };
+        let opgezocht = tokio::time::timeout(wacht, tokio::net::lookup_host(&host))
             .await
+            .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
             .with_context(|| format!("{host} opzoeken"))
             .and_then(|mut a| {
                 a.next()
@@ -1788,8 +1847,9 @@ async fn try_dial(
             Err(e) => return Err(e),
         }
     }
+    let bezet = bezet.load();
     for k in &doel.kandidaten {
-        if !adressen.contains(k) {
+        if !adressen.contains(k) && !bezet.contains(k) {
             adressen.push(*k);
         }
     }
@@ -2580,6 +2640,7 @@ mod tests {
             logrem: Logrem::default(),
             media: MediaSleutels::default(),
             spawner: None,
+            bezet: Bezet::default(),
             eigen: Vec::new(),
             tikken: 0,
             mapping: None,
@@ -2588,6 +2649,7 @@ mod tests {
             gezien_media: Vec::new(),
             adressen_verstuurd: HashMap::new(),
             adressen_ontvangen: HashMap::new(),
+            adressen_wachtend: HashMap::new(),
         };
         (actor, rx, vlaggen)
     }
