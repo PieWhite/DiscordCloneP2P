@@ -166,7 +166,8 @@ bij een botsing wint de verbinding waarvan de initiator de laagste UUID heeft.
 enum ControlMsg {
     Hello { protocol_version: u32, peer_id: Uuid, display_name: String, media_port: u16,
             app_version: String,
-            public_key: Vec<u8>, signature: Vec<u8>, media_index: u32 },  // protocol 6
+            public_key: Vec<u8>, signature: Vec<u8>, media_index: u32,   // protocol 6
+            voor: Option<PeerId> },                                      // fase B3
     HelloAck { /* dezelfde velden */ },
     Ping { nonce: u64 },
     Pong { nonce: u64 },
@@ -205,8 +206,24 @@ enum ControlMsg {
                 start: u32, points: Vec<[u16; 2]> },        // 48
     DrawClear { stream_id: u32, scope: DrawClearScope },     // 49, kijker → deler
     DrawState { stream_id: u32, lines: Vec<DrawLine> },      // 50, deler → kijker
+
+    // adressen uitwisselen (fase B4) — vluchtig, single-hop, nooit in de log
+    Addresses { control: Vec<SocketAddr>, media: Vec<SocketAddr>,
+                you_are: Option<SocketAddr>, media_you_are: Option<SocketAddr>,
+                others: Vec<PeerAddresses> },                // 51
 }
 ```
+
+`Addresses` (beslissing 47): waar de afzender zichzelf bereikbaar denkt (wat zijn router opende,
+hoe anderen hem zagen, zijn LAN- en tailnet-adres), het bronadres van deze verbinding zoals hij
+het ziet (`you_are`, "peer als STUN"), het bronadres van onze media, en per andere verbonden
+peer waar hij die ziet. Elke peer stuurt het op zijn tik van 1 s naar elke verbonden peer, maar
+alleen als de inhoud veranderde, en die vergelijking let niet op de volgorde: een adres dat al
+in een lijst staat verandert niets, anders zingt het rond tussen peers die elkaar op
+verschillende adressen zien. De ontvanger neemt per peer hooguit één per halve seconde aan. Alles is een hint: de ontvanger neemt van elke lijst hooguit 8
+adressen mee, alleen over targets met een vastgepinde sleutel, en het verandert alleen waar we
+bellen en waar keepalives heen gaan, nooit wie er binnenkomt. Een oudere peer slaat de tag
+stil over.
 
 `MusicControl` (beslissing 41): `MusicAction` is een `u8` (`PLAY_PAUSE = 1`, `NEXT = 2`),
 zodat een onbekende actie als onbekend doorkomt. De DJ voert hem alleen uit voor zijn
@@ -267,7 +284,31 @@ de `HelloAck` en laat de actor de pins beoordelen.
 
 De `PeerId` blijft de UUID: hij staat niet in de handtekening en is gebonden via de pin in
 `config.toml` (`known_id` + `public_key`). Een sleutel leren (trust-on-first-use) mag alleen op
-een tailnet- of loopbackadres (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `127/8`, `::1`).
+een tailnet- of loopbackadres (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `127/8`, `::1`), en
+alleen op het opgezochte adres uit de config, nooit op een kandidaat. Op een publiek adres komt
+de sleutel uit een uitnodigingscode (zie "Uitnodigingscodes" hieronder).
+
+`voor` (fase B3): de `PeerId` die de beller op dit adres zoekt, gezet als hij een kandidaat uit
+een code of een geleerd adres belt. Wie het niet is sluit stil, vóór de actor. Zo kan een
+verouderd adres van B dat nu van C is, de verbinding tussen de beller en C niet laten wegvallen
+(de botsingsregel zou de nieuwe verbinding verkiezen). Leeg op het configadres: daar moet een
+herinstallatie zich nog als `IdentityChanged` melden.
+
+### Uitnodigingscodes (fase B1)
+
+`fitcom1:` plus base32 zonder opvulling, in kleine letters (`crates/proto/src/uitnodiging.rs`):
+
+```text
+[versie 1][PeerId 16][Ed25519-sleutel 32][naamlengte 1][naam ≤ 64][aantal 1]
+per adres: [familie 4|6][ip 4|16][poort u16 BE]
+[blake3 van al het voorgaande, eerste 4 bytes]
+```
+
+Ongeveer 150 tekens met drie adressen. Geen geheim en geen toegang: wie een code plakt pint de
+sleutel erin (`crates/app/src/codes.rs` koppelt hem aan een bestaande peer op `PeerId`, sleutel
+of adres, en weigert een sleutel die afwijkt van wat er vaststaat). De controlesom vangt een
+afgekapte of half overgetypte code; het is geen MAC. Een code gaat nooit over de draad tussen
+peers: mensen plakken hem.
 
 Regels voor uitbreiding:
 - Alleen **toevoegen** aan het eind van enums en structs. Nooit varianten hernummeren of verwijderen.
@@ -918,10 +959,29 @@ QUIC-uni-stream terug. Dat kind-byte (`0` = bestand, `1` = update, zie
 Het triggert alleen niets meer.
 
 ## Verbindingsbeheer
-- Bij start verbindt elke peer met alle geconfigureerde adressen.
-- Falende verbindingen: exponentiële backoff, 1s → 30s cap, oneindig doorproberen. Een
-  sessie die korter dan 10 s duurde telt als afwijzing en zet de backoff niet terug (B-40):
-  anders belde een peer met een verkeerde pin elke seconde opnieuw.
+- Bij start belt elke peer elke geconfigureerde peer, op het adres uit de config (tailnet) en op
+  zijn **kandidaten** (fase B3): de adressen uit zijn code, wat er in `<data>/adressen.json`
+  onthouden is, en wat peers ons vertelden (`Addresses`). Gestaffeld, 250 ms ertussen, vanaf
+  hetzelfde endpoint (dus dezelfde NAT-mapping); de eerste QUIC-verbinding die opkomt krijgt de
+  `Hello`, de rest gaat dicht vóór er een `Hello` over gaat. Haalt een adres QUIC maar wordt het
+  niets (iemand anders, een andere versie, stil gesloten), dan volgt de rest.
+- Peers erbij terwijl de mesh draait: `MeshCommand::VoegToe` (een nieuwe code, achteraan, zodat
+  de targetnummers van app en mesh gelijk blijven) en `MeshCommand::WerkBij` (een code voor een
+  bestaande peer).
+- Falende verbindingen: exponentiële backoff, 1s → 30s cap, oneindig doorproberen; **10 s**
+  zolang er een kandidaat buiten het tailnet is: beide kanten bellen elkaar dan vaak genoeg
+  terwijl de NAT-mapping van de vorige poging nog leeft, en op een makkelijke NAT is dat het hele
+  doorprikken. Een nieuwe kandidaat of pin wekt de dialer meteen. Een sessie die korter dan 10 s
+  duurde telt als afwijzing en zet de backoff niet terug (B-40): anders belde een peer met een
+  verkeerde pin elke seconde opnieuw.
+- **Port mapping** (fase B2, `crates/net/src/poorten.rs`): twee `portmapper`-clients (PCP,
+  NAT-PMP, UPnP) voor `control_port` en `media_port`, op een eigen thread met een eigen kleine
+  runtime, zolang de app draait. Wat de router opent komt vooraan in de eigen adressen, dus in de
+  eigen code en in `Addresses`. Bij netjes afsluiten weer vrijgegeven. `port_mapping = false` in
+  de config zet het uit; dan meet de app één keer wat de router kan (A0).
+- **Adressen onthouden** (fase B4): wat een peer over de adressen van een ander vertelde komt in
+  `<data>/adressen.json` (8 per peer, 60 dagen). Zo vinden twee apps elkaar na een herstart
+  terug zonder nieuwe code, en zolang één peer bereikbaar blijft heelt een IP-wissel vanzelf.
 - Liveness via QUIC keep-alive (5s) en idle timeout (15s); RTT komt uit `Connection::rtt()`.
   `Ping`/`Pong` bestaat in het protocol en wordt beantwoord, maar we sturen zelf niets —
   de transportlaag doet dit beter dan wij op applicatieniveau kunnen.
@@ -929,10 +989,17 @@ Het triggert alleen niets meer.
   weigert niets maar zwijgt; zonder deadline blijft de UI 15s op "verbinden…" staan.
 - Peer-status in de UI: `Offline` / `Connecting` / `Online` / `VersionMismatch` /
   `IdentityChanged` / `UnknownKey` (geen sleutel vastgepind en een adres buiten het tailnet).
+  `Online` draagt het bronadres; Settings → Network maakt er "direct · internet", "direct ·
+  LAN" of "via tailnet" van (fase B6).
 - Eén of twee peers offline is een normale toestand, geen foutpad.
 
 ### Botsende verbindingen
 Twee peers die tegelijk starten dialen elkaar tegelijk, dus er ontstaan twee verbindingen.
+Met kandidaten (B3) kan elke kant de ander via meer dan één adres bereiken, maar per poging
+gaat er maar één `Hello` uit, dus het blijven er twee. Tijdens de wissel kan een kant heel even
+offline staan: de verliezer wordt gesloten voordat de winnaar daar geïnstalleerd is. Dat kon met
+één adres ook al; daarna staat er één verbinding die blijft (test
+`twee_werkende_kandidaten_tegelijk_geven_een_verbinding_die_blijft`).
 De winnaar is **absoluut** bepaald: de verbinding die is opgezet door de peer met het
 laagste `PeerId`. De andere wordt aan beide kanten gesloten.
 

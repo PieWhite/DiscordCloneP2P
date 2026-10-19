@@ -607,7 +607,7 @@ referentietoestand van de oude weergave is naast de nieuwe gelegd, en het idle-v
 gemeten (beslissing 39, "Gemeten"). **Op Windows nog niet:** niemand heeft de GPUI-build
 daar gestart. Zie `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)".
 
-### Fase 16 — Verbinden zonder Tailscale (gepland, 2026-10-18)
+### Fase 16 — Verbinden zonder Tailscale (A en B gebouwd 2026-10-19)
 De vrienden installeren geen extra app en zetten geen poorten open; ze willen één code
 plakken. Het volledige plan, de beslissingen met onderbouwing en wat "klaar" betekent per
 stap staan in `docs/PLAN-ZONDER-TAILSCALE.md`. Kort:
@@ -619,7 +619,9 @@ stap staan in `docs/PLAN-ZONDER-TAILSCALE.md`. Kort:
   (`docs/OVERDRACHT.md` beslissing 46, `docs/TESTPLAN.md` "Protocol 6").
 - **Fase B, release 2 (additief):** uitnodigingscodes, automatische port mapping
   (UPnP/PCP/NAT-PMP), adressen uitwisselen via de mesh, één mediasocket per proces met
-  roaming. Daarna verbinden twee peers zonder Tailscale.
+  roaming. Daarna verbinden twee peers zonder Tailscale. **Gebouwd op 2026-10-19 (B1 t/m B6),
+  nog niet uitgegeven en nog niet tussen twee huizen getest** (`docs/OVERDRACHT.md` beslissing
+  47, `docs/TESTPLAN.md` "Fase B"). B7 (IPv6) wacht op de A0-regels van de vrienden.
 - **Fase C:** alleen als de meting uit fase A een paar laat zien dat B niet direct krijgt.
 
 Geen server, geen STUN, geen DHT, geen relay: invariant 1 wordt er eenvoudiger van.

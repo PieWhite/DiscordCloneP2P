@@ -1,4 +1,4 @@
-# SPEC — P2P communicatie-app (3 peers, Tailscale, geen servers)
+# SPEC — P2P communicatie-app (3 peers, geen servers)
 
 Vastgelegd 2026-07-28. Vervangt `OPEN-QUESTIONS.md`.
 Dit document is de bron van waarheid voor *wat* we bouwen. Het *hoe* staat in `ARCHITECTURE.md`.
@@ -20,7 +20,8 @@ Dat is de belangrijkste niet-functionele eis en wint van kwaliteit waar ze botse
   keten) en zijn sinds fase 10 ook bevestigd op 1440p en 3440×1440 (ultrawide) — zie
   `ROADMAP.md`, fase 10.
 - Iedereen gebruikt altijd een headset.
-- Alle drie: 1 Gbit/s symmetrisch, Tailscale.
+- Alle drie: 1 Gbit/s symmetrisch. Tailscale was tot fase 16 de verbinding; sinds fase B
+  verbinden de peers ook zonder (uitnodigingscodes, port mapping, adressen via elkaar).
 - Windows 11; sinds 2026-08-05 ook macOS 14+ op Apple Silicon (zelfde codebase,
   protocol 5, volledige featurepariteit behalve P2P-auto-update — zie
   `docs/OVERDRACHT.md` beslissing 21).
@@ -70,7 +71,8 @@ Voor 1440p en 3440×1440 geldt dezelfde waarschuwing: niet zomaar omhoog schalen
 matige verbinding.
 
 ## In scope
-1. P2P-netwerklaag over het tailnet, geen signaling-server.
+1. P2P-netwerklaag zonder signaling-server: op publieke adressen met uitnodigingscodes, of
+   over het tailnet.
 2. Voice chat, full mesh, lokaal gemixt.
 3. Screenshare 1080p60, hardware-encoded, lage latency.
 4. Meerdere bronnen tegelijk delen (monitor + vensters) en meerdere streams tegelijk bekijken.
@@ -92,10 +94,11 @@ matige verbinding.
   displaynaam. UUID = auteursidentiteit in de chat, naam is cosmetisch en wijzigbaar.
 - Transport: **QUIC (quinn)** voor control + chat + toekomstige file transfer.
   **Plain UDP** voor audio/video.
-- Peers adresseren via tailnet-IP of MagicDNS-naam, configureerbaar.
+- Peers adresseren via hun uitnodigingscode (sleutel en adressen), of via tailnet-IP of
+  MagicDNS-naam. Adressen zijn hints; de vastgepinde sleutel beslist wie er binnenkomt.
 - Vaste default-poort, overschrijfbaar (nodig voor meerdere instanties op één PC).
 - Protocolversie in de handshake; mismatch geeft nette melding, geen crash.
-- Alleen verbindingen van geconfigureerde peer-UUID's worden geaccepteerd.
+- Alleen verbindingen met een vastgepinde sleutel worden geaccepteerd (protocol 6).
 
 ### Screenshare
 - Capture: **Windows.Graphics.Capture** (monitor én venster, cursor-toggle, rand uitschakelbaar).

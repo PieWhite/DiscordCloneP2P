@@ -2,10 +2,12 @@
 
 Opgesteld 2026-10-18 met Rick. In `ROADMAP.md` is dit fase 16.
 
-**Status 2026-10-19:** fase A is gebouwd (A1 t/m A6), nog niet uitgegeven en nog niet tussen
-twee machines getest. Wat er bij het bouwen anders uitviel dan hieronder staat, staat in
-`docs/OVERDRACHT.md` beslissing 46; de open punten met echte machines in `docs/TESTPLAN.md`,
-"Protocol 6". Fase B en C: nog niets gebouwd.
+**Status 2026-10-19:** fase A is gebouwd (A1 t/m A6) en fase B ook (B1 t/m B6), allebei nog
+niet uitgegeven en nog niet tussen twee machines getest. Wat er bij het bouwen anders uitviel
+dan hieronder staat, staat in `docs/OVERDRACHT.md` beslissing 46 (A) en 47 (B); de open punten
+met echte machines in `docs/TESTPLAN.md`, "Protocol 6" en "Fase B". **B7 (IPv6) is niet
+gebouwd**: hij wacht op de A0-regels van de vrienden. Fase C: niets gebouwd. A en B kunnen
+apart of samen uit: een peer met alleen fase A werkt met een peer met B (beslissing 47).
 
 ## Waarom
 

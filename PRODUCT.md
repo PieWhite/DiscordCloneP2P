@@ -135,7 +135,9 @@ productdoel — de code is wél N-agnostisch en het aantal komt uit config.
 
 Alle drie:
 
-- Windows 11, NVIDIA Turing of nieuwer, 1 Gbit/s symmetrisch, Tailscale altijd draaiend.
+- Windows 11, NVIDIA Turing of nieuwer, 1 Gbit/s symmetrisch. Tailscale hoeft niet meer
+  (fase 16): de vrienden installeren geen extra app en zetten geen poorten open, ze plakken één
+  keer elkaars uitnodigingscode.
 - Altijd een headset (dat is de reden dat er geen echo-onderdrukking in zit).
 - **Twee schermen per persoon.** Bevestigd 2026-08-04. `docs/SPEC.md` gaat nog uit van
   "1 monitor per persoon"; dat is achterhaald en heeft eerdere UX-keuzes beïnvloed (o.a.
@@ -155,8 +157,10 @@ in rust praktisch niets doet.
 ## Positioning
 
 Wat een naburig product niet waar kan maken: **nul servers en geen host-peer.** Geen
-signaling, geen TURN, geen database, geen cloud-API, geen accounts. Tailscale is de enige
-externe afhankelijkheid en wordt als draaiend verondersteld. Elke instantie initieert én
+signaling, geen STUN of TURN, geen relay, geen database, geen cloud-API, geen accounts. De
+pc's vinden elkaar met een uitnodigingscode die je één keer plakt; de eigen router zet de poorten
+open, en wie dat niet kan wordt via een andere peer gevonden. Tailscale mag, maar is geen
+afhankelijkheid meer. Elke instantie initieert én
 accepteert; geen enkele functie hangt af van "peer X is er". Eén of twee peers offline is
 een gewone toestand, geen foutpad.
 
@@ -193,9 +197,9 @@ andere peer ophalen, maar hij past hem pas toe na een expliciete bevestiging.
 
 Alles hieronder is gebouwd en werkt (fase 0 t/m 11 uit `ROADMAP.md`):
 
-- QUIC-mesh over het tailnet (chat, control, bestanden), plain UDP voor audio/video.
-  Auto-reconnect met exponentiële backoff; alleen geconfigureerde peer-UUID's worden
-  geaccepteerd.
+- QUIC-mesh op publieke adressen of het tailnet (chat, control, bestanden), versleutelde UDP
+  over één mediasocket voor audio/video. Auto-reconnect met exponentiële backoff; alleen peers
+  met een vastgepinde sleutel (uit hun code, of geleerd over het tailnet) komen binnen.
 - Voice: Opus 48 kHz/20 ms, open mic met VAD, RNNoise-ruisonderdrukking, adaptieve
   jitterbuffer per spreker, lokale mix, per-deelnemer volume, mute/deafen. Expliciet
   join/leave — niet altijd-aan.

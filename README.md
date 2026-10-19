@@ -1,8 +1,9 @@
 # FitCommunication
 
-Servervrij alternatief voor Discord voor een kleine vaste groep. Draait over een
-Tailscale-tailnet, zonder signaling-server, zonder TURN, zonder accounts, zonder cloud.
-Alle peers zijn gelijkwaardig — er is geen host.
+Servervrij alternatief voor Discord voor een kleine vaste groep. De pc's vinden elkaar met
+een uitnodigingscode die je één keer plakt, en praten daarna rechtstreeks met elkaar: zonder
+signaling-server, zonder STUN of TURN, zonder accounts, zonder cloud. Alle peers zijn
+gelijkwaardig — er is geen host. Tailscale mag, maar hoeft niet meer.
 
 **Status:** alle geplande fasen zijn af — chat, voice, screenshare, camera,
 bestandsdeling, kanalen en automatische updates. Zie [ROADMAP.md](ROADMAP.md) en
@@ -17,8 +18,10 @@ alleen op Windows;** een mac kan wel naar de camera van een Windows-peer kijken 
 ## Wat je nodig hebt
 
 - Windows 11, of macOS 14+ op Apple Silicon
-- [Tailscale](https://tailscale.com/), geïnstalleerd en ingelogd op elke machine, met
-  alle machines in hetzelfde tailnet
+- Een gewone internetverbinding. De app vraagt de eigen router om zijn poorten open te zetten
+  (UPnP, PCP of NAT-PMP, wat de router kan); kan die dat niet, dan vinden de pc's elkaar via
+  een derde die wel bereikbaar is. Zie "Elkaar vinden" hieronder. Tailscale is niet meer
+  nodig; wie het heeft houdt het, en dan loopt het verkeer daar ook gewoon over.
 - Om zelf te bouwen: Rust (stable; op Windows met de MSVC-toolchain) en `cmake`
   (libopus wordt vanuit broncode meegebouwd). Op Windows hoort bij MSVC de Windows SDK
   (zit in de C++-workload van de VS Build Tools): een release-build haalt er `fxc.exe` uit
@@ -31,12 +34,31 @@ alleen op Windows;** een mac kan wel naar de camera van een Windows-peer kijken 
 2. Maak een lege map `data` naast `fitcom.exe`. Daarmee draait de app **portable**:
    config, database en logs blijven bij de exe. Doe je dit niet, dan gebruikt de app
    `%APPDATA%\FitCommunication`.
-3. Start `fitcom.exe` één keer. Hij maakt een voorbeeld-`config.toml` aan en sluit niet af.
-4. Pas `config.toml` aan (zie hieronder) en start opnieuw.
+3. Start `fitcom.exe`. Windows vraagt of de app mag netwerken: zie "Firewall" hieronder.
+4. Wissel uitnodigingscodes uit met de anderen (zie "Elkaar vinden").
+
+## Elkaar vinden: de uitnodigingscode
+
+In Settings → Network staat **Your invite code**, een regel die begint met `fitcom1:`. Druk op
+Copy en zet hem in de groepsapp; elk zijn eigen code. Plak daarna de codes van de anderen in
+**Add peers** en druk op Add. Je mag een heel bericht plakken, met tekst eromheen en meerdere
+codes erin. Eén keer is genoeg: de app onthoudt de peers in `config.toml` en de adressen
+waarop hij ze zag in `adressen.json`, dus na een herstart vinden ze elkaar vanzelf terug.
+
+Wat er in een code staat: je `PeerId`, je publieke sleutel, je naam en de adressen die je pc
+van zichzelf kent (het adres dat de router naar buiten opende, je LAN-adres, je tailnet-adres
+als je dat hebt). **Een code is geen wachtwoord.** Hij laat niemand binnen: alleen wie jij de
+code van hebt geplakt komt erin, en alleen met de sleutel uit die code. Wie jouw code heeft
+maar jij de zijne niet, komt niet binnen.
+
+Lukt verbinden niet meteen, dan is dat meestal de router: Settings → Network → Reachability
+zegt wat hij kan. Zolang één van de drie wel bereikbaar is, vertelt die de andere twee hoe ze
+elkaar kunnen bellen.
 
 ## Configuratie
 
-`config.toml`:
+Normaal hoef je `config.toml` niet aan te raken: peers komen erbij met hun code. Wat er in
+staat:
 
 ```toml
 display_name     = "Rick"    # hoe de anderen jou zien
@@ -50,40 +72,50 @@ autostart        = false     # meestarten met Windows
 # input_device  = "Microfoon (BlackShark V3 Pro - Chat)"
 # output_device = "Luidsprekers (BlackShark V3 Pro - Chat)"
 
-[[peers]]
-address = "vriend-pc"        # MagicDNS-naam of tailnet-IP zoals 100.64.0.2
-label   = "Vriend"           # alleen zichtbaar tot hij voor het eerst verbindt
+port_mapping     = true      # de router de twee poorten laten openzetten (UPnP/PCP/NAT-PMP)
 
+# Komt erbij als je een code plakt; met de hand bewerken hoeft niet.
+[[peers]]
+label      = "Vriend"
+known_id   = "…"             # zijn PeerId, uit zijn code
+public_key = "…"             # zijn sleutel, uit zijn code: alleen die komt binnen
+addresses  = ["84.104.12.9:41650", "192.168.2.10:41650"]
+
+# Een peer op het tailnet kan ook zonder code, met zijn tailnet-adres of MagicDNS-naam. Zijn
+# sleutel wordt dan bij het eerste contact over het tailnet vastgelegd.
 [[peers]]
 address = "100.64.0.3"
 label   = "Derde"
 ```
 
-Elke peer zet de **andere twee** in zijn eigen `config.toml`. Verder hoef je niets af te
-stemmen: identiteiten worden bij het eerste contact automatisch geleerd en vastgelegd
-(`known_id` verschijnt dan vanzelf in het bestand). Je hoeft dus geen ID's uit te wisselen.
+Een sleutel wordt alleen vastgelegd uit een code, of bij het eerste contact over het tailnet;
+nooit op een LAN- of internetadres, want daar zou de eerste die zich meldt de identiteit kapen.
+Daarna komt alleen wie die sleutel heeft binnen, vanaf welk adres ook.
 
-**MagicDNS-namen zijn te verkiezen boven IP's** — die blijven werken als een tailnet-IP
-verandert. Staat MagicDNS uit, gebruik dan de `100.x.x.x`-adressen uit `tailscale status`.
+#### Firewall: "Privé" aanvinken, en het thuisnetwerk op "Privé"
 
-#### Firewall: één vinkje, en het moet het juiste zijn
+Zonder Tailscale komen de anderen rechtstreeks via internet binnen, op de twee poorten die de
+router voor de app openzet. Windows Firewall moet dat dan ook doorlaten. Bij de eerste start
+vraagt Windows of `fitcom.exe` mag netwerken, met "Privé" en "Openbaar" als twee vinkjes.
 
-Windows vraagt bij de eerste start of `fitcom.exe` mag netwerken, met "Privé" en "Openbaar"
-als twee losse vinkjes. **Zet alleen het Tailscale-netwerk aan, en laat "Privé" en
-"Openbaar" uit.** Doe dit op alle drie de PC's en controleer het ook als je het ooit al eens
-hebt weggeklikt — één verkeerd vinkje stelt de app open voor het hele subnet waar je op zit.
-
-Dat is nu geen theorie. De app luistert op álle netwerkinterfaces (`0.0.0.0`) en de
-identiteit die een peer claimt is nog niet cryptografisch aan zijn verbinding gebonden, dus
-deze firewallregel is op dit moment de enige echte grens tussen "onze drie PC's" en
-"iedereen op dezelfde wifi". Bij een LAN-party, in een hotel of op congres-wifi is dat het
-verschil dat telt. Volledige onderbouwing: `docs/BEVEILIGING.md`, bevindingen B-09 en B-05.
+1. **Vink "Privé" aan** (en laat "Openbaar" uit). Klikte je die melding ooit weg of vinkte je
+   alles uit, dan heeft Windows expliciete *blokkeer*regels gemaakt, en die winnen. Herstel:
+   Windows-beveiliging → Firewall- en netwerkbeveiliging → Een app toestaan via de firewall →
+   Instellingen wijzigen → zoek `fitcom` → vink **Privé** aan, **Openbaar** uit → OK.
+2. **Zet je thuisnetwerk op "Privé".** Instellingen → Netwerk en internet → Wi-Fi of Ethernet
+   → je netwerk → Netwerkprofieltype → **Privénetwerk**. Op een openbaar profiel (hotel,
+   congres) laat de firewall de app dan bewust niet toe.
 
 Controleren of het goed staat:
 
 ```powershell
-Get-NetFirewallRule -DisplayName "*fitcom*" | Get-NetFirewallAddressFilter
+Get-NetFirewallRule -DisplayName "*fitcom*" | Select-Object DisplayName, Enabled, Action, Profile
 ```
+
+Er hoort een regel met `Action Allow` en `Profile Private` bij te staan, en geen `Block` voor
+`Private`. Waarom dit veilig is terwijl de app nu aan internet staat: elke verbinding bewijst
+met een getekende handshake wie hij is, en alleen vastgelegde sleutels komen binnen; alle media
+is versleuteld. Zie `docs/BEVEILIGING.md`, het dreigingsmodel.
 
 #### Waar je de zip uitpakt
 
@@ -116,7 +148,8 @@ niet binnen een .app-bundel. Verder gelden dezelfde stappen als hierboven.
 
 | Bestand | |
 |---|---|
-| `config.toml` | Door jou te bewerken. Mag je kopiëren tussen machines. |
+| `config.toml` | Je peers en instellingen. Te bewerken, maar codes plakken in de app is makkelijker. |
+| `adressen.json` | Waar de peers de laatste keer gezien zijn. Weggooien mag; dan duurt het eerste verbinden misschien wat langer. |
 | `identity.toml` | Door de app gegenereerd. **Niet kopiëren** — twee peers met dezelfde identiteit breken de chat-synchronisatie. |
 | `chat.sqlite` | De volledige chatgeschiedenis. Weggooien wist je geschiedenis, maar de anderen vullen hem bij de eerstvolgende verbinding weer aan. |
 | `logs/fitcom.<datum>.log` | Dit bestand is wat je nodig hebt als iets niet werkt. |
@@ -176,18 +209,22 @@ cargo run -p fitcom -- --data-dir C:\tmp\peerA
 ```
 
 Geef elke instantie een eigen `--data-dir` en zet in elke `config.toml` een andere
-`control_port` en `media_port`, met `address = "127.0.0.1"` en de poort van de ander.
+`control_port` en `media_port`, met `address = "127.0.0.1"` en de poort van de ander (of
+wissel hun codes uit), en `port_mapping = false`: anders vraagt elke instantie de router om
+zijn poorten.
 
 ## Problemen oplossen
 
 | Wat je ziet | Wat het betekent |
 |---|---|
-| `offline · peer reageert niet` | De ander draait de app niet, of de firewall blokkeert. |
-| `offline · <adres> opzoeken` | De naam is niet op te lossen. Staat MagicDNS aan? Draait Tailscale? |
+| `offline · peer reageert niet` | De ander draait de app niet, of de firewall blokkeert. Kijk bij de ander naar "Firewall" hierboven en naar Reachability in Settings → Network. |
+| `offline · <adres> opzoeken` | De naam is niet op te lossen. Staat MagicDNS aan? Draait Tailscale? Zonder Tailscale: plak zijn code. |
+| `No key known for this peer` | Deze peer staat in de config zonder sleutel en is niet op het tailnet. Plak zijn code. |
+| Een code wordt geweigerd met "different key" | Voor die peer staat al een andere sleutel vast. Heeft hij opnieuw geïnstalleerd? Haal dan `known_id` en `public_key` van hem uit `config.toml` en plak zijn code opnieuw. |
 | `versie X vs Y` | De twee PC's draaien verschillende versies. Kopieer dezelfde exe naar beide. |
 | `microfoon of weergave: ...` | Het apparaat uit `config.toml` bestaat niet of is in gebruik. Haal de regel weg om het standaardapparaat te nemen. |
 | Je hoort niemand | Zit de ander ook in het gesprek? Staat deafen aan? Klopt `media_port` en laat de firewall UDP door? |
-| `andere identiteit dan verwacht` | Achter dit adres zit een andere installatie dan eerder. Klopt dat (nieuwe PC, `identity.toml` weg)? Haal dan `known_id` uit `config.toml`. |
+| `A different identity answered at this address` | Achter dit adres zit een andere installatie dan eerder. Klopt dat (nieuwe PC, `identity.toml` weg)? Haal dan `known_id` en `public_key` uit `config.toml` en plak zijn nieuwe code. |
 
 Meer detail in de log: start met `FITCOM_LOG=debug`.
 

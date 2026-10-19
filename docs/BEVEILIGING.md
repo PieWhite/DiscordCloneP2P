@@ -255,6 +255,53 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   `0.0.0.0`) is met dit alles minder erg, maar het dreigingsmodel hieronder gaat opnieuw bij
 >   fase B, als de app bewust aan internet staat.
 
+> **Addendum 2026-10-19 (fase B: verbinden zonder Tailscale, beslissing 47).** De app staat nu
+> **bewust aan internet**: de router zet de control- en mediapoort open (UPnP, PCP of
+> NAT-PMP), peers bellen elkaar op publieke adressen uit een uitnodigingscode, en een peer
+> vertelt de anderen op welke adressen hij hen ziet. Het dreigingsmodel hieronder is daarom
+> herschreven. Wat er van buiten komt en hoe het begrensd is:
+>
+> - **Een uitnodigingscode** is geen geheim en geen toegang: `PeerId`, publieke sleutel, naam en
+>   adressen, met een blake3-controlesom die tikfouten vangt (geen MAC: wie een code vervalst
+>   kan er andere adressen in zetten, en dat kost hooguit mislukte belpogingen). De sleutel uit
+>   de code wordt vastgepind; een code met een andere sleutel of `PeerId` dan er al vaststaat
+>   wordt geweigerd, en de eigen code ook. De naam gaat door `speelt::schoon`.
+> - **Adressen zijn hints, nooit toegang.** Kandidaten uit een code, uit `adressen.json` en uit
+>   `ControlMsg::Addresses` (tag 51) bepalen alleen waar we bellen en waar keepalives heen gaan.
+>   Binnenkomen gaat alleen met de vastgepinde sleutel; een sleutel leren gebeurt nooit op een
+>   kandidaat, alleen op het opgezochte tailnet-adres uit de config. Elke lijst is begrensd op 8,
+>   een peer kan alleen iets zeggen over targets met een vastgepinde sleutel, elke peer geldt
+>   hooguit 8 geleerde adressen, wat peers over ons eigen adres zeggen hooguit 4 (zodat de eigen
+>   LAN- en tailnet-adressen in de code blijven), en per peer neemt de actor hooguit één
+>   `Addresses` per halve seconde aan. Geleerde adressen die blijven falen worden niet
+>   gedegradeerd; ze vallen pas weg als er acht nieuwere zijn. Het ergste dat een kwaadwillende peer met `Addresses` kan: ons
+>   een QUIC-Initial per ~10 s naar een adres naar keuze laten sturen (geen versterking: een
+>   Initial is kleiner dan wat hij ervoor moet sturen), en zijn eigen adres in onze lijst zetten.
+> - **`Hello.voor`** (additief) zegt welke peer de beller zoekt. Wie het niet is sluit stil, nog
+>   vóór de actor: een verouderd adres van B dat nu van C is, kan zo de verbinding tussen de
+>   beller en C niet meer laten wegvallen. Niet op het tailnet-adres uit de config, zodat een
+>   herinstallatie daar nog als "andere identiteit" zichtbaar is.
+> - **Roaming** (zoals WireGuard): media gaat naar het bronadres van het laatste echte pakket van
+>   een peer, pas nadat er van die verbinding een geauthenticeerde keepalive kwam, en alleen ná
+>   tag en replayvenster. Een aanvaller zonder sleutel verplaatst niets. **Restrisico, bewust
+>   aanvaard:** een aanvaller *op het pad* die een vers pakket onderschept en eerder dan het
+>   origineel vanaf een ander bronadres aflevert, kan onze media naar dat adres laten gaan tot het
+>   volgende echte pakket van de peer (bij een stille peer hooguit 15 s, de keepalive). Dat
+>   breekt de eigenschap van vóór B5 dat media alleen naar het IP van de QUIC-verbinding ging.
+>   WireGuard heeft hetzelfde gedrag; wie op het pad zit kan het verkeer ook gewoon tegenhouden.
+> - **Port mapping** praat alleen met de eigen router (PCP en NAT-PMP op UDP 5351) en, voor UPnP,
+>   het LAN (een SSDP-multicast en HTTP naar wie antwoordt). Niets op internet (invariant 1). De
+>   mapping gaat bij netjes afsluiten weer weg; na hard afsluiten blijft hij tot zijn lease
+>   verloopt. In die tijd staat de poort open, achter de getekende handshake en de A3-rand.
+> - **De rand blijft:** QUIC `retry()` voor een ongevalideerd adres, 8 gevalideerde pogingen per
+>   bron-IP per seconde, de grenzen van B-17 en B-26, logregels begrensd (B-25). Op de mediasocket
+>   is rommel één tabelopzoeking (onbekende sessie-index) zonder cryptografie. Gemeten: zie
+>   beslissing 47, "willekeurige UDP".
+> - **Firewall.** Het oude advies "alleen het Tailscale-netwerk aanvinken" vervalt: zonder
+>   Tailscale moet de app op het profiel "Privé" binnen mogen, en het thuisnetwerk moet op
+>   "Privé" staan (`README.md`). Op een openbaar profiel (hotel, congres) laat de firewall hem
+>   dan bewust niet toe.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
@@ -266,16 +313,30 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 
 ## Het dreigingsmodel: aanname versus code
 
-Het project rust op vier aannames. Twee ervan maakt de code niet waar.
+> **Herschreven op 2026-10-19 (fase B).** De app staat nu bewust aan internet. De tabel
+> hieronder is het model zoals het nu is; daaronder staat het oorspronkelijke model van
+> 2026-08-05, als geschiedenis.
 
 | # | Aanname | Waar vastgelegd | Maakt de code hem waar? |
 |---|---|---|---|
-| 1 | Tailscale/WireGuard is de beveiligingsgrens; alleen tailnet-verkeer bereikt de app | `TODO.md:37-40`, `crates/net/src/tls.rs:1-12` | **Nee.** Beide sockets binden op `0.0.0.0` — alle interfaces. Zie B-09. |
-| 2 | De UUID-allowlist laat alleen bekende peers binnen | `TODO.md:38-39` | **Nee.** De `PeerId` is een onbewezen claim in een bericht, en de controle erop is inkomend dode code. Zie B-05. |
+| 1 | Iedereen op internet kan de control- en mediapoort bereiken | `crates/net/src/poorten.rs`, `README.md` | Ja, bewust: de router zet ze open. De grens is niet meer het netwerk maar de sleutel. |
+| 2 | Alleen een vastgepinde sleutel komt binnen, vanaf welk adres ook | `crates/net/src/mesh.rs` (`beoordeel`, `koppel_inkomend`), beslissing 46 | Ja. Handtekening over de TLS-exporter; een sleutel komt alleen uit een code of uit het eerste contact over het tailnet. |
+| 3 | Adressen zijn hints en geven nooit toegang | beslissing 47 | Ja. Kandidaten, `adressen.json` en `Addresses` bepalen alleen waar we bellen; ze zijn begrensd. |
+| 4 | Media is vertrouwelijk en niet te vervalsen | `crates/net/src/mediasleutel.rs` | Ja, AES-256-GCM per richting met replayvenster. Roaming verplaatst het doel alleen na een echt pakket (restrisico: zie het addendum van 2026-10-19). |
+| 5 | Rommel op een open poort kost geen merkbare CPU | A3-rand, sessie-index | Ja, gemeten (beslissing 47). |
+| 6 | De drie peers zijn vrienden en vertrouwen elkaar | `docs/ARCHITECTURE.md` | Ja, en dat blijft de grens binnen de mesh: een peer kan een ander via `Addresses` laten bellen naar een adres naar keuze, en de bevindingen die "een peer" als aanvaller hebben (B-06, B-22...) gelden onverkort. |
+
+**Wat het oorspronkelijke model (2026-08-05) zei.** Het project rustte toen op vier aannames,
+waarvan de code er twee niet waarmaakte:
+
+| # | Aanname | Waar vastgelegd | Maakt de code hem waar? |
+|---|---|---|---|
+| 1 | Tailscale/WireGuard is de beveiligingsgrens; alleen tailnet-verkeer bereikt de app | `TODO.md:37-40`, `crates/net/src/tls.rs:1-12` | **Nee.** Beide sockets binden op `0.0.0.0` — alle interfaces. Zie B-09. *(Sinds fase B bewust zo, zie hierboven.)* |
+| 2 | De UUID-allowlist laat alleen bekende peers binnen | `TODO.md:38-39` | **Nee.** De `PeerId` is een onbewezen claim in een bericht, en de controle erop is inkomend dode code. Zie B-05. *(Opgelost 2026-10-19.)* |
 | 3 | De drie peers zijn vrienden en vertrouwen elkaar | `docs/ARCHITECTURE.md:638-640` | Ja — maar dit is nu ook "hun PC's mogen code op de jouwe draaien". Zie B-01. |
 | 4 | Binaries worden met de hand gekopieerd | `crates/proto/src/lib.rs:22-24` | Niet meer waar sinds fase 11: peers duwen elkaar exe's toe. |
 
-**Wat dat praktisch betekent.** Zolang alle drie de machines schoon zijn en er nooit een
+**Wat dat toen praktisch betekende.** Zolang alle drie de machines schoon zijn en er nooit een
 vreemde op hetzelfde subnet zit, gebeurt er niets. Zodra één van die twee dingen wél
 gebeurt — een gecompromitteerde PC van een vriend, of een avondje gamen op een LAN-party,
 in een hotel of op congres-wifi — is er geen tweede verdedigingslaag.
@@ -340,7 +401,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-06 | KRITIEK | **Deels (2026-08-13)** — `op.author` wordt nooit tegen de afzender gecontroleerd | `store/lib.rs:240`, `app/chat.rs:293` |
 | B-07 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Seq-squatting: `INSERT OR IGNORE` + oplopende VV vernietigt stil echte berichten | `store/lib.rs:429-444` |
 | B-08 | ~~KRITIEK~~ | **Opgelost (2026-08-13)** — Misvormd `Channel` aliast op de opslagsleutel van het algemene kanaal | `store/lib.rs:499-509` |
-| B-09 | HOOG | **Deels (2026-08-13)** — Beide sockets binden op `0.0.0.0`; het tailnet is niet de feitelijke grens | `net/mesh.rs:235`, `net/media.rs:75` |
+| B-09 | HOOG | **Vervallen (2026-10-19)** — bewust aan internet sinds fase B; de grens is de sleutel (B-05). `bind_address` wordt niet gelezen | `net/mesh.rs`, `net/verdeler.rs` |
 | B-10 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Onbegrensde Opus-decoders per `stream_id` — 1,2 GB uit 3 MB verkeer | `audio/session.rs:964,1004` |
 | B-11 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Eén UDP-pakket zet een videostream permanent vast | `video/fragment.rs:243-250,287` |
 | B-12 | ~~HOOG~~ | **Opgelost (2026-08-13)** — Fragmentbuffers: geen cap, geen timeout, en aanvallersbuckets zijn eviction-immuun | `video/fragment.rs:264,297-301` |
@@ -732,6 +793,14 @@ plaats van te botsen met het algemene kanaal.
 # HOOG
 
 ## B-09 — Beide sockets binden op `0.0.0.0`
+
+> **Vervallen als bevinding op 2026-10-19 (fase B, beslissing 47).** Binden op alle interfaces
+> is nu de bedoeling: de router zet de poorten open naar internet, en de grens is de sleutel
+> (B-05, opgelost) en niet het netwerk. Wat hieronder staat was de juiste analyse voor een app
+> die op het tailnet als grens leunde. **Let op:** `bind_address` in `config.toml` wordt nergens
+> gelezen; beide sockets binden altijd op `0.0.0.0` (dat was vóór fase B al zo, gevonden op
+> 2026-10-19). Wie alleen Tailscale wil, zet `port_mapping = false`, maar de poorten luisteren
+> dan nog steeds op alle interfaces.
 
 **Waar:** `crates/net/src/mesh.rs:235`, `crates/net/src/media.rs:75`.
 

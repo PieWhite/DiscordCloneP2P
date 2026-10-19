@@ -7,6 +7,13 @@ Laatst bijgewerkt: 2026-10-19 (protocol 6, zie hieronder); daarvoor 2026-10-04. 
 de UI-stack van egui naar Tauri v2), en de weergavelaag is daarna nog één keer gewisseld:
 van Tauri naar GPUI (beslissing 39).
 
+**Wat er later op 2026-10-19 bijkwam (nog niet uitgegeven): verbinden zonder Tailscale.** Fase B
+van `docs/PLAN-ZONDER-TAILSCALE.md`: uitnodigingscodes, port mapping via de eigen router, bellen
+op alle kandidaat-adressen, adressen uitwisselen via de mesh ("peer als STUN") en één
+mediasocket per proces met roaming. Additief op protocol 6. Lees beslissing 47 vóór je iets aan
+`mesh.rs`, `verdeler.rs`, `poorten.rs` of `mediasleutel.rs` doet. Niets hiervan is al tussen twee
+huizen getest (`docs/TESTPLAN.md`, "Fase B").
+
 **Wat er op 2026-10-19 bijkwam (nog niet uitgegeven):** protocol 6. Elke installatie heeft een
 vaste sleutel, de handshake is getekend, de sleutels van de peers staan vast in `config.toml`,
 en alle media is versleuteld. Fase A van `docs/PLAN-ZONDER-TAILSCALE.md`; lees beslissing 46
@@ -66,6 +73,7 @@ crates/app/src/ui/view/        AppView en één bestand per gebied
 | 12 — UI-stack naar Tauri v2 | ✅ af, **de media- en sleep/plak-paden nog niet met echte hardware getest** | volledige testsuite blijft groen (de vier `hoort_bij_kanaal`-tests zijn meeverhuisd naar `ui/state.rs` als `belongs_to_channel`); app gebouwd, gestart en gescreenshot tegen `design/shots/` op 1440×900; `cargo clippy --all-targets` schoon; idle-CPU gemeten, zie fase 12 in `ROADMAP.md` |
 | UI-stack naar GPUI (2026-10-04) | ✅ af op macOS, **op Windows nog door niemand gestart** | 200 unit-tests plus de integratietests groen, `clippy` schoon; 97 referentietoestanden van de oude frontend naast GPUI-screenshots uit de fixturemodus gelegd; 13+ headless venstertests (toetsenbord, plakken, slepen); Windows alleen vanaf de Mac getypecheckt (gnu en msvc) en voor gnu gelinkt. Zie beslissing 39 en `docs/TESTPLAN.md`, "GPUI-weergave (2026-10-04)" |
 | 16A — Sleutels en versleutelde media (protocol 6, 2026-10-19) | ✅ gebouwd, **nog niet uitgegeven en nog niet met echte peers getest** | unit- en integratietests in `crates/net` (handtekening, pins, stille close, versie-alleen-antwoord, belstorm, AEAD, replay, venster tegen een referentiemodel, twee meshes die dezelfde mediasleutels afleiden); `protocol-reviewer` vóór beide protocolcommits; stootmeting op loopback vóór en na. Zie beslissing 46 en `docs/TESTPLAN.md`, "Protocol 6" |
+| 16B — Verbinden zonder Tailscale (2026-10-19) | ✅ gebouwd (B1 t/m B6), **nog niet uitgegeven en nog niet tussen twee huizen getest**; B7 (IPv6) niet gebouwd | integratietests in `crates/net/tests/mesh.rs` (alleen op elkaars code over het LAN, twee werkende kandidaten, een stil sluitende kandidaat, een derde die vertelt waar de ander zit) en `crates/app/tests/codes_plakken.rs` (plakken door de motor heen, herstart zonder nieuwe code); `verdeler.rs`; `protocol-reviewer` vóór elke commit; B5 gemeten tegen de build ervóór, port mapping op Ricks router. Zie beslissing 47 en `docs/TESTPLAN.md`, "Fase B" |
 
 **Fase 5 was kleiner dan gepland.** Venster-capture, meerdere bronnen tegelijk delen en
 meerdere inkomende streams tegelijk bekijken bleken al in fase 4 meegebouwd — zie
@@ -2585,6 +2593,184 @@ niets uitgegeven, en dat mag ook nooit.
 
 **Wat je niet mag omdraaien:** zie de sectie "Sleutels en versleutelde media" in `CLAUDE.md`.
 
+### 47. Verbinden zonder Tailscale: codes, port mapping, adressen via elkaar en één mediasocket (fase B, 2026-10-19)
+
+Fase B van `docs/PLAN-ZONDER-TAILSCALE.md` (fase 16 in `ROADMAP.md`), B1 t/m B6, op protocol 6
+van beslissing 46. De vrienden installeren geen Tailscale en zetten geen poorten open; ze plakken
+één keer elkaars code. Er komt geen server bij, geen STUN, geen DHT en geen relay: de app praat
+alleen met de eigen router en met de andere peers. **Additief, geen protocolbump**, en een peer
+met alleen fase A blijft werken met een peer met B (zie B5 hieronder). Niets hiervan is al
+tussen twee huizen getest: `docs/TESTPLAN.md`, "Fase B".
+
+**B1 — uitnodigingscodes.** `crates/proto/src/uitnodiging.rs`: `fitcom1:` plus base32 van
+versie, `PeerId`, sleutel, naam en hooguit 8 adressen, met een blake3-controlesom van 4 bytes
+(ongeveer 150 tekens). `vind_in` vist elke code uit geplakte tekst. `crates/app/src/codes.rs`
+koppelt een code aan een peer in de config, op `PeerId`, dan sleutel, dan een adres dat in de
+code staat (een tailnet-peer die nooit verbonden was, of een peer waarvan de gebruiker na een
+herinstallatie `known_id` en `public_key` weghaalde). Geweigerd: de eigen code, en een sleutel
+of `PeerId` die afwijkt van wat er vaststaat. Een code zonder adressen wist de werkende niet.
+De motor zet een nieuwe peer achteraan (`MeshCommand::VoegToe`; de targetnummers van app en mesh
+blijven zo gelijk) of werkt een bestaande bij (`MeshCommand::WerkBij`), en schrijft dan één keer
+`config.toml` weg (`PeerConfig::addresses`). De config-template heeft geen voorbeeldpeers meer.
+Settings → Network: de eigen code met Copy, een plakveld (meerdere regels, een heel bericht mag)
+met Add, en één regel over wat er van het plakken terechtkwam. **Afwijkingen van het plan:** geen
+`UiCommand::CopyInviteCode` (de code staat in `UiState` en het venster kopieert hem zelf, zoals
+de identiteit in Account); `AddPeerCodes` heet `VoegCodesToe`. Hooguit 16 codes per keer
+plakken; de naam gaat door `speelt::schoon`.
+
+**B2 — port mapping.** `crates/net/src/poorten.rs`: twee `portmapper`-clients, voor
+`control_port` en voor de mediapoort, zolang de app draait. **Op een eigen thread met een eigen
+kleine runtime**, niet op de runtime van de mesh zoals het plan zei: A0 vond al dat portmapper de
+gateway synchroon opzoekt (`SendARP`). Start 10 s na het opstarten, **eerst proben en dan pas
+mappen** (zonder probe begint portmapper met UPnP, en dat mislukt op een router die alleen PCP
+en NAT-PMP doet, zoals die van Rick), en één tik per minuut die een mislukte mapping opnieuw
+vraagt (geen netwerk bij autostart, een router die even weg was); zolang er een mapping is, doet
+die tik niets. **Eens per vijf minuten opnieuw proben, en UPnP uit als de router PCP of NAT-PMP
+spreekt** (gevonden door de reviewer): portmapper vertrouwt een probe maar tien minuten en kiest
+bij het vernieuwen van een lease (PCP na 30 min) opnieuw een protocol; zonder verse probe viel
+hij dan terug op UPnP, en op Ricks router was de mapping na een uur weg. Spreekt de router niets,
+dan eens per tien minuten proben (elke probe zoekt dan een seconde naar UPnP). Wat de router opent komt vooraan in de eigen adressen, dus in de eigen code. Bij
+netjes afsluiten `deactivate()` plus een tweede probe als wachtpost, via `MeshSluiter::sluit`
+(hooguit 1,5 s). **Met port mapping aan meet de motor A0 niet meer zelf**: die tijdelijke mapping
+op dezelfde poort zou bij het vrijgeven de echte meenemen. De regel in Settings → Network komt nu
+live van de mesh (`MeshEvent::Bereik`), met "open at <adres>" erachter. Configsleutel
+`port_mapping` (standaard aan), plat naast `bind_address`, niet `network.port_mapping` zoals het
+plan schreef: er is geen `[network]`-tabel.
+
+Gemeten op Ricks router met `crates/net/examples/poortmeting.rs` (testpoorten 42680/42681): PCP
+opende beide poorten op het publieke adres, en het vrijgeven bij afsluiten duurde 1,1 s. In rust
+(release, mesh zonder peers, 90 s, alleen dit proces):
+
+| | port mapping uit | port mapping aan |
+|---|---|---|
+| context switches per seconde (twee runs) | 3,83 / 3,74 | 3,72 / 3,59 |
+| processortijd over 90 s | onder de meetgrens (< 16 ms) | onder de meetgrens (< 16 ms) |
+| threads | 4 | 7–8 |
+
+Het verschil in wekmomenten is ruis; de mapping zelf slaapt tot een lease halverwege is. Gemeten
+uit de cumulatieve ruwe tellers van Windows (`Win32_PerfRawData_PerfProc_Thread`, twee standen),
+niet met `typeperf`: op deze Nederlandse Windows heten de tellers anders, en een wildcard op de
+procesnaam pakte daar elke thread van het systeem. Gemeten vóór de probe van vijf minuten erbij
+kwam (zie hierboven): die kost per client één PCP- en één NAT-PMP-rondje per vijf minuten.
+
+**B3 — bellen op kandidaten.** `PeerTarget::kandidaten`: de adressen uit de code en uit
+`adressen.json`; daarbij komen in de actor de geleerde (B4), die vóór de code-adressen gaan.
+Elke dialer leest een `watch<Doel>` met configadres, kandidaten, pin en `known_id`, en wordt
+meteen wakker als die verandert. `verbind_eerste` belt alle adressen gestaffeld (250 ms) vanaf
+hetzelfde endpoint; de eerste QUIC-verbinding krijgt de `Hello`, de rest gaat dicht vóór er een
+`Hello` over gaat, zodat de botsingsregel nooit tussen twee eigen verbindingen kiest. Een adres
+dat QUIC haalt maar daarna niets wordt (de eigen pc op een oud LAN-adres, een andere installatie
+die ons niet kent en stil sluit, een peer op een andere versie, een andere sleutel dan de pin)
+gaat eruit en dan de rest (gevonden door de reviewer: eerst brak zo'n adres de hele poging af,
+elke ronde opnieuw). Een **alarm** (`IdentityChanged`) blijft het bij dezelfde `PeerId` met een
+andere sleutel en op het tailnet-adres uit de config, zoals in fase A; op een kandidaat is het
+gewoon een verkeerd adres. Backoff hooguit 10 s zolang er een kandidaat buiten het tailnet is.
+Een sleutel leren blijft alleen op het opgezochte tailnet-adres uit de config.
+
+**`Hello.voor`** (additief, `serde(default)`, niet in het plan): bij het bellen van een kandidaat
+staat erin welke `PeerId` de beller zoekt, en wie het niet is sluit stil vóór de actor. Zonder
+dit kon een verouderd adres van B dat nu van C is, de verbinding tussen de beller en C laten
+wegvallen: C zag een nieuwe verbinding van de beller die volgens de botsingsregel de voorkeur
+had (gevonden door de reviewer). Niet op het configadres, zodat een herinstallatie daar nog als
+andere identiteit zichtbaar is.
+
+**B4 — adressen uitwisselen.** `ControlMsg::Addresses` (tag 51), vluchtig en single-hop: eigen
+control- en mediakandidaten, `you_are`, `media_you_are` en per andere verbonden peer waar we hem
+zien. De actor stuurt het op zijn tik van 1 s naar elke verbonden peer, alleen als de inhoud
+veranderde (bij verbinden, een peer erbij of weg, een nieuw adres van de router of van een peer).
+**Geen rondzingen** (gevonden door de reviewer, die het met een model naliep): een adres dat al in
+een lijst staat verandert niets, ook de volgorde niet, en wat we versturen wordt zonder volgorde
+vergeleken. Eerst zette elk binnenkomend `you_are` zijn adres vooraan; twee peers die ons op
+verschillende adressen zien gooiden de lijst dan om beurten om, en elke keer ging er een nieuw
+`Addresses` naar iedereen, met een schrijfactie naar `adressen.json` en een nieuwe eigen code (een
+state-push naar het venster) bij elke ontvanger. Per peer neemt de actor hooguit één `Addresses`
+per halve seconde aan. Ontvangen: `you_are` en `media_you_are` worden eigen adressen (loopback
+eruit, hooguit 4, zodat de eigen LAN- en tailnet-adressen er altijd nog bij passen, wat een peer
+ook stuurt), de mediakandidaten worden hints voor keepalives, en de
+control-adressen van de afzender en van de anderen worden geleerde kandidaten, alleen voor
+targets met een vastgepinde sleutel, hooguit 8 per peer, de nieuwste eerst. Elke wijziging gaat
+als `MeshEvent::Geleerd` naar de motor, die hem in `<data>/adressen.json` zet
+(`crates/app/src/adressen.rs`, 8 per peer, 60 dagen, alleen schrijven bij een nieuw adres); bij
+het starten komen die weer in als kandidaten. Geleerde adressen die blijvend falen worden niet
+gedegradeerd; ze vallen er pas uit als er acht nieuwere zijn (een kwaadwillende peer kan ons zo
+hooguit acht adressen per ~10 s laten bellen, `docs/BEVEILIGING.md`). Zo vinden twee apps elkaar na een herstart terug zonder nieuwe code, en vinden twee
+peers die elkaar niet direct kennen elkaar via een derde (test `een_derde_vertelt_waar_de_ander_zit`).
+
+**B5 — één mediasocket per proces, roaming.** `crates/net/src/verdeler.rs`. De mesh bindt hem
+bij het starten op `media_port` (`MeshHandle::post`), niet meer bij deelnemen aan het gesprek;
+`Hello.media_port` is de echt gebonden poort. Eén ontvangthread (`fitcom-media`) ontsleutelt
+en verdeelt over begrensde crossbeam-rijen: Opus naar de audiosessie (512), beeld per
+`(afzender, stream_id)` naar de kijker die erop intekende (2048). `try_send`, nooit wachten op
+een consument; een vertrokken consument verliest zijn route bij het volgende pakket. De deler
+verstuurt vanaf een kloon van die socket. Ontvangbuffer 2 MB. Een abonnement op een rij is een handvat (`verdeler::Abonnement`): valt het weg, dan verdwijnt zijn route meteen, maar nooit de route van een nieuwer abonnement op dezelfde stream. Is `media_port` bezet, dan kiest de mesh een vrije poort in plaats van niet te starten (de handshake noemt de echte); de fijne timer (`timeBeginPeriod`) gaat pas aan als er media loopt, niet al in de tray.
+
+- **Roaming alleen na een keepalive.** Het plan zei "altijd antwoorden naar het laatste
+  geauthenticeerde bronadres". Dat breekt een peer met fase A zonder B5 (zelfde protocol 6):
+  die stuurt beeld vanaf losse poorten en verwacht het op de poort uit zijn
+  `StreamSubscribe`. Daarom: per verbinding één adresvak, gedeeld door zend- en
+  ontvangstsleutel, dat pas gevuld wordt als er van die verbinding een geauthenticeerde
+  keepalive binnenkwam (`PayloadType::KEEPALIVE = 0xff`, stream `u32::MAX`), en daarna bij
+  elk echt pakket bijgewerkt. Een peer zonder B5 stuurt nooit een keepalive en houdt dus
+  precies het gedrag van fase A. Leren gebeurt pas ná tag en venster.
+- **Keepalive:** 44 bytes UDP-payload (12 kop + 16 header + 16 tag), niet de 16 van het plan.
+  Elke 15 s naar elke verbonden peer, en de eerste 20 s na een nieuwe verbinding of een
+  nieuwe hint elke seconde, zodat het pad er binnen een seconde staat. Naar het geleerde adres,
+  anders naar elke hint (zijn IP met de mediapoort uit de handshake, plus zijn mediakandidaten
+  uit B4).
+- **De vensters horen bij die ene socket.** Het gat uit beslissing 46 (een opgevangen pakket
+  herhalen naar een verse socket) is daarmee dicht: er is geen verse socket meer.
+- **De kijker slaapt het laatste stuk.** Een crossbeam-rij wekt in hele milliseconden: een
+  time-out van 1 ms duurde p90 2,5 ms (socket: 1,5 ms). Binnen 2 ms van het geplande moment
+  van het volgende beeld slaapt de lus daarom met `thread::sleep` (p90 0,5 ms te laat).
+  Zonder dit toonde de kijker op p99 0,6 ms later dan gepland, met dit 0,9 ms eerder dan vóór B5.
+
+Gemeten (release, 1080p60 H.264 12 Mbit/s, `hapering.rs` met `FITCOM_SPOOR`, 40 s per run,
+oude en nieuwe build afwisselend):
+
+| | vóór B5 (3 runs) | na B5 (2 runs) |
+|---|---|---|
+| verloren fragmenten | 13 / 18 / 13 | 0 / 0 |
+| aankomst → getoond p50 / p99 | 29,1–29,5 / 30,9–31,1 ms | 29,1–29,2 / 30,5–30,6 ms |
+| te laat t.o.v. planning p50 / p99 | 0,82–0,85 / 1,87–1,94 ms | 0,49 / 1,00–1,10 ms |
+
+"Aankomst" ligt na B5 één stap later (na de rij). Die stap apart gemeten (`burst.rs`,
+`vertraging_door_de_verdeler`, 4320 pakketten op het tempo van 1080p60): eigen socket p50
+0,011 / p99 0,035 ms, via de verdeler p50 0,014 / p99 0,056 ms. Stoottest 10 van 10 heel; twee
+keyframes van 242 fragmenten tegelijk op één socket komen heel aan (`verdeler.rs`).
+
+**B6 — wat je ziet.** Settings → Network: per peer het pad achter het adres ("direct ·
+internet", "direct · LAN", "via tailnet", "not reachable"), uit het bronadres van de verbinding
+(`PeerStatus::Online::remote`); de eigen bereikbaarheid live. Documenten: README (codes, de
+firewall op "Privé" in plaats van "alleen het Tailscale-netwerk"), BEVEILIGING (het
+dreigingsmodel herschreven, B-09 vervallen), ARCHITECTURE, PRODUCT, SPEC, TESTPLAN.
+
+**Gemeten: willekeurige UDP.** Een mesh zonder peers (release, port mapping uit) kreeg 2000 willekeurige pakketten per seconde
+per poort (1 tot 1400 bytes; 30% met de kop van een QUIC-Initial, 30% met twaalf willekeurige
+bytes vooraan zoals een mediapakket): op de control-poort 0,42% van één kern, op de mediapoort
+0,39%, op beide tegelijk 0,82% (480.036 pakketten in 120 s). Ongeveer 2 µs per pakket. In alle
+runs geen logregel erbij (4 regels, allemaal van het opstarten). Gewone achtergrondruis van
+internet is een paar pakketten per seconde; daarvan is het onmeetbaar.
+
+**Niet gebouwd:** B7 (IPv6; wacht op de A0-regels van de vrienden, zie `TODO.md`) en fase C.
+De "Bekende grenzen" uit het plan gelden onverkort. Nieuw gevonden en niet aangeraakt:
+`bind_address` in `config.toml` wordt nergens gelezen (ouder dan fase B; `TODO.md`).
+
+**Wat je niet mag omdraaien:**
+- Een adres is een hint. Kandidaten, `adressen.json` en `Addresses` bepalen alleen waar we bellen
+  en waar keepalives heen gaan; een sleutel leren gebeurt nooit op een kandidaat.
+- Per belpoging één `Hello`: de verliezers van de staffel gaan dicht vóór de `Hello`.
+- Roaming pas na een keepalive van die verbinding, en alleen ná tag en venster. Een peer zonder
+  B5 mag nooit geroamd worden: hij verwacht beeld op de poort uit zijn `StreamSubscribe`.
+- Eén mediasocket, één set vensters; niet opnieuw opbouwen bij opnieuw deelnemen of intekenen.
+- De mediathread wacht nooit op een consument (`try_send`, begrensde rijen).
+- Port mapping op een eigen thread, nooit op de runtime van de mesh of een mediathread; met port
+  mapping aan geen tweede, tijdelijke mapping op dezelfde poort.
+- `Addresses` alleen bij een wijziging, zonder op volgorde te letten, en elke lijst begrensd. Een
+  adres dat al in een lijst staat verandert niets, ook de volgorde niet: anders zingt het rond.
+- Port mapping: eens per vijf minuten proben, en UPnP uit zolang de router PCP of NAT-PMP
+  spreekt. Anders is de mapping na het eerste vernieuwen weg.
+- `Hello.voor` niet op het configadres zetten.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
@@ -2751,6 +2937,10 @@ bool`, bepaald op elk van de drie plekken in `streams.rs` die hem opbouwen (`sto
   voice-sessie heeft het goed (`open_apparaten` geeft beide streams terug); een tap die dat
   niet doet ziet er van buiten identiek uit. Test hierop door de chunks écht op te vangen,
   niet door te kijken of het starten lukte.
+- **`scripts/run-peers.ps1` en `run-peers.sh` zetten `port_mapping = false`** in de configs die ze
+  schrijven (sinds fase B). Start je met de hand instanties met een eigen `--data-dir`, zet het
+  daar ook: anders vraagt elke instantie na 10 s de echte router om zijn poorten, en na hard
+  afsluiten blijven die mappings staan tot hun lease verloopt.
 - **`crates/net/tests/leestimeout.rs` valt om als de machine druk is** (een build ernaast,
   een spel): de mediaan van een leestimeout van 1 ms liep op 2026-10-19 tussen 1,5 en 24 ms
   in drie runs vlak na elkaar. Dat is CPU-tekort, geen timerresolutie. Opnieuw draaien op een

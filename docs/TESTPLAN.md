@@ -1491,3 +1491,73 @@ Op deze pc geverifieerd:
     hij blijven staan tot zijn lease verloopt, hooguit twee uur).
 14. **macOS:** vraagt de Mac bij de eerste start om toegang tot het lokale netwerk (UPnP zoekt
     met een multicast)? Dat is nieuw; noteer het, en of de regel daarna klopt.
+
+## Fase B: verbinden zonder Tailscale (2026-10-19, beslissing 47)
+
+Fase B van `docs/PLAN-ZONDER-TAILSCALE.md`: uitnodigingscodes, port mapping, bellen op
+kandidaten, adressen uitwisselen, één mediasocket met roaming. Additief op protocol 6: een peer
+met alleen fase A blijft werken (zie punt 11). **Nog niets hiervan tussen twee huizen.**
+
+Op deze pc geverifieerd:
+- Tests in `crates/net/tests/mesh.rs`: twee peers verbinden op alleen elkaars code via een
+  LAN-adres (waar nooit een sleutel geleerd wordt), met een dood adres vooraan; twee werkende
+  kandidaten tegelijk geven na de botsing één verbinding die blijft; een peer erbij terwijl de
+  mesh draait; een kandidaat die QUIC haalt en stil sluit (de eigen pc) houdt de rest niet
+  tegen; op het configadres blijft een andere installatie "andere identiteit"; een derde
+  vertelt A waar B zit en A en B verbinden zelf.
+- `crates/net/src/verdeler.rs`: stem en beeld bij hun eigen consument, twee keyframes tegelijk
+  heel, het antwoord gaat na een keepalive naar het echte bronadres, een vertrokken kijker
+  ruimt zijn route op. `mediasleutel.rs`: leren pas na een keepalive en alleen van echte
+  pakketten.
+- B5 tegen de build van vóór B5 met `hapering.rs` en `FITCOM_SPOOR` (beslissing 47, tabel).
+- B2 op Ricks router met `crates/net/examples/poortmeting.rs`: zie beslissing 47 voor wat de
+  router opende en wat het in rust kost.
+- Willekeurige UDP op beide poorten: zie beslissing 47.
+
+**Vóór de release** (alles hieronder met Tailscale **uit** op beide pc's, tenzij anders):
+
+1. **Firewall precies zoals de README het zegt.** Beide vrienden zetten de firewall volgens
+   `README.md` → "Firewall": fitcom op "Privé", thuisnetwerk op profiel "Privé". Controleer met
+   het `Get-NetFirewallRule`-commando uit de README dat er een `Allow` voor `Private` staat en
+   geen `Block`. Test daarna punt 2 **zonder** iets extra's open te zetten. Werkt het pas met de
+   firewall uit, dan klopt de README niet: dat is een blokkade.
+2. **Twee huizen, Tailscale uit, alleen de code.** Rick en een vriend zetten Tailscale uit
+   (afsluiten, niet alleen pauzeren), wisselen codes uit via de groepsapp en plakken die. Binnen
+   een halve minuut online; in Settings → Network bij de ander "direct · internet". Kijk in de
+   log naar "port mapping gestart" en "control-poort gemapt" bij beiden.
+3. **Voice en 12 Mbit/s schermdelen op dat pad.** Tien minuten praten, vijf minuten 1080p60
+   delen met `FITCOM_SPOOR` bij de kijker. Vergelijk `verlies-<id>.csv` en `kijker-<id>.csv` met
+   een spoor over het tailnet (punt 6 van "Protocol 6"). Niet slechter; anders is het een
+   blokkade.
+4. **Beide apps herstarten.** Weer online zonder nieuwe code. In `<data>/adressen.json` staan
+   de adressen van de ander.
+5. **Router herstarten (nieuw IP).** Eén van de twee herstart zijn router (bij de meeste
+   providers krijg je dan een ander IP, controleer dat op een "wat is mijn IP"-site). Met de
+   derde peer online: hij heelt vanzelf, binnen een paar minuten, zonder nieuwe code. Zonder
+   derde peer: alleen als het onthouden adres nog klopt; anders is opnieuw codes plakken de
+   bekende grens.
+6. **De derde peer zonder port mapping.** Zet bij de derde `port_mapping = false` (of test bij
+   iemand wiens router geen UPnP/PCP/NAT-PMP doet). Hij verbindt via B4 met de andere twee: hij
+   belt naar buiten, de anderen vertellen hem hoe ze elkaar zien. Kijk in de log van de anderen
+   of zijn adres als "geleerd" binnenkomt.
+7. **Twee peers zonder port mapping, met een derde.** Zet bij twee peers `port_mapping = false`;
+   de derde houdt hem aan. De twee verbinden met elkaar via wat de derde ze vertelt (doorprikken
+   met gelijktijdig bellen). Lukt dit niet, noteer welke router en provider: dat is fase C.
+8. **Router netjes achterlaten.** Kijk in de router (bij PCP/NAT-PMP soms onzichtbaar; bij UPnP
+   meestal een lijst) dat er na netjes afsluiten geen mapping van FitCom meer staat. Na hard
+   afsluiten mag hij blijven staan tot zijn lease verloopt.
+9. **LAN.** Twee peers op hetzelfde thuisnetwerk: "direct · LAN".
+10. **Met Tailscale aan.** Alles werkt nog als vroeger; het pad is "via tailnet".
+11. **Eén peer nog op fase A (alleen protocol 6, zonder B).** Voice en schermdelen beide
+    kanten op werken (de B-peer roamt niet naar hem: hij stuurt geen keepalive).
+12. **IPv6 (B7, niet gebouwd).** Noteer bij elke vriend de A0-regel ("IPv6" of "no IPv6").
+
+**macOS** (vanaf Windows niet te compileren: `ring` en libopus vragen de C-compiler van Xcode):
+13. `cargo check --workspace --all-targets` en `cargo test -p fitcom-net -p fitcom-proto` op de
+    Mac. `crates/video/examples/mac_keten.rs` draait (één mediasocket per kant).
+14. Codes uitwisselen tussen Mac en Windows, Tailscale uit: verbinden, voice beide kanten op, de
+    Mac kijkt naar Windows en andersom.
+15. Port mapping op de Mac: vraagt macOS om toegang tot het lokale netwerk (UPnP zoekt met een
+    multicast)? En klopt de Reachability-regel daarna?
+16. De kijker op de Mac: beeld blijft vloeiend (de kijker slaapt nu het laatste stuk voor een
+    beeld met `thread::sleep`; op macOS is dat al fijn, dus geen verschil verwacht).
