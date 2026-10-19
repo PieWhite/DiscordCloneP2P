@@ -939,16 +939,22 @@ impl Actor {
                     // bij een target horen.
                     self.retry_pending().await;
                 }
-                Internal::Connecting { target } => {
+                // Een belpoging die nog liep toen de ander ons belde: zijn uitkomst zegt niets
+                // meer, en "offline" zou de peer onterecht uit het gesprek halen.
+                Internal::Connecting { target } if self.targets[target].bound.is_none() => {
                     self.set_status(target, PeerStatus::Connecting).await;
                 }
+                Internal::Connecting { .. } => {}
                 Internal::Established(e) => {
                     let target = e.target;
                     self.install(*e, target).await
                 }
                 Internal::Inkomend(w) => self.on_inkomend(w).await,
                 Internal::Geweigerd { ip, reden } => self.meld_weigering(ip, reden),
-                Internal::Rejected { target, status } => self.set_status(target, status).await,
+                Internal::Rejected { target, status } if self.targets[target].bound.is_none() => {
+                    self.set_status(target, status).await
+                }
+                Internal::Rejected { .. } => {}
                 Internal::Frame { conn_id, msg } => self.on_frame(conn_id, msg).await,
                 Internal::IncomingFileStream { conn_id, stream } => {
                     self.on_incoming_file_stream(conn_id, stream).await
@@ -1401,7 +1407,7 @@ impl Actor {
                 out: e.out,
             },
         );
-        self.werk_bezet_bij();
+        self.werk_bezet_bij(None);
 
         self.set_status(target, status).await;
     }
@@ -1481,6 +1487,8 @@ impl Actor {
             return;
         }
         self.adressen_ontvangen.insert(from, nu);
+        // Dit bericht is nieuwer dan een eventueel wachtend: dat mag er niet meer overheen.
+        self.adressen_wachtend.remove(&from);
         let (target, media_hint) = (active.target, active.media_addr);
         let max = Addresses::MAX;
 
@@ -1539,9 +1547,15 @@ impl Actor {
         }
     }
 
-    /// Zie [`Bezet`]. Alleen een nieuwe lijst als er iets veranderde.
-    fn werk_bezet_bij(&self) {
-        let nu: Vec<SocketAddr> = self.active.values().map(|a| a.remote).collect();
+    /// Zie [`Bezet`]. Alleen een nieuwe lijst als er iets veranderde. `zonder`: een verbinding
+    /// die nu dichtgaat maar nog in `active` staat.
+    fn werk_bezet_bij(&self, zonder: Option<u64>) {
+        let nu: Vec<SocketAddr> = self
+            .active
+            .values()
+            .filter(|a| Some(a.conn_id) != zonder)
+            .map(|a| a.remote)
+            .collect();
         if !zelfde_set(&nu, &self.bezet.load()) {
             self.bezet.store(Arc::new(nu));
         }
@@ -1593,6 +1607,9 @@ impl Actor {
         // op de dode verbinding, dus zonder dat de dialer ooit weer aan de slag ging.
         // `bound == Some(conn_id)` is bovendien nog steeds de test die voorkomt dat een
         // verlaten botsings-verbinding de goede wegkickt.
+        // Eerst `Bezet` zonder deze verbinding: de dialer die zo wakker wordt, mag zijn adres
+        // weer proberen.
+        self.werk_bezet_bij(Some(conn_id));
         if let Some(t) = self.targets.iter().position(|t| t.bound == Some(conn_id)) {
             self.targets[t].bound = None;
             let _ = self.targets[t].connected.send(false);
@@ -1611,7 +1628,6 @@ impl Actor {
             self.adressen_verstuurd.remove(&peer);
             self.adressen_ontvangen.remove(&peer);
             self.adressen_wachtend.remove(&peer);
-            self.werk_bezet_bij();
             tracing::info!(peer = ?peer, %reason, "verbinding verbroken");
         }
 
@@ -1629,7 +1645,7 @@ impl Actor {
         for a in self.active.values_mut() {
             a.remote = a.conn.remote_address();
         }
-        self.werk_bezet_bij();
+        self.werk_bezet_bij(None);
         self.tikken = self.tikken.wrapping_add(1);
         if self.tikken.is_multiple_of(EIGEN_ELKE) {
             self.meld_eigen_adressen().await;
@@ -1847,7 +1863,7 @@ async fn try_dial(
             Err(e) => return Err(e),
         }
     }
-    let bezet = bezet.load();
+    let bezet = bezet.load_full();
     for k in &doel.kandidaten {
         if !adressen.contains(k) && !bezet.contains(k) {
             adressen.push(*k);
