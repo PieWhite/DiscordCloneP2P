@@ -58,6 +58,7 @@ fn config_multi(me: PeerId, name: &str, my_port: u16, peer_ports: &[u16]) -> Mes
         media_port: 0,
         app_version: "0.1.0".to_string(),
         sleutel: wegwerpsleutel(),
+        port_mapping: false,
         targets: peer_ports
             .iter()
             .map(|&p| PeerTarget {
@@ -649,4 +650,81 @@ async fn een_ander_op_het_configadres_blijft_een_alarm() {
     })
     .await;
     assert_eq!((expected, got), (idb, idc));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn een_derde_vertelt_waar_de_ander_zit() {
+    // B4, "peer als STUN": A kent B alleen op een oud adres waar niemand meer luistert, en B
+    // kent geen adres van A. C is met allebei verbonden en vertelt A hoe hij B ziet. Daarna
+    // verbinden A en B zelf, zonder dat C iets doorstuurt.
+    init_tracing();
+    let Some(ip) = lan_ip() else {
+        eprintln!("geen netwerk; overgeslagen");
+        return;
+    };
+    let (pa, pb, pc, dood) = (
+        free_port().await,
+        free_port().await,
+        free_port().await,
+        free_port().await,
+    );
+    let (ida, idb, idc) = (
+        PeerId::new_random(),
+        PeerId::new_random(),
+        PeerId::new_random(),
+    );
+    let (ka, kb, kc) = (wegwerpsleutel(), wegwerpsleutel(), wegwerpsleutel());
+    let sleutel = |k: &ring::signature::Ed25519KeyPair| -> [u8; 32] {
+        k.public_key().as_ref().try_into().unwrap()
+    };
+    let op = |p: u16| vec![std::net::SocketAddr::new(ip, p)];
+    let mut cfg_a = config_multi(ida, "A", pa, &[]);
+    cfg_a.sleutel = ka.clone();
+    cfg_a.targets = vec![
+        uit_code(idb, sleutel(&kb), op(dood)),
+        uit_code(idc, sleutel(&kc), op(pc)),
+    ];
+    let mut cfg_b = config_multi(idb, "B", pb, &[]);
+    cfg_b.sleutel = kb.clone();
+    cfg_b.targets = vec![
+        uit_code(ida, sleutel(&ka), Vec::new()),
+        uit_code(idc, sleutel(&kc), op(pc)),
+    ];
+    let mut cfg_c = config_multi(idc, "C", pc, &[]);
+    cfg_c.sleutel = kc.clone();
+    cfg_c.targets = vec![
+        uit_code(ida, sleutel(&ka), op(pa)),
+        uit_code(idb, sleutel(&kb), op(pb)),
+    ];
+
+    let mut a = spawn(cfg_a).unwrap();
+    let _b = spawn(cfg_b).unwrap();
+    let _c = spawn(cfg_c).unwrap();
+
+    let mut geleerd = None;
+    let gevonden = timeout(Duration::from_secs(20), async {
+        loop {
+            match a.events.recv().await {
+                Some(MeshEvent::Geleerd {
+                    target: 0,
+                    adressen,
+                    ..
+                }) => geleerd = Some(adressen),
+                Some(MeshEvent::Status {
+                    target: 0,
+                    status: PeerStatus::Online { peer_id, .. },
+                }) => return peer_id,
+                Some(_) => {}
+                None => panic!("mesh gestopt"),
+            }
+        }
+    })
+    .await
+    .expect("A vond B niet via C");
+    assert_eq!(gevonden, idb);
+    let geleerd = geleerd.expect("A meldde geen geleerd adres voor B");
+    assert!(
+        geleerd.contains(&std::net::SocketAddr::new(ip, pb)),
+        "{geleerd:?}"
+    );
 }

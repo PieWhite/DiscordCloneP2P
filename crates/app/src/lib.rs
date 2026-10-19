@@ -4,6 +4,7 @@
 //! de koppeling tussen oplog en mesh — wie wanneer wat naar wie stuurt — is met een
 //! integratietest te controleren in plaats van met twee vensters en een logbestand.
 
+pub mod adressen;
 pub mod chat;
 pub mod clips;
 pub mod codes;

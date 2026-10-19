@@ -184,6 +184,7 @@ mod tests {
             public_key: Vec::new(),
             signature: Vec::new(),
             media_index: 0,
+            voor: None,
         });
         assert!(frame_bytes(&msg).is_err());
     }

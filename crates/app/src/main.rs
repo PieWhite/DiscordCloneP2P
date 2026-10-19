@@ -107,6 +107,9 @@ fn start() -> Result<()> {
         .build()
         .context("tokio-runtime opzetten")?;
 
+    // B4: waar de peers de vorige keer gezien zijn, zodat een herstart ze terugvindt zonder
+    // nieuwe code. Na de adressen uit hun code, die de dialer achteraan zet.
+    let mut gezien = fitcom::adressen::lees(&data_dir.join("adressen.json"));
     let mesh_cfg = fitcom_net::MeshConfig {
         me: identity.peer_id,
         display_name: cfg.display_name.clone(),
@@ -114,6 +117,7 @@ fn start() -> Result<()> {
         media_port: cfg.media_port,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         sleutel: std::sync::Arc::new(identity.sleutelpaar()?),
+        port_mapping: cfg.port_mapping,
         targets: cfg
             .peers
             .iter()
@@ -127,7 +131,13 @@ fn start() -> Result<()> {
                 known_id: p.known_id,
                 control_port: p.control_port,
                 public_key: p.vastgepinde_sleutel(),
-                kandidaten: p.addresses.clone(),
+                kandidaten: p
+                    .known_id
+                    .and_then(|id| gezien.remove(&id))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(p.addresses.iter().copied())
+                    .collect(),
             })
             .collect(),
     };

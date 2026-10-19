@@ -90,6 +90,8 @@ for ((i = 0; i < count; i++)); do
     echo "display_name = \"$name\""
     echo "control_port = $((base_port + i * 2))"
     echo "media_port   = $((base_port + i * 2 + 1))"
+    # Niet de router van deze pc om poorten vragen voor een test op één pc.
+    echo "port_mapping = false"
     for ((j = 0; j < count; j++)); do
       [ "$j" = "$i" ] && continue
       echo ""

@@ -106,6 +106,10 @@ pub struct PeerState {
     pub activity: Option<String>,
     /// Set when `presence` is `broken`: what is wrong, in one sentence.
     pub problem: Option<String>,
+    /// How the connection runs (phase B6): "direct · internet", "direct · LAN", "via
+    /// tailnet", or "not reachable" while offline. Moves only with a new connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub app_version: Option<String>,
     pub in_call: bool,
     pub volume: f32,
@@ -671,8 +675,12 @@ fn router_line(b: &fitcom_net::bereik::Bereik) -> String {
         Soort::Cgnat => "CGNAT",
         Soort::Onbekend => "outside address unknown",
     };
+    let mapped = b
+        .gemapt
+        .map(|a| format!(" \u{b7} open at {a}"))
+        .unwrap_or_default();
     format!(
-        "Router: PCP {} \u{b7} NAT-PMP {} \u{b7} UPnP {} \u{b7} {outside} \u{b7} {}",
+        "Router: PCP {} \u{b7} NAT-PMP {} \u{b7} UPnP {} \u{b7} {outside} \u{b7} {}{mapped}",
         yes(b.pcp),
         yes(b.nat_pmp),
         yes(b.upnp),
@@ -724,6 +732,27 @@ fn code_result_line(u: &crate::codes::CodesUitslag) -> String {
         parts.push(format!("{who} {why}"));
     }
     parts.join(" ")
+}
+
+/// The path of a connection, from its source address (phase B6).
+fn path_word(status: &PeerStatus) -> &'static str {
+    let PeerStatus::Online { remote, .. } = status else {
+        return "not reachable";
+    };
+    let ip = remote.ip().to_canonical();
+    let lan = match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unicast_link_local() || v6.is_unique_local()
+        }
+    };
+    if fitcom_net::mag_leren(ip) && !ip.is_loopback() {
+        "via tailnet"
+    } else if lan {
+        "direct \u{b7} LAN"
+    } else {
+        "direct \u{b7} internet"
+    }
 }
 
 /// RTT is deliberately not here: it moves every tick and lives in the `meters` event, so
@@ -825,6 +854,7 @@ impl UiState {
                         .clone()
                         .filter(|_| presence == Presence::Online),
                     problem,
+                    path: Some(path_word(&p.status).to_string()),
                     app_version,
                     in_call: p.in_voice,
                     volume: p.volume,
@@ -1393,11 +1423,18 @@ mod router_tests {
             nat_pmp: true,
             extern_v4: Some("84.84.84.84".parse().unwrap()),
             ipv6: false,
+            gemapt: None,
         };
         assert_eq!(
             router_line(&rick),
             "Router: PCP yes \u{b7} NAT-PMP yes \u{b7} UPnP no \u{b7} public IPv4 \u{b7} no IPv6"
         );
+        // B2: met port mapping ook waar de router de poort opende.
+        let open = Bereik {
+            gemapt: Some("84.84.84.84:41650".parse().unwrap()),
+            ..rick.clone()
+        };
+        assert!(router_line(&open).ends_with("no IPv6 \u{b7} open at 84.84.84.84:41650"));
         let cgnat = Bereik {
             gateway: true,
             upnp: true,

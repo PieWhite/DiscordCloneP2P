@@ -906,6 +906,7 @@ mod tests {
             user_status: None,
             activity: None,
             problem: None,
+            path: None,
             app_version: None,
             in_call,
             volume: 1.0,

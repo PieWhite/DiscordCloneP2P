@@ -191,10 +191,14 @@ fn peer_row(
     window: &mut Window,
     cx: &mut Context<SettingsPane>,
 ) -> Div {
-    let address = match &p.app_version {
-        Some(v) => format!("{} \u{b7} v{v}", p.address),
-        None => p.address.clone(),
-    };
+    // B6: how the connection runs, between the address and the version.
+    let version = p.app_version.as_ref().map(|v| format!("v{v}"));
+    let address = [Some(p.address.clone()), p.path.clone(), version]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
     div()
         .flex()
         .items_center()

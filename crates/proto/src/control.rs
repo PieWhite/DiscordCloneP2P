@@ -15,6 +15,7 @@
 use crate::op::{Op, VersionVector};
 use crate::{Channel, OpId, PeerId};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 /// Soort gedeelde bron. Als `u8` op de draad zodat een onbekende soort van een nieuwere
 /// peer geen decodeerfout geeft maar gewoon als "onbekend" doorkomt.
@@ -186,6 +187,52 @@ control_messages! {
     48 => Draw(Draw),
     49 => DrawClear(DrawClear),
     50 => DrawState(DrawState),
+
+    // 51: adressen uitwisselen (fase B4 van `docs/PLAN-ZONDER-TAILSCALE.md`). Vluchtig en
+    // single-hop zoals 44-47, nooit een op. Alles erin is een hint: een vals adres kost
+    // hooguit een mislukte belpoging, binnenkomen gaat alleen met de vastgepinde sleutel. Een
+    // oudere peer slaat de tag stil over.
+    51 => Addresses(Addresses),
+}
+
+/// Waar de afzender zelf bereikbaar denkt te zijn, en hoe hij de ontvanger en de andere
+/// verbonden peers ziet ("peer als STUN", B4). Verstuurd bij verbinden en bij een wijziging.
+/// De ontvanger neemt van elke lijst hooguit [`Addresses::MAX`] adressen mee.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Addresses {
+    /// Waar de afzender zijn control-poort (QUIC) bereikbaar denkt: wat zijn router opende,
+    /// hoe anderen hem zagen, zijn LAN- en tailnet-adres.
+    #[serde(default)]
+    pub control: Vec<SocketAddr>,
+    /// Hetzelfde voor zijn ene mediasocket.
+    #[serde(default)]
+    pub media: Vec<SocketAddr>,
+    /// Het bronadres van déze verbinding zoals de afzender het ziet: zo ziet de ontvanger
+    /// zichzelf van buiten.
+    #[serde(default)]
+    pub you_are: Option<SocketAddr>,
+    /// Het bronadres van de media van de ontvanger zoals de afzender het laatst zag.
+    #[serde(default)]
+    pub media_you_are: Option<SocketAddr>,
+    /// Per andere verbonden peer: waar de afzender hem ziet. Zo vinden twee peers die elkaar
+    /// (nog) niet bereiken elkaar via een derde, zonder dat die derde iets doorstuurt.
+    #[serde(default)]
+    pub others: Vec<PeerAddresses>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerAddresses {
+    pub peer: PeerId,
+    #[serde(default)]
+    pub control: Vec<SocketAddr>,
+    #[serde(default)]
+    pub media: Vec<SocketAddr>,
+}
+
+impl Addresses {
+    /// Zoveel adressen per lijst, en zoveel andere peers, neemt een ontvanger hooguit mee.
+    /// Meer is geen hint meer maar rommel (B-17-stijl).
+    pub const MAX: usize = 8;
 }
 
 /// Punten erbij aan één lijn op een gedeeld scherm. Coördinaten zijn genormaliseerd op het
@@ -397,6 +444,14 @@ pub struct Hello {
     /// pakket zonder te proberen aan een sleutel koppelt.
     #[serde(default)]
     pub media_index: u32,
+    /// Fase B3: welke peer de beller hier denkt te bereiken, als hij dat weet. Een adres is
+    /// een hint en kan verouderd zijn; wie hier niet bedoeld is sluit stil, nog vóór hij de
+    /// beller als peer behandelt. Anders kon een oud adres van B, dat nu van C is, de
+    /// verbinding tussen de beller en C laten wegvallen (de botsingsregel kiest de nieuwe).
+    /// Leeg bij een peer van vóór B3, en op het adres uit de config (het tailnet): daar moet
+    /// een herinstallatie zich nog als andere identiteit kunnen melden.
+    #[serde(default)]
+    pub voor: Option<PeerId>,
 }
 
 /// Wat elke kant bij het verbinden tekent (protocol 6, beslissing 46).
@@ -642,6 +697,7 @@ mod tests {
             public_key: vec![7; Handtekening::SLEUTEL_LEN],
             signature: vec![9; Handtekening::LEN],
             media_index: 0xdead_beef,
+            voor: Some(PeerId::new_random()),
         });
         let bytes = msg.encode().unwrap();
         assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
@@ -731,6 +787,32 @@ mod tests {
     }
 
     #[test]
+    fn adressen_komen_heelhuids_over_met_tag_51() {
+        let msg = ControlMsg::Addresses(Addresses {
+            control: vec![
+                "84.104.12.9:41650".parse().unwrap(),
+                "[2a02::5]:41650".parse().unwrap(),
+            ],
+            media: vec!["84.104.12.9:41651".parse().unwrap()],
+            you_are: Some("100.64.0.2:41650".parse().unwrap()),
+            media_you_are: None,
+            others: vec![PeerAddresses {
+                peer: PeerId::new_random(),
+                control: vec!["192.168.2.5:41650".parse().unwrap()],
+                media: Vec::new(),
+            }],
+        });
+        let bytes = msg.encode().unwrap();
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 51);
+        assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+        // Een lege map (een nieuwere peer die velden weglaat) decodeert ook.
+        let leeg = ControlMsg::Addresses(Addresses::default())
+            .encode()
+            .unwrap();
+        assert!(ControlMsg::decode(&leeg).unwrap().is_some());
+    }
+
+    #[test]
     fn tags_zijn_uniek() {
         // Vangt de kopieer-plakfout waarbij twee varianten dezelfde tag krijgen.
         let all = [
@@ -784,6 +866,7 @@ mod tests {
                 stream_id: 0,
                 lines: vec![],
             }),
+            ControlMsg::Addresses(Addresses::default()),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();

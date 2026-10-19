@@ -81,6 +81,8 @@ for ($i = 0; $i -lt $Count; $i++) {
         "display_name = `"$name`""
         "control_port = $($basePort + $i * 2)"
         "media_port   = $($basePort + $i * 2 + 1)"
+        # Niet de router van deze pc om poorten vragen voor een test op één pc.
+        "port_mapping = false"
     )
     for ($j = 0; $j -lt $Count; $j++) {
         if ($j -eq $i) { continue }

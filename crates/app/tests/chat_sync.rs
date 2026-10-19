@@ -40,6 +40,7 @@ fn config_multi(me: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> MeshConf
         media_port: 0,
         app_version: "0.1.0".to_string(),
         sleutel: fitcom_net::wegwerpsleutel(),
+        port_mapping: false,
         targets: anderen
             .iter()
             .map(|&ander| PeerTarget {
@@ -92,7 +93,9 @@ impl Peer {
                 MeshEvent::Status { .. }
                 | MeshEvent::LearnedIdentity { .. }
                 | MeshEvent::IncomingFileStream { .. }
-                | MeshEvent::EigenAdressen(_) => {}
+                | MeshEvent::EigenAdressen(_)
+                | MeshEvent::Bereik(_)
+                | MeshEvent::Geleerd { .. } => {}
                 MeshEvent::Message { from, msg } => {
                     let cmds = self.chat.bij_bericht(from, msg).unwrap();
                     self.stuur(cmds);

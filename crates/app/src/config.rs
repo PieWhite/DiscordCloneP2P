@@ -48,6 +48,14 @@ pub struct Config {
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
 
+    /// Fase B2: de router de control- en mediapoort laten openzetten (UPnP, PCP, NAT-PMP),
+    /// zolang de app draait, en bij netjes afsluiten weer dicht. Daarmee is deze pc van
+    /// buiten bereikbaar zonder Tailscale en zonder poorten met de hand open te zetten.
+    /// Alleen de eigen router wordt gevraagd. Uit: dan meet de app één keer wat de router
+    /// kan (A0) en zet hij niets open.
+    #[serde(default = "waar")]
+    pub port_mapping: bool,
+
     /// Sluitknop verbergt naar de tray in plaats van af te sluiten. De app blijft dan
     /// synchroniseren en melden terwijl je iets anders doet.
     #[serde(default = "waar")]
@@ -479,6 +487,7 @@ impl Config {
             control_port: DEFAULT_CONTROL_PORT,
             media_port: DEFAULT_MEDIA_PORT,
             bind_address: default_bind_address(),
+            port_mapping: true,
             minimize_to_tray: true,
             autostart: false,
             input_device: None,

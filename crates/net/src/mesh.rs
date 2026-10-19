@@ -22,10 +22,12 @@
 //! goedgekeurd (B-05a): wie niet binnenkomt hoort niets terug, ook geen naam of versie.
 
 use crate::mediasleutel::{self, MediaSleutels};
+use crate::poorten::{Mapper, Mapping};
 use crate::verdeler::Verdeler;
 use crate::{framing, tls};
 use anyhow::{bail, Context, Result};
-use fitcom_proto::control::{Handtekening, Hello, HelloAck};
+use fitcom_proto::control::{Addresses, Handtekening, Hello, HelloAck, PeerAddresses};
+use fitcom_proto::uitnodiging::is_bruikbaar;
 use fitcom_proto::{ControlMsg, PeerId, MEDIA_SLEUTEL_LABEL, PROTOCOL_VERSION};
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use std::collections::{HashMap, HashSet};
@@ -93,6 +95,9 @@ pub struct MeshConfig {
     /// De vaste sleutel van deze installatie (`identity.toml`). Bewijst bij elke
     /// verbinding dat wij `me` zijn.
     pub sleutel: Arc<Ed25519KeyPair>,
+    /// B2: de router de control- en mediapoort laten openzetten (`crate::poorten`). Uit in
+    /// tests: die horen de router van de testmachine niet aan te raken.
+    pub port_mapping: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +187,9 @@ pub enum PeerStatus {
         /// `env!("CARGO_PKG_VERSION")` van de peer, uit de handshake. `"0.0.0"` voor een
         /// peer die het veld nog niet kende.
         app_version: String,
+        /// Het bronadres van de verbinding: zegt of het pad via het tailnet, het LAN of
+        /// internet loopt (B6). Verandert alleen bij een nieuwe verbinding.
+        remote: SocketAddr,
     },
     /// De peer draait een andere protocolversie. Geen crash, wel onbruikbaar tot
     /// één van beiden update. `theirs == 0`: onbekend, maar ouder (een peer op 5 sluit
@@ -227,6 +235,15 @@ pub enum MeshEvent {
     /// De control-adressen waarop deze pc zichzelf bereikbaar denkt (B1): wat in de eigen
     /// uitnodigingscode hoort. Alleen bij een wijziging.
     EigenAdressen(Vec<SocketAddr>),
+    /// B2: wat de router nu over ons zegt (de regel van A0, live). Alleen bij een wijziging.
+    Bereik(crate::bereik::Bereik),
+    /// B4: de adressen waarop een peer gezien is, de nieuwste eerst. De app bewaart ze, zodat
+    /// een herstart elkaar terugvindt zonder nieuwe code. Alleen bij een wijziging.
+    Geleerd {
+        target: usize,
+        peer_id: PeerId,
+        adressen: Vec<SocketAddr>,
+    },
 }
 
 pub enum MeshCommand {
@@ -291,6 +308,8 @@ pub struct MeshHandle {
     /// De UDP-socket onder `endpoint`, alleen om in [`MeshHandle::shutdown`] te zien wanneer
     /// niemand anders hem nog vasthoudt.
     socket: Arc<dyn quinn::AsyncUdpSocket>,
+    /// B2: `None` met port mapping uit.
+    mapper: Option<Arc<Mapper>>,
     _shutdown: ShutdownGuard,
 }
 
@@ -335,7 +354,7 @@ impl MeshHandle {
     /// Een handvat om bij het afsluiten van de app de verbindingen te sluiten, ook nadat
     /// de handle zelf aan de motor is gegeven.
     pub fn sluiter(&self) -> MeshSluiter {
-        MeshSluiter(self.endpoint.clone())
+        MeshSluiter(self.endpoint.clone(), self.mapper.clone())
     }
 }
 
@@ -343,25 +362,38 @@ impl MeshHandle {
 /// anderen zagen je nog 15 s (de idle-timeout) online en in het gesprek en bleven audio
 /// naar een dode poort sturen.
 #[derive(Clone)]
-pub struct MeshSluiter(quinn::Endpoint);
+pub struct MeshSluiter(quinn::Endpoint, Option<Arc<Mapper>>);
+
+/// Hoe lang het vrijgeven van de port mapping bij het afsluiten mag duren. PCP en NAT-PMP
+/// zijn één pakket; UPnP is HTTP naar de router.
+const MAPPING_VRIJGEVEN: Duration = Duration::from_millis(1500);
 
 impl MeshSluiter {
-    /// Stuurt elke peer een nette afsluiting en wacht hoogstens `max` tot die weg is.
-    /// De endpoint-taak moet daarvoor nog draaien: aanroepen vóór de runtime weg is.
+    /// Stuurt elke peer een nette afsluiting en wacht hoogstens `max` tot die weg is, en
+    /// geeft de port mapping vrij (B2). De endpoint-taak moet daarvoor nog draaien:
+    /// aanroepen vóór de runtime weg is.
     pub async fn sluit(&self, max: Duration) {
         self.0.close(0u32.into(), b"afsluiten");
-        let _ = tokio::time::timeout(max, self.0.wait_idle()).await;
+        let mapping = async {
+            if let Some(m) = &self.1 {
+                m.sluit(MAPPING_VRIJGEVEN).await;
+            }
+        };
+        let _ = tokio::join!(tokio::time::timeout(max, self.0.wait_idle()), mapping);
     }
 }
 
 /// Zet alle netwerktaken stil zodra de handle wegvalt. Zonder dit blijft de UDP-poort
 /// bezet en blijven dialers doorproberen nadat de app ze niet meer nodig heeft.
-struct ShutdownGuard(watch::Sender<bool>, Verdeler);
+struct ShutdownGuard(watch::Sender<bool>, Verdeler, Option<Arc<Mapper>>);
 
 impl Drop for ShutdownGuard {
     fn drop(&mut self) {
         let _ = self.0.send(true);
         self.1.stop();
+        if let Some(m) = &self.2 {
+            m.stop();
+        }
     }
 }
 
@@ -437,6 +469,8 @@ enum Internal {
         reason: String,
     },
     Tick,
+    /// B2: de router opende een poort, of zei iets nieuws.
+    Mapping(Mapping),
 }
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
@@ -553,6 +587,16 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         .as_ref()
         .try_into()
         .context("Ed25519-sleutel is 32 bytes")?;
+    // B2: de router de poorten laten openzetten. Op een eigen thread; meldt via een zwakke
+    // zender, zodat hij de actor niet in leven houdt.
+    let mapper = cfg.port_mapping.then(|| {
+        let int = int_tx.downgrade();
+        Mapper::start(local_addr.port(), post.poort(), move |m| {
+            if let Some(tx) = int.upgrade() {
+                let _ = tx.try_send(Internal::Mapping(m));
+            }
+        })
+    });
     let mut actor = Actor {
         cfg: cfg.clone(),
         active: HashMap::new(),
@@ -571,6 +615,12 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         }),
         eigen: Vec::new(),
         tikken: 0,
+        mapping: None,
+        lokaal: Vec::new(),
+        gezien_control: Vec::new(),
+        gezien_media: Vec::new(),
+        adressen_verstuurd: HashMap::new(),
+        adressen_ontvangen: HashMap::new(),
     };
     for t in &cfg.targets {
         actor.voeg_toe(t.clone());
@@ -586,7 +636,8 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         public_key,
         endpoint,
         socket,
-        _shutdown: ShutdownGuard(stop_tx, post),
+        mapper: mapper.clone(),
+        _shutdown: ShutdownGuard(stop_tx, post, mapper),
     })
 }
 
@@ -607,22 +658,100 @@ struct TargetState {
     public_key: Option<[u8; 32]>,
     bound: Option<u64>,
     last_status: Option<PeerStatus>,
+    /// Uit de config: zijn code en wat er bij het starten onthouden was.
+    code: Vec<SocketAddr>,
+    /// Van peers gehoord (B4), de nieuwste eerst, begrensd op [`Addresses::MAX`].
+    geleerd: Vec<SocketAddr>,
 }
 
 impl TargetState {
-    /// Pin en kandidaten opnieuw naar de dialer, als ze veranderden.
-    fn werk_doel_bij(&self, kandidaten: Option<Vec<SocketAddr>>) {
+    /// Pin en kandidaten opnieuw naar de dialer, als ze veranderden. Geleerde adressen
+    /// eerst: die zijn verser dan wat er in een code stond.
+    fn werk_doel_bij(&self) {
+        let kandidaten = uniek(self.geleerd.iter().chain(&self.code).copied(), usize::MAX);
         self.doel.send_if_modified(|d| {
             let oud = d.clone();
             d.pin = self.public_key;
             d.known_id = self.known_id;
-            if let Some(k) = kandidaten {
-                d.kandidaten = k;
-            }
+            d.kandidaten = kandidaten;
             *d != oud
         });
     }
 }
+
+/// Zonder dubbelen en zonder onbruikbare adressen, hooguit `max`, in volgorde.
+fn uniek(lijst: impl IntoIterator<Item = SocketAddr>, max: usize) -> Vec<SocketAddr> {
+    let mut uit = Vec::new();
+    for a in lijst {
+        if uit.len() == max {
+            break;
+        }
+        if is_bruikbaar(&a) && !uit.contains(&a) {
+            uit.push(a);
+        }
+    }
+    uit
+}
+
+/// Zet `nieuw` vooraan in `lijst` en begrenst hem op `max`. `true` als er iets veranderde.
+///
+/// Staat alles uit `nieuw` er al in, dan verandert er niets, ook niet de volgorde: anders
+/// zouden twee peers die ons op verschillende adressen zien de lijst om beurten omgooien, en
+/// zou elke omgooiing een nieuw `Addresses` naar iedereen zijn (gevonden door de reviewer).
+fn onthoud(
+    lijst: &mut Vec<SocketAddr>,
+    nieuw: impl IntoIterator<Item = SocketAddr>,
+    max: usize,
+) -> bool {
+    let nieuw: Vec<SocketAddr> = nieuw.into_iter().filter(is_bruikbaar).collect();
+    if nieuw.iter().all(|a| lijst.contains(a)) {
+        return false;
+    }
+    let samen = uniek(nieuw.into_iter().chain(lijst.iter().copied()), max);
+    let anders = samen != *lijst;
+    *lijst = samen;
+    anders
+}
+
+/// Dezelfde adressen, de volgorde daargelaten.
+fn zelfde_set(a: &[SocketAddr], b: &[SocketAddr]) -> bool {
+    let (mut a, mut b) = (a.to_vec(), b.to_vec());
+    a.sort_unstable();
+    b.sort_unstable();
+    a == b
+}
+
+/// Zelfde inhoud, de volgorde van de lijsten daargelaten: dan hoeft het niet opnieuw.
+fn zelfde_adressen(a: &Addresses, b: &Addresses) -> bool {
+    let anderen = |x: &Addresses| {
+        let mut o: Vec<(PeerId, Vec<SocketAddr>, Vec<SocketAddr>)> = x
+            .others
+            .iter()
+            .map(|p| {
+                let (mut c, mut m) = (p.control.clone(), p.media.clone());
+                c.sort_unstable();
+                m.sort_unstable();
+                (p.peer, c, m)
+            })
+            .collect();
+        o.sort_unstable();
+        o
+    };
+    zelfde_set(&a.control, &b.control)
+        && zelfde_set(&a.media, &b.media)
+        && a.you_are == b.you_are
+        && a.media_you_are == b.media_you_are
+        && anderen(a) == anderen(b)
+}
+
+/// Zoveel eigen adressen leren we van wat peers zeggen (`you_are`): genoeg voor een paar peers
+/// die ons op verschillende adressen zien, en klein genoeg dat de eigen LAN- en tailnet-adressen
+/// er altijd nog bij passen, ook als een peer onzin stuurt.
+const MAX_GEZIEN: usize = 4;
+
+/// Sneller dan dit na elkaar neemt de actor geen `Addresses` van dezelfde peer aan. Een eerlijke
+/// peer stuurt hooguit één per tik van een seconde.
+const ADRESSEN_PAUZE: Duration = Duration::from_millis(500);
 
 /// Wat de actor nodig heeft om er een target bij te zetten terwijl de mesh draait (B1).
 struct Spawner {
@@ -721,6 +850,8 @@ struct Active {
     conn_id: u64,
     target: Option<usize>,
     display_name: String,
+    /// Het bronadres van de verbinding: `you_are` voor hem, en hoe wij hem anderen melden.
+    remote: SocketAddr,
     media_addr: SocketAddr,
     app_version: String,
     conn: quinn::Connection,
@@ -753,6 +884,17 @@ struct Actor {
     /// De laatst gemelde eigen control-adressen (`MeshEvent::EigenAdressen`).
     eigen: Vec<SocketAddr>,
     tikken: u32,
+    /// B2: wat de router laatst zei.
+    mapping: Option<Mapping>,
+    /// De IP's van deze pc zelf (`lokale_ips`), eens per [`EIGEN_ELKE`] tikken opgezocht.
+    lokaal: Vec<IpAddr>,
+    /// B4: hoe peers ons zagen (`you_are`, `media_you_are`), de nieuwste eerst.
+    gezien_control: Vec<SocketAddr>,
+    gezien_media: Vec<SocketAddr>,
+    /// B4: wat elke peer laatst van ons hoorde; opnieuw alleen bij een wijziging.
+    adressen_verstuurd: HashMap<PeerId, Addresses>,
+    /// B4: wanneer elke peer ons laatst `Addresses` stuurde (zie [`ADRESSEN_PAUZE`]).
+    adressen_ontvangen: HashMap<PeerId, Instant>,
 }
 
 /// Hoe lang een niet te koppelen inkomende beller blijft wachten voordat we concluderen
@@ -790,6 +932,11 @@ impl Actor {
                 }
                 Internal::Closed { conn_id, reason } => self.on_closed(conn_id, reason).await,
                 Internal::Tick => self.on_tick().await,
+                Internal::Mapping(m) => {
+                    let _ = self.events.send(MeshEvent::Bereik(m.bereik.clone())).await;
+                    self.mapping = Some(m);
+                    self.meld_eigen_adressen().await;
+                }
             }
         }
         // De endpoint wordt door de shutdown-taak gesloten, niet hier: die moet ook
@@ -810,6 +957,8 @@ impl Actor {
             public_key: t.public_key,
             bound: None,
             last_status: None,
+            code: t.kandidaten.clone(),
+            geleerd: Vec::new(),
         });
         let Some(s) = &self.spawner else { return };
         let Some(int) = s.int.upgrade() else { return };
@@ -824,14 +973,34 @@ impl Actor {
         ));
     }
 
-    /// De eigen control-adressen opnieuw opzoeken, en melden als ze veranderden.
+    /// Waar deze pc zijn control-poort of zijn mediapoort bereikbaar denkt: wat de router
+    /// opende, hoe peers ons zagen, en de eigen IP's. Die volgorde: het eerste is wat een
+    /// ander van buiten het best bereikt.
+    fn eigen_adressen(&self, media: bool) -> Vec<SocketAddr> {
+        let (gemapt, gezien, poort) = if media {
+            let m = self.mapping.as_ref().and_then(|m| m.media);
+            (m, &self.gezien_media, self.cfg.media_port)
+        } else {
+            let c = self.mapping.as_ref().and_then(|m| m.control);
+            (c, &self.gezien_control, self.cfg.control_port)
+        };
+        uniek(
+            gemapt
+                .map(SocketAddr::V4)
+                .into_iter()
+                .chain(gezien.iter().copied())
+                .chain(self.lokaal.iter().map(|&ip| SocketAddr::new(ip, poort))),
+            Addresses::MAX,
+        )
+    }
+
+    /// De eigen IP's opnieuw opzoeken en de control-adressen melden als ze veranderden.
     async fn meld_eigen_adressen(&mut self) {
-        let poort = self.cfg.control_port;
-        let nu: Vec<SocketAddr> = lokale_ips()
-            .into_iter()
-            .map(|ip| SocketAddr::new(ip, poort))
-            .collect();
-        if nu != self.eigen {
+        if self.tikken.is_multiple_of(EIGEN_ELKE) {
+            self.lokaal = lokale_ips();
+        }
+        let nu = self.eigen_adressen(false);
+        if !zelfde_set(&nu, &self.eigen) {
             self.eigen = nu.clone();
             let _ = self.events.send(MeshEvent::EigenAdressen(nu)).await;
         }
@@ -862,7 +1031,8 @@ impl Actor {
                 }
                 t.known_id = Some(known_id);
                 t.public_key = Some(public_key);
-                t.werk_doel_bij(Some(kandidaten));
+                t.code = kandidaten;
+                t.werk_doel_bij();
                 // Een geparkeerde beller kan nu op zijn sleutel gekoppeld worden.
                 self.retry_pending().await;
             }
@@ -1099,7 +1269,7 @@ impl Actor {
                 tracing::info!(peer = ?e.peer_id, remote = %e.remote, target, "sleutel vastgepind");
                 self.targets[target].known_id = Some(e.peer_id);
                 self.targets[target].public_key = Some(e.sleutel);
-                self.targets[target].werk_doel_bij(None);
+                self.targets[target].werk_doel_bij();
                 let _ = self
                     .events
                     .send(MeshEvent::LearnedIdentity {
@@ -1128,6 +1298,9 @@ impl Actor {
             }
             tracing::debug!(peer = ?e.peer_id, "dubbele verbinding: nieuwe is de voorkeur, oude sluiten");
             existing.conn.close(0u32.into(), b"dubbele verbinding");
+            // De nieuwe verbinding krijgt een vers `Addresses`; het `Closed` van de oude vindt
+            // hem straks niet meer in `active`.
+            self.adressen_verstuurd.remove(&e.peer_id);
         }
 
         tracing::info!(
@@ -1188,6 +1361,7 @@ impl Actor {
             media_addr,
             rtt_ms: e.conn.rtt().as_millis() as u32,
             app_version: e.app_version.clone(),
+            remote: e.remote,
         };
 
         self.active.insert(
@@ -1196,6 +1370,7 @@ impl Actor {
                 conn_id: e.conn_id,
                 target: Some(target),
                 display_name: e.display_name,
+                remote: e.remote,
                 media_addr,
                 app_version: e.app_version,
                 conn: e.conn,
@@ -1238,6 +1413,12 @@ impl Actor {
             return;
         };
 
+        // Adressen zijn van de mesh zelf (B4), niet van de app.
+        if let ControlMsg::Addresses(a) = msg {
+            self.on_adressen(from, a).await;
+            return;
+        }
+
         // Ping wordt hier afgehandeld: liveness hoort niet in de applicatielaag terecht
         // te komen. De rest gaat door naar de app.
         if let ControlMsg::Ping(p) = &msg {
@@ -1252,6 +1433,120 @@ impl Actor {
         }
 
         let _ = self.events.send(MeshEvent::Message { from, msg }).await;
+    }
+
+    /// Wat een verbonden peer over adressen vertelt (B4). Alles is een hint: het verandert
+    /// alleen waar we bellen en waar keepalives heen gaan, nooit wie er binnenkomt. Elke lijst
+    /// is begrensd, en een peer kan alleen over targets met een vastgepinde sleutel iets
+    /// zeggen.
+    async fn on_adressen(&mut self, from: PeerId, a: Addresses) {
+        let Some(active) = self.active.get(&from) else {
+            return;
+        };
+        // Een peer die blijft sturen kost ons per bericht een tabelkopie en een schrijfactie
+        // naar schijf; meer dan een eerlijke peer stuurt nemen we niet aan.
+        let nu = Instant::now();
+        if self
+            .adressen_ontvangen
+            .get(&from)
+            .is_some_and(|t| nu.duration_since(*t) < ADRESSEN_PAUZE)
+        {
+            return;
+        }
+        self.adressen_ontvangen.insert(from, nu);
+        let (target, media_hint) = (active.target, active.media_addr);
+        let max = Addresses::MAX;
+
+        // Hoe hij ons ziet. Loopback zegt een ander niets.
+        let buiten = |x: &SocketAddr| !x.ip().is_loopback();
+        let mut eigen_anders = onthoud(
+            &mut self.gezien_control,
+            a.you_are.filter(buiten),
+            MAX_GEZIEN,
+        );
+        eigen_anders |= onthoud(
+            &mut self.gezien_media,
+            a.media_you_are.filter(buiten),
+            MAX_GEZIEN,
+        );
+        if eigen_anders {
+            self.meld_eigen_adressen().await;
+        }
+
+        // Waar hij zelf zegt te zitten: om te bellen, en voor keepalives naar zijn mediasocket.
+        let mut hints = vec![media_hint];
+        hints.extend(a.media.iter().take(max).copied());
+        self.media.zet_hints(from, uniek(hints, max + 1));
+        let mut geleerd = vec![(target, a.control.into_iter().take(max).collect::<Vec<_>>())];
+
+        // Hoe hij de anderen ziet: zo vinden twee peers die elkaar niet bereiken elkaar toch.
+        for p in a.others.into_iter().take(max) {
+            if p.peer == self.cfg.me || p.peer == from {
+                continue;
+            }
+            let t = self
+                .targets
+                .iter()
+                .position(|t| t.known_id == Some(p.peer) && t.public_key.is_some());
+            geleerd.push((t, p.control.into_iter().take(max).collect()));
+        }
+
+        for (t, adressen) in geleerd {
+            let Some(t) = t else { continue };
+            let ts = &mut self.targets[t];
+            if !onthoud(&mut ts.geleerd, adressen, Addresses::MAX) {
+                continue;
+            }
+            ts.werk_doel_bij();
+            if let Some(peer_id) = ts.known_id {
+                let adressen = ts.geleerd.clone();
+                let _ = self
+                    .events
+                    .send(MeshEvent::Geleerd {
+                        target: t,
+                        peer_id,
+                        adressen,
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// Elke verbonden peer krijgt `Addresses` als wat wij hem zouden vertellen veranderde:
+    /// bij verbinden, als er een peer bij komt of weggaat, als de router of een peer ons een
+    /// ander adres geeft. Op de tik, dus hooguit eens per seconde per peer.
+    fn stuur_adressen(&mut self) {
+        let (control, media) = (self.eigen_adressen(false), self.eigen_adressen(true));
+        let gezien: Vec<(PeerId, SocketAddr)> =
+            self.active.iter().map(|(&p, a)| (p, a.remote)).collect();
+        for (&peer, a) in &self.active {
+            let msg = Addresses {
+                control: control.clone(),
+                media: media.clone(),
+                you_are: Some(a.remote),
+                media_you_are: self.media.geleerd(peer),
+                others: gezien
+                    .iter()
+                    .filter(|(p, _)| *p != peer)
+                    .take(Addresses::MAX)
+                    .map(|&(p, remote)| PeerAddresses {
+                        peer: p,
+                        control: vec![remote],
+                        media: self.media.geleerd(p).into_iter().collect(),
+                    })
+                    .collect(),
+            };
+            if self
+                .adressen_verstuurd
+                .get(&peer)
+                .is_some_and(|oud| zelfde_adressen(oud, &msg))
+            {
+                continue;
+            }
+            if a.out.try_send(ControlMsg::Addresses(msg.clone())).is_ok() {
+                self.adressen_verstuurd.insert(peer, msg);
+            }
+        }
     }
 
     async fn on_closed(&mut self, conn_id: u64, reason: String) {
@@ -1278,6 +1573,8 @@ impl Actor {
         // En pas daarna uit `active`, en alleen als deze verbinding daar nog echt staat.
         if let Some((&peer, _)) = self.active.iter().find(|(_, a)| a.conn_id == conn_id) {
             self.active.remove(&peer);
+            self.adressen_verstuurd.remove(&peer);
+            self.adressen_ontvangen.remove(&peer);
             tracing::info!(peer = ?peer, %reason, "verbinding verbroken");
         }
 
@@ -1291,6 +1588,7 @@ impl Actor {
         if self.tikken.is_multiple_of(EIGEN_ELKE) {
             self.meld_eigen_adressen().await;
         }
+        self.stuur_adressen();
 
         let updates: Vec<(usize, PeerStatus)> = self
             .active
@@ -1305,6 +1603,7 @@ impl Actor {
                             media_addr: a.media_addr,
                             rtt_ms: a.conn.rtt().as_millis() as u32,
                             app_version: a.app_version.clone(),
+                            remote: a.remote,
                         },
                     )
                 })
@@ -1614,6 +1913,9 @@ async fn opzetten(
                 public_key: cfg.sleutel.public_key().as_ref().to_vec(),
                 signature: teken(&cfg.sleutel, &conn, Handtekening::BELLER)?,
                 media_index: mijn_index,
+                // Niet op het configadres: daar meldt een herinstallatie zich als andere
+                // identiteit (fase A), en dat zou een stille close verbergen.
+                voor: if bij_config { None } else { doel.known_id },
             }),
         )
         .await?;
@@ -1948,6 +2250,19 @@ async fn accept_one(
         bail!("peer meldde onze eigen identiteit");
     }
 
+    // B3: hij zocht een ander (een verouderd adres). Stil, vóór de actor, zodat zijn
+    // verbinding met ons niet als botsing de echte wegdrukt.
+    if hello.voor.is_some_and(|v| v != cfg.me) {
+        conn.close(0u32.into(), b"");
+        let _ = int
+            .send(Internal::Geweigerd {
+                ip: remote.ip(),
+                reden: "zocht een andere peer",
+            })
+            .await;
+        return Ok(());
+    }
+
     // De actor kent de pins en de targets. Hij antwoordt binnen `PENDING_GRACE`, ook als
     // het antwoord "nee" is; daarom staat dit buiten de deadline hierboven.
     //
@@ -2242,6 +2557,8 @@ mod tests {
                 public_key: None,
                 bound: None,
                 last_status: None,
+                code: Vec::new(),
+                geleerd: Vec::new(),
             });
         }
         let actor = Actor {
@@ -2253,6 +2570,7 @@ mod tests {
                 targets: targets.clone(),
                 app_version: "1.0.0".into(),
                 sleutel: wegwerpsleutel(),
+                port_mapping: false,
             },
             active: HashMap::new(),
             targets: target_state,
@@ -2264,6 +2582,12 @@ mod tests {
             spawner: None,
             eigen: Vec::new(),
             tikken: 0,
+            mapping: None,
+            lokaal: Vec::new(),
+            gezien_control: Vec::new(),
+            gezien_media: Vec::new(),
+            adressen_verstuurd: HashMap::new(),
+            adressen_ontvangen: HashMap::new(),
         };
         (actor, rx, vlaggen)
     }
@@ -2349,6 +2673,46 @@ mod tests {
         assert!(max_inkomend(12) >= 12 * 8);
         // Maar wel eindig, want dat is het hele punt van B-17.
         assert!(max_inkomend(3) <= 64);
+    }
+
+    #[test]
+    fn bekende_adressen_gooien_de_volgorde_niet_om() {
+        // Twee peers die ons op een ander adres zien sturen om beurten hun `you_are`. Stond
+        // het al in de lijst, dan mag dat niets veranderen: anders gaat er bij elke beurt een
+        // nieuw `Addresses` naar iedereen, en zingt het rond.
+        let (a, b, c): (SocketAddr, SocketAddr, SocketAddr) = (
+            "84.1.2.3:41650".parse().unwrap(),
+            "192.168.2.5:41650".parse().unwrap(),
+            "100.64.0.9:41650".parse().unwrap(),
+        );
+        let mut lijst = Vec::new();
+        assert!(onthoud(&mut lijst, [a], 4));
+        assert!(onthoud(&mut lijst, [b], 4));
+        assert_eq!(lijst, vec![b, a]);
+        for _ in 0..3 {
+            assert!(!onthoud(&mut lijst, [a], 4));
+            assert!(!onthoud(&mut lijst, [b], 4));
+        }
+        assert_eq!(lijst, vec![b, a]);
+        assert!(onthoud(&mut lijst, [c], 4));
+        assert_eq!(lijst[0], c);
+        // Begrensd, en rommel komt er niet in.
+        assert!(!onthoud(&mut lijst, ["0.0.0.0:1".parse().unwrap()], 4));
+        let veel: Vec<SocketAddr> = (1..=9)
+            .map(|i| SocketAddr::from(([10, 0, 0, i], 1)))
+            .collect();
+        onthoud(&mut lijst, veel, 4);
+        assert_eq!(lijst.len(), 4);
+        // Volgorde telt niet bij het vergelijken van wat we versturen.
+        let x = Addresses {
+            control: vec![a, b],
+            ..Addresses::default()
+        };
+        let y = Addresses {
+            control: vec![b, a],
+            ..Addresses::default()
+        };
+        assert!(zelfde_adressen(&x, &y));
     }
 
     #[test]
@@ -2544,6 +2908,7 @@ mod tests {
             media_port: 0,
             app_version: "1.0.0".into(),
             sleutel: wegwerpsleutel(),
+            port_mapping: false,
             targets: vec![PeerTarget {
                 address: "127.0.0.1".into(),
                 label: "A".into(),
@@ -2578,6 +2943,7 @@ mod tests {
             public_key: sleutel.public_key().as_ref().to_vec(),
             signature: handtekening,
             media_index: 0,
+            voor: None,
         })
     }
 

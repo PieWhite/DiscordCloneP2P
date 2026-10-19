@@ -206,6 +206,25 @@ impl MediaSleutels {
         self.0.store(Arc::new(t));
     }
 
+    /// Waar keepalives naar `peer` heen mogen zolang er van hem niets geleerd is. Doet niets
+    /// voor een peer zonder verbinding. De aanroeper begrenst: dit komt deels van de draad (B4).
+    pub(crate) fn zet_hints(&self, peer: PeerId, hints: Vec<SocketAddr>) {
+        let oud = self.0.load();
+        let zelfde = |h: &[SocketAddr]| {
+            let (mut a, mut b) = (h.to_vec(), hints.clone());
+            a.sort_unstable();
+            b.sort_unstable();
+            a == b
+        };
+        if !oud.zend.contains_key(&peer) || oud.hints.get(&peer).is_some_and(|h| zelfde(h)) {
+            return;
+        }
+        let mut t = Tabel::clone(&oud);
+        t.hints.insert(peer, Arc::new(hints));
+        t.versie += 1;
+        self.0.store(Arc::new(t));
+    }
+
     /// Het laatst geleerde bronadres van de mediasocket van `peer`, als hij één socket heeft.
     pub fn geleerd(&self, peer: PeerId) -> Option<SocketAddr> {
         self.0

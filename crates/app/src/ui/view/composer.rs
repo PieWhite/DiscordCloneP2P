@@ -1263,6 +1263,7 @@ mod window_tests {
             user_status: None,
             activity: None,
             problem: None,
+            path: None,
             app_version: None,
             in_call: false,
             volume: 1.0,

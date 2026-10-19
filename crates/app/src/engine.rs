@@ -789,7 +789,10 @@ impl Engine {
         // die korter loopt, de router van de testmachine nooit aan. Was er nog geen router
         // te vinden (autostart vóór de wifi, of een VPN), dan één keer opnieuw: anders lijkt
         // die screenshot op een router die niets kan, en op die regel rust de keuze voor fase C.
-        {
+        // Met port mapping (B2) meet de mesh dit zelf, live, en meldt het als
+        // `MeshEvent::Bereik`: een tweede, tijdelijke mapping op dezelfde poort zou die van
+        // de mesh bij het vrijgeven meenemen.
+        if !self.cfg.port_mapping {
             let tx = self.file_tx.clone();
             let poort = self.cfg.control_port;
             tokio::spawn(async move {
@@ -983,6 +986,20 @@ impl Engine {
                 if let Some(p) = self.peers.get_mut(target) {
                     p.peer_id = Some(peer_id);
                 }
+            }
+
+            MeshEvent::Geleerd {
+                peer_id, adressen, ..
+            } => {
+                let pad = self.config_path.with_file_name("adressen.json");
+                if let Err(e) = crate::adressen::bewaar(&pad, peer_id, &adressen) {
+                    tracing::warn!(error = %format!("{e:#}"), "adressen.json niet bijgewerkt");
+                }
+            }
+
+            MeshEvent::Bereik(b) => {
+                tracing::info!(bereik = %b, "bereikbaarheid (port mapping)");
+                self.bereik = Some(b);
             }
 
             MeshEvent::EigenAdressen(adressen) => {

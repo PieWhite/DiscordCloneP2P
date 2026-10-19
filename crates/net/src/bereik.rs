@@ -41,6 +41,9 @@ pub struct Bereik {
     pub extern_v4: Option<Ipv4Addr>,
     /// Of deze pc een globaal IPv6-adres heeft.
     pub ipv6: bool,
+    /// Sinds B2: waar de control-poort van buiten te bereiken is, als de router hem
+    /// openzette. Bij de eenmalige meting van A0 (zonder port mapping) altijd leeg.
+    pub gemapt: Option<std::net::SocketAddrV4>,
 }
 
 /// Wat het externe adres over de verbinding naar buiten zegt.
@@ -140,6 +143,7 @@ async fn meet_hier(poort: u16) -> Bereik {
         nat_pmp,
         extern_v4,
         ipv6: heeft_globaal_ipv6(),
+        gemapt: None,
     }
 }
 
@@ -152,7 +156,7 @@ async fn meet_hier(poort: u16) -> Bereik {
 ///
 /// shortcut: alleen het voorkeursbronadres en geen lijst van alle interfaces (netwatch
 /// opent daarvoor op Windows WMI); bij B7 de interfaces echt opsommen.
-fn heeft_globaal_ipv6() -> bool {
+pub(crate) fn heeft_globaal_ipv6() -> bool {
     let bron = std::net::UdpSocket::bind("[::]:0")
         .and_then(|s| s.connect("[2001:db8::1]:9").map(|()| s))
         .and_then(|s| s.local_addr());

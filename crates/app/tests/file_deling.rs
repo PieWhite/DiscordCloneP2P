@@ -37,6 +37,7 @@ fn config(naam: &str, eigen: u16, ander: u16, downloads: &Path) -> Config {
         control_port: eigen,
         media_port: 0,
         bind_address: fitcom::config::ALLE_INTERFACES.to_string(),
+        port_mapping: false,
         minimize_to_tray: false,
         autostart: false,
         input_device: None,
@@ -73,6 +74,7 @@ fn start(
         media_port: 0,
         app_version: "0.1.0".to_string(),
         sleutel: fitcom_net::wegwerpsleutel(),
+        port_mapping: false,
         targets: vec![PeerTarget {
             address: "127.0.0.1".into(),
             label: "ander".into(),
@@ -109,6 +111,7 @@ fn start_op_schijf(
         media_port: 0,
         app_version: "0.1.0".to_string(),
         sleutel: fitcom_net::wegwerpsleutel(),
+        port_mapping: false,
         targets: vec![],
     })
     .unwrap();
