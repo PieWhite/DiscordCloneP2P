@@ -10,6 +10,8 @@ anyhow = "1.0.104"
 # De mediasleuteltabel: de mesh-actor schrijft hem, de mediathreads lezen hem zonder lock
 # (beslissing 46). Stond al in de lockfile.
 arc-swap = "1.9.2"
+# B5: de ene mediathread geeft pakketten door aan audio en kijkers, zoals die crates al doen.
+crossbeam-channel = "0.5.16"
 fitcom-proto.workspace = true
 # A0: één keer meten wat de router doet (UPnP, PCP, NAT-PMP) en welk adres hij naar buiten
 # toont. Een port van de portmapper van Tailscale, die op Ricks router NAT-PMP en PCP vond

@@ -22,6 +22,7 @@
 //! goedgekeurd (B-05a): wie niet binnenkomt hoort niets terug, ook geen naam of versie.
 
 use crate::mediasleutel::{self, MediaSleutels};
+use crate::verdeler::Verdeler;
 use crate::{framing, tls};
 use anyhow::{bail, Context, Result};
 use fitcom_proto::control::{Handtekening, Hello, HelloAck};
@@ -250,9 +251,12 @@ pub struct MeshHandle {
     pub events: mpsc::Receiver<MeshEvent>,
     /// Het adres waarop we daadwerkelijk luisteren.
     pub local_addr: SocketAddr,
-    /// De mediasleutels van de verbonden peers. Geef een kloon aan elke `MediaSocket`; de
-    /// mesh houdt hem bij bij verbinden en verbreken.
+    /// De mediasleutels van de verbonden peers. De mesh houdt ze bij bij verbinden en
+    /// verbreken; [`MeshHandle::post`] versleutelt en opent ermee.
     pub media: MediaSleutels,
+    /// De ene mediasocket van dit proces, op `media_port` (fase B5). Geef een kloon aan de
+    /// voice-sessie, elke deler en elke kijker.
+    pub post: Verdeler,
     endpoint: quinn::Endpoint,
     /// De UDP-socket onder `endpoint`, alleen om in [`MeshHandle::shutdown`] te zien wanneer
     /// niemand anders hem nog vasthoudt.
@@ -322,11 +326,12 @@ impl MeshSluiter {
 
 /// Zet alle netwerktaken stil zodra de handle wegvalt. Zonder dit blijft de UDP-poort
 /// bezet en blijven dialers doorproberen nadat de app ze niet meer nodig heeft.
-struct ShutdownGuard(watch::Sender<bool>);
+struct ShutdownGuard(watch::Sender<bool>, Verdeler);
 
 impl Drop for ShutdownGuard {
     fn drop(&mut self) {
         let _ = self.0.send(true);
+        self.1.stop();
     }
 }
 
@@ -433,6 +438,22 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
     let (int_tx, int_rx) = mpsc::channel(1024);
     let (stop_tx, stop_rx) = watch::channel(false);
     let media = MediaSleutels::default();
+    // Bij het starten en niet bij deelnemen aan het gesprek: de keepalives houden het gat
+    // in de NAT open voordat iemand praat of deelt, en de handshake noemt de echte poort.
+    //
+    // Is de poort bezet, dan een vrije in plaats van niet starten (invariant 7): de handshake
+    // noemt de echte poort, dus de anderen vinden hem toch.
+    let post = match Verdeler::start(cfg.media_port, media.clone()) {
+        Ok(p) => p,
+        Err(e) if cfg.media_port != 0 => {
+            tracing::warn!(poort = cfg.media_port, error = %format!("{e:#}"),
+                "mediapoort bezet; een vrije poort gekozen");
+            Verdeler::start(0, media.clone()).context("mediapoort binden")?
+        }
+        Err(e) => return Err(e),
+    };
+    let mut cfg = cfg;
+    cfg.media_port = post.poort();
 
     // Commando's van de UI lopen door dezelfde interne wachtrij als netwerkgebeurtenissen,
     // zodat de actor één bron van waarheid heeft en geen locks nodig heeft.
@@ -542,9 +563,10 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         events: event_rx,
         local_addr,
         media,
+        post: post.clone(),
         endpoint,
         socket,
-        _shutdown: ShutdownGuard(stop_tx),
+        _shutdown: ShutdownGuard(stop_tx, post),
     })
 }
 
@@ -1040,6 +1062,7 @@ impl Actor {
             e.hun_index,
             ontvang,
             e.mijn_index,
+            media_addr,
         );
 
         let status = PeerStatus::Online {

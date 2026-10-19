@@ -26,7 +26,7 @@
 //! MTU van 1280, geen jitter en geen verlies op de lijn. Verlies dat je hier ziet komt
 //! van buffers aan deze kant, niet van het netwerk.
 
-use fitcom_net::{MediaSleutels, PeerAdres};
+use fitcom_net::{MediaSleutels, PeerAdres, Verdeler};
 use fitcom_proto::PeerId;
 use fitcom_video::capture::{afmeting_van, BronSoort};
 use fitcom_video::{beschikbare_bronnen, deel, kijk, Codec, D3dContext, DelerConfig, KijkerConfig};
@@ -65,6 +65,10 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
     let sleutels = MediaSleutels::default();
     let (deler_id, kijker_id) = (PeerId::new_random(), PeerId::new_random());
     MediaSleutels::koppel((&sleutels, deler_id), (&sleutels, kijker_id));
+    // Elk zijn eigen mediasocket, zoals twee peers (fase B5): de kijker luistert op die van
+    // zichzelf, de deler verstuurt vanaf de zijne.
+    let post_kijker = Verdeler::start(0, sleutels.clone()).expect("mediasocket kijker");
+    let post_deler = Verdeler::start(0, sleutels.clone()).expect("mediasocket deler");
     let kijker = kijk(
         &d3d,
         KijkerConfig {
@@ -74,7 +78,7 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             hoogte,
             codec: Codec::H264,
             afzender: deler_id,
-            sleutels: sleutels.clone(),
+            post: post_kijker.clone(),
         },
     )
     .expect("kijker starten");
@@ -96,7 +100,7 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             // Geen terugblik: deze test meet de keten, en een miniatuur per halve
             // seconde ernaast zou meten wat er niet gemeten wordt.
             voorbeeld: false,
-            sleutels,
+            post: post_deler,
         },
         vec![doel],
     )

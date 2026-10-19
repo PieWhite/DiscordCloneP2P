@@ -6,7 +6,7 @@
 
 use fitcom_net::{
     spawn, wegwerpsleutel, MediaSocket, MeshCommand, MeshConfig, MeshEvent, MeshHandle, PeerAdres,
-    PeerStatus, PeerTarget, MAX_PAKKET,
+    PeerStatus, PeerTarget,
 };
 use fitcom_proto::control::OpBroadcast;
 use fitcom_proto::{Channel, ControlMsg, Op, OpKind, PeerId};
@@ -392,17 +392,16 @@ async fn verbonden_peers_delen_mediasleutels_en_niemand_anders() {
     // Na een botsing hoort de winnende verbinding aan beide kanten even te landen.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let (ma, mb) = (a.media.clone(), b.media.clone());
+    // Via de mediasocket van elke mesh (fase B5): A verstuurt vanaf de zijne, B luistert op de
+    // zijne. Een losse socket ernaast zou na de eerste keepalive omzeild worden, want dan gaat
+    // alles naar het geleerde adres van B's mediasocket.
+    let (post_a, post_b) = (a.post.clone(), b.post.clone());
     let uitkomst = tokio::task::spawn_blocking(move || {
-        let zender = MediaSocket::bind(0, ma).unwrap();
-        let mut ontvanger = MediaSocket::bind(0, mb).unwrap();
-        ontvanger.zet_timeout(Duration::from_millis(200)).unwrap();
+        let zender = post_a.zender().unwrap();
+        let rij = post_b.luister_geluid();
         let naar_b = PeerAdres {
             id: idb,
-            addr: std::net::SocketAddr::from((
-                [127, 0, 0, 1],
-                ontvanger.local_addr().unwrap().port(),
-            )),
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], post_b.poort())),
         };
         let header = fitcom_proto::MediaHeader {
             stream_id: 0,
@@ -413,11 +412,10 @@ async fn verbonden_peers_delen_mediasleutels_en_niemand_anders() {
             frag_index: 0,
         };
         zender.stuur(naar_b, &header, b"hoi").unwrap();
-        let mut buf = [0u8; MAX_PAKKET];
-        let ontvangen = ontvanger
-            .ontvang(&mut buf)
-            .unwrap()
-            .map(|(van, h, p)| (van, h.seq, p.to_vec()));
+        let ontvangen = rij
+            .recv_timeout(Duration::from_secs(2))
+            .ok()
+            .map(|p| (p.van, p.header.seq, p.payload));
 
         // Een derde zonder verbinding heeft geen sleutel voor B, en wat hij met een eigen
         // tabel stuurt gaat bij B niet open.
@@ -425,7 +423,7 @@ async fn verbonden_peers_delen_mediasleutels_en_niemand_anders() {
         fitcom_net::MediaSleutels::koppel((&vreemd, PeerId::new_random()), (&vreemd, idb));
         let indringer = MediaSocket::bind(0, vreemd).unwrap();
         indringer.stuur(naar_b, &header, b"nep").unwrap();
-        let geweigerd = ontvanger.ontvang(&mut buf).unwrap().is_none();
+        let geweigerd = rij.recv_timeout(Duration::from_millis(300)).is_err();
         (ontvangen, geweigerd)
     })
     .await

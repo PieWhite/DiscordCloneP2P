@@ -68,13 +68,26 @@ Beeldvullend zit op F11 en dubbelklik, zonder modeswitch — er kan een game op 
 scherm draaien. De swapchain houdt de afmeting van de stream en DXGI schaalt bij het
 presenteren; het venster bewaakt zelf de beeldverhouding.
 
-### Waarom elke kijker een eigen UDP-poort bindt
-Video kan niet over de voice-poort: die is bezet zodra je in een gesprek zit. De kijker
-bindt daarom per stream zijn eigen poort en zet die in `StreamSubscribe.media_port`.
-Daardoor is er niets te demultiplexen — één socket, één stream, één thread, één venster —
-en botsen video en voice nergens. *(Fase B5 van `docs/PLAN-ZONDER-TAILSCALE.md` gaat naar één
-mediasocket per proces, omdat achter een NAT elke socket een eigen gat is; sinds protocol 6
-draagt elk pakket al de sleutel van zijn afzender, dus demultiplexen wordt dan veilig.)*
+### Eén mediasocket per proces (fase B5)
+Tot fase B5 bond elke kijker per stream een eigen poort, de deler verstuurde vanaf weer een
+andere, en de voice-sessie bond `media_port` pas bij deelnemen. Op een tailnet kon dat; achter
+een NAT is elke socket een eigen gat dat iemand moet doorprikken, en de kijker wist niet eens
+naar welke poort. Nu bindt de mesh bij het starten één socket op `media_port`
+(`crates/net/src/verdeler.rs`, `MeshHandle::post`), zoals BUNDLE in WebRTC. Eén ontvangthread
+ontsleutelt en verdeelt over begrensde rijen: Opus naar de audiosessie, beeld per
+`(afzender, stream_id)` naar de kijker die erop intekende. Dat demultiplexen is veilig omdat
+elk pakket sinds protocol 6 opengaat met de sleutel van zijn afzender, en de `stream_id` in
+het versleutelde deel zit. De thread wacht nooit op een consument: wie achterloopt verliest wat
+niet meer in zijn rij past. Deler, voice-sessie en keepalives versturen vanaf klonen van
+dezelfde socket. `StreamSubscribe.media_port` en `VoiceJoin.media_port` zijn die ene poort;
+een peer van vóór B5 gebruikt ze nog als adres van zijn eigen losse sockets.
+
+**Roaming.** Per verbinding één adresvak: het bronadres van het laatste echte pakket van die
+peer, zoals WireGuard. Het wordt pas gevuld nadat er van die verbinding een keepalive
+(`PayloadType::KEEPALIVE`) binnenkwam: alleen een peer met één socket stuurt die. Daarna gaat
+alles naar dat adres in plaats van naar zijn IP met de aangekondigde poort; dat dekt een NAT
+die de poort herschrijft. Een peer zonder B5 houdt het gedrag van protocol 6 zonder B5. Leren
+gebeurt pas ná tag en replayvenster.
 
 ### NV12 naar BGRA
 De decoder levert NV12, een swapchain wil BGRA. Die omzetting gaat via
@@ -87,7 +100,8 @@ niet omdat je alleen je eigen scherm kent.
 
 ```
 main thread            weergavelaag — pure weergave van een momentopname
-tokio runtime          motor (oplog + mesh), quinn control-mesh, UDP media-sockets
+tokio runtime          motor (oplog + mesh), quinn control-mesh
+media thread           de ene UDP-mediasocket: ontsleutelen, roaming, keepalives, verdelen
 capture thread(s)      WGC → D3D11 texture → encoder → UDP  (één per gedeelde bron)
 render thread(s)       UDP → decoder → D3D11 swapchain      (één per bekeken stream)
 audio capture thread   WASAPI → nnnoiseless → VAD → Opus → UDP
@@ -282,7 +296,15 @@ offset  size  veld
 - Een onbekende index is één tabelopzoeking, geen cryptografie. Teller en index 0 zijn
   gereserveerd.
 - Replayvenster van 2048 tellers per (ontvangende socket, index), plus een hoogste-tellermerk
-  per sleutel over alle sockets; pas gemarkeerd ná geslaagd ontsleutelen.
+  per sleutel over alle sockets; pas gemarkeerd ná geslaagd ontsleutelen. Sinds fase B5 is er
+  één ontvangende socket per proces, die niet opnieuw opgebouwd wordt bij opnieuw deelnemen of
+  intekenen: een opgevangen pakket naar een verse socket herhalen kan dus niet meer.
+- **Keepalive** (fase B5): een leeg pakket met `payload_type = 0xff` en stream-id `u32::MAX`,
+  44 bytes UDP-payload, elke 15 s naar elke verbonden peer (de eerste 20 s na een nieuwe
+  verbinding of hint elke seconde). Naar het geleerde adres, anders naar elke hint. Wie er een
+  ontvangt mag die verbinding voortaan roamen (zie "Eén mediasocket per proces"). Een peer
+  zonder B5 opent hem en laat hem liggen: audio neemt alleen Opus, een kijker alleen zijn
+  eigen stream.
 - Wat niet opengaat (onbekende index, foute tag, herhaling, te oud) wordt stil weggegooid,
   net als rommel die te kort is. `MediaSocket::ontvang` levert de bewezen afzender (`PeerId`),
   geen bronadres.
@@ -295,7 +317,7 @@ offset  size  veld
 0       4     stream_id   u32  (voice = 0, screenshare = 1.., desktop-audio = eigen id)
 4       4     seq         u32  monotoon per stream
 8       4     timestamp   u32  90 kHz voor video, 48 kHz voor audio
-12      1     payload_type u8  (0=opus, 1=hevc, 2=h264)
+12      1     payload_type u8  (1=opus, 2=hevc, 3=h264, 0xff=keepalive)
 13      1     flags       u8   bit0 = keyframe, bit1 = laatste fragment, bit2 = pariteit
 14      2     frag_index  u16
 ```
@@ -978,7 +1000,7 @@ terug met een waarschuwing in het log, en mislukt het opnieuw binden zoals voorh
 crates/
   proto/     ControlMsg, Op, media-header, version vector — geen I/O, puur en testbaar
   store/     rusqlite, oplog, timeline-opbouw, sync-berekening
-  net/       quinn mesh, reconnect, UDP media-sockets, uni-streams voor bestandsbytes
+  net/       quinn mesh, reconnect, de ene UDP-mediasocket, uni-streams voor bestandsbytes
   audio/     capture, opus, jitterbuffer, mix, ns/vad
   video/     WGC capture, MF encoder en decoder, kleuromzetting, D3D11 render-venster,
              deler- en kijker-thread

@@ -26,7 +26,7 @@ use crate::codec::{Codec, Encoder, EncoderConfig, HNS_PER_SEC};
 use crate::d3d::D3dContext;
 use crate::fragment::headers_voor;
 use anyhow::{Context, Result};
-use fitcom_net::{MediaSleutels, MediaSocket, PeerAdres};
+use fitcom_net::{PeerAdres, Verdeler};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -90,9 +90,10 @@ pub struct DelerConfig {
     /// decoder aan te pas — dat is ook het enige dat kán, want Media Foundation geeft een
     /// camera niet twee keer uit.
     pub voorbeeld: bool,
-    /// De mediasleutels van de mesh (`MeshHandle::media`): elk fragment gaat versleuteld
-    /// naar elke kijker.
-    pub sleutels: MediaSleutels,
+    /// De mediasocket van dit proces (`MeshHandle::post`, fase B5): elk fragment gaat
+    /// versleuteld naar elke kijker, vanaf die ene socket, zodat het gat in de NAT dat de
+    /// keepalives openhouden ook het gat van het beeld is.
+    pub post: Verdeler,
 }
 
 struct Gedeeld {
@@ -234,7 +235,7 @@ pub fn deel(d3d: &D3dContext, cfg: DelerConfig, kijkers: Vec<PeerAdres>) -> Resu
 }
 
 fn deel_lus(d3d: &D3dContext, cfg: &DelerConfig, gedeeld: &Arc<Gedeeld>) -> Result<()> {
-    let socket = MediaSocket::bind(0, cfg.sleutels.clone()).context("uitgaande mediapoort")?;
+    let socket = cfg.post.zender().context("uitgaande mediapoort")?;
     let mut capture = Capture::start(d3d, &cfg.bron)?;
     let (breedte, hoogte) = capture.afmeting();
 

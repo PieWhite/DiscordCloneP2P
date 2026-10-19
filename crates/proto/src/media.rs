@@ -40,7 +40,17 @@ impl PayloadType {
     pub const OPUS: Self = Self(1);
     pub const HEVC: Self = Self(2);
     pub const H264: Self = Self(3);
+    /// Fase B5: een leeg pakket elke 15 s naar elke verbonden peer, zodat het gat in de NAT
+    /// openstaat voordat iemand praat of deelt. Wie er een ontvangt weet dat de afzender één
+    /// mediasocket heeft en mag voortaan antwoorden naar het bronadres van zijn pakketten
+    /// (roaming, `crates/net/src/mediasleutel.rs`). Additief: een peer zonder B5 opent hem
+    /// wel, maar audio laat alles behalve Opus liggen en een kijker alles van een andere
+    /// stream. Bovenaan de reeks, zodat een volgende codec gewoon 4 kan nemen.
+    pub const KEEPALIVE: Self = Self(0xff);
 }
+
+/// De stream-id van een keepalive. Geen echte stream: de deler deelt id's uit vanaf 1.
+pub const KEEPALIVE_STREAM_ID: u32 = u32::MAX;
 
 /// Stream 0 is altijd voice. Screenshare- en desktop-audio-streams krijgen id's vanaf 1,
 /// toegekend door de deler.
@@ -140,6 +150,17 @@ mod tests {
             grootste + 40 + 8 <= 1280,
             "{grootste} bytes UDP-payload is te veel"
         );
+    }
+
+    #[test]
+    fn keepalive_ligt_vast_en_botst_met_niets() {
+        // Een peer die dit type kent leert er een bronadres van; het mag dus nooit een codec
+        // worden, en het getal staat vast tussen versies.
+        assert_eq!(PayloadType::KEEPALIVE.0, 0xff);
+        for codec in [PayloadType::OPUS, PayloadType::HEVC, PayloadType::H264] {
+            assert_ne!(codec, PayloadType::KEEPALIVE);
+        }
+        assert_ne!(KEEPALIVE_STREAM_ID, VOICE_STREAM_ID);
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! beide kanten. Daar is de periodieke microhapering in te dateren; de meterregels per
 //! seconde middelen hem juist weg.
 
-use fitcom_net::{MediaSleutels, PeerAdres};
+use fitcom_net::{MediaSleutels, PeerAdres, Verdeler};
 use fitcom_proto::PeerId;
 use fitcom_video::capture::{Bron, BronSoort};
 use fitcom_video::venster::Venster;
@@ -157,6 +157,10 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
     let sleutels = MediaSleutels::default();
     let (deler_id, kijker_id) = (PeerId::new_random(), PeerId::new_random());
     MediaSleutels::koppel((&sleutels, deler_id), (&sleutels, kijker_id));
+    // Elk zijn eigen mediasocket, zoals twee peers (fase B5): de kijker luistert op die van
+    // zichzelf, de deler verstuurt vanaf de zijne.
+    let post_kijker = Verdeler::start(0, sleutels.clone()).expect("mediasocket kijker");
+    let post_deler = Verdeler::start(0, sleutels.clone()).expect("mediasocket deler");
     let kijker = kijk(
         &d3d,
         KijkerConfig {
@@ -166,7 +170,7 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
             hoogte: h,
             codec,
             afzender: deler_id,
-            sleutels: sleutels.clone(),
+            post: post_kijker.clone(),
         },
     )
     .expect("kijker starten");
@@ -184,7 +188,7 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
             fps,
             bitrate,
             voorbeeld: false,
-            sleutels,
+            post: post_deler,
         },
         vec![doel],
     )

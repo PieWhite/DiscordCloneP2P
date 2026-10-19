@@ -1318,10 +1318,9 @@ impl Engine {
             return;
         }
         let cfg = VoiceConfig {
-            media_port: self.cfg.media_port,
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
-            sleutels: self.mesh.media.clone(),
+            post: self.mesh.post.clone(),
         };
         match fitcom_audio::start(cfg) {
             Ok(h) => {
@@ -1398,7 +1397,7 @@ impl Engine {
     fn meld_voice_status(&mut self, naar: Option<PeerId>) {
         let msg = if self.voice.is_some() {
             ControlMsg::VoiceJoin(VoiceJoin {
-                media_port: self.cfg.media_port,
+                media_port: self.mesh.post.poort(),
             })
         } else {
             ControlMsg::VoiceLeave(VoiceLeave {})
@@ -1986,7 +1985,7 @@ impl Engine {
                 // anderen zien. Wat wél alleen voor de camera geldt is dat de deler
                 // blijft bestaan zonder kijkers — zie `heeft_voorbeeld`.
                 voorbeeld: true,
-                sleutels: self.mesh.media.clone(),
+                post: self.mesh.post.clone(),
             },
             kijkers,
         )?;
@@ -2056,7 +2055,7 @@ impl Engine {
                 hoogte,
                 codec: gok,
                 afzender: eigenaar,
-                sleutels: self.mesh.media.clone(),
+                post: self.mesh.post.clone(),
             },
         )?;
 

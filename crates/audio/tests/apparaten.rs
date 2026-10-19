@@ -19,10 +19,10 @@ fn config() -> VoiceConfig {
 
 fn config_met(sleutels: MediaSleutels) -> VoiceConfig {
     VoiceConfig {
-        media_port: 0, // laat het systeem een vrije poort kiezen
         input_device: None,
         output_device: None,
-        sleutels,
+        // Poort 0: laat het systeem een vrije poort kiezen.
+        post: fitcom_net::Verdeler::start(0, sleutels).expect("mediasocket"),
     }
 }
 
@@ -98,17 +98,15 @@ fn sessie_start_en_stopt_netjes() {
 #[test]
 #[ignore = "vereist een echte geluidskaart"]
 fn opnieuw_deelnemen_op_dezelfde_poort_lukt() {
-    // Het gebruikelijke geval waarin dit misgaat: verlaten en meteen weer deelnemen,
-    // terwijl de vorige sessie de UDP-poort nog vasthoudt.
-    let eerste = fitcom_audio::start(config()).expect("eerste sessie");
+    // Vroeger het geval waarin dit misging: verlaten en meteen weer deelnemen, terwijl de
+    // vorige sessie de UDP-poort nog vasthield. Sinds fase B5 bindt een sessie niets: de
+    // mediasocket hoort bij het proces, dus de poort blijft dezelfde.
+    let cfg = config();
+    let eerste = fitcom_audio::start(cfg.clone()).expect("eerste sessie");
     let poort = eerste.media_addr.port();
     drop(eerste);
 
-    let tweede = fitcom_audio::start(VoiceConfig {
-        media_port: poort,
-        ..config()
-    })
-    .expect("meteen opnieuw deelnemen moet lukken");
+    let tweede = fitcom_audio::start(cfg).expect("meteen opnieuw deelnemen moet lukken");
     assert_eq!(tweede.media_addr.port(), poort);
 }
 

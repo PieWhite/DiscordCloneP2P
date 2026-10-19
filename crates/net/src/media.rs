@@ -44,9 +44,13 @@ pub const MAX_PAKKET: usize = 1500;
 /// beeld dat al te laat is, en de samensteller gooit oude frames toch weg.
 ///
 /// Sinds protocol 6 is elk pakket 28 bytes groter (sessie-index, teller, tag). Gemeten op
-/// loopback hield 1 MB daardoor 917 pakketten vast in plaats van 940; 1100 kB houdt er
-/// weer minstens evenveel vast, zodat een stoot niet eerder sneuvelt dan vóór de AEAD.
-const ONTVANGBUFFER: usize = 1100 * 1024;
+/// loopback hield 1 MB daardoor 917 pakketten vast in plaats van 940; 1100 kB hield er
+/// weer minstens evenveel vast.
+///
+/// Sinds fase B5 komt alle media van dit proces op één socket binnen
+/// ([`crate::verdeler`]): twee delers die tegelijk een keyframe sturen moeten er allebei in
+/// passen, dus 2 MB.
+const ONTVANGBUFFER: usize = 2 * 1024 * 1024;
 
 /// Zet de timerresolutie van dit proces op één milliseconde.
 ///
@@ -62,10 +66,12 @@ const ONTVANGBUFFER: usize = 1100 * 1024;
 ///
 /// Sinds Windows 10 2004 werkt dit per proces en niet meer systeembreed, dus een game
 /// naast ons merkt er niets van. Er staat geen `timeEndPeriod` tegenover: Windows ruimt
-/// dat bij het afsluiten van het proces zelf op, en de enige plek waar dit vandaan komt is
-/// het openen van een mediasocket — dus zodra er beeld of geluid loopt.
+/// dat bij het afsluiten van het proces zelf op, en dit komt alleen van een losse
+/// [`MediaSocket::bind`] of van de verdeler zodra er beeld of geluid loopt (`zender`,
+/// `luister_*`). De mediasocket zelf bestaat sinds fase B5 vanaf het starten; die zet hem
+/// niet, zodat een app die alleen in de tray staat op de grove tik blijft.
 #[cfg(windows)]
-fn zorg_voor_fijne_timer() {
+pub(crate) fn zorg_voor_fijne_timer() {
     static EEN_KEER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     EEN_KEER.get_or_init(|| {
         // SAFETY: `timeBeginPeriod` neemt alleen een getal aan en heeft geen
@@ -84,7 +90,7 @@ fn zorg_voor_fijne_timer() {
 /// Op macOS tikt de klok al fijner dan een milliseconde; `recv_timeout` en
 /// `thread::sleep` doen daar gewoon wat er gevraagd wordt. Niets te repareren.
 #[cfg(not(windows))]
-fn zorg_voor_fijne_timer() {}
+pub(crate) fn zorg_voor_fijne_timer() {}
 
 /// Zorgt dat een socket **niet** meegaat naar een kindproces.
 ///
@@ -144,7 +150,12 @@ impl MediaSocket {
     pub fn bind(port: u16, sleutels: MediaSleutels) -> Result<Self> {
         // Vóór de timeout hieronder: anders is die 15,6 ms in plaats van 200.
         zorg_voor_fijne_timer();
+        Self::bind_stil(port, sleutels)
+    }
 
+    /// [`MediaSocket::bind`] zonder de fijne timer; voor de verdeler, zie
+    /// [`zorg_voor_fijne_timer`].
+    pub(crate) fn bind_stil(port: u16, sleutels: MediaSleutels) -> Result<Self> {
         let sock = UdpSocket::bind(("0.0.0.0", port))
             .with_context(|| format!("UDP-poort {port} binden"))?;
         // Zonder timeout kan een wachtende thread niet meer worden afgesloten.
@@ -166,6 +177,11 @@ impl MediaSocket {
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.sock.local_addr()?)
+    }
+
+    /// De sleuteltabel waarmee deze socket verzegelt en opent.
+    pub fn sleutels(&self) -> &MediaSleutels {
+        &self.sleutels
     }
 
     /// Hoe lang [`MediaSocket::ontvang`] blijft wachten voordat hij `None` teruggeeft.
@@ -196,6 +212,10 @@ impl MediaSocket {
 
     /// Versleutelt en verstuurt. Een fout als er voor die peer (nog of niet meer) geen
     /// sleutel is: dan is hij niet verbonden, en wat er dan nog gestuurd wordt kan weg.
+    ///
+    /// Heeft die peer één mediasocket en kwam er al iets van hem binnen, dan gaat het naar
+    /// het bronadres van zijn laatste echte pakket in plaats van naar `naar.addr` (roaming,
+    /// zie [`crate::mediasleutel`]).
     pub fn stuur(&self, naar: PeerAdres, header: &MediaHeader, payload: &[u8]) -> Result<()> {
         let mut buf = [0u8; MAX_PAKKET];
         let klaar = MEDIA_HEADER_LEN + payload.len();
@@ -208,11 +228,12 @@ impl MediaSocket {
                 .expect("vaste lengte"),
         );
         buf[MEDIA_KOP_LEN + MEDIA_HEADER_LEN..MEDIA_KOP_LEN + klaar].copy_from_slice(payload);
-        let lengte = self
+        let (lengte, geleerd) = self
             .sleutels
             .verzegel(naar.id, &mut buf, klaar)
             .context("geen mediasleutel voor deze peer")?;
-        self.sock.send_to(&buf[..lengte], naar.addr)?;
+        self.sock
+            .send_to(&buf[..lengte], geleerd.unwrap_or(naar.addr))?;
         Ok(())
     }
 
@@ -228,7 +249,7 @@ impl MediaSocket {
         buf: &'a mut [u8; MAX_PAKKET],
     ) -> Result<Option<(PeerId, MediaHeader, &'a [u8])>> {
         match self.sock.recv_from(buf) {
-            Ok((n, _)) => match self.sleutels.open(&mut self.vensters, &mut buf[..n]) {
+            Ok((n, bron)) => match self.sleutels.open(&mut self.vensters, bron, &mut buf[..n]) {
                 Some((van, klaar)) => {
                     Ok(MediaHeader::parse(klaar).map(|(header, payload)| (van, header, payload)))
                 }

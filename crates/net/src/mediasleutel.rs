@@ -34,11 +34,22 @@
 //!
 //! De tabel is een `ArcSwap`: de mesh-actor schrijft hem bij verbinden en verbreken, de
 //! mediathreads lezen hem zonder lock.
+//!
+//! # Roaming (fase B5)
+//!
+//! Sinds er één mediasocket per proces is, antwoorden we naar het **laatste geauthenticeerde
+//! bronadres** van een peer, zoals WireGuard: dat dekt een NAT die de poort herschrijft en een
+//! peer wiens adres wisselt. Elke verbinding heeft daarvoor één adresvak, gedeeld door haar
+//! zend- en ontvangstsleutel. Het wordt alleen gevuld ná een geslaagde `open` (een adres is een
+//! hint, nooit toegang) en pas nadat er van die verbinding een **keepalive** binnenkwam: alleen
+//! een peer met één socket stuurt die. Een peer zonder B5 stuurt beeld vanaf losse poorten en
+//! verwacht het op de poort uit zijn `StreamSubscribe`; voor hem blijft alles zoals het was.
 
-use arc_swap::ArcSwap;
-use fitcom_proto::{PeerId, MEDIA_KOP_LEN, MEDIA_TAG_LEN};
+use arc_swap::{ArcSwap, ArcSwapOption};
+use fitcom_proto::{PayloadType, PeerId, MEDIA_KOP_LEN, MEDIA_TAG_LEN};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -51,12 +62,20 @@ pub const VENSTER: u64 = 2048;
 /// een herverbinding onderweg zijn mogen nog aankomen; daarna niet meer.
 const NAWERKING: Duration = Duration::from_secs(5);
 
+/// Het laatste geauthenticeerde bronadres van een verbinding (roaming). Leeg tot er een
+/// keepalive van die verbinding binnenkwam.
+type Adresvak = Arc<ArcSwapOption<SocketAddr>>;
+
+/// Plek van `payload_type` in de ontsleutelde mediaheader (`fitcom_proto::MediaHeader`).
+const PAYLOAD_TYPE_PLEK: usize = 12;
+
 struct Zend {
     sleutel: LessSafeKey,
     /// De index die de ontvanger koos.
     index: u32,
     teller: AtomicU64,
     conn_id: u64,
+    adres: Adresvak,
 }
 
 struct Ontvang {
@@ -66,12 +85,20 @@ struct Ontvang {
     vervalt: Option<Instant>,
     /// De hoogste teller die met deze sleutel ooit opengegaan is, over alle sockets heen.
     hoogste: Arc<AtomicU64>,
+    /// Hetzelfde vak als in de [`Zend`] van deze verbinding.
+    adres: Adresvak,
 }
 
 #[derive(Clone, Default)]
 struct Tabel {
     zend: HashMap<PeerId, Arc<Zend>>,
     ontvang: HashMap<u32, Arc<Ontvang>>,
+    /// Waar keepalives heen gaan zolang er van een peer nog niets geleerd is: zijn IP met
+    /// zijn mediapoort uit de handshake, plus wat hij zelf als kandidaat opgaf (B4).
+    hints: HashMap<PeerId, Arc<Vec<SocketAddr>>>,
+    /// Gaat omhoog als er een verbinding of een hint bij komt; de mediapost stuurt dan meteen
+    /// een keepalive in plaats van op zijn volgende ronde te wachten.
+    versie: u64,
 }
 
 /// De mediasleutels van deze mesh. Goedkoop te klonen; elke kloon kijkt naar dezelfde tabel.
@@ -128,6 +155,10 @@ thread_local! {
 impl MediaSleutels {
     /// Legt de sleutels van een nieuwe verbinding vast. Alleen de mesh-actor roept dit aan,
     /// voor de verbinding die de botsing won.
+    ///
+    /// `hint` is waar zijn mediasocket waarschijnlijk zit (zijn IP met de mediapoort uit de
+    /// handshake): daar gaan keepalives heen tot er iets van hem binnen is.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn zet(
         &self,
         conn_id: u64,
@@ -136,21 +167,31 @@ impl MediaSleutels {
         hun_index: u32,
         ontvang: [u8; 32],
         mijn_index: u32,
+        hint: SocketAddr,
     ) {
         let mut t = Tabel::clone(&self.0.load());
         // Nooit een verse teller op dezelfde verbinding: dezelfde sleutel met een teller die
         // opnieuw bij 1 begint hergebruikt nonces, en dan is AES-GCM stuk.
-        if t.zend.get(&peer).is_none_or(|z| z.conn_id != conn_id) {
-            t.zend.insert(
-                peer,
-                Arc::new(Zend {
-                    sleutel: aead(&zend),
-                    index: hun_index,
-                    teller: AtomicU64::new(0),
-                    conn_id,
-                }),
-            );
-        }
+        let vak = match t.zend.get(&peer) {
+            Some(z) if z.conn_id == conn_id => z.adres.clone(),
+            _ => {
+                let vak = Adresvak::default();
+                t.zend.insert(
+                    peer,
+                    Arc::new(Zend {
+                        sleutel: aead(&zend),
+                        index: hun_index,
+                        teller: AtomicU64::new(0),
+                        conn_id,
+                        adres: vak.clone(),
+                    }),
+                );
+                // Een nieuwe verbinding begint opnieuw met leren: zijn adres kan veranderd
+                // zijn, en wat er van de vorige geleerd was hoorde bij die NAT-toestand.
+                t.hints.insert(peer, Arc::new(vec![hint]));
+                vak
+            }
+        };
         t.ontvang.entry(mijn_index).or_insert_with(|| {
             Arc::new(Ontvang {
                 peer,
@@ -158,9 +199,44 @@ impl MediaSleutels {
                 conn_id,
                 vervalt: None,
                 hoogste: Arc::default(),
+                adres: vak,
             })
         });
+        t.versie += 1;
         self.0.store(Arc::new(t));
+    }
+
+    /// Het laatst geleerde bronadres van de mediasocket van `peer`, als hij één socket heeft.
+    pub fn geleerd(&self, peer: PeerId) -> Option<SocketAddr> {
+        self.0
+            .load()
+            .zend
+            .get(&peer)?
+            .adres
+            .load()
+            .as_deref()
+            .copied()
+    }
+
+    /// Zie [`Tabel::versie`].
+    pub(crate) fn versie(&self) -> u64 {
+        self.0.load().versie
+    }
+
+    /// Per verbonden peer: waar een keepalive heen moet. Het geleerde adres als dat er is,
+    /// anders elke hint.
+    pub(crate) fn keepalive_doelen(&self) -> Vec<(PeerId, Vec<SocketAddr>)> {
+        let t = self.0.load();
+        t.zend
+            .iter()
+            .map(|(&peer, z)| {
+                let naar = match z.adres.load().as_deref() {
+                    Some(&a) => vec![a],
+                    None => t.hints.get(&peer).map(|h| h.to_vec()).unwrap_or_default(),
+                };
+                (peer, naar)
+            })
+            .collect()
     }
 
     /// Een verbinding is weg. Verzenden met haar sleutel stopt meteen; ontvangen mag nog
@@ -177,6 +253,8 @@ impl MediaSleutels {
         }
         let mut t = Tabel::clone(&oud);
         t.zend.retain(|_, z| z.conn_id != conn_id);
+        let Tabel { zend, hints, .. } = &mut t;
+        hints.retain(|peer, _| zend.contains_key(peer));
         let tot = Instant::now() + NAWERKING;
         for o in t.ontvang.values_mut() {
             if o.conn_id == conn_id && o.vervalt.is_none() {
@@ -186,6 +264,7 @@ impl MediaSleutels {
                     conn_id,
                     vervalt: Some(tot),
                     hoogste: o.hoogste.clone(),
+                    adres: o.adres.clone(),
                 });
             }
         }
@@ -219,10 +298,11 @@ impl MediaSleutels {
         };
         let (ab, ba) = (sleutel(), sleutel());
         let (index_a, index_b) = (nieuwe_index(), nieuwe_index());
-        // Van a naar b: a verzegelt met `ab` op de index van b, b opent met `ab`.
+        // Van a naar b: a verzegelt met `ab` op de index van b, b opent met `ab`. Eerst
+        // beide zendkanten, zodat elke ontvangstkant het adresvak van zijn verbinding vindt.
         a.0.zet_kant(b.1, ab, index_b);
-        b.0.zet_open(index_b, a.1, ab);
         b.0.zet_kant(a.1, ba, index_a);
+        b.0.zet_open(index_b, a.1, ab);
         a.0.zet_open(index_a, b.1, ba);
     }
 
@@ -235,6 +315,7 @@ impl MediaSleutels {
                 index,
                 teller: AtomicU64::new(0),
                 conn_id: 0,
+                adres: Adresvak::default(),
             }),
         );
         self.0.store(Arc::new(t));
@@ -242,6 +323,10 @@ impl MediaSleutels {
 
     fn zet_open(&self, index: u32, van: PeerId, sleutel: [u8; 32]) {
         let mut t = Tabel::clone(&self.0.load());
+        let adres = t
+            .zend
+            .get(&van)
+            .map_or_else(Adresvak::default, |z| z.adres.clone());
         t.ontvang.insert(
             index,
             Arc::new(Ontvang {
@@ -250,14 +335,21 @@ impl MediaSleutels {
                 conn_id: 0,
                 vervalt: None,
                 hoogste: Arc::default(),
+                adres,
             }),
         );
         self.0.store(Arc::new(t));
     }
 
     /// Verzegelt `buf[MEDIA_KOP_LEN..MEDIA_KOP_LEN + lengte]` voor `naar`, op zijn plek, en
-    /// levert de lengte van het hele pakket. `None` als er geen sleutel voor die peer is.
-    pub(crate) fn verzegel(&self, naar: PeerId, buf: &mut [u8], lengte: usize) -> Option<usize> {
+    /// levert de lengte van het hele pakket plus zijn geleerde adres (roaming), als dat er
+    /// is. `None` als er geen sleutel voor die peer is.
+    pub(crate) fn verzegel(
+        &self,
+        naar: PeerId,
+        buf: &mut [u8],
+        lengte: usize,
+    ) -> Option<(usize, Option<SocketAddr>)> {
         let tabel = self.0.load();
         let z = tabel.zend.get(&naar)?;
         let totaal = MEDIA_KOP_LEN + lengte + MEDIA_TAG_LEN;
@@ -274,15 +366,17 @@ impl MediaSleutels {
             .seal_in_place_separate_tag(nonce(teller), Aad::from(&*kop), &mut rest[..lengte])
             .ok()?;
         rest[lengte..lengte + MEDIA_TAG_LEN].copy_from_slice(tag.as_ref());
-        Some(totaal)
+        Some((totaal, z.adres.load().as_deref().copied()))
     }
 
     /// Opent een pakket op zijn plek: de afzender en de klare bytes (mediaheader plus
     /// payload), of `None` voor alles wat niet van een verbonden peer komt, vervalst is,
-    /// herhaald wordt of te oud is.
+    /// herhaald wordt of te oud is. `bron` is waar het vandaan kwam; dat wordt het adres van
+    /// die peer als hij één socket heeft (zie "Roaming" bovenaan).
     pub(crate) fn open<'a>(
         &self,
         vensters: &mut Vensters,
+        bron: SocketAddr,
         pakket: &'a mut [u8],
     ) -> Option<(PeerId, &'a [u8])> {
         if pakket.len() < MEDIA_KOP_LEN + MEDIA_TAG_LEN {
@@ -314,6 +408,14 @@ impl MediaSleutels {
         // teller het venster op en valt al het echte verkeer erbuiten.
         venster.markeer(teller);
         o.hoogste.fetch_max(teller, Ordering::Relaxed);
+        // Pas hier, ná de tag en het venster: een adres leren van een pakket dat niet echt
+        // of niet nieuw is, zou iedereen het verkeer laten omleiden. Vergelijken vóór
+        // schrijven, zodat het gewone pad alleen leest.
+        let keepalive = klaar.get(PAYLOAD_TYPE_PLEK) == Some(&PayloadType::KEEPALIVE.0);
+        let nu = o.adres.load();
+        if (keepalive || nu.is_some()) && nu.as_deref() != Some(&bron) {
+            o.adres.store(Some(Arc::new(bron)));
+        }
         Some((o.peer, klaar))
     }
 }
@@ -382,6 +484,11 @@ impl Venster {
 mod tests {
     use super::*;
 
+    const BRON: SocketAddr = SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+        9,
+    );
+
     fn paar() -> (MediaSleutels, PeerId, PeerId) {
         let t = MediaSleutels::default();
         let (a, b) = (PeerId::new_random(), PeerId::new_random());
@@ -393,7 +500,7 @@ mod tests {
     fn pakket(t: &MediaSleutels, naar: PeerId, inhoud: &[u8]) -> Vec<u8> {
         let mut buf = vec![0u8; 1500];
         buf[MEDIA_KOP_LEN..MEDIA_KOP_LEN + inhoud.len()].copy_from_slice(inhoud);
-        let n = t.verzegel(naar, &mut buf, inhoud.len()).expect("sleutel");
+        let (n, _) = t.verzegel(naar, &mut buf, inhoud.len()).expect("sleutel");
         buf.truncate(n);
         buf
     }
@@ -408,11 +515,11 @@ mod tests {
         let mut v = Vensters::default();
         let mut p = pakket(&t, b, b"stem van a");
         assert_eq!(p.len(), MEDIA_KOP_LEN + 10 + MEDIA_TAG_LEN);
-        let (van, klaar) = t.open(&mut v, &mut p).expect("hoort open te gaan");
+        let (van, klaar) = t.open(&mut v, BRON, &mut p).expect("hoort open te gaan");
         assert_eq!((van, klaar), (a, &b"stem van a"[..]));
 
         let mut terug = pakket(&t, a, b"en van b");
-        assert_eq!(t.open(&mut v, &mut terug).map(|(p, _)| p), Some(b));
+        assert_eq!(t.open(&mut v, BRON, &mut terug).map(|(p, _)| p), Some(b));
     }
 
     #[test]
@@ -422,16 +529,16 @@ mod tests {
         let mut p = pakket(&t, b, b"echt");
         let laatste = p.len() - 1;
         p[laatste] ^= 1;
-        assert!(t.open(&mut v, &mut p).is_none());
+        assert!(t.open(&mut v, BRON, &mut p).is_none());
 
         let mut p = pakket(&t, b, b"echt");
         p[MEDIA_KOP_LEN] ^= 1;
-        assert!(t.open(&mut v, &mut p).is_none());
+        assert!(t.open(&mut v, BRON, &mut p).is_none());
 
         // En de teller zit in de AAD: ophogen om het venster te omzeilen helpt niet.
         let mut p = pakket(&t, b, b"echt");
         p[11] ^= 1;
-        assert!(t.open(&mut v, &mut p).is_none());
+        assert!(t.open(&mut v, BRON, &mut p).is_none());
     }
 
     #[test]
@@ -439,16 +546,16 @@ mod tests {
         let (t, _, b) = paar();
         let mut v = Vensters::default();
         let p = pakket(&t, b, b"een keer");
-        assert!(t.open(&mut v, &mut p.clone()).is_some());
-        assert!(t.open(&mut v, &mut p.clone()).is_none(), "replay");
+        assert!(t.open(&mut v, BRON, &mut p.clone()).is_some());
+        assert!(t.open(&mut v, BRON, &mut p.clone()).is_none(), "replay");
 
         // Een vervalsing met dezelfde teller mag het echte pakket niet blokkeren.
         let echt = pakket(&t, b, b"daarna");
         let mut nep = echt.clone();
         let laatste = nep.len() - 1;
         nep[laatste] ^= 1;
-        assert!(t.open(&mut v, &mut nep).is_none());
-        assert!(t.open(&mut v, &mut echt.clone()).is_some());
+        assert!(t.open(&mut v, BRON, &mut nep).is_none());
+        assert!(t.open(&mut v, BRON, &mut echt.clone()).is_some());
     }
 
     #[test]
@@ -459,19 +566,19 @@ mod tests {
         let mut tussen: Vec<Vec<u8>> = (0..VENSTER - 2).map(|_| pakket(&t, b, b"x")).collect();
         let laat = tussen.pop().unwrap();
         for mut p in tussen {
-            assert!(t.open(&mut v, &mut p).is_some());
+            assert!(t.open(&mut v, BRON, &mut p).is_some());
         }
         // Verwisseld onderweg, maar nog binnen 2048: welkom.
-        assert!(t.open(&mut v, &mut laat.clone()).is_some());
-        assert!(t.open(&mut v, &mut eerste.clone()).is_some());
+        assert!(t.open(&mut v, BRON, &mut laat.clone()).is_some());
+        assert!(t.open(&mut v, BRON, &mut eerste.clone()).is_some());
 
         // Nu ver vooruit: het eerste pakket valt buiten het venster, ook ongezien.
         let oud = pakket(&t, b, b"te oud");
         for _ in 0..VENSTER {
-            assert!(t.open(&mut v, &mut pakket(&t, b, b"y")).is_some());
+            assert!(t.open(&mut v, BRON, &mut pakket(&t, b, b"y")).is_some());
         }
         assert!(
-            t.open(&mut v, &mut oud.clone()).is_none(),
+            t.open(&mut v, BRON, &mut oud.clone()).is_none(),
             "buiten het venster"
         );
     }
@@ -483,7 +590,7 @@ mod tests {
         let mut p = pakket(&t, b, b"inhoud");
         p[..4].copy_from_slice(&0xdead_beefu32.to_be_bytes());
         let voor = pogingen();
-        assert!(t.open(&mut v, &mut p).is_none());
+        assert!(t.open(&mut v, BRON, &mut p).is_none());
         assert_eq!(
             pogingen(),
             voor,
@@ -491,7 +598,7 @@ mod tests {
         );
 
         // Te kort om iets te zijn: ook niets.
-        assert!(t.open(&mut v, &mut [0u8; 20]).is_none());
+        assert!(t.open(&mut v, BRON, &mut [0u8; 20]).is_none());
         assert_eq!(pogingen(), voor);
     }
 
@@ -500,13 +607,15 @@ mod tests {
         let t = MediaSleutels::default();
         let (ik, hij) = (PeerId::new_random(), PeerId::new_random());
         let (mijn, zijn) = (nieuwe_index(), nieuwe_index());
-        t.zet(7, hij, [1; 32], zijn, [2; 32], mijn);
+        t.zet(7, hij, [1; 32], zijn, [2; 32], mijn, BRON);
         // Wat hij ons stuurt: zijn zendsleutel is onze ontvangstsleutel.
         let zijn_kant = MediaSleutels::default();
-        zijn_kant.zet(7, ik, [2; 32], mijn, [1; 32], zijn);
+        zijn_kant.zet(7, ik, [2; 32], mijn, [1; 32], zijn, BRON);
 
         let mut v = Vensters::default();
-        assert!(t.open(&mut v, &mut pakket(&zijn_kant, ik, b"a")).is_some());
+        assert!(t
+            .open(&mut v, BRON, &mut pakket(&zijn_kant, ik, b"a"))
+            .is_some());
 
         t.vergeet(7);
         assert!(
@@ -514,12 +623,14 @@ mod tests {
             "niet meer naar een dode verbinding"
         );
         assert!(
-            t.open(&mut v, &mut pakket(&zijn_kant, ik, b"b")).is_some(),
+            t.open(&mut v, BRON, &mut pakket(&zijn_kant, ik, b"b"))
+                .is_some(),
             "nawerking"
         );
         t.ruim_op();
         assert!(
-            t.open(&mut v, &mut pakket(&zijn_kant, ik, b"c")).is_some(),
+            t.open(&mut v, BRON, &mut pakket(&zijn_kant, ik, b"c"))
+                .is_some(),
             "nog binnen 5 s"
         );
     }
@@ -528,9 +639,9 @@ mod tests {
     fn dezelfde_verbinding_twee_keer_zetten_begint_de_teller_niet_opnieuw() {
         let t = MediaSleutels::default();
         let hij = PeerId::new_random();
-        t.zet(3, hij, [1; 32], 10, [2; 32], 11);
+        t.zet(3, hij, [1; 32], 10, [2; 32], 11, BRON);
         let eerste = pakket(&t, hij, b"a");
-        t.zet(3, hij, [1; 32], 10, [2; 32], 11);
+        t.zet(3, hij, [1; 32], 10, [2; 32], 11, BRON);
         let tweede = pakket(&t, hij, b"a");
         assert_ne!(
             eerste[4..12],
@@ -547,20 +658,20 @@ mod tests {
         let (t, _, b) = paar();
         let oud = pakket(&t, b, b"oud");
         let mut eerste_socket = Vensters::default();
-        assert!(t.open(&mut eerste_socket, &mut oud.clone()).is_some());
+        assert!(t.open(&mut eerste_socket, BRON, &mut oud.clone()).is_some());
         for _ in 0..VENSTER {
             assert!(t
-                .open(&mut eerste_socket, &mut pakket(&t, b, b"x"))
+                .open(&mut eerste_socket, BRON, &mut pakket(&t, b, b"x"))
                 .is_some());
         }
 
         let mut nieuwe_socket = Vensters::default();
         let voor = pogingen();
-        assert!(t.open(&mut nieuwe_socket, &mut oud.clone()).is_none());
+        assert!(t.open(&mut nieuwe_socket, BRON, &mut oud.clone()).is_none());
         assert_eq!(pogingen(), voor, "te oud: weg vóór de cryptografie");
         // Wat nieuw is komt op de nieuwe socket gewoon binnen.
         assert!(t
-            .open(&mut nieuwe_socket, &mut pakket(&t, b, b"nieuw"))
+            .open(&mut nieuwe_socket, BRON, &mut pakket(&t, b, b"nieuw"))
             .is_some());
     }
 
@@ -598,6 +709,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Een mediaheader van 16 bytes met dit payload-type, als inhoud van een pakket.
+    fn kop(payload_type: PayloadType) -> [u8; 16] {
+        let mut k = [0u8; 16];
+        k[PAYLOAD_TYPE_PLEK] = payload_type.0;
+        k
+    }
+
+    #[test]
+    fn een_adres_wordt_pas_geleerd_na_een_keepalive_en_alleen_van_echte_pakketten() {
+        let (t, a, b) = paar();
+        let mut v = Vensters::default();
+        let adres = |p: u16| SocketAddr::from(([198, 51, 100, 7], p));
+
+        // Een peer zonder B5 stuurt nooit een keepalive: van hem leren we niets, ook niet van
+        // zijn stem. Zijn beeld komt van een andere poort dan zijn stem.
+        let mut stem = pakket(&t, b, &kop(PayloadType::OPUS));
+        assert!(t.open(&mut v, adres(1), &mut stem).is_some());
+        assert_eq!(t.geleerd(a), None);
+
+        let mut ka = pakket(&t, b, &kop(PayloadType::KEEPALIVE));
+        assert!(t.open(&mut v, adres(2), &mut ka).is_some());
+        assert_eq!(t.geleerd(a), Some(adres(2)), "na een keepalive: één socket");
+
+        // Daarna volgt het adres elk echt pakket (de NAT herschreef de poort).
+        let mut beeld = pakket(&t, b, &kop(PayloadType::H264));
+        assert!(t.open(&mut v, adres(3), &mut beeld.clone()).is_some());
+        assert_eq!(t.geleerd(a), Some(adres(3)));
+        let (_, naar_a) = t.verzegel(a, &mut [0u8; 64], 4).unwrap();
+        assert_eq!(
+            naar_a,
+            Some(adres(3)),
+            "antwoorden gaan naar het geleerde adres"
+        );
+
+        // Een herhaling of een vervalsing vanaf elders verplaatst niets.
+        assert!(t.open(&mut v, adres(4), &mut beeld).is_none());
+        let mut nep = pakket(&t, b, &kop(PayloadType::H264));
+        let laatste = nep.len() - 1;
+        nep[laatste] ^= 1;
+        assert!(t.open(&mut v, adres(5), &mut nep).is_none());
+        assert_eq!(t.geleerd(a), Some(adres(3)));
+    }
+
+    #[test]
+    fn een_nieuwe_verbinding_begint_opnieuw_met_leren() {
+        let t = MediaSleutels::default();
+        let (ik, hij) = (PeerId::new_random(), PeerId::new_random());
+        let hint = SocketAddr::from(([198, 51, 100, 7], 41651));
+        t.zet(1, hij, [1; 32], 10, [2; 32], 11, hint);
+        let zijn_kant = MediaSleutels::default();
+        zijn_kant.zet(1, ik, [2; 32], 11, [1; 32], 10, hint);
+
+        let mut v = Vensters::default();
+        let ergens = SocketAddr::from(([203, 0, 113, 1], 5000));
+        let mut ka = pakket(&zijn_kant, ik, &kop(PayloadType::KEEPALIVE));
+        assert!(t.open(&mut v, ergens, &mut ka).is_some());
+        assert_eq!(t.keepalive_doelen(), vec![(hij, vec![ergens])]);
+
+        // Opnieuw verbonden (zijn IP kan intussen anders zijn): terug naar de hint.
+        t.zet(2, hij, [3; 32], 12, [4; 32], 13, hint);
+        assert_eq!(t.geleerd(hij), None);
+        assert_eq!(t.keepalive_doelen(), vec![(hij, vec![hint])]);
+        t.vergeet(2);
+        assert!(t.keepalive_doelen().is_empty());
     }
 
     #[test]

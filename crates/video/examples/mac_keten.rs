@@ -23,7 +23,7 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
-    use fitcom_net::{MediaSleutels, PeerAdres};
+    use fitcom_net::{MediaSleutels, PeerAdres, Verdeler};
     use fitcom_proto::PeerId;
     use fitcom_video::capture::{afmeting_van, BronSoort};
     use fitcom_video::{
@@ -73,6 +73,9 @@ fn main() {
             let sleutels = MediaSleutels::default();
             let (deler_id, kijker_id) = (PeerId::new_random(), PeerId::new_random());
             MediaSleutels::koppel((&sleutels, deler_id), (&sleutels, kijker_id));
+            // Elk zijn eigen mediasocket, zoals twee peers (fase B5).
+            let post_kijker = Verdeler::start(0, sleutels.clone())?;
+            let post_deler = Verdeler::start(0, sleutels.clone())?;
             let kijker = kijk(
                 &d3d,
                 KijkerConfig {
@@ -82,7 +85,7 @@ fn main() {
                     hoogte,
                     codec: Codec::H264,
                     afzender: deler_id,
-                    sleutels: sleutels.clone(),
+                    post: post_kijker.clone(),
                 },
             )?;
             let doel = PeerAdres {
@@ -100,7 +103,7 @@ fn main() {
                     fps: env_u32("KETEN_FPS", 60),
                     bitrate: env_u32("KETEN_BITRATE", 25_000_000),
                     voorbeeld: true,
-                    sleutels,
+                    post: post_deler,
                 },
                 vec![doel],
             )?;

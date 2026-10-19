@@ -15,8 +15,8 @@ pub use appversion::is_newer;
 pub use control::{ControlMsg, StreamKind, Typing, UserStatus, UserStatusValue};
 pub use ids::{Channel, OpId, PeerId, TopicId};
 pub use media::{
-    MediaHeader, PayloadType, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN, MEDIA_KOP_LEN,
-    MEDIA_SLEUTEL_LABEL, MEDIA_TAG_LEN, PARITEIT_PAYLOAD_LEN, VOICE_STREAM_ID,
+    MediaHeader, PayloadType, KEEPALIVE_STREAM_ID, MAX_MEDIA_PAYLOAD, MEDIA_HEADER_LEN,
+    MEDIA_KOP_LEN, MEDIA_SLEUTEL_LABEL, MEDIA_TAG_LEN, PARITEIT_PAYLOAD_LEN, VOICE_STREAM_ID,
 };
 pub use op::{Op, OpKind, VersionVector};
 

@@ -21,7 +21,7 @@ use crate::fragment::Reassembler;
 use crate::venster::Venster;
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
-use fitcom_net::{MediaSleutels, MediaSocket};
+use fitcom_net::{Abonnement, Verdeler};
 use fitcom_proto::teken::Tekening;
 use fitcom_proto::{ControlMsg, PeerId};
 use std::collections::VecDeque;
@@ -32,6 +32,12 @@ use std::time::{Duration, Instant};
 /// Kort genoeg dat het venster op muis en toetsen blijft reageren als er geen beeld
 /// binnenkomt, lang genoeg dat we niet zinloos wakker worden.
 const ONTVANG_TIMEOUT: Duration = Duration::from_millis(8);
+/// Is het volgende beeld dichterbij dan dit, dan slaapt de lus precies tot dan in plaats van
+/// op de rij van de verdeler te wachten. Een crossbeam-rij wekt in hele milliseconden (gemeten
+/// op 2026-10-19: een time-out van 1 ms duurt p90 2,5 ms), `thread::sleep` binnen een halve
+/// (p90 0,5 ms te laat). Met de socket van vóór fase B5 was dat 1,5 ms; zonder dit toonde de
+/// kijker zijn beelden op p99 0,6 ms later dan gepland.
+const PRECIES_ONDER: Duration = Duration::from_millis(2);
 /// Niet vaker dan dit om een keyframe vragen. Bij aanhoudend verlies zou een verzoek
 /// per kapot beeld de deler bedelven en het probleem alleen maar erger maken.
 const KEYFRAME_PAUZE: Duration = Duration::from_millis(500);
@@ -85,8 +91,9 @@ pub struct KijkerConfig {
     /// open UDP-poort komt vroeg of laat iets anders binnen, en dat mag nooit in de decoder
     /// terechtkomen.
     pub afzender: PeerId,
-    /// De mediasleutels van de mesh (`MeshHandle::media`).
-    pub sleutels: MediaSleutels,
+    /// De mediasocket van dit proces (`MeshHandle::post`, fase B5). De kijker bindt zelf
+    /// niets meer: hij krijgt van de verdeler wat er voor deze stream van deze peer binnenkomt.
+    pub post: Verdeler,
 }
 
 struct Gedeeld {
@@ -144,9 +151,8 @@ impl Drop for KijkerHandle {
 /// Opent een venster en begint te luisteren. De poort in de handle moet naar de deler,
 /// anders komt er nooit beeld.
 pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
-    let socket = MediaSocket::bind(0, cfg.sleutels.clone()).context("mediapoort voor video")?;
-    socket.zet_timeout(ONTVANG_TIMEOUT)?;
-    let poort = socket.local_addr()?.port();
+    let pakketten = cfg.post.luister_beeld(cfg.afzender, cfg.stream_id);
+    let poort = cfg.post.poort();
 
     let gedeeld = Arc::new(Gedeeld {
         stop: AtomicBool::new(false),
@@ -174,7 +180,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
                     venster,
                     decoder,
                     &d3d,
-                    socket,
+                    pakketten,
                     &cfg,
                     &staat,
                     &event_tx,
@@ -213,7 +219,7 @@ fn kijk_lus(
     mut venster: Venster,
     mut decoder: Decoder,
     d3d: &D3dContext,
-    mut socket: MediaSocket,
+    pakketten: Abonnement,
     cfg: &KijkerConfig,
     gedeeld: &Arc<Gedeeld>,
     events: &Sender<KijkerEvent>,
@@ -224,7 +230,6 @@ fn kijk_lus(
     let mut tekenwerk: VecDeque<ControlMsg> = VecDeque::new();
     let mut laatste_tekening = Instant::now();
     let mut samensteller = Reassembler::new();
-    let mut buf = [0u8; fitcom_net::MAX_PAKKET];
     // De codec waar de huidige decoder voor gebouwd is; begint als de gok uit de
     // config en volgt daarna wat de pakketten zelf melden.
     let mut codec_actief = cfg.codec;
@@ -250,7 +255,6 @@ fn kijk_lus(
     let mut uitvouwer = Uitvouwer::default();
     let mut wachtrij: std::collections::VecDeque<(Instant, Instant, crate::fragment::Frame)> =
         std::collections::VecDeque::new();
-    let mut korte_timeout = false;
 
     let begin = Instant::now();
     let mut spoor = crate::spoor::Spoor::nieuw(
@@ -266,19 +270,6 @@ fn kijk_lus(
 
     while !gedeeld.stop.load(Ordering::Relaxed) {
         meter.tik();
-
-        // Wacht er beeld op zijn beurt, dan moet de lus fijner tikken dan de 8 ms die
-        // voor een leeg venster prima is — anders komt elk beeld tot 8 ms te laat en is
-        // de hele planning voor niets geweest.
-        let wil_kort = !wachtrij.is_empty();
-        if wil_kort != korte_timeout {
-            korte_timeout = wil_kort;
-            let _ = socket.zet_timeout(if wil_kort {
-                Duration::from_millis(1)
-            } else {
-                ONTVANG_TIMEOUT
-            });
-        }
 
         // Alles waarvan de tijd gekomen is decoderen; alleen het laatste tonen. Meer dan
         // één tegelijk betekent dat we achterlopen, en dan is de nieuwste de juiste.
@@ -348,16 +339,32 @@ fn kijk_lus(
             let _ = events.try_send(KijkerEvent::KeyframeNodig);
         }
 
-        let ontvangen = match socket.ontvang(&mut buf) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %format!("{e:#}"), "mediasocket gaf een fout");
-                continue;
+        // Wacht er beeld op zijn beurt, dan moet de lus op tijd wakker zijn; anders komt elk
+        // beeld te laat en is de hele planning voor niets geweest.
+        let tot_beeld = wachtrij
+            .front()
+            .map(|(op, _, _)| op.saturating_duration_since(Instant::now()));
+        let pakket = match tot_beeld {
+            Some(rest) if rest <= PRECIES_ONDER => match pakketten.try_recv() {
+                Ok(p) => p,
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    std::thread::sleep(rest.min(Duration::from_millis(1)));
+                    continue;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+            },
+            rest => {
+                match pakketten.recv_timeout(rest.map_or(ONTVANG_TIMEOUT, |r| {
+                    (r - PRECIES_ONDER).min(ONTVANG_TIMEOUT)
+                })) {
+                    Ok(p) => p,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    // Een nieuwere kijker op dezelfde stream kreeg de route; deze krijgt niets meer.
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                }
             }
         };
-        let Some((van, header, payload)) = ontvangen else {
-            continue;
-        };
+        let (van, header, payload) = (pakket.van, pakket.header, &pakket.payload[..]);
         // `van` is bewezen: het pakket ging open met de sleutel van die peer. Dat is de
         // hele controle tegen ingeschoven fragmenten (B-28); de bronpoort-heuristiek van
         // vóór protocol 6 is weg. De `stream_id` zit in het versleutelde deel.

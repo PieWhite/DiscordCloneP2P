@@ -28,7 +28,7 @@ use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 pub use fitcom_net::PeerAdres;
-use fitcom_net::{MediaSleutels, MediaSocket};
+use fitcom_net::{Abonnement, MediaSocket, Pakket, Verdeler};
 use fitcom_proto::{MediaHeader, PayloadType, PeerId, VOICE_STREAM_ID};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -62,12 +62,12 @@ const BRONWAARSCHUWING_PAUZE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct VoiceConfig {
-    pub media_port: u16,
     /// Naam zoals Windows hem toont. `None` = het standaardapparaat.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
-    /// De mediasleutels van de mesh (`MeshHandle::media`): zonder sleutel geen pakket.
-    pub sleutels: MediaSleutels,
+    /// De mediasocket van dit proces (`MeshHandle::post`, fase B5). De sessie verstuurt vanaf
+    /// een kloon ervan en krijgt al het Opus dat binnenkomt; ze bindt zelf niets.
+    pub post: Verdeler,
 }
 
 /// Momentopname voor de spreekindicatie in de UI.
@@ -355,7 +355,8 @@ struct Apparaten {
 }
 
 pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
-    let socket = bind_met_geduld(cfg.media_port, &cfg.sleutels)?;
+    let post = cfg.post.clone();
+    let socket = post.zender()?;
     let media_addr = socket.local_addr()?;
     // Bureaubladgeluid komt van hetzelfde apparaat als waar jij op luistert — dat is
     // per definitie wat er te horen valt.
@@ -416,35 +417,15 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
     );
 
     let verzender = socket.probeer_clone()?;
-    let bewaard = socket.probeer_clone()?;
     start_opname(gedeeld.clone(), opname_rx, verzender, apparaten.invoer_rate)?;
-    start_ontvangst(gedeeld.clone(), socket)?;
+    start_ontvangst(gedeeld.clone(), post.luister_geluid())?;
     start_mixen(gedeeld.clone(), weergave_tx, apparaten.uitvoer_rate)?;
 
     Ok(VoiceHandle {
         gedeeld,
         media_addr,
-        socket: bewaard,
+        socket,
         uitvoer_apparaat: uitvoer_naam,
-    })
-}
-
-/// De threads van een vorige sessie merken pas na hun timeout dat ze mogen stoppen,
-/// dus vlak na "verlaten" is de poort nog even bezet. Wie meteen opnieuw deelneemt
-/// zou anders een onbegrijpelijke foutmelding krijgen.
-fn bind_met_geduld(port: u16, sleutels: &MediaSleutels) -> Result<MediaSocket> {
-    let mut laatste = None;
-    for _ in 0..15 {
-        match MediaSocket::bind(port, sleutels.clone()) {
-            Ok(s) => return Ok(s),
-            Err(e) => {
-                laatste = Some(e);
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
-    }
-    Err(laatste.expect("lus draait minstens één keer")).with_context(|| {
-        format!("mediapoort {port} openen; draait er nog een instantie op deze poort?")
     })
 }
 
@@ -1505,26 +1486,23 @@ mod sck_capture {
 // Ontvangen
 // ---------------------------------------------------------------------------
 
-fn start_ontvangst(gedeeld: Arc<Gedeeld>, mut socket: MediaSocket) -> Result<()> {
+fn start_ontvangst(gedeeld: Arc<Gedeeld>, pakketten: Abonnement) -> Result<()> {
     std::thread::Builder::new()
         .name("fitcom-ontvangst".into())
         .spawn(move || {
-            let mut buf = [0u8; fitcom_net::MAX_PAKKET];
             let mut laatste_waarschuwing = std::time::Instant::now() - BRONWAARSCHUWING_PAUZE;
             while !gedeeld.stop.load(Ordering::Relaxed) {
-                let ontvangen = match socket.ontvang(&mut buf) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "mediasocket gaf een fout");
-                        continue;
-                    }
+                // De verdeler stuurt hier alleen Opus heen; video gaat naar de kijkers.
+                let Pakket {
+                    van,
+                    header,
+                    payload,
+                } = match pakketten.recv_timeout(Duration::from_millis(200)) {
+                    Ok(p) => p,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    // Een nieuwere sessie luistert nu; deze is klaar.
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 };
-                let Some((van, header, payload)) = ontvangen else {
-                    continue;
-                };
-                if header.payload_type != PayloadType::OPUS {
-                    continue; // video; die heeft zijn eigen poort en zijn eigen thread
-                }
 
                 // Alleen van wie in het gesprek zit. Dat `van` die peer is, is bewezen: het
                 // pakket ging open met zijn sleutel (protocol 6, B-18).
@@ -1559,9 +1537,7 @@ fn start_ontvangst(gedeeld: Arc<Gedeeld>, mut socket: MediaSocket) -> Result<()>
                         }
                         continue;
                     }
-                    j.entry(bron)
-                        .or_default()
-                        .push(header.seq, payload.to_vec());
+                    j.entry(bron).or_default().push(header.seq, payload);
                 }
             }
         })
