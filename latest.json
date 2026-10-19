@@ -1,7 +1,7 @@
 {
-  "version": "1.10.1",
-  "url": "https://github.com/PieWhite/DiscordCloneP2P/releases/download/v1.10.1/fitcom.exe",
-  "size": 38817792,
-  "hash": "2bd3ee7292d8ac34a7c008f45e2565b01b287503c67f8441f2ca954ea5d48ef6",
-  "signature": "9ba2b5533133d2f33aeafcaac1ddbdf85d21ad983b06a2878c7e3cdba0faa45ba13a100c42846835ebb333b61d2c5f49bd85b4cf3bfd94f7fcacb5a08d273302"
+  "version": "1.11.0",
+  "url": "https://github.com/PieWhite/DiscordCloneP2P/releases/download/v1.11.0/fitcom.exe",
+  "size": 42315776,
+  "hash": "5fc70576138a356058d5b5758331b42c2e6b8486c0fe6e428d37239221f786da",
+  "signature": "a9e8b53e77da9d97892f1813d8d8170d44dbb457037ba615ff4b1d2fea88c015febb62be1172e7008e1e59ecd3914cd1f2258b4c8dde90c8bf80727dcadec509"
 }
