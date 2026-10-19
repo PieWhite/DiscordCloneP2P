@@ -13,6 +13,7 @@
 //! stilvallen zonder dat er iets misgaat.
 
 use crate::chat::Chat;
+use crate::codes::{self, CodeWeigering, CodesUitslag, Koppeling};
 use crate::config::{self, Config, PushToTalkConfig, SoundConfig, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::gebruik::{self, Gebruik};
@@ -105,6 +106,25 @@ pub struct PeerView {
     /// Het spel dat bij deze peer vooraan staat, zoals hij het meldde en door `speelt::schoon`
     /// gehaald. `None` zonder spel, of offline. Wisselt alleen als hij van spel wisselt.
     pub activiteit: Option<String>,
+}
+
+impl PeerView {
+    fn nieuw(label: String, address: String, peer_id: Option<PeerId>) -> Self {
+        Self {
+            label,
+            address,
+            peer_id,
+            status: PeerStatus::Offline {
+                reason: "nog niet verbonden".into(),
+            },
+            in_voice: false,
+            niveau: 0.0,
+            spreekt: false,
+            volume: 1.0,
+            user_status: None,
+            activiteit: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -266,6 +286,11 @@ pub struct Snapshot {
     /// elke seconde en zou dan bij elke tik een `state`-event afdwingen. De UI haalt hem
     /// met `get_recap` uit deze momentopname op, net als de tijdlijn.
     pub overzicht: Arc<gebruik::Overzicht>,
+    /// De eigen uitnodigingscode (B1). Verandert alleen als de eigen adressen of de naam
+    /// veranderen.
+    pub uitnodiging: String,
+    /// Wat er van de laatste keer codes plakken terechtkwam.
+    pub codes_uitslag: Option<CodesUitslag>,
     pub fout: Option<String>,
 }
 
@@ -393,6 +418,8 @@ pub enum UiCommand {
     ZetClipsHotkey(String),
     /// Waar clips (en de ring eronder) heen gaan. Een lopende opname verhuist mee.
     ZetClipMap(PathBuf),
+    /// Geplakte tekst met één of meer uitnodigingscodes (fase B1).
+    VoegCodesToe(String),
 }
 
 pub struct EngineHandle {
@@ -447,23 +474,22 @@ pub fn spawn(
     let peers = cfg
         .peers
         .iter()
-        .map(|p| PeerView {
-            label: if p.label.is_empty() {
+        .map(|p| {
+            let label = if p.label.is_empty() {
                 p.address.clone()
             } else {
                 p.label.clone()
-            },
-            address: p.address.clone(),
-            peer_id: p.known_id,
-            status: PeerStatus::Offline {
-                reason: "nog niet verbonden".into(),
-            },
-            in_voice: false,
-            niveau: 0.0,
-            spreekt: false,
-            volume: 1.0,
-            user_status: None,
-            activiteit: None,
+            };
+            // Een peer uit een code heeft geen configadres; dan het eerste uit zijn code.
+            let adres = if p.address.is_empty() {
+                p.addresses
+                    .first()
+                    .map(|a| a.to_string())
+                    .unwrap_or_default()
+            } else {
+                p.address.clone()
+            };
+            PeerView::nieuw(label, adres, p.known_id)
         })
         .collect();
 
@@ -511,6 +537,9 @@ pub fn spawn(
         overzicht: Arc::new(gebruik::Overzicht::default()),
         overzicht_van: None,
         bereik: None,
+        eigen_adressen: Vec::new(),
+        uitnodiging: String::new(),
+        codes_uitslag: None,
         updates: Updates::new(),
         updates_dir,
         file_tx,
@@ -611,6 +640,11 @@ struct Engine {
     overzicht_van: Option<Instant>,
     /// Zie [`Snapshot::bereik`].
     bereik: Option<fitcom_net::bereik::Bereik>,
+    /// Waar deze pc zichzelf bereikbaar denkt, van de mesh (`MeshEvent::EigenAdressen`).
+    eigen_adressen: Vec<SocketAddr>,
+    /// Zie [`Snapshot::uitnodiging`] en [`Snapshot::codes_uitslag`].
+    uitnodiging: String,
+    codes_uitslag: Option<CodesUitslag>,
     /// Welke versie de release-feed aanbood en waar we staan met het ophalen daarvan.
     /// Zie `crate::updates` voor de beslissingen en `crate::release` voor het halen.
     updates: Updates,
@@ -949,6 +983,11 @@ impl Engine {
                 if let Some(p) = self.peers.get_mut(target) {
                     p.peer_id = Some(peer_id);
                 }
+            }
+
+            MeshEvent::EigenAdressen(adressen) => {
+                self.eigen_adressen = adressen;
+                self.werk_uitnodiging_bij();
             }
 
             // Een bulkoverdracht, los van de control-stream. Het kind-byte plus (voor een
@@ -2527,6 +2566,7 @@ impl Engine {
             }
             UiCommand::DownloadBestand(file) => self.download_bestand(file),
             UiCommand::ZetNaam(naam) => self.zet_naam(&naam),
+            UiCommand::VoegCodesToe(tekst) => self.voeg_codes_toe(&tekst),
             UiCommand::NietStoren(aan) => self.niet_storen = aan,
             UiCommand::VerwijderAlleAfbeeldingen => self.verwijder_alle_afbeeldingen(),
             UiCommand::MaakKanaal(titel) => {
@@ -2750,6 +2790,137 @@ impl Engine {
         }
         let r = self.chat.zet_naam(naam);
         self.verwerk(r);
+        self.werk_uitnodiging_bij();
+    }
+
+    /// De eigen code opnieuw opbouwen uit `PeerId`, sleutel, naam en de eigen adressen.
+    fn werk_uitnodiging_bij(&mut self) {
+        self.uitnodiging = fitcom_proto::uitnodiging::Uitnodiging {
+            peer_id: self.chat.me(),
+            public_key: self.mesh.public_key,
+            naam: self.cfg.display_name.clone(),
+            adressen: self.eigen_adressen.clone(),
+        }
+        .code();
+    }
+
+    /// Codes uit geplakte tekst: elke peer erbij of bijgewerkt, en dan één keer de config
+    /// wegschrijven. Zie `crate::codes` voor de regel welke peer bij een code hoort.
+    fn voeg_codes_toe(&mut self, tekst: &str) {
+        let mut uitslag = CodesUitslag::default();
+        // Meer dan dit in één keer plakken is geen groep vrienden meer.
+        const MAX_CODES: usize = 16;
+        let mut gevonden = fitcom_proto::uitnodiging::Uitnodiging::vind_in(tekst);
+        gevonden.truncate(MAX_CODES);
+        uitslag.geen_code = gevonden.is_empty();
+        for code in gevonden {
+            let u = match code {
+                Ok(u) => u,
+                Err(e) => {
+                    uitslag
+                        .geweigerd
+                        .push((String::new(), CodeWeigering::Onleesbaar(e)));
+                    continue;
+                }
+            };
+            let naam = u.naam.clone();
+            match self.neem_code(u) {
+                Ok(true) => uitslag.toegevoegd.push(naam),
+                Ok(false) => uitslag.bijgewerkt.push(naam),
+                Err(w) => uitslag.geweigerd.push((naam, w)),
+            }
+        }
+        if !uitslag.toegevoegd.is_empty() || !uitslag.bijgewerkt.is_empty() {
+            if let Err(e) = self.cfg.save(&self.config_path) {
+                self.fout = Some(format!("config opslaan: {e:#}"));
+            }
+        }
+        tracing::info!(
+            toegevoegd = uitslag.toegevoegd.len(),
+            bijgewerkt = uitslag.bijgewerkt.len(),
+            geweigerd = uitslag.geweigerd.len(),
+            "uitnodigingscodes verwerkt"
+        );
+        self.codes_uitslag = Some(uitslag);
+    }
+
+    /// Eén code toepassen. `Ok(true)`: een nieuwe peer; `Ok(false)`: een bestaande bijgewerkt.
+    ///
+    /// Config, mesh en `self.peers` houden dezelfde volgorde aan: het targetnummer van de
+    /// mesh is de plek in `cfg.peers`. Neemt de mesh het niet aan, dan verandert er dus ook
+    /// hier niets.
+    fn neem_code(
+        &mut self,
+        mut u: fitcom_proto::uitnodiging::Uitnodiging,
+    ) -> std::result::Result<bool, CodeWeigering> {
+        // De naam komt van een andere pc: dezelfde schoonmaak als een spelnaam van de draad.
+        u.naam = crate::speelt::schoon(&u.naam).unwrap_or_default();
+        let sleutel = release::bytes_naar_hex(&u.public_key);
+        match codes::koppel(&self.cfg.peers, self.chat.me(), &u)? {
+            Koppeling::Bestaand(i) => {
+                self.mesh
+                    .commands
+                    .try_send(MeshCommand::WerkBij {
+                        target: i,
+                        known_id: u.peer_id,
+                        public_key: u.public_key,
+                        kandidaten: if u.adressen.is_empty() {
+                            self.cfg.peers[i].addresses.clone()
+                        } else {
+                            u.adressen.clone()
+                        },
+                    })
+                    .map_err(|_| CodeWeigering::Bezet)?;
+                let p = &mut self.cfg.peers[i];
+                p.known_id = Some(u.peer_id);
+                p.public_key = Some(sleutel);
+                // Een code zonder adressen (gemaakt zonder netwerk) wist de werkende niet.
+                if !u.adressen.is_empty() {
+                    p.addresses = u.adressen;
+                }
+                if p.label.is_empty() {
+                    p.label = u.naam;
+                }
+                if let Some(v) = self.peers.get_mut(i) {
+                    v.peer_id = Some(u.peer_id);
+                }
+                Ok(false)
+            }
+            Koppeling::Nieuw => {
+                let label = if u.naam.is_empty() {
+                    "peer".to_string()
+                } else {
+                    u.naam
+                };
+                self.mesh
+                    .commands
+                    .try_send(MeshCommand::VoegToe(fitcom_net::PeerTarget {
+                        address: String::new(),
+                        label: label.clone(),
+                        known_id: Some(u.peer_id),
+                        control_port: config::DEFAULT_CONTROL_PORT,
+                        public_key: Some(u.public_key),
+                        kandidaten: u.adressen.clone(),
+                    }))
+                    .map_err(|_| CodeWeigering::Bezet)?;
+                let adres = u
+                    .adressen
+                    .first()
+                    .map(|a| a.to_string())
+                    .unwrap_or_default();
+                self.cfg.peers.push(config::PeerConfig {
+                    address: String::new(),
+                    label: label.clone(),
+                    known_id: Some(u.peer_id),
+                    control_port: config::DEFAULT_CONTROL_PORT,
+                    public_key: Some(sleutel),
+                    addresses: u.adressen,
+                });
+                self.peers
+                    .push(PeerView::nieuw(label, adres, Some(u.peer_id)));
+                Ok(true)
+            }
+        }
     }
 
     /// Schrijft de padkaarten van `files` naar schijf. Zie [`PadenIndex`] voor het
@@ -3246,6 +3417,8 @@ impl Engine {
                 .collect(),
             eigen_status: self.eigen_status,
             update: self.updates.status().cloned(),
+            uitnodiging: self.uitnodiging.clone(),
+            codes_uitslag: self.codes_uitslag.clone(),
             wordle: WordleView {
                 dag: self.wordle.huidige_dag(),
                 bord: self.wordle.bord(),

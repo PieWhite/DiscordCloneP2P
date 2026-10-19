@@ -24,7 +24,7 @@ use crate::ui::commands;
 use crate::ui::Ui;
 use controls::{Choices, Ranged};
 use gpui_kit::base::slider::SliderEvent;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis};
 use gpui_kit::component::select::SelectEvent;
 use gpui_kit::{
@@ -43,6 +43,8 @@ pub struct SettingsPane {
     app: AppHandle,
     ui: Arc<Ui>,
     name: Entity<InputState>,
+    /// Network: the paste field for invite codes. Several lines, for a whole chat message.
+    codes: Entity<TextareaState>,
     /// The display name last copied into `name`.
     synced_name: Option<String>,
     status: Choices,
@@ -66,6 +68,7 @@ pub struct SettingsPane {
 impl SettingsPane {
     pub fn new(init: &PaneInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx));
+        let codes = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 6));
         let status = Choices::new(window, cx);
         let mic = Choices::new(window, cx);
         let speaker = Choices::new(window, cx);
@@ -160,6 +163,7 @@ impl SettingsPane {
             app: init.app.clone(),
             ui: init.ui.clone(),
             name,
+            codes,
             synced_name: None,
             status,
             mic,
@@ -362,6 +366,16 @@ impl Render for SettingsPane {
             )
             .into_any_element()
     }
+}
+
+/// The paste field for invite codes: `.text-input`, several rows.
+fn codes_field(input: &Entity<TextareaState>) -> impl IntoElement {
+    Textarea::new(input)
+        .w(px(520.))
+        .px(px(10.))
+        .bg(c::SPACE)
+        .text_size(px(12.))
+        .font_family(theme::MONO_FONT)
 }
 
 /// The text field with the shape of `.text-input`, 240px by default.

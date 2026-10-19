@@ -421,7 +421,9 @@ impl Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
     /// Tailnet-IP (`100.x.x.x`) of MagicDNS-naam. MagicDNS heeft de voorkeur: die
-    /// blijft geldig als het IP verandert.
+    /// blijft geldig als het IP verandert. Leeg voor een peer die uit een uitnodigingscode
+    /// komt (fase B1); die wordt op `addresses` gebeld.
+    #[serde(default)]
     pub address: String,
 
     /// Alleen voor weergave zolang we de peer nog nooit gesproken hebben. Zodra hij
@@ -445,6 +447,12 @@ pub struct PeerConfig {
     /// met deze `known_id` een andere sleutel toont komt er niet in (B-05, beslissing 46).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+
+    /// De control-adressen uit zijn uitnodigingscode (B1), om naast `address` te proberen.
+    /// Hints: binnenkomen gaat alleen met `public_key`. Een nieuwe code van dezelfde peer
+    /// vervangt ze.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<std::net::SocketAddr>,
 }
 
 impl PeerConfig {
@@ -475,22 +483,9 @@ impl Config {
             autostart: false,
             input_device: None,
             output_device: None,
-            peers: vec![
-                PeerConfig {
-                    address: "100.64.0.2".into(),
-                    label: "peer-2".into(),
-                    known_id: None,
-                    control_port: DEFAULT_CONTROL_PORT,
-                    public_key: None,
-                },
-                PeerConfig {
-                    address: "100.64.0.3".into(),
-                    label: "peer-3".into(),
-                    known_id: None,
-                    control_port: DEFAULT_CONTROL_PORT,
-                    public_key: None,
-                },
-            ],
+            // Leeg: peers komen er sinds fase B1 bij met hun uitnodigingscode (Settings →
+            // Network), niet meer met een tailnet-adres dat je moet opzoeken.
+            peers: Vec::new(),
             video: VideoConfig::default(),
             sound: SoundConfig::default(),
             clips: ClipsConfig::default(),

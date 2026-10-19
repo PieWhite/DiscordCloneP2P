@@ -10,6 +10,7 @@ pub mod ids;
 pub mod media;
 pub mod op;
 pub mod teken;
+pub mod uitnodiging;
 
 pub use appversion::is_newer;
 pub use control::{ControlMsg, StreamKind, Typing, UserStatus, UserStatusValue};

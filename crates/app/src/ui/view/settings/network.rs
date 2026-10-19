@@ -1,15 +1,16 @@
 //! The Network tab: the peers with their addresses, versions and link state, and the ports.
 
-use super::controls::{control_row, help_rich, input_box, label, Body, Piece};
-use super::SettingsPane;
+use super::controls::{control_row, help, help_rich, input_box, label, Body, Piece};
+use super::{codes_field, SettingsPane};
+use crate::ui::commands;
 use crate::ui::state::{PeerState, Presence};
 use crate::ui::theme::{self, c};
 use crate::ui::view::format;
-use crate::ui::view::widgets::{avatar, meter_view, Dot};
+use crate::ui::view::widgets::{avatar, meter_view, Btn, BtnKind, Dot};
 use crate::ui::view::AppSnapshot;
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, Context, Div, IntoElement, ParentElement, SharedString,
-    Styled, Window,
+    div, prelude::FluentBuilder, px, ClipboardItem, Context, Div, IntoElement, ParentElement,
+    SharedString, Styled, Window,
 };
 
 impl SettingsPane {
@@ -50,17 +51,69 @@ impl SettingsPane {
                 )
         };
 
+        let code = s.invite_code.clone();
         Body::new()
             .h2("Network")
             .p(concat!(
-                "Peers are addressed over the tailnet. A peer's key is pinned the first time it ",
-                "connects over the tailnet; after that, only that key gets in."
+                "Peers find each other with invite codes: send yours to the others and paste ",
+                "theirs below, once. Nothing goes through a server. Over the tailnet a key is ",
+                "still pinned on first contact; after that, only that key gets in."
             ))
+            .field(
+                div()
+                    .child(label("Your invite code"))
+                    .child(help(concat!(
+                        "Not a secret: it lets nobody in. It holds your key and the addresses this ",
+                        "PC knows for itself; only a peer whose code you pasted gets in."
+                    )))
+                    .child(
+                        control_row().child(code_block(&s.invite_code)).child(
+                            Btn::new("copy-invite", "Copy")
+                                .kind(BtnKind::Ghost)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(code.clone()))
+                                }),
+                        ),
+                    ),
+            )
+            .field(
+                div()
+                    .child(label("Add peers"))
+                    .child(help(
+                        "Paste one or more codes, or the whole message they came in.",
+                    ))
+                    .child(codes_field(&self.codes))
+                    .child(
+                        control_row()
+                            .mt(px(8.))
+                            .child(
+                                Btn::new("add-codes", "Add")
+                                    .kind(BtnKind::Accent)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let text = this.codes.read(cx).value();
+                                        commands::add_peer_codes(&this.ui, &text);
+                                        this.codes.update(cx, |state, cx| {
+                                            state.set_value(String::new(), window, cx)
+                                        });
+                                    })),
+                            )
+                            .when_some(s.code_result.clone(), |row, result| {
+                                row.child(
+                                    div()
+                                        .max_w(px(420.))
+                                        .text_size(px(12.))
+                                        .text_color(c::SILVER)
+                                        .whitespace_normal()
+                                        .child(result),
+                                )
+                            }),
+                    ),
+            )
             .field(
                 div()
                     .child(label("Peers"))
                     .child(help_rich(&[
-                        Piece::Text("Each peer lists the other two, in "),
+                        Piece::Text("Everyone you added, kept in "),
                         Piece::Mono("config.toml"),
                         Piece::Text("."),
                     ]))
@@ -101,6 +154,33 @@ impl SettingsPane {
                     ),
             )
     }
+}
+
+/// The invite code in the mono face, broken into blocks so it wraps. Copying goes through
+/// the button, which takes the code whole.
+fn code_block(code: &str) -> Div {
+    let blocks: Vec<String> = code
+        .as_bytes()
+        .chunks(24)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect();
+    div()
+        .max_w(px(420.))
+        .px(px(9.))
+        .py(px(6.))
+        .bg(c::SPACE)
+        .border_1()
+        .border_color(theme::BORDER)
+        .text_size(px(12.))
+        .text_color(c::SKY)
+        .font_family(theme::MONO_FONT)
+        .child(
+            div().flex().flex_row().flex_wrap().children(
+                blocks
+                    .into_iter()
+                    .map(|b| div().whitespace_nowrap().child(b)),
+            ),
+        )
 }
 
 /// `.peer-row`: avatar, name over address and version, and the link on the right.

@@ -41,6 +41,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
             known_id: None,
             control_port: ander,
             public_key: None,
+            addresses: Vec::new(),
         }],
         video: VideoConfig::default(),
         sound: Default::default(),
@@ -65,6 +66,7 @@ fn start(id: PeerId, naam: &str, eigen: u16, ander: u16, dir: &std::path::Path) 
             known_id: None,
             control_port: ander,
             public_key: None,
+            kandidaten: Vec::new(),
         }],
     })
     .unwrap();

@@ -2341,6 +2341,8 @@ dependencies = [
 name = "fitcom-proto"
 version = "1.10.1"
 dependencies = [
+ "blake3",
+ "data-encoding",
  "rmp-serde",
  "serde",
  "serde_bytes",

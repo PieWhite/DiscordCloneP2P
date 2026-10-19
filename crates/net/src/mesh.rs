@@ -37,6 +37,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// Zolang er een kandidaat buiten het tailnet is (B3): beide kanten bellen elkaar dan vaak
+/// genoeg terwijl de NAT-mapping van de vorige poging nog leeft, en op een makkelijke NAT is
+/// dat het hele doorprikken. Kost een paar QUIC-Initials per 10 s.
+const BACKOFF_MAX_PUBLIEK: Duration = Duration::from_secs(10);
+/// Hoe vaak de eigen adressen opnieuw opgezocht worden (een DHCP-wissel, Tailscale aan of uit).
+const EIGEN_ELKE: u32 = 30;
 /// QUIC praat over UDP, dus een peer die uit staat weigert niets — die zwijgt gewoon.
 /// Zonder eigen deadline blijven we tot de idle-timeout hangen en staat er seconden
 /// lang "verbinden…" in de UI terwijl er niemand thuis is.
@@ -91,7 +97,8 @@ pub struct MeshConfig {
 
 #[derive(Debug, Clone)]
 pub struct PeerTarget {
-    /// Tailnet-IP of MagicDNS-naam.
+    /// Tailnet-IP of MagicDNS-naam. Leeg voor een peer die alleen uit een uitnodigingscode
+    /// komt.
     pub address: String,
     pub label: String,
     /// Bekend uit eerdere sessies (trust-on-first-use).
@@ -100,6 +107,9 @@ pub struct PeerTarget {
     /// De vastgepinde Ed25519-sleutel van deze peer. Zodra die er is komt alleen wie hem
     /// bezit nog binnen, vanaf welk adres dan ook.
     pub public_key: Option<[u8; 32]>,
+    /// Control-adressen om naast `address` te proberen (B3): uit zijn uitnodigingscode en
+    /// geleerd van peers (B4). Hints, nooit toegang; een sleutel leren gebeurt hier nooit.
+    pub kandidaten: Vec<SocketAddr>,
 }
 
 /// Een vers sleutelpaar, voor tests en hulpprogramma's zonder `identity.toml`.
@@ -214,6 +224,9 @@ pub enum MeshEvent {
         from: PeerId,
         stream: quinn::RecvStream,
     },
+    /// De control-adressen waarop deze pc zichzelf bereikbaar denkt (B1): wat in de eigen
+    /// uitnodigingscode hoort. Alleen bij een wijziging.
+    EigenAdressen(Vec<SocketAddr>),
 }
 
 pub enum MeshCommand {
@@ -228,6 +241,17 @@ pub enum MeshCommand {
         to: PeerId,
         respond: oneshot::Sender<Option<quinn::SendStream>>,
     },
+    /// Een peer erbij, uit een uitnodigingscode (B1). Krijgt het volgende targetnummer: de
+    /// app houdt dezelfde volgorde aan.
+    VoegToe(PeerTarget),
+    /// Sleutel, `PeerId` en kandidaten van een bestaand target, uit zijn code (B1). De app
+    /// heeft al gecontroleerd dat de sleutel niet botst met wat er vastgepind staat.
+    WerkBij {
+        target: usize,
+        known_id: PeerId,
+        public_key: [u8; 32],
+        kandidaten: Vec<SocketAddr>,
+    },
 }
 
 impl std::fmt::Debug for MeshCommand {
@@ -241,6 +265,10 @@ impl std::fmt::Debug for MeshCommand {
             Self::Broadcast(msg) => f.debug_tuple("Broadcast").field(msg).finish(),
             Self::OpenUploadStream { to, .. } => {
                 f.debug_struct("OpenUploadStream").field("to", to).finish()
+            }
+            Self::VoegToe(t) => f.debug_tuple("VoegToe").field(&t.label).finish(),
+            Self::WerkBij { target, .. } => {
+                f.debug_struct("WerkBij").field("target", target).finish()
             }
         }
     }
@@ -257,6 +285,8 @@ pub struct MeshHandle {
     /// De ene mediasocket van dit proces, op `media_port` (fase B5). Geef een kloon aan de
     /// voice-sessie, elke deler en elke kijker.
     pub post: Verdeler,
+    /// De publieke sleutel van deze installatie, voor de eigen uitnodigingscode (B1).
+    pub public_key: [u8; 32],
     endpoint: quinn::Endpoint,
     /// De UDP-socket onder `endpoint`, alleen om in [`MeshHandle::shutdown`] te zien wanneer
     /// niemand anders hem nog vasthoudt.
@@ -480,23 +510,6 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         });
     }
 
-    // Elke target krijgt een vlag "er is verbinding". De dialer wacht daarop, zodat we
-    // niet blijven dialen naar een peer die ons al gebeld heeft.
-    let mut connected_flags = Vec::new();
-    for (idx, target) in cfg.targets.iter().enumerate() {
-        let (tx, rx) = watch::channel(false);
-        connected_flags.push(tx);
-        tokio::spawn(dial_loop(
-            endpoint.clone(),
-            cfg.clone(),
-            idx,
-            target.clone(),
-            int_tx.clone(),
-            rx,
-            stop_rx.clone(),
-        ));
-    }
-
     tokio::spawn(accept_loop(
         endpoint.clone(),
         cfg.clone(),
@@ -534,29 +547,35 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         });
     }
 
-    tokio::spawn(
-        Actor {
-            cfg,
-            active: HashMap::new(),
-            targets: connected_flags
-                .into_iter()
-                .map(|flag| TargetState {
-                    connected: flag,
-                    resolved: None,
-                    known_id: None,
-                    public_key: None,
-                    bound: None,
-                    last_status: None,
-                })
-                .collect(),
-            events: event_tx,
-            pending: Vec::new(),
-            gemelde_frames: HashSet::new(),
-            logrem: Logrem::default(),
-            media: media.clone(),
-        }
-        .run(int_rx),
-    );
+    let public_key: [u8; 32] = cfg
+        .sleutel
+        .public_key()
+        .as_ref()
+        .try_into()
+        .context("Ed25519-sleutel is 32 bytes")?;
+    let mut actor = Actor {
+        cfg: cfg.clone(),
+        active: HashMap::new(),
+        targets: Vec::new(),
+        events: event_tx,
+        pending: Vec::new(),
+        gemelde_frames: HashSet::new(),
+        logrem: Logrem::default(),
+        media: media.clone(),
+        // Zwak: de actor stopt pas als elke sterke zender weg is, en hij mag zichzelf daar
+        // niet tussen zetten.
+        spawner: Some(Spawner {
+            endpoint: endpoint.clone(),
+            int: int_tx.downgrade(),
+            stop: stop_rx.clone(),
+        }),
+        eigen: Vec::new(),
+        tikken: 0,
+    };
+    for t in &cfg.targets {
+        actor.voeg_toe(t.clone());
+    }
+    tokio::spawn(actor.run(int_rx));
 
     Ok(MeshHandle {
         commands: cmd_tx,
@@ -564,6 +583,7 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
         local_addr,
         media,
         post: post.clone(),
+        public_key,
         endpoint,
         socket,
         _shutdown: ShutdownGuard(stop_tx, post),
@@ -575,12 +595,40 @@ pub fn spawn(cfg: MeshConfig) -> Result<MeshHandle> {
 // ---------------------------------------------------------------------------
 
 struct TargetState {
+    /// "Er is verbinding". De dialer wacht daarop, zodat we niet blijven bellen naar een peer
+    /// die ons al gebeld heeft.
     connected: watch::Sender<bool>,
+    /// Wat de dialer probeert; bijgewerkt bij elke wijziging van pin of kandidaten.
+    doel: watch::Sender<Doel>,
+    /// Alleen het opgezochte configadres (het tailnet). Een sleutel leren kan alleen vanaf
+    /// hier; kandidaten tellen daarvoor nooit mee.
     resolved: Option<SocketAddr>,
     known_id: Option<PeerId>,
     public_key: Option<[u8; 32]>,
     bound: Option<u64>,
     last_status: Option<PeerStatus>,
+}
+
+impl TargetState {
+    /// Pin en kandidaten opnieuw naar de dialer, als ze veranderden.
+    fn werk_doel_bij(&self, kandidaten: Option<Vec<SocketAddr>>) {
+        self.doel.send_if_modified(|d| {
+            let oud = d.clone();
+            d.pin = self.public_key;
+            d.known_id = self.known_id;
+            if let Some(k) = kandidaten {
+                d.kandidaten = k;
+            }
+            *d != oud
+        });
+    }
+}
+
+/// Wat de actor nodig heeft om er een target bij te zetten terwijl de mesh draait (B1).
+struct Spawner {
+    endpoint: quinn::Endpoint,
+    int: mpsc::WeakSender<Internal>,
+    stop: watch::Receiver<bool>,
 }
 
 /// Een inkomende verbinding die haar handtekening al bewees en nu wacht op het oordeel van
@@ -700,6 +748,11 @@ struct Actor {
     gemelde_frames: HashSet<u64>,
     logrem: Logrem,
     media: MediaSleutels,
+    /// `None` in tests zonder netwerk.
+    spawner: Option<Spawner>,
+    /// De laatst gemelde eigen control-adressen (`MeshEvent::EigenAdressen`).
+    eigen: Vec<SocketAddr>,
+    tikken: u32,
 }
 
 /// Hoe lang een niet te koppelen inkomende beller blijft wachten voordat we concluderen
@@ -711,11 +764,7 @@ const PENDING_GRACE: Duration = Duration::from_secs(3);
 
 impl Actor {
     async fn run(mut self, mut rx: mpsc::Receiver<Internal>) {
-        for (idx, t) in self.cfg.targets.iter().enumerate() {
-            self.targets[idx].known_id = t.known_id;
-            self.targets[idx].public_key = t.public_key;
-        }
-
+        self.meld_eigen_adressen().await;
         while let Some(msg) = rx.recv().await {
             match msg {
                 Internal::Command(c) => self.on_command(c).await,
@@ -748,8 +797,75 @@ impl Actor {
         tracing::debug!("mesh-actor gestopt");
     }
 
+    /// Zet een target erbij en start zijn dialer. Het nummer is de plek in de lijst.
+    fn voeg_toe(&mut self, t: PeerTarget) {
+        let (connected, connected_rx) = watch::channel(false);
+        let (doel, doel_rx) = watch::channel(Doel::van(&t));
+        let target = self.targets.len();
+        self.targets.push(TargetState {
+            connected,
+            doel,
+            resolved: None,
+            known_id: t.known_id,
+            public_key: t.public_key,
+            bound: None,
+            last_status: None,
+        });
+        let Some(s) = &self.spawner else { return };
+        let Some(int) = s.int.upgrade() else { return };
+        tokio::spawn(dial_loop(
+            s.endpoint.clone(),
+            self.cfg.clone(),
+            target,
+            doel_rx,
+            int,
+            connected_rx,
+            s.stop.clone(),
+        ));
+    }
+
+    /// De eigen control-adressen opnieuw opzoeken, en melden als ze veranderden.
+    async fn meld_eigen_adressen(&mut self) {
+        let poort = self.cfg.control_port;
+        let nu: Vec<SocketAddr> = lokale_ips()
+            .into_iter()
+            .map(|ip| SocketAddr::new(ip, poort))
+            .collect();
+        if nu != self.eigen {
+            self.eigen = nu.clone();
+            let _ = self.events.send(MeshEvent::EigenAdressen(nu)).await;
+        }
+    }
+
     async fn on_command(&mut self, cmd: MeshCommand) {
         match cmd {
+            MeshCommand::VoegToe(t) => {
+                tracing::info!(label = ?t.label, target = self.targets.len(), "peer toegevoegd");
+                self.voeg_toe(t);
+            }
+            MeshCommand::WerkBij {
+                target,
+                known_id,
+                public_key,
+                kandidaten,
+            } => {
+                let Some(t) = self.targets.get_mut(target) else {
+                    return;
+                };
+                // De app controleerde dit al tegen de config; hier nog eens tegen wat de actor
+                // intussen geleerd kan hebben. Een vastgepinde sleutel verandert nooit stil.
+                if t.public_key.is_some_and(|k| k != public_key)
+                    || t.known_id.is_some_and(|k| k != known_id)
+                {
+                    tracing::warn!(target, "code botst met de vastgepinde sleutel; genegeerd");
+                    return;
+                }
+                t.known_id = Some(known_id);
+                t.public_key = Some(public_key);
+                t.werk_doel_bij(Some(kandidaten));
+                // Een geparkeerde beller kan nu op zijn sleutel gekoppeld worden.
+                self.retry_pending().await;
+            }
             MeshCommand::Send { to, msg } => {
                 if let Some(a) = self.active.get(&to) {
                     let _ = a.out.try_send(msg);
@@ -805,7 +921,7 @@ impl Actor {
     /// die we ten onrechte wegkieperen is een peer die pas na zijn volgende backoff weer
     /// binnenkomt. Elke plek gaat sowieso na [`PENDING_GRACE`] weer open.
     fn max_pending(&self) -> usize {
-        self.cfg.targets.len().saturating_mul(4).max(8)
+        self.targets.len().saturating_mul(4).max(8)
     }
 
     /// Beslist over een inkomende beller die zijn handtekening al bewees, vóór de
@@ -983,6 +1099,7 @@ impl Actor {
                 tracing::info!(peer = ?e.peer_id, remote = %e.remote, target, "sleutel vastgepind");
                 self.targets[target].known_id = Some(e.peer_id);
                 self.targets[target].public_key = Some(e.sleutel);
+                self.targets[target].werk_doel_bij(None);
                 let _ = self
                     .events
                     .send(MeshEvent::LearnedIdentity {
@@ -1170,6 +1287,10 @@ impl Actor {
     async fn on_tick(&mut self) {
         self.retry_pending().await;
         self.media.ruim_op();
+        self.tikken = self.tikken.wrapping_add(1);
+        if self.tikken.is_multiple_of(EIGEN_ELKE) {
+            self.meld_eigen_adressen().await;
+        }
 
         let updates: Vec<(usize, PeerStatus)> = self
             .active
@@ -1213,14 +1334,14 @@ async fn dial_loop(
     endpoint: quinn::Endpoint,
     cfg: MeshConfig,
     target: usize,
-    peer: PeerTarget,
+    doel: watch::Receiver<Doel>,
     int: mpsc::Sender<Internal>,
     connected: watch::Receiver<bool>,
     mut stop: watch::Receiver<bool>,
 ) {
     tokio::select! {
         _ = cancelled(&mut stop) => {}
-        _ = dial_forever(endpoint, cfg, target, peer, int, connected) => {}
+        _ = dial_forever(endpoint, cfg, target, doel, int, connected) => {}
     }
 }
 
@@ -1228,7 +1349,7 @@ async fn dial_forever(
     endpoint: quinn::Endpoint,
     cfg: MeshConfig,
     target: usize,
-    peer: PeerTarget,
+    mut doel: watch::Receiver<Doel>,
     int: mpsc::Sender<Internal>,
     mut connected: watch::Receiver<bool>,
 ) {
@@ -1242,9 +1363,10 @@ async fn dial_forever(
             }
         }
 
+        let d = doel.borrow_and_update().clone();
         let _ = int.send(Internal::Connecting { target }).await;
 
-        match try_dial(&endpoint, &cfg, target, &peer, &int).await {
+        match try_dial(&endpoint, &cfg, target, &d, &int).await {
             // B-40: alleen een sessie die er echt geweest is verdient een verse backoff.
             // `VersionMismatch` keerde ook als `Ok` terug en zette hem daarmee terug op
             // één seconde, dus tegen een peer die altijd een afwijkende versie meldt deden
@@ -1255,7 +1377,7 @@ async fn dial_forever(
             }
             Ok(Dialresultaat::Afgewezen) => {}
             Err(e) => {
-                tracing::debug!(address = %peer.address, error = %format!("{e:#}"), "verbinden mislukt");
+                tracing::debug!(address = %d.address, error = %format!("{e:#}"), "verbinden mislukt");
                 let _ = int
                     .send(Internal::Rejected {
                         target,
@@ -1267,8 +1389,18 @@ async fn dial_forever(
             }
         }
 
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        let max = if d.buiten_tailnet() {
+            BACKOFF_MAX_PUBLIEK
+        } else {
+            BACKOFF_MAX
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => {}
+            // Een geplakte code of een nieuw geleerd adres: meteen proberen, niet pas na de
+            // backoff van een peer die tot nu toe onbereikbaar was.
+            Ok(()) = doel.changed() => backoff = BACKOFF_START,
+        }
+        backoff = (backoff * 2).min(max);
     }
 }
 
@@ -1282,32 +1414,193 @@ enum Dialresultaat {
     Afgewezen,
 }
 
+/// Tussen het starten van twee belpogingen naar verschillende kandidaten (B3). Kort genoeg
+/// dat een werkend adres achteraan in de lijst snel aan de beurt is, lang genoeg dat een
+/// adres dat meteen antwoordt (het LAN, het tailnet) de rest niet eens laat starten.
+const STAFFEL: Duration = Duration::from_millis(250);
+
+/// Wat de dialer probeert (B3). De actor houdt hem bij; de dialer leest hem bij elke poging
+/// opnieuw, zodat een geplakte code of een geleerd adres meteen meedoet.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Doel {
+    /// Uit de config: het tailnet-adres of de MagicDNS-naam. Leeg voor een peer die alleen
+    /// uit een uitnodigingscode komt.
+    address: String,
+    control_port: u16,
+    /// Uit de code en geleerd (B4). Hints, nooit toegang.
+    kandidaten: Vec<SocketAddr>,
+    /// De vastgepinde sleutel en `PeerId`. Op een kandidaat waar een ander opneemt is het
+    /// adres verkeerd, en daar blijft het bij.
+    pin: Option<[u8; 32]>,
+    known_id: Option<PeerId>,
+}
+
+impl Doel {
+    fn van(t: &PeerTarget) -> Self {
+        Self {
+            address: t.address.clone(),
+            control_port: t.control_port,
+            kandidaten: t.kandidaten.clone(),
+            pin: t.public_key,
+            known_id: t.known_id,
+        }
+    }
+
+    /// Of er een kandidaat buiten het tailnet bij is: dan bellen we vaker
+    /// ([`BACKOFF_MAX_PUBLIEK`]).
+    fn buiten_tailnet(&self) -> bool {
+        self.kandidaten.iter().any(|a| !mag_leren(a.ip()))
+    }
+}
+
 /// Verbindt, doet de handshake en keert pas terug als de verbinding weer weg is.
+///
+/// Belt het configadres en alle kandidaten gestaffeld vanaf hetzelfde endpoint (B3): de eerste
+/// QUIC-verbinding die opkomt krijgt de `Hello`. Neemt daar iemand anders op dan deze peer,
+/// dan gaat het verder met de rest.
 async fn try_dial(
     endpoint: &quinn::Endpoint,
     cfg: &MeshConfig,
     target: usize,
-    peer: &PeerTarget,
+    doel: &Doel,
     int: &mpsc::Sender<Internal>,
 ) -> Result<Dialresultaat> {
-    let host = format!("{}:{}", peer.address, peer.control_port);
-    let addr = tokio::net::lookup_host(&host)
-        .await
-        .with_context(|| format!("{host} opzoeken"))?
-        .next()
-        .with_context(|| format!("{host} leverde geen adres op"))?;
+    let mut adressen = Vec::new();
+    let mut configadres = None;
+    if !doel.address.is_empty() {
+        let host = format!("{}:{}", doel.address, doel.control_port);
+        let opgezocht = tokio::net::lookup_host(&host)
+            .await
+            .with_context(|| format!("{host} opzoeken"))
+            .and_then(|mut a| {
+                a.next()
+                    .with_context(|| format!("{host} leverde geen adres op"))
+            });
+        match opgezocht {
+            Ok(addr) => {
+                let _ = int.send(Internal::Resolved { target, addr }).await;
+                adressen.push(addr);
+                configadres = Some(addr);
+            }
+            // Zonder Tailscale is de MagicDNS-naam weg; de adressen uit de code niet.
+            Err(e) if !doel.kandidaten.is_empty() => {
+                tracing::debug!(error = %format!("{e:#}"), "configadres niet op te zoeken; de kandidaten wel");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    for k in &doel.kandidaten {
+        if !adressen.contains(k) {
+            adressen.push(*k);
+        }
+    }
+    if adressen.is_empty() {
+        bail!("geen adres om te proberen");
+    }
 
-    let _ = int.send(Internal::Resolved { target, addr }).await;
+    // Een adres dat de QUIC-handshake haalt maar daarna niets wordt (de eigen pc op een oud
+    // LAN-adres, een andere installatie die ons niet kent en stil sluit, een peer op een
+    // andere versie) gaat eruit, en dan de rest. Anders won zo'n adres elke ronde de staffel
+    // en kwam een werkend adres verderop nooit aan de beurt.
+    let mut fout: Option<anyhow::Error> = None;
+    let mut gemeld = false;
+    loop {
+        let (conn, addr) = verbind_eerste(endpoint, &adressen).await?;
+        let bij_config = configadres == Some(addr);
+        match opzetten(conn, cfg, target, doel, bij_config, int).await {
+            Ok(Opgezet::Klaar(r)) => return Ok(r),
+            Ok(Opgezet::Volgende { status_gemeld }) => {
+                tracing::debug!(%addr, target, "op deze kandidaat werd het niets");
+                gemeld |= status_gemeld;
+                fout.get_or_insert_with(|| anyhow::anyhow!("op dit adres neemt een ander op"));
+            }
+            Err(e) => {
+                tracing::debug!(%addr, target, error = %format!("{e:#}"), "handshake op deze kandidaat mislukt");
+                fout = Some(e);
+            }
+        }
+        adressen.retain(|a| *a != addr);
+        if adressen.is_empty() {
+            // Een versieverschil of een ander op het tailnet-adres staat al als status; die
+            // niet overschrijven met een kale fout.
+            return match fout {
+                Some(e) if !gemeld => Err(e),
+                _ => Ok(Dialresultaat::Afgewezen),
+            };
+        }
+    }
+}
 
+/// Wat er na het opzetten van één verbinding uitkwam.
+enum Opgezet {
+    /// Klaar met deze poging: er heeft een sessie gedraaid (die nu voorbij is).
+    Klaar(Dialresultaat),
+    /// Op dit adres werd het niets vóór er een sessie was: een ander nam op, of een peer op
+    /// een andere versie. Probeer de andere kandidaten. `status_gemeld`: er ging al een
+    /// status naar de actor (versieverschil, `IdentityChanged`).
+    Volgende { status_gemeld: bool },
+}
+
+/// Belt alle adressen gestaffeld vanaf hetzelfde endpoint en levert de eerste QUIC-verbinding
+/// die opkomt. De rest wordt afgebroken vóór er een `Hello` over gaat, zodat er per poging
+/// hooguit één verbinding ontstaat en de botsingsregel niet tussen twee eigen verbindingen
+/// hoeft te kiezen.
+async fn verbind_eerste(
+    endpoint: &quinn::Endpoint,
+    adressen: &[SocketAddr],
+) -> Result<(quinn::Connection, SocketAddr)> {
+    let mut lopend = tokio::task::JoinSet::new();
+    let mut rest = adressen.iter().copied();
+    let mut fout: Option<anyhow::Error> = None;
+    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+    let mut volgende = tokio::time::Instant::now();
+    loop {
+        if tokio::time::Instant::now() >= volgende {
+            if let Some(addr) = rest.next() {
+                match endpoint.connect(addr, tls::SERVER_NAME) {
+                    Ok(c) => {
+                        lopend.spawn(async move {
+                            c.await
+                                .map(|conn| (conn, addr))
+                                .with_context(|| format!("QUIC-verbinding naar {addr}"))
+                        });
+                    }
+                    Err(e) => fout = Some(anyhow::Error::new(e).context(format!("{addr}"))),
+                }
+                volgende += STAFFEL;
+                continue;
+            }
+        }
+        let meer = rest.len() > 0;
+        if lopend.is_empty() && !meer {
+            break;
+        }
+        tokio::select! {
+            Some(r) = lopend.join_next() => match r {
+                Ok(Ok(v)) => return Ok(v),
+                Ok(Err(e)) => fout = Some(e),
+                Err(_) => {}
+            },
+            _ = tokio::time::sleep_until(volgende), if meer => {}
+            _ = tokio::time::sleep_until(deadline) => bail!("peer reageert niet"),
+        }
+    }
+    Err(fout.unwrap_or_else(|| anyhow::anyhow!("peer reageert niet")))
+}
+
+/// De handshake op een opgezette QUIC-verbinding, en daarna de sessie.
+async fn opzetten(
+    conn: quinn::Connection,
+    cfg: &MeshConfig,
+    target: usize,
+    doel: &Doel,
+    bij_config: bool,
+    int: &mpsc::Sender<Internal>,
+) -> Result<Opgezet> {
     let mijn_index = mediasleutel::nieuwe_index();
 
     // Alleen het opzetten krijgt een deadline. De sessie erna mag uren duren.
     let opgezet = tokio::time::timeout(CONNECT_TIMEOUT, async {
-        let conn = endpoint
-            .connect(addr, tls::SERVER_NAME)?
-            .await
-            .with_context(|| format!("QUIC-verbinding naar {addr}"))?;
-
         let (mut send, mut recv) = conn.open_bi().await.context("control-stream openen")?;
 
         framing::write_frame(
@@ -1331,12 +1624,12 @@ async fn try_dial(
             None => bail!("peer sloot de verbinding tijdens de handshake"),
         };
 
-        Ok::<_, anyhow::Error>((conn, send, recv, ack))
+        Ok::<_, anyhow::Error>((send, recv, ack))
     })
     .await
     .map_err(|_| anyhow::anyhow!("peer reageert niet"))?;
 
-    let (conn, send, recv, ack) = match opgezet {
+    let (send, recv, ack) = match opgezet {
         Ok(v) => v,
         // Een peer op protocol 5 schrijft zijn `HelloAck` en sluit in dezelfde tik, dus het
         // antwoord komt nooit aan; alleen zijn sluitreden wel. Zonder dit zag wie al
@@ -1351,7 +1644,9 @@ async fn try_dial(
                     },
                 })
                 .await;
-            return Ok(Dialresultaat::Afgewezen);
+            return Ok(Opgezet::Volgende {
+                status_gemeld: true,
+            });
         }
         Err(e) => return Err(e),
     };
@@ -1368,12 +1663,14 @@ async fn try_dial(
             })
             .await;
         // Geen fout: dit is een nette, verwachte uitkomst waar de gebruiker wat mee moet.
-        return Ok(Dialresultaat::Afgewezen);
+        return Ok(Opgezet::Volgende {
+            status_gemeld: true,
+        });
     }
 
     // Wie hier antwoordt moet bewijzen dat hij de sleutel heeft die hij noemt, over déze
     // verbinding. Of het de goede sleutel is beslist de actor (`install`): alleen die kent
-    // de pins zoals ze nu zijn; `peer` is een kopie van bij het starten.
+    // de pins zoals ze nu zijn.
     let Some(sleutel) = bewezen_sleutel(
         &exporter(&conn, Handtekening::OPNEMER)?,
         &ack.public_key,
@@ -1388,11 +1685,47 @@ async fn try_dial(
                 },
             })
             .await;
-        return Ok(Dialresultaat::Afgewezen);
+        return Ok(Opgezet::Volgende {
+            status_gemeld: true,
+        });
     };
 
     if ack.peer_id == cfg.me {
-        bail!("dit adres wijst naar onszelf; controleer de config");
+        conn.close(0u32.into(), b"");
+        let _ = int
+            .send(Internal::Rejected {
+                target,
+                status: PeerStatus::Offline {
+                    reason: "dit adres wijst naar onszelf".to_string(),
+                },
+            })
+            .await;
+        return Ok(Opgezet::Volgende {
+            status_gemeld: true,
+        });
+    }
+
+    // B3: een kandidaat is een hint. Neemt daar iemand anders op dan de peer van deze pin,
+    // dan is het adres verkeerd (een oud adres, een vals adres van een ander) en gaan we
+    // verder met de rest. Een alarm is het bij dezelfde `PeerId` met een andere sleutel, en
+    // op het tailnet-adres uit de config, zoals in fase A.
+    if doel.pin.is_some_and(|p| p != sleutel) {
+        conn.close(1u32.into(), b"andere sleutel");
+        let alarm = doel.known_id == Some(ack.peer_id) || bij_config;
+        if alarm {
+            let _ = int
+                .send(Internal::Rejected {
+                    target,
+                    status: PeerStatus::IdentityChanged {
+                        expected: doel.known_id.unwrap_or(ack.peer_id),
+                        got: ack.peer_id,
+                    },
+                })
+                .await;
+        }
+        return Ok(Opgezet::Volgende {
+            status_gemeld: alarm,
+        });
     }
 
     let begin = Instant::now();
@@ -1419,11 +1752,11 @@ async fn try_dial(
     // we elke seconde opnieuw, met bij de ander elke seconde een volle online/offline-ronde.
     // Met sleutels is dat de gewone foutvorm geworden (een oude pin, een vriend met een
     // nieuwe sleutel), dus een korte sessie telt als afwijzing.
-    Ok(if begin.elapsed() < KORTE_SESSIE {
+    Ok(Opgezet::Klaar(if begin.elapsed() < KORTE_SESSIE {
         Dialresultaat::Afgewezen
     } else {
         Dialresultaat::Sessie
-    })
+    }))
 }
 
 /// Een sessie korter dan dit was geen sessie maar een afwijzing (zie `try_dial`).
@@ -1834,6 +2167,29 @@ async fn run_session(
     let _ = int.send(Internal::Closed { conn_id, reason }).await;
 }
 
+/// De IP's die deze pc voor zichzelf kiest: naar internet (achter een router meestal het
+/// LAN-adres) en naar het tailnet. Er gaat geen pakket heen: een UDP-socket "verbinden" kiest
+/// alleen een route en een bronadres, zoals bij A0 (`bereik.rs`).
+///
+/// shortcut: alleen de voorkeursroutes, geen lijst van alle interfaces (netwatch opent
+/// daarvoor op Windows WMI); een tweede netwerkkaart doet zo niet mee. Bij B7 echt opsommen.
+fn lokale_ips() -> Vec<IpAddr> {
+    let via = |doel: &str| {
+        let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        s.connect(doel).ok()?;
+        let ip = s.local_addr().ok()?.ip();
+        (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
+    };
+    // Een documentatieadres (TEST-NET-1) en het vaste adres van Tailscale zelf. Staat
+    // Tailscale uit, dan gaat ook dat tweede via het LAN, en valt het als dubbel weg.
+    let mut uit: Vec<IpAddr> = [via("192.0.2.1:9"), via("100.100.100.100:9")]
+        .into_iter()
+        .flatten()
+        .collect();
+    uit.dedup();
+    uit
+}
+
 /// Volledige anyhow-ketens zijn onleesbaar in een UI-label.
 fn short_reason(e: &anyhow::Error) -> String {
     let s = e.to_string();
@@ -1869,16 +2225,18 @@ mod tests {
                 known_id: None,
                 control_port: 41000,
                 public_key: None,
+                kandidaten: Vec::new(),
             })
             .collect();
         let (tx, rx) = mpsc::channel(32);
         let mut vlaggen = Vec::new();
         let mut target_state = Vec::new();
-        for _ in 0..aantal_targets {
+        for t in &targets {
             let (vlag_tx, vlag_rx) = watch::channel(false);
             vlaggen.push(vlag_rx);
             target_state.push(TargetState {
                 connected: vlag_tx,
+                doel: watch::channel(Doel::van(t)).0,
                 resolved: None,
                 known_id: None,
                 public_key: None,
@@ -1903,6 +2261,9 @@ mod tests {
             gemelde_frames: HashSet::new(),
             logrem: Logrem::default(),
             media: MediaSleutels::default(),
+            spawner: None,
+            eigen: Vec::new(),
+            tikken: 0,
         };
         (actor, rx, vlaggen)
     }
@@ -2189,6 +2550,7 @@ mod tests {
                 known_id: pin.map(|(id, _)| id),
                 control_port: ander,
                 public_key: pin.map(|(_, k)| k),
+                kandidaten: Vec::new(),
             }],
         })
         .unwrap()

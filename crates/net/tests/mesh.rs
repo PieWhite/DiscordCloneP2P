@@ -10,6 +10,7 @@ use fitcom_net::{
 };
 use fitcom_proto::control::OpBroadcast;
 use fitcom_proto::{Channel, ControlMsg, Op, OpKind, PeerId};
+use ring::signature::KeyPair;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -65,6 +66,7 @@ fn config_multi(me: PeerId, name: &str, my_port: u16, peer_ports: &[u16]) -> Mes
                 known_id: None,
                 control_port: p,
                 public_key: None,
+                kandidaten: Vec::new(),
             })
             .collect(),
     }
@@ -431,4 +433,220 @@ async fn verbonden_peers_delen_mediasleutels_en_niemand_anders() {
 
     assert_eq!(uitkomst.0, Some((ida, 1, b"hoi".to_vec())));
     assert!(uitkomst.1, "een pakket met een vreemde sleutel ging open");
+}
+/// Het LAN-adres van deze pc (geen pakket: alleen de route kiezen), of `None` zonder netwerk.
+fn lan_ip() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Een peer die alleen uit een uitnodigingscode komt: geen tailnet-adres, wel sleutel,
+/// `PeerId` en kandidaten.
+fn uit_code(id: PeerId, sleutel: [u8; 32], kandidaten: Vec<std::net::SocketAddr>) -> PeerTarget {
+    PeerTarget {
+        address: String::new(),
+        label: "code".into(),
+        known_id: Some(id),
+        control_port: 0,
+        public_key: Some(sleutel),
+        kandidaten,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn twee_peers_verbinden_op_alleen_elkaars_code_buiten_het_tailnet() {
+    // Fase B: geen tailnet. Het adres is een LAN-adres, waar nooit een sleutel geleerd wordt;
+    // binnenkomen kan dus alleen met de sleutel uit de code. De eerste kandidaat is een dood
+    // adres: gestaffeld bellen moet de tweede vinden.
+    init_tracing();
+    let Some(ip) = lan_ip() else {
+        eprintln!("geen netwerk; overgeslagen");
+        return;
+    };
+    let (pa, pb) = (free_port().await, free_port().await);
+    let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+    let (ka, kb) = (wegwerpsleutel(), wegwerpsleutel());
+    let sleutel = |k: &ring::signature::Ed25519KeyPair| -> [u8; 32] {
+        k.public_key().as_ref().try_into().unwrap()
+    };
+    let dood = std::net::SocketAddr::new(ip, free_port().await);
+    let mut cfg_a = config_multi(ida, "A", pa, &[]);
+    cfg_a.sleutel = ka.clone();
+    cfg_a.targets = vec![uit_code(
+        idb,
+        sleutel(&kb),
+        vec![dood, std::net::SocketAddr::new(ip, pb)],
+    )];
+    let mut cfg_b = config_multi(idb, "B", pb, &[]);
+    cfg_b.sleutel = kb.clone();
+    cfg_b.targets = vec![uit_code(
+        ida,
+        sleutel(&ka),
+        vec![std::net::SocketAddr::new(ip, pa)],
+    )];
+
+    let mut a = spawn(cfg_a).unwrap();
+    let mut b = spawn(cfg_b).unwrap();
+    assert_eq!(wait_for(&mut a, "A ziet B", 15, online).await, idb);
+    assert_eq!(wait_for(&mut b, "B ziet A", 15, online).await, ida);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn twee_werkende_kandidaten_tegelijk_geven_een_verbinding_die_blijft() {
+    // B3: beide kanten bellen elkaar tegelijk, elk op twee adressen die allebei werken
+    // (loopback en het LAN-adres). Per poging gaat er maar één `Hello` uit, en de
+    // botsingsregel kiest daarna één verbinding; die moet blijven staan.
+    init_tracing();
+    let Some(ip) = lan_ip() else {
+        eprintln!("geen netwerk; overgeslagen");
+        return;
+    };
+    let (pa, pb) = (free_port().await, free_port().await);
+    let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+    let (ka, kb) = (wegwerpsleutel(), wegwerpsleutel());
+    let sleutel = |k: &ring::signature::Ed25519KeyPair| -> [u8; 32] {
+        k.public_key().as_ref().try_into().unwrap()
+    };
+    let beide = |p: u16| {
+        vec![
+            std::net::SocketAddr::from(([127, 0, 0, 1], p)),
+            std::net::SocketAddr::new(ip, p),
+        ]
+    };
+    let mut cfg_a = config_multi(ida, "A", pa, &[]);
+    cfg_a.sleutel = ka.clone();
+    cfg_a.targets = vec![uit_code(idb, sleutel(&kb), beide(pb))];
+    let mut cfg_b = config_multi(idb, "B", pb, &[]);
+    cfg_b.sleutel = kb.clone();
+    cfg_b.targets = vec![uit_code(ida, sleutel(&ka), beide(pa))];
+
+    let mut a = spawn(cfg_a).unwrap();
+    let mut b = spawn(cfg_b).unwrap();
+    wait_for(&mut a, "A ziet B", 15, online).await;
+    wait_for(&mut b, "B ziet A", 15, online).await;
+    // Tijdens de botsing kan een kant heel even offline gaan: de verliezer wordt gesloten
+    // voordat de winnaar daar geïnstalleerd is. Dat kon met één adres ook al. Daarna moet er
+    // aan beide kanten één verbinding staan die blijft.
+    for h in [&mut a, &mut b] {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mut laatst = None;
+        while let Ok(ev) = h.events.try_recv() {
+            if let MeshEvent::Status { status, .. } = ev {
+                laatst = Some(status);
+            }
+        }
+        if let Some(s) = laatst {
+            assert!(
+                matches!(s, PeerStatus::Online { .. }),
+                "na de botsing: {s:?}"
+            );
+        }
+    }
+    let rust = timeout(Duration::from_secs(4), async {
+        loop {
+            tokio::select! {
+                Some(ev) = a.events.recv() => if let Some(r) = offline(&ev) { return r },
+                Some(ev) = b.events.recv() => if let Some(r) = offline(&ev) { return r },
+            }
+        }
+    })
+    .await;
+    assert!(rust.is_err(), "verbinding viel weg na de botsing: {rust:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn een_peer_uit_een_code_erbij_terwijl_de_mesh_draait() {
+    // B1: beide starten zonder peers; daarna plakt elk de code van de ander.
+    init_tracing();
+    let Some(ip) = lan_ip() else {
+        eprintln!("geen netwerk; overgeslagen");
+        return;
+    };
+    let (pa, pb) = (free_port().await, free_port().await);
+    let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+    let mut cfg_a = config_multi(ida, "A", pa, &[]);
+    let mut cfg_b = config_multi(idb, "B", pb, &[]);
+    cfg_a.targets.clear();
+    cfg_b.targets.clear();
+    let mut a = spawn(cfg_a).unwrap();
+    let mut b = spawn(cfg_b).unwrap();
+    for (h, id, sleutel, poort) in [(&a, idb, b.public_key, pb), (&b, ida, a.public_key, pa)] {
+        h.commands
+            .send(MeshCommand::VoegToe(uit_code(
+                id,
+                sleutel,
+                vec![std::net::SocketAddr::new(ip, poort)],
+            )))
+            .await
+            .unwrap();
+    }
+    assert_eq!(wait_for(&mut a, "A ziet B", 15, online).await, idb);
+    assert_eq!(wait_for(&mut b, "B ziet A", 15, online).await, ida);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn een_kandidaat_die_snel_opneemt_maar_niets_wordt_houdt_de_rest_niet_tegen() {
+    // De eerste kandidaat is A's eigen poort (een oud LAN-adres dat nu de eigen pc is): die
+    // haalt QUIC in een milliseconde en sluit dan stil. B belt A niet terug. Toch moet A via
+    // de tweede kandidaat bij B komen, en niet elke ronde opnieuw op zichzelf stuklopen.
+    init_tracing();
+    let Some(ip) = lan_ip() else {
+        eprintln!("geen netwerk; overgeslagen");
+        return;
+    };
+    let (pa, pb) = (free_port().await, free_port().await);
+    let (ida, idb) = (PeerId::new_random(), PeerId::new_random());
+    let (ka, kb) = (wegwerpsleutel(), wegwerpsleutel());
+    let sleutel = |k: &ring::signature::Ed25519KeyPair| -> [u8; 32] {
+        k.public_key().as_ref().try_into().unwrap()
+    };
+    let mut cfg_a = config_multi(ida, "A", pa, &[]);
+    cfg_a.sleutel = ka.clone();
+    cfg_a.targets = vec![uit_code(
+        idb,
+        sleutel(&kb),
+        vec![
+            std::net::SocketAddr::new(ip, pa),
+            std::net::SocketAddr::new(ip, pb),
+        ],
+    )];
+    let mut cfg_b = config_multi(idb, "B", pb, &[]);
+    cfg_b.sleutel = kb.clone();
+    // B kent A wel (anders sluit hij stil), maar heeft geen adres om hem te bellen.
+    cfg_b.targets = vec![uit_code(ida, sleutel(&ka), Vec::new())];
+
+    let mut a = spawn(cfg_a).unwrap();
+    let _b = spawn(cfg_b).unwrap();
+    assert_eq!(wait_for(&mut a, "A ziet B", 10, online).await, idb);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn een_ander_op_het_configadres_blijft_een_alarm() {
+    // Fase A: op het (tailnet-)adres uit de config neemt een andere installatie op, met een
+    // andere `PeerId` en sleutel (een herinstallatie). Dat moet "andere identiteit" blijven
+    // en niet stil "verbinden..." worden, ook nu een kandidaat die niet klopt gewoon wordt
+    // overgeslagen.
+    init_tracing();
+    let (pa, pc) = (free_port().await, free_port().await);
+    let (ida, idb, idc) = (
+        PeerId::new_random(),
+        PeerId::new_random(),
+        PeerId::new_random(),
+    );
+    let mut cfg_a = config(ida, "A", pa, pc);
+    cfg_a.targets[0].known_id = Some(idb);
+    cfg_a.targets[0].public_key = Some([7; 32]);
+    let mut a = spawn(cfg_a).unwrap();
+    let _c = spawn(config(idc, "C", pc, pa)).unwrap();
+    let (expected, got) = wait_for(&mut a, "A meldt een andere identiteit", 10, |ev| match ev {
+        MeshEvent::Status {
+            status: PeerStatus::IdentityChanged { expected, got },
+            ..
+        } => Some((*expected, *got)),
+        _ => None,
+    })
+    .await;
+    assert_eq!((expected, got), (idb, idc));
 }

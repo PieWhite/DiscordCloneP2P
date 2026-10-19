@@ -127,6 +127,7 @@ fn start() -> Result<()> {
                 known_id: p.known_id,
                 control_port: p.control_port,
                 public_key: p.vastgepinde_sleutel(),
+                kandidaten: p.addresses.clone(),
             })
             .collect(),
     };

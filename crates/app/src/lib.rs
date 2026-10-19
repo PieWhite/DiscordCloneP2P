@@ -6,6 +6,7 @@
 
 pub mod chat;
 pub mod clips;
+pub mod codes;
 pub mod config;
 pub mod engine;
 pub mod files;

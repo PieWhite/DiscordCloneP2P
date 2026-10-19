@@ -612,6 +612,13 @@ pub struct UiState {
     /// once, a few seconds after start.
     #[serde(default)]
     pub router: Option<String>,
+    /// This installation's invite code (phase B1). Changes only with its own addresses or
+    /// name.
+    #[serde(default)]
+    pub invite_code: String,
+    /// What the last paste of invite codes did, in one or two sentences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_result: Option<String>,
     pub download_dir: String,
     pub pictures_dir: String,
     pub autostart: bool,
@@ -673,6 +680,52 @@ fn router_line(b: &fitcom_net::bereik::Bereik) -> String {
     )
 }
 
+/// One line about the last paste of invite codes.
+fn code_result_line(u: &crate::codes::CodesUitslag) -> String {
+    use crate::codes::CodeWeigering;
+    use fitcom_proto::uitnodiging::CodeFout;
+    if u.geen_code {
+        return "No invite code in that text. A code starts with fitcom1:".into();
+    }
+    let names = |v: &[String]| {
+        v.iter()
+            .map(|n| if n.is_empty() { "a peer" } else { n.as_str() })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !u.toegevoegd.is_empty() {
+        parts.push(format!("Added {}.", names(&u.toegevoegd)));
+    }
+    if !u.bijgewerkt.is_empty() {
+        parts.push(format!("Updated {}.", names(&u.bijgewerkt)));
+    }
+    for (name, why) in &u.geweigerd {
+        let who = if name.is_empty() {
+            "A code"
+        } else {
+            name.as_str()
+        };
+        let why = match why {
+            CodeWeigering::Onleesbaar(CodeFout::Controlesom) => {
+                "is cut off or mistyped. Copy it again, whole."
+            }
+            CodeWeigering::Onleesbaar(CodeFout::Versie(_)) => {
+                "comes from a newer version of the app. Update first."
+            }
+            CodeWeigering::Onleesbaar(_) => "is damaged. Copy it again, whole.",
+            CodeWeigering::EigenCode => "is your own code.",
+            CodeWeigering::SleutelWijkt => {
+                "has a different key than the one pinned for this peer. If they reinstalled, \
+                 remove their known_id and public_key from config.toml first."
+            }
+            CodeWeigering::Bezet => "could not be added just now. Paste it again.",
+        };
+        parts.push(format!("{who} {why}"));
+    }
+    parts.join(" ")
+}
+
 /// RTT is deliberately not here: it moves every tick and lives in the `meters` event, so
 /// a measurement ticking over cannot force a full state push. See `ui/mod.rs`.
 fn peer_presence(view: &PeerView) -> (Presence, Option<String>, Option<String>) {
@@ -705,7 +758,11 @@ fn peer_presence(view: &PeerView) -> (Presence, Option<String>, Option<String>) 
         ),
         PeerStatus::UnknownKey => (
             Presence::Broken,
-            Some("No key known for this peer. Keys are only learned over the tailnet.".into()),
+            Some(
+                "No key known for this peer. Paste their invite code; keys are only learned \
+                 by themselves over the tailnet."
+                    .into(),
+            ),
             None,
         ),
     }
@@ -916,6 +973,8 @@ impl UiState {
             control_port: c.control_port,
             media_port: c.media_port,
             router: snap.bereik.as_ref().map(router_line),
+            invite_code: snap.uitnodiging.clone(),
+            code_result: snap.codes_uitslag.as_ref().map(code_result_line),
             download_dir: snap.download_dir.display().to_string(),
             pictures_dir: snap.pictures_dir.display().to_string(),
             autostart: c.autostart,

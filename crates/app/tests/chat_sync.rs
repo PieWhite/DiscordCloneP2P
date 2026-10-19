@@ -48,6 +48,7 @@ fn config_multi(me: PeerId, naam: &str, eigen: u16, anderen: &[u16]) -> MeshConf
                 known_id: None,
                 control_port: ander,
                 public_key: None,
+                kandidaten: Vec::new(),
             })
             .collect(),
     }
@@ -90,7 +91,8 @@ impl Peer {
                 }
                 MeshEvent::Status { .. }
                 | MeshEvent::LearnedIdentity { .. }
-                | MeshEvent::IncomingFileStream { .. } => {}
+                | MeshEvent::IncomingFileStream { .. }
+                | MeshEvent::EigenAdressen(_) => {}
                 MeshEvent::Message { from, msg } => {
                     let cmds = self.chat.bij_bericht(from, msg).unwrap();
                     self.stuur(cmds);

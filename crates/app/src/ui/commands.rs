@@ -362,6 +362,13 @@ pub fn pick_clips_dir(ui: &Arc<Ui>) {
     });
 }
 
+/// Pasted text with one or more invite codes; the engine fishes them out (phase B1).
+pub fn add_peer_codes(ui: &Ui, text: &str) {
+    if !text.trim().is_empty() {
+        send(ui, UiCommand::VoegCodesToe(text.to_string()));
+    }
+}
+
 pub fn set_display_name(ui: &Ui, name: &str) {
     let name = name.trim().to_string();
     if !name.is_empty() {
