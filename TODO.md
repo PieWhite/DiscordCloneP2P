@@ -54,6 +54,9 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
 - **`bind_address` in `config.toml` wordt nergens gelezen** (gevonden 2026-10-19, ouder dan fase
   B): beide sockets binden altijd op `0.0.0.0`. Sinds fase B is dat de bedoeling; het veld en zijn
   waarschuwing horen weg of echt aangesloten.
+- **Settings → Network toont de mediapoort uit de config**, ook als de mesh is uitgeweken naar
+  een vrije poort omdat de configpoort bezet was (sinds fase B5; alleen de log zegt het). Werkt
+  gewoon, want de handshake noemt de echte poort; alleen de weergave klopt dan niet.
 - Remote input control (muis/toetsenbord overnemen, Moonlight-stijl).
 - Directe NVENC in plaats van Media Foundation, als de latencymeting in fase 4 daarom vraagt.
 - Subkanalen binnen een DM (het oorspronkelijke plan voor fase 9, vóór Rick het omdraaide

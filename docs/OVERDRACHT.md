@@ -2758,7 +2758,9 @@ opzoeken van een MagicDNS-naam wacht hooguit 1 s als er kandidaten zijn, een te 
 `Addresses` wordt op de volgende tik verwerkt in plaats van weggegooid, `you_are` komt uit het
 huidige bronadres (na een QUIC-padmigratie), en de mediapoort krijgt bij het starten 1,5 s om
 vrij te komen voor er een andere gekozen wordt. Bewust gelaten: meer dan ~15 kandidaten passen
-niet in één belronde van 4 s (in de praktijk 10 tot 13).
+niet in één belronde van 4 s (in de praktijk 10 tot 13), en een `WerkBij` (een nieuwe code voor
+een bekende peer) vervangt de kandidaten uit `adressen.json` door die uit de code tot de volgende
+`Geleerd`.
 
 **Niet gebouwd:** B7 (IPv6; wacht op de A0-regels van de vrienden, zie `TODO.md`) en fase C.
 De "Bekende grenzen" uit het plan gelden onverkort. Nieuw gevonden en niet aangeraakt:
