@@ -3,8 +3,9 @@
 //! (`self-<stream_id>`). Images come from `Thumbnails`; this pane observes that entity, so a
 //! 2 Hz frame re-renders the strip and nothing else.
 //!
-//! A peer's tile is the one home of Watch / Stop watching (`set_watching`), and its speaker
-//! button opens that person's audio popover, where the screen-audio volume lives.
+//! A peer's tile has Watch / Stop watching (`set_watching`; Watch also sits on the voice-list
+//! hover in `channels.rs`), and its speaker button opens that person's audio popover, where
+//! the screen-audio volume lives.
 //!
 //! Drawn without `.cached()` because its height follows its content. The row scrolls
 //! sideways instead of widening the main column (the old strip pushed the column past the

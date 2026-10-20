@@ -199,7 +199,7 @@ pub struct OwnStreamState {
     pub viewers: usize,
     pub is_audio: bool,
     /// Our own camera rather than a screen: the camera button reads this for its pressed
-    /// state, and the sharing line leaves it out of "Sharing <screen>".
+    /// state, and the share button and the "You share" lines count only screens.
     pub is_camera: bool,
     /// Our shared Spotify (also `is_audio`); the title is what plays now.
     #[serde(default)]

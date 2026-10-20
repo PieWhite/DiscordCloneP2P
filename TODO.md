@@ -49,8 +49,6 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
   IPv6. Bouwen: dual-stack sockets (`[::]` met `IPV6_V6ONLY` uit via `socket2`; Windows zet hem
   standaard aan), globale IPv6-adressen in `lokale_ips` (`mesh.rs`) en in de code, en de
   interfaces echt opsommen in plaats van alleen de voorkeursroute.
-- **Een peer verwijderen in de app.** Codes plakken voegt peers toe; weghalen gaat nog met de
-  hand in `config.toml` (een `[[peers]]`-blok), met de app dicht.
 - **`bind_address` in `config.toml` wordt nergens gelezen** (gevonden 2026-10-19, ouder dan fase
   B): beide sockets binden altijd op `0.0.0.0`. Sinds fase B is dat de bedoeling; het veld en zijn
   waarschuwing horen weg of echt aangesloten.

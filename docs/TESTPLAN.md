@@ -1381,10 +1381,10 @@ versie, en een peer op 1.9.0 als je er een hebt.
    keuze zet de pen op. Een nieuw kijkvenster houdt de laatst gekozen pen.
 5. **Ongedaan en wissen.** B: Ctrl+Z haalt zijn laatste lijn weg, bij iedereen; Delete al
    zijn lijnen; C's lijnen blijven staan. Hetzelfde via het menu.
-6. **De deler wist.** A: "Clear" onder "Sharing" wist alles bij iedereen. "Block drawing":
-   alles weg, B's titel verliest de hint, het menu zegt "Drawing is off for this stream",
-   slepen doet niets. "Allow drawing" zet het terug. Stop en deel opnieuw: de laatste stand
-   geldt nog (tot A de app herstart).
+6. **De deler wist.** A: "Clear drawing" in Settings → Video wist alles bij iedereen. "Allow
+   drawing" uit: alles weg, B's titel verliest de hint, het menu zegt "Drawing is off for this
+   stream", slepen doet niets. Weer aan zet het terug. Stop en deel opnieuw, en herstart A: de
+   laatste stand geldt nog (`allow_drawing` in `config.toml`, beslissing 49).
 7. **Vertrek.** B sluit zijn venster: B's lijnen verdwijnen bij A en C. C verliest de
    verbinding (Tailscale uit): C's lijnen verdwijnen. A stopt met delen: alles weg.
 8. **Spel vooraan (invariant 4, het belangrijkste punt).** Er staan lijnen op A's monitor.

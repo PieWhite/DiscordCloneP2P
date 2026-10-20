@@ -2276,6 +2276,8 @@ een spel in exclusive fullscreen niet kan of beelden kost, bouw wat werkt en mel
   **Clear**. Eén schakelaar voor elk scherm dat je deelt; de laatste stand geldt deze sessie
   ook voor het volgende scherm (niet in `config.toml`, zie de vervolgpunten). Bij een
   gedeelde **monitor** staan de lijnen in een doorklikbaar venster over die monitor.
+  *Sinds beslissing 49:* de schakelaar en Clear staan in Settings → Video, en de stand wordt
+  bewaard als `allow_drawing` in `config.toml` (standaard aan).
 - **Overal:** de lijnen staan ook op de tegels in de streamstrook, de eigen tegel van de deler
   inbegrepen.
 
@@ -2824,7 +2826,11 @@ DND is rood. `design/main-window.html` en `design/shots/` blijven oudere anti-re
   drawing); de "now sharing"-regels zijn uit de kanaalkolom. Eronder, alleen bij gedeelde
   Spotify, één regel: "You share …" bij de DJ, "X plays …" met pauze/volgende bij een
   luisteraar. Die twee knoppen staan nergens anders.
+  *Sinds beslissing 49:* geen menu meer; tijdens delen stopt één klik op de deelknop elk
+  eigen scherm, tekenen staat in Settings → Video, en per gedeeld scherm staat er ook een
+  regel met een eigen stop.
 - **Kanaalkolom, spraaksectie:** alleen wie er in het gesprek zit, plus Join the call.
+  *Sinds beslissing 49:* hover over een streamer maakt van LIVE een Watch-knop.
 - **Streamtegels** voor elk scherm en elke camera van iemand in het gesprek, ook als je niet
   kijkt. Een tegel van een ander heeft Watch / Stop watching (oog) en een luidsprekerknop die
   de popover opent, en zo nodig de ledenlijst.
@@ -2836,6 +2842,53 @@ DND is rood. `design/main-window.html` en `design/shots/` blijven oudere anti-re
 **Wat het kost.** `design/shots/` en oude screenshots zijn geen vergelijkingsmateriaal meer;
 de fixtures blijven bruikbaar (zelfde `UiState`). Windows is voor B nog niet gezien, net als
 bij beslissing 39.
+
+### 49. Delen met één klik, peers verwijderen en Watch in de spraaklijst (2026-10-20)
+
+Op Ricks verzoek, vijf kleine stappen richting hoe Discord het doet. Alleen UI en lokale
+config; geen protocolwijziging.
+
+- **De deelknop stopt met één klik** (`d128758`). Het menu onder de deelknop (Stop sharing,
+  Allow drawing, Clear drawing) is weg: tijdens delen stopt een klik elk eigen scherm. Deel-
+  en Spotify-knop tonen een doorgestreept icoon zolang ze aan staan (`monitor-off`,
+  `music-off`): de volgende klik zet uit. De cameraknop houdt bewust zijn oude conventie
+  (doorgestreept zolang hij uit staat). Tekenen toestaan en wissen staan in Settings → Video.
+  De schakelaar wordt nu bewaard, `allow_drawing` bovenaan in `config.toml`, standaard aan
+  (gelijk aan de oude sessiestand), en geldt voor elk lopend en volgend eigen scherm;
+  `UiCommand::ZetTekenen(bool)` draagt geen stream-id meer. Voor kijkers verandert niets.
+- **Directe berichten alleen achter de @ in de rail** (`feb4f8f`). De groep DIRECT MESSAGES
+  onder de kanalen is weg; `dm_list` in de @-weergave is de enige plek.
+- **Peers verwijderen** (`21736c8`), in Settings → Network: een prullenbak per peer achter een
+  bevestiging. Alleen lokaal: de anderen houden hem in hun lijst. `MeshCommand::Vergeet(target)`
+  maakt het target een grafsteen: de dialer stopt, een lopende verbinding gaat dicht langs
+  `on_closed` (de app krijgt een laatste `Offline`, de mediasleutels gaan weg), en pin,
+  `PeerId` en adressen zijn leeg. `koppel_inkomend`, `beoordeel` (nieuw:
+  `Weigering::Verwijderd`), `Resolved`, `WerkBij` en `set_status` slaan hem over, zodat een
+  verwijderde tailnet-peer nooit opnieuw een sleutel leert. In de app wist
+  `PeerConfig::vergeet` pin en adressen, `#[serde(skip)] verwijderd` houdt hem tot de volgende
+  start in de lijst, `Config::save` schrijft hem niet weg en de momentopname laat hem overal
+  weg; `PeerView::plek` / `PeerState::slot` dragen de motorplek, want de lijst in het venster is
+  gefilterd. Opruimen bij wegvallen en verwijderen staat samen in `Engine::peer_weg`. Zijn ops
+  blijven in de store (invariant 6). Opnieuw zijn code plakken maakt een **nieuwe** peer, ook
+  met een andere sleutel: dat is nu de knop voor "een vriend heeft opnieuw geïnstalleerd"
+  (`docs/BEVEILIGING.md`, addendum 2026-10-19).
+  Afgewezen: `Vec::remove` op de targets. De dial-taken en de app tellen op targetnummer;
+  verschuiven laat een lopende belpoging of een `PeerState` bij de verkeerde peer uitkomen.
+- **Watch bij hover in de spraaklijst** (`2c86360`). Over iemand in het gesprek die deelt
+  hoveren maakt van LIVE een Watch-knop, voor een stream die je nog niet bekijkt (scherm vóór
+  camera). Daarmee heeft Watch twee plekken, de tegel en deze hover: bewust, als in Discord.
+- **Een eigen stop per gedeeld scherm, en "Stream <spel>"** (`eb9ef55`). Onder de
+  gespreksknoppen staat per gedeeld scherm "You share <titel> · N watching" met een eigen
+  stop (X), naast de deelknop die alles uitzet. Staat er een spel vooraan en deel je nog geen
+  scherm, dan deelt "Stream <spel>" met één klik het venster van dat spel, zonder kiezer:
+  `speelt::Zoeker::venster` onthoudt de HWND van het laatst gevonden spel (`UiCommand::DeelSpel`).
+  Alleen Windows, en alleen met `share_activity` aan, want anders wordt er niet gemeten
+  (beslissing 43). `SelfState::playing` wisselt alleen bij een ander spel, dus past het in
+  `UiState`.
+
+**Wat het kost.** "Elk ding één plek" uit beslissing 48 heeft nu twee bewuste uitzonderingen:
+Watch (tegel en hover) en stoppen (deelknop en de regel per scherm). Een verwijderde peer blijft
+tot de volgende start een grafsteen in de mesh.
 
 ## Bugs die de tests eruit haalden
 

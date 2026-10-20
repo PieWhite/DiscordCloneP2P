@@ -424,7 +424,8 @@ mag omdraaien:
   scherm met de hele `DrawState`, ook als die leeg is.
 - **Of het mag staat op `StreamAnnounce::drawing`** (`#[serde(default)]`), en uit wist alles.
   Een oudere deler stuurt het niet en krijgt dus geen pen. Geen apart bericht voor de
-  schakelaar.
+  schakelaar. Die staat in Settings → Video en wordt bewaard als `allow_drawing`: één stand
+  voor elk eigen scherm (beslissing 49).
 - **Lijnen leven zolang de tekenaar kijkt.** Uittekenen of wegvallen wist ze bij de deler
   (`vergeet_tekenaar`), en stoppen met delen of intrekken neemt alles mee.
 - **Tekenen kost niets per beeld.** De lagen zijn layered vensters die alleen bij een
@@ -494,6 +495,22 @@ Wat je niet mag omdraaien:
   wachtpost (anders breekt het weggooien van de client het vrijgeven af). "Geen router
   gevonden" is een eigen uitkomst met één nieuwe poging, nooit "router kan niets". Geen
   interfacelijst via netwatch (WMI op Windows) en geen ✓/✗ in de UI-regel (niet in de fonts).
+
+## Peers verwijderen (2026-10-20)
+Beslissing 49 in `docs/OVERDRACHT.md`. Settings → Network, een prullenbak per peer achter een
+bevestiging. Wat je niet mag omdraaien:
+
+- **Een grafsteen, nooit `Vec::remove`.** `MeshCommand::Vergeet` laat het target op zijn plek:
+  dial-taken en app (`PeerView::plek`, `PeerState::slot`) tellen op targetnummer, en
+  verschuiven laat een lopende belpoging bij de verkeerde peer uitkomen.
+- **`Vergeet` wist pin, `PeerId` en adressen en leert nooit opnieuw**, ook niet over het
+  tailnet: `koppel_inkomend`, `beoordeel` (`Weigering::Verwijderd`), `Resolved`, `WerkBij` en
+  `set_status` slaan een grafsteen over.
+- **Alleen lokaal.** Geen bericht op de draad; de anderen houden hem in hun lijst.
+- **Zijn ops blijven in de store** (invariant 6). Verwijderen is geen geschiedenis wissen.
+- **Opnieuw zijn code plakken is een nieuwe peer**, ook met een andere sleutel. Dat is de weg
+  terug na een herinstallatie, en het blijft een keuze van de gebruiker (`docs/BEVEILIGING.md`,
+  addendum 2026-10-19).
 
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het

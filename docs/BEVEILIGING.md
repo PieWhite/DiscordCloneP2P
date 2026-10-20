@@ -247,9 +247,14 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   8 gevalideerde pogingen per bron-IP per seconde. Dat sluit versterking via een gespoofde
 >   afzender en het opmaken van het budget van een echt IP.
 > - **Nog open, en waarom.** Een vriend met een **nieuwe installatie** (nieuwe `identity.toml`)
->   komt er pas weer in als de anderen zijn `known_id` en `public_key` met de hand uit hun
->   `config.toml` halen; er is geen knop voor. Dat is bewust: de app kan een gestolen
->   identiteit niet van een herinstallatie onderscheiden. Een `PeerId` staat niet in de
+>   komt er pas weer in als de anderen hem verwijderen (Settings → Network, sinds beslissing
+>   49) en zijn code opnieuw plakken; dat maakt een nieuwe peer, ook met een andere sleutel.
+>   Het blijft een expliciete, lokale handeling van de gebruiker, nooit iets wat de app zelf
+>   doet: de app kan een gestolen identiteit niet van een herinstallatie onderscheiden, dus de
+>   gebruiker beslist. Een verwijderd target is een grafsteen en leert nooit meer een sleutel,
+>   ook niet over het tailnet (`koppel_inkomend`, `beoordeel` met `Weigering::Verwijderd` en
+>   `Resolved` slaan hem over); een grafsteen en geen `Vec::remove`, omdat de dial-taken en de
+>   app op targetnummer tellen. Een `PeerId` staat niet in de
 >   handtekening en is alleen zo betrouwbaar als de pin. De TLS-sessie zelf blijft anoniem; de
 >   handtekening doet het werk dat een certificaatcontrole elders doet. B-09 (binden op
 >   `0.0.0.0`) is met dit alles minder erg, maar het dreigingsmodel hieronder gaat opnieuw bij

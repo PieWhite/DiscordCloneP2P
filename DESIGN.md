@@ -191,25 +191,39 @@ The reading measure lives on the text (72ch), while rows, hover fields and the c
 span the column.
 
 ### Call controls (information architecture)
-Each control has one home, so a screenshare is never crowded.
+Each control has one home, so a screenshare is never crowded. Two deliberate second homes,
+as in Discord: Watch (stream tile and voice-list hover) and stopping a screen (the share
+button and that screen's own line).
 - **Self panel** (bottom of the channels column): avatar, name, status, mic, deafen and
   do-not-disturb. Mic and deafen stay here always, joined or not.
 - **Voice-connected panel** (only while joined): in the channels column between the voice
   roster and the self panel, stacked as in Discord. Top: "Voice connected" in green, "N
   people · worst RTT" in mono under it, Leave on the right. Under that one row of equal
   buttons: camera, share screen, Spotify.
-- **Share menu:** while a screen is shared, the share button opens a menu with Stop
-  sharing, Allow drawing and (when something is drawn) Clear drawing; while not sharing it
-  opens the picker. The "now sharing" lines are not in the channels column.
-- **Music line:** inside the voice-connected panel, only while Spotify is shared: "You share <title> ·
-  N listening" for the DJ, "<name> plays <title>" with play/pause and next for a listener.
-  Those two buttons live nowhere else.
+- **Share button:** while not sharing it opens the picker; while sharing it shows the
+  crossed monitor and one click stops every own screen, no menu. Spotify likewise shows the
+  crossed note while on. The camera button keeps its own convention (crossed while off).
+  Allow drawing and Clear drawing live in Settings → Video, one saved switch for every own
+  screen (`allow_drawing`).
+- **Stream <game>:** a full-width button under the call buttons while a game is in front
+  and no screen is shared (Windows, with "Show the game I'm playing" on); one click shares
+  that game's window, no picker.
+- **Panel lines:** inside the voice-connected panel, one quiet line per own screen, "You
+  share <title> · N watching" with its own stop (X), and per shared Spotify: "You share
+  <title> · N listening" for the DJ, "<name> plays <title>" with play/pause and next for a
+  listener. Those two music buttons live nowhere else. The "now sharing" lines are not in
+  the channels column.
 - **Channels column, voice section:** only who is in the call (avatar, name, LIVE and
-  muted marks) plus Join the call when not joined. No other buttons.
+  muted marks) plus Join the call when not joined. Hovering a peer turns LIVE into Watch
+  for a stream you do not watch yet, screens before cameras. No other buttons.
+- **Channels column, DMs:** none. Direct messages live only behind the @ in the rail.
 - **Stream tiles:** every screen or camera of someone in the call has a tile, watched or
-  not (an unwatched one shows its title on the well). A peer's tile owns Watch / Stop
-  watching (an eye glyph) and a speaker button that opens that person's popover, opening
-  the member list if it was closed. Your own tiles have neither.
+  not (an unwatched one shows its title on the well). A peer's tile has Watch / Stop
+  watching (an eye glyph; Watch also sits on the voice-list hover) and a speaker button
+  that opens that person's popover, opening the member list if it was closed. Your own
+  tiles have neither.
+- **Settings → Network:** a trash button per peer, behind a confirm dialog, removes that
+  peer locally; the others keep listing them.
 - **Members:** one line per person (avatar, name, mono sub-line), no sliders or chips
   inline. A click on a peer opens their audio popover (serif name, "only for you"): Voice,
   Screen audio (if sharing) and Spotify (if you hear it), each with a mute button and a
@@ -251,6 +265,7 @@ titlebar at 20px. The app icon is a black tile (#16191E to #000, radius 36/160, 
 edge) carrying `>Fit_`: a mono prompt in iron, the serif "Fit", the chrome cursor. At 48px
 and below the prompt drops. Source: `crates/app/icons/icon.svg` (glyphs as outlines);
 `icon.png`, `icon.ico` and `tray-32.png` are renders of it.
+
 ## Components
 
 ### Buttons
@@ -274,7 +289,8 @@ Icon buttons are 32px, transparent, ash glyph; hover is a lift ground and a whit
 - **Unread:** the name lifts to white.
 
 ### Cards and popovers
-Radius 16, 1px hairline, lift or void ground. Stream tiles carry Watch, and the tile of a
+Radius 16, 1px hairline, lift or void ground. Stream tiles carry Watch (so does the
+voice-list hover), and the tile of a
 stream you watch has a chrome outline. The audio popover carries the peer's serif name and
 one slider row per source.
 
