@@ -426,9 +426,9 @@ pub fn render_body(
 }
 
 /// `.mention { padding: 0 3px }` has no counterpart in a text run, so the padding is a
-/// thin plus a hair space on each side (about 3px at 14px), drawn on the plate and left out of a copy. Returns the text
-/// to draw, the spans moved along, the plate ranges (padding included) and the byte
-/// offsets of the inserted characters.
+/// thin plus a hair space on each side (about 3px at 14px), drawn on the plate and left
+/// out of a copy. Returns the text to draw, the spans moved along, the plate ranges
+/// (padding included) and the byte offsets of the inserted characters.
 pub fn pad_mentions(
     text: &str,
     spans: Vec<Span>,
