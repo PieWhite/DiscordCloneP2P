@@ -1,12 +1,18 @@
-//! The Video tab: codec, frame rate, bitrate. Every change goes out as the whole triple, so
-//! the two values it did not touch are the engine's current ones.
+//! The Video tab: codec, frame rate, bitrate, and whether viewers may draw on your screen.
+//! Every codec/rate change goes out as the whole triple, so the two values it did not touch
+//! are the engine's current ones.
 
-use super::controls::{control_row, help, label, note, readout, Body, Piece, Range, Seg};
+use super::controls::{control_row, help, label, note, readout, switch, Body, Piece, Range, Seg};
 use super::SettingsPane;
 use crate::ui::commands;
 use crate::ui::view::format;
+use crate::ui::view::widgets::{Btn, BtnKind};
 use crate::ui::view::AppSnapshot;
-use gpui_kit::{div, App, ClickEvent, Context, KeyDownEvent, ParentElement, Window};
+use gpui_kit::{
+    div, prelude::FluentBuilder, px, App, ClickEvent, Context, KeyDownEvent, ParentElement, Styled,
+    Window,
+};
+use std::rc::Rc;
 
 /// One click on a codec or frame-rate button: the whole triple goes to the engine.
 fn set_video(
@@ -32,6 +38,17 @@ impl SettingsPane {
         let bitrate_now = self.bitrate.value(cx);
 
         let set = |codec: &str, fps: u32| set_video(snap, codec, fps, v.bitrate);
+        let (ui_draw, drawing) = (snap.ui.clone(), snap.s.allow_drawing);
+        let draw_toggle =
+            Rc::new(move |_: &_, _: &mut _, _: &mut _| commands::set_drawing(&ui_draw, !drawing));
+        // Only screens carry lines; the camera never does.
+        let with_lines: Vec<u32> = snap
+            .s
+            .own_streams
+            .iter()
+            .filter(|st| st.has_drawing)
+            .map(|st| st.stream_id)
+            .collect();
 
         Body::new()
             .h2("Video")
@@ -87,6 +104,36 @@ impl SettingsPane {
                             )))
                             .child(readout(format!("{} Mbit/s", bitrate_now.round() as u32))),
                     ),
+            )
+            .field(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(label("Allow drawing").mb(px(2.)))
+                            .child(help(concat!(
+                                "Viewers of a screen you share can draw on it, and everyone ",
+                                "watching sees the lines. Turning this off clears them."
+                            )))
+                            .when(!with_lines.is_empty(), |d| {
+                                let ui = snap.ui.clone();
+                                d.child(
+                                    control_row().mt(px(8.)).child(
+                                        Btn::new("clear-drawing", "Clear drawing")
+                                            .kind(BtnKind::Ghost)
+                                            .on_click(move |_, _, _| {
+                                                for stream in &with_lines {
+                                                    commands::clear_drawing(&ui, *stream);
+                                                }
+                                            }),
+                                    ),
+                                )
+                            }),
+                    )
+                    .child(switch("allow-drawing", drawing, Some(draw_toggle))),
             )
             .field(note(&[Piece::Text(concat!(
                 "Desktop audio starts and stops with the share, always. Your own voice is ",

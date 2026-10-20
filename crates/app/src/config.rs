@@ -101,6 +101,11 @@ pub struct Config {
     #[serde(default = "default_share_activity")]
     pub share_activity: bool,
 
+    /// Mogen kijkers op je gedeelde scherm tekenen (beslissing 45). Standaard aan, zoals
+    /// vóór deze instelling; uit wist alles wat er staat.
+    #[serde(default = "waar")]
+    pub allow_drawing: bool,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
@@ -500,6 +505,7 @@ impl Config {
             clips: ClipsConfig::default(),
             push_to_talk: PushToTalkConfig::default(),
             share_activity: default_share_activity(),
+            allow_drawing: true,
             download_dir: None,
         }
     }
@@ -854,6 +860,18 @@ mod tests {
         assert!(!uit.share_activity);
         let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
         assert!(!terug.share_activity);
+    }
+
+    /// Een config van vóór deze instelling laat tekenen toe, zoals toen; uit overleeft
+    /// opslaan-en-teruglezen.
+    #[test]
+    fn allow_drawing_staat_standaard_aan_ook_in_een_oude_config() {
+        let oud: Config = toml::from_str(r#"display_name = "Rick""#).unwrap();
+        assert!(oud.allow_drawing);
+        assert!(Config::template().allow_drawing);
+        let uit: Config = toml::from_str("display_name = \"Rick\"\nallow_drawing = false").unwrap();
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
+        assert!(!terug.allow_drawing);
     }
 
     /// Een config van vóór de push-to-talk-tabel moet starten, in de oude modus; kapotte

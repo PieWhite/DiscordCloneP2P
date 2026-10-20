@@ -203,8 +203,8 @@ pub struct Streams {
     volgende_id: u32,
     eigen: Vec<EigenStream>,
     vreemd: Vec<VreemdeStream>,
-    /// Of een nieuw gedeeld scherm tekenen toestaat: de laatste stand van de schakelaar,
-    /// deze sessie. Begint aan.
+    /// Of een nieuw gedeeld scherm tekenen toestaat: de laatste stand van de schakelaar.
+    /// Begint aan; de motor zet hem bij het starten uit de config.
     tekenen_standaard: bool,
 }
 
@@ -295,28 +295,22 @@ impl Streams {
         )
     }
 
-    /// De schakelaar van de deler: mogen kijkers op dit scherm tekenen. Uit wist alles en
-    /// zegt het iedereen via een nieuwe aankondiging, net als een nieuwe titel. Geldt ook
-    /// voor schermen die we hierna deze sessie nog delen.
-    pub fn zet_tekenen(&mut self, stream_id: u32, aan: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
+    /// De schakelaar van de deler (`Config::allow_drawing`): mogen kijkers op zijn schermen
+    /// tekenen. Geldt voor elk scherm dat loopt en elk dat hierna komt. Uit wist alles en
+    /// zegt het iedereen via een nieuwe aankondiging, net als een nieuwe titel.
+    pub fn zet_tekenen(&mut self, aan: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
         self.tekenen_standaard = aan;
-        let Some(s) = self
-            .eigen
-            .iter_mut()
-            .find(|s| s.id == stream_id && s.kind.is_scherm())
-        else {
-            return (Vec::new(), Vec::new());
-        };
-        if !Arc::make_mut(&mut s.tekening).zet_aan(aan) {
-            return (Vec::new(), Vec::new());
+        let (mut cmds, mut acties) = (Vec::new(), Vec::new());
+        for s in self.eigen.iter_mut().filter(|s| s.kind.is_scherm()) {
+            if Arc::make_mut(&mut s.tekening).zet_aan(aan) {
+                cmds.push(MeshCommand::Broadcast(s.aankondiging()));
+                acties.push(Actie::Tekening {
+                    eigenaar: None,
+                    stream_id: s.id,
+                });
+            }
         }
-        (
-            vec![MeshCommand::Broadcast(s.aankondiging())],
-            vec![Actie::Tekening {
-                eigenaar: None,
-                stream_id,
-            }],
-        )
+        (cmds, acties)
     }
 
     /// De deler wist alles op zijn scherm, van iedereen.
@@ -1473,7 +1467,7 @@ mod tests {
         );
         assert!(cmds.is_empty());
 
-        s.zet_tekenen(id, false);
+        s.zet_tekenen(false);
         let (cmds, _) = s.bij_bericht(
             a,
             ip(),
@@ -1492,14 +1486,14 @@ mod tests {
             &ControlMsg::Draw(lijn(id, 1, 0, &[[0, 0], [9, 9]])),
         );
 
-        let (cmds, acties) = s.zet_tekenen(id, false);
+        let (cmds, acties) = s.zet_tekenen(false);
         assert!(matches!(
             cmds.as_slice(),
             [MeshCommand::Broadcast(ControlMsg::StreamAnnounce(an))] if !an.drawing
         ));
         assert_eq!(acties.len(), 1);
         assert!(s.eigen()[0].tekening.is_leeg());
-        let (cmds, acties) = s.zet_tekenen(id, false);
+        let (cmds, acties) = s.zet_tekenen(false);
         assert!(cmds.is_empty() && acties.is_empty(), "al uit");
 
         let (tweede, _) = s.deel(StreamKind::MONITOR, "Tweede".into(), 1920, 1080);

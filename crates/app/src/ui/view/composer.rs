@@ -1231,7 +1231,7 @@ pub(super) mod window_tests {
             })
         }
 
-        fn drain(&mut self) -> Vec<UiCommand> {
+        pub(in crate::ui::view) fn drain(&mut self) -> Vec<UiCommand> {
             std::iter::from_fn(|| self.commands.try_recv().ok()).collect()
         }
     }

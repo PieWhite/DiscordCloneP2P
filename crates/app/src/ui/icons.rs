@@ -51,6 +51,8 @@ icons! {
     HeadOff => "head-off",
     Moon => "moon",
     Monitor => "monitor",
+    /// The share button while sharing: the next click stops.
+    MonitorOff => "monitor-off",
     Clip => "clip",
     Download => "download",
     Retry => "retry",
@@ -78,6 +80,8 @@ icons! {
     Play => "play",
     Tiles => "tiles",
     Music => "music",
+    /// The Spotify button while it is sent to the call: the next click stops.
+    MusicOff => "music-off",
     /// One toggle for a listener: they do not know whether the DJ's Spotify is playing.
     PlayPause => "play-pause",
     Next => "next",

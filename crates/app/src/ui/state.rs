@@ -590,6 +590,9 @@ pub struct UiState {
     /// Whether the game in front is shared as "Playing X". Comes from `config.toml`.
     #[serde(default)]
     pub share_activity: bool,
+    /// Whether viewers may draw on your shared screens. Comes from `config.toml`.
+    #[serde(default)]
+    pub allow_drawing: bool,
     /// Constant for the life of the process; rides along so the Settings panel does not
     /// need a second call to draw the picker.
     pub sound_sets: Vec<SoundSetInfo>,
@@ -963,6 +966,7 @@ impl UiState {
                 available: fitcom_audio::spreektoets::BESCHIKBAAR,
             },
             share_activity: snap.deel_activiteit,
+            allow_drawing: snap.tekenen,
             sound_sets: c.sound_sets.clone(),
             sound_events: c.sound_events.clone(),
             input_device: snap.input_device.clone(),

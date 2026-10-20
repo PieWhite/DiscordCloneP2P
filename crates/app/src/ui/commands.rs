@@ -246,9 +246,10 @@ pub fn stop_sharing(ui: &Ui, stream: u32) {
     send(ui, UiCommand::StopDelen(stream));
 }
 
-/// May viewers draw on this screen of ours (decision 45). Off also wipes what is there.
-pub fn set_drawing(ui: &Ui, stream: u32, on: bool) {
-    send(ui, UiCommand::ZetTekenen(stream, on));
+/// May viewers draw on the screens we share, now and later (decision 45). Saved to
+/// `config.toml`; off also wipes what is there.
+pub fn set_drawing(ui: &Ui, on: bool) {
+    send(ui, UiCommand::ZetTekenen(on));
 }
 
 /// Wipe every line on this screen of ours, whoever drew it.

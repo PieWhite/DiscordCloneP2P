@@ -1,15 +1,15 @@
 //! The voice-connected panel at the foot of the channel column, above the self panel, drawn
 //! only while joined (decision 48, moved there as in Discord on 2026-10-20): the call's size
 //! and worst link with Leave beside it, then camera, screen share and Spotify in one row, and
-//! under that one quiet line per shared Spotify. These are the only homes of those controls.
+//! under that one quiet line per shared Spotify. These are the only homes of those controls;
+//! the drawing switch for your shared screens is in Settings → Video.
 
 use super::super::commands::{self, MusicAction};
 use super::super::icons::Icon;
 use super::super::state::PeerState;
 use super::super::theme;
-use super::widgets::{dk_btn, meter_view, popover_item, popover_surface, tooltip};
+use super::widgets::{dk_btn, meter_view, tooltip};
 use super::{format, AppSnapshot};
-use gpui_kit::base::Popover;
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Div, ElementId, FontWeight,
     HighlightStyle, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
@@ -145,56 +145,45 @@ pub fn render_panel(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> An
         .into_any_element()
 }
 
-/// Camera, screen share (with its menu while sharing) and Spotify, in equal widths.
+/// Camera, screen share and Spotify, in equal widths. Share and Spotify show their crossed
+/// glyph while on: the next click stops. Drawing lives in Settings → Video.
 fn toolbar(snap: &AppSnapshot) -> Div {
     let camera = snap.own_camera().is_some();
     let spotify = snap.own_music().is_some();
     // Screens only: the camera has its own button, so it must not count as "sharing".
-    let screens: Vec<(u32, bool, bool)> = snap
+    let screens: Vec<u32> = snap
         .s
         .own_streams
         .iter()
         .filter(|st| !st.is_audio && !st.is_camera)
-        .map(|st| (st.stream_id, st.drawing, st.has_drawing))
+        .map(|st| st.stream_id)
         .collect();
     let (u_cam, u_spot) = (snap.ui.clone(), snap.ui.clone());
 
-    let share: AnyElement = if screens.is_empty() {
+    let share = if screens.is_empty() {
         dk_btn("call-share", Icon::Monitor, false)
-            .w_full()
-            .h(px(36.))
             .tooltip(tooltip("Share screen"))
             .on_click(
                 snap.app
                     .listener(|app, _: &ClickEvent, window, cx| app.open_picker(window, cx)),
             )
-            .into_any_element()
     } else {
-        let (app, snap) = (snap.app.clone(), snap.clone());
-        Popover::new("share-menu")
-            .anchor(gpui_kit::Anchor::BottomLeft)
-            .offset(px(6.))
-            .open(snap.v.share_menu)
-            .on_open_change(move |open, _, cx| {
-                let open = *open;
-                app.update(cx, |app, cx| {
-                    app.v_mut().share_menu = open;
-                    cx.notify();
-                });
+        let ui = snap.ui.clone();
+        dk_btn("call-share", Icon::MonitorOff, true)
+            .tooltip(tooltip("Stop sharing"))
+            .on_click(move |_: &ClickEvent, _, _| {
+                for stream in &screens {
+                    commands::stop_sharing(&ui, *stream);
+                }
             })
-            .trigger_with(|_, _, _| {
-                dk_btn("call-share", Icon::Monitor, true)
-                    .w_full()
-                    .h(px(36.))
-                    .tooltip(tooltip("Sharing your screen"))
-                    .test_support()
-                    .into_any_element()
-            })
-            .content(move |_, _, _| share_menu(&snap, screens))
-            .into_any_element()
     };
 
-    let cell = |el: AnyElement| div().flex_1().min_w_0().child(el);
+    let cell = |el: gpui_kit::Stateful<Div>| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .child(el.w_full().h(px(36.)).test_support())
+    };
     div()
         .flex()
         .items_center()
@@ -205,82 +194,27 @@ fn toolbar(snap: &AppSnapshot) -> Div {
                 if camera { Icon::Cam } else { Icon::CamOff },
                 camera,
             )
-            .w_full()
-            .h(px(36.))
             .tooltip(tooltip(if camera {
                 "Turn the camera off"
             } else {
                 "Turn the camera on"
             }))
-            .on_click(move |_: &ClickEvent, _, _| commands::set_camera(&u_cam, !camera))
-            .into_any_element(),
+            .on_click(move |_: &ClickEvent, _, _| commands::set_camera(&u_cam, !camera)),
         ))
         .child(cell(share))
         .child(cell(
-            dk_btn("call-spotify", Icon::Music, spotify)
-                .w_full()
-                .h(px(36.))
-                .tooltip(tooltip(if spotify {
-                    "Stop sending Spotify to the call"
-                } else {
-                    "Everyone in the call hears your Spotify, and only that"
-                }))
-                .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&u_spot, !spotify))
-                .into_any_element(),
-        ))
-}
-
-/// The share button's menu while a screen is shared. Drawing is one switch for every screen
-/// you share (decision 45); blocking also wipes.
-fn share_menu(snap: &AppSnapshot, screens: Vec<(u32, bool, bool)>) -> gpui_kit::Stateful<Div> {
-    let ids: Vec<u32> = screens.iter().map(|(id, ..)| *id).collect();
-    let drawing = screens.iter().any(|(_, on, _)| *on);
-    let has_drawing = screens.iter().any(|(.., lines)| *lines);
-    let (stop, draw, clear) = (ids.clone(), ids.clone(), ids);
-    let (u_draw, u_clear) = (snap.ui.clone(), snap.ui.clone());
-    popover_surface()
-        .id("share-menu-card")
-        .w(px(220.))
-        .p(px(6.))
-        .flex()
-        .flex_col()
-        .child(
-            popover_item("share-stop", false)
-                .child(Icon::X.size(16.))
-                .child("Stop sharing")
-                .on_click(snap.app.listener(move |app, _: &ClickEvent, _, cx| {
-                    app.v_mut().share_menu = false;
-                    for stream in &stop {
-                        commands::stop_sharing(app.ui(), *stream);
-                    }
-                    cx.notify();
-                }))
-                .test_support(),
-        )
-        .child(
-            popover_item("share-drawing", false)
-                .child(Icon::Edit.size(16.))
-                .child(div().flex_1().child("Allow drawing"))
-                .when(drawing, |d| d.child(Icon::Check.size(14.)))
-                .on_click(move |_: &ClickEvent, _, _| {
-                    for stream in &draw {
-                        commands::set_drawing(&u_draw, *stream, !drawing);
-                    }
-                })
-                .test_support(),
-        )
-        .when(has_drawing, |d| {
-            d.child(
-                popover_item("share-clear", false)
-                    .child(Icon::Trash.size(16.))
-                    .child("Clear drawing")
-                    .on_click(move |_: &ClickEvent, _, _| {
-                        for stream in &clear {
-                            commands::clear_drawing(&u_clear, *stream);
-                        }
-                    }),
+            dk_btn(
+                "call-spotify",
+                if spotify { Icon::MusicOff } else { Icon::Music },
+                spotify,
             )
-        })
+            .tooltip(tooltip(if spotify {
+                "Stop sending Spotify to the call"
+            } else {
+                "Everyone in the call hears your Spotify, and only that"
+            }))
+            .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&u_spot, !spotify)),
+        ))
 }
 
 /// One muted line with the title in white.
@@ -374,12 +308,11 @@ mod tests {
         assert!(present(cx), "the call panel once joined");
     }
 
-    /// While a screen is shared, the share button opens its menu with Stop sharing and Allow
-    /// drawing. Revert to see it fail: drop the `.on_open_change(..)` on the share `Popover`
-    /// (the controlled `open(snap.v.share_menu)` then shuts it on the next frame).
+    /// While a screen is shared, one click on the share button stops it; no menu.
+    /// Revert to see it fail: put back the `Popover` around the button while sharing.
     #[gpui_kit::test]
-    fn the_share_button_opens_its_menu_while_sharing(cx: &mut TestAppContext) {
-        let h = Harness::new(cx);
+    fn the_share_button_stops_sharing_on_click(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
         h.app.update(cx, |app, cx| {
             let mut s = (*app.s).clone();
             s.voice.joined = true;
@@ -397,21 +330,14 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        let items = |cx: &mut TestAppContext| {
-            h.with_window(cx, |window, cx| {
-                // The popup places itself from its trigger's bounds of the frame before.
-                window.render_frame(cx);
-                window.render_frame(cx);
-                (
-                    window.try_find("share-stop").is_some(),
-                    window.try_find("share-drawing").is_some(),
-                )
-            })
-        };
-        assert_eq!(items(cx), (false, false), "closed until clicked");
-        h.with_window(cx, |window, cx| window.click("call-share", cx));
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("call-share", cx)
+        });
         cx.run_until_parked();
-        assert_eq!(items(cx), (true, true));
-        assert!(h.app.read_with(cx, |app, _| app.v.share_menu));
+        assert!(matches!(
+            h.drain().as_slice(),
+            [crate::engine::UiCommand::StopDelen(6)]
+        ));
     }
 }

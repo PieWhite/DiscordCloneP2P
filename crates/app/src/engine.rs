@@ -242,6 +242,8 @@ pub struct Snapshot {
     pub push_to_talk: PushToTalkConfig,
     /// Meesturen welk spel er vooraan staat (`Config::share_activity`).
     pub deel_activiteit: bool,
+    /// Mogen kijkers op je scherm tekenen (`Config::allow_drawing`).
+    pub tekenen: bool,
     /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
     /// instellingenscherm: de sessie leest dit bij het starten uit de config.
     pub input_device: Option<String>,
@@ -335,9 +337,9 @@ pub enum UiCommand {
     BedienMuziek(PeerId, u32, MusicAction),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
-    /// Mogen kijkers op dit eigen scherm tekenen (beslissing 45). Uit wist ook alles. Geldt
-    /// deze sessie ook voor schermen die je hierna deelt.
-    ZetTekenen(u32, bool),
+    /// Mogen kijkers op je eigen schermen tekenen (beslissing 45), lopend en hierna gedeeld.
+    /// Uit wist ook alles. Wordt opgeslagen (`Config::allow_drawing`).
+    ZetTekenen(bool),
     /// Alle lijnen op dit eigen scherm wissen, van iedereen.
     WisTekening(u32),
     /// Volume van één stream van een peer, los van zijn stem.
@@ -508,6 +510,10 @@ pub fn spawn(
         crate::clips::HotkeyDraad::dode()
     });
 
+    // Nog geen schermen, dus dit zet alleen de stand voor het eerste dat gedeeld wordt.
+    let mut streams = Streams::new();
+    streams.zet_tekenen(cfg.allow_drawing);
+
     let engine = Engine {
         mesh,
         chat,
@@ -518,7 +524,7 @@ pub fn spawn(
         verbonden: HashMap::new(),
         voice: None,
         peers_in_voice: HashSet::new(),
-        streams: Streams::new(),
+        streams,
         d3d: None,
         bronnen: HashMap::new(),
         delers: HashMap::new(),
@@ -2566,8 +2572,14 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
-            UiCommand::ZetTekenen(id, aan) => {
-                let (cmds, acties) = self.streams.zet_tekenen(id, aan);
+            UiCommand::ZetTekenen(aan) => {
+                if self.cfg.allow_drawing != aan {
+                    self.cfg.allow_drawing = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+                let (cmds, acties) = self.streams.zet_tekenen(aan);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
@@ -3399,6 +3411,7 @@ impl Engine {
             geluid: self.cfg.sound.clone(),
             push_to_talk: self.cfg.push_to_talk.clone(),
             deel_activiteit: self.cfg.share_activity,
+            tekenen: self.cfg.allow_drawing,
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),

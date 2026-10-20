@@ -358,8 +358,6 @@ pub struct ViewState {
     pub volume_before_mute: HashMap<members::VolumeKey, f32>,
     /// The peer whose "Audio for" popover is open: the one home of their volumes.
     pub audio_for: Option<String>,
-    /// The call panel's share menu is open. Only while a screen is shared.
-    pub share_menu: bool,
     pub focused: bool,
     /// Unread count of the conversation at the moment it was opened, for the "new" line.
     pub unread_at_open: usize,
@@ -397,7 +395,6 @@ impl Default for ViewState {
             drafts: HashMap::new(),
             volume_before_mute: HashMap::new(),
             audio_for: None,
-            share_menu: false,
             focused: true,
             unread_at_open: 0,
             collapsed: false,
@@ -800,12 +797,6 @@ impl AppView {
             self.v_mut().dm = first;
         }
 
-        // A share that ended elsewhere (window closed, call left) takes its menu along, so
-        // the next share does not open with it.
-        if self.v.share_menu && !(self.s.voice.joined && self.snapshot().sharing_self()) {
-            self.v_mut().share_menu = false;
-        }
-
         if active_channel(&self.v) != before {
             self.after_conversation_change(window, cx);
         } else if previous.timeline_revision != self.s.timeline_revision {
@@ -1191,9 +1182,6 @@ impl AppView {
         };
         if let Some(dialog) = dialog {
             self.open_dialog(dialog, window, cx);
-        }
-        if d.share_menu {
-            self.v_mut().share_menu = true;
         }
         if let Some(peer) = &d.audio_for {
             let first = self
