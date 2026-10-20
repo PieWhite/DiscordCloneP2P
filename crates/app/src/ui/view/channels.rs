@@ -18,7 +18,7 @@ use super::{AppHandle, AppSnapshot, Dialog, PaneInit, View};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, radians, AnyElement, App, ClickEvent, Context, Div, ElementId,
     FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
+    Render, SharedString, Stateful, StatefulInteractiveElement, Styled, TestSupportExt, Window,
 };
 
 pub struct ChannelsPane {
@@ -383,17 +383,19 @@ enum VoicePeer<'a> {
 }
 
 /// One person in the call: avatar with the speaking ring, name, LIVE while they show a
-/// screen or camera, the mic-off glyph when muted. The whole row is a meter view: the ring
-/// and the name's white both follow the speaking level.
+/// screen or camera, the mic-off glyph when muted. Hovering a peer's LIVE turns it into
+/// Watch for a stream you are not watching yet (screens before cameras), as in Discord. The
+/// whole row is a meter view: the ring and the name's white both follow the speaking level.
 fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut App) -> AnyElement {
     let s = &snap.s;
-    let (key, name, hue, muted, live) = match who {
+    let (key, name, hue, muted, live, watch) = match who {
         VoicePeer::Me => (
             None,
             s.me.name.clone(),
             s.me.avatar,
             s.voice.muted,
             s.own_streams.iter().any(|st| !st.is_audio),
+            None,
         ),
         VoicePeer::Peer(p) => (
             Some(p.id.clone()),
@@ -401,8 +403,15 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
             p.avatar,
             p.volume == 0.0,
             s.streams.iter().any(|st| st.owner == p.id && !st.is_audio),
+            s.streams
+                .iter()
+                .filter(|st| st.owner == p.id && !st.is_audio && !st.watching)
+                .min_by_key(|st| st.is_camera)
+                .map(|st| st.stream_id),
         ),
     };
+    let group: SharedString = format!("voice-row-{}", key.as_deref().unwrap_or("@self")).into();
+    let ui = snap.ui.clone();
     let id: ElementId =
         ElementId::Name(format!("voice-peer-{}", key.as_deref().unwrap_or("@self")).into());
     meter_view(id, &snap.meters, window, cx, move |m, _, _| {
@@ -411,6 +420,7 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
             Some(id) => m.speaking(id),
         };
         div()
+            .id(ElementId::Name(group.clone()))
             .flex()
             .items_center()
             .gap(px(10.))
@@ -422,6 +432,7 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
             } else {
                 theme::TEXT
             })
+            .group(group.clone())
             .child(avatar(&name, hue, 22., None, speaking))
             .child(
                 div()
@@ -432,7 +443,16 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
                     .text_ellipsis()
                     .child(name.clone()),
             )
-            .when(live, |d| d.child(live_pill()))
+            .when(live, |d| match (&key, watch) {
+                (Some(owner), Some(stream)) => d.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .child(live_pill().group_hover(group.clone(), |s| s.invisible()))
+                        .child(watch_btn(&ui, owner, stream, &group)),
+                ),
+                _ => d.child(live_pill()),
+            })
             .when(muted, |d| {
                 d.child(
                     div()
@@ -440,9 +460,46 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
                         .child(Icon::MicOff.size(14.)),
                 )
             })
+            .test_support()
             .into_any_element()
     })
     .into_any_element()
+}
+
+/// Watch, laid over the LIVE pill and shown only while the row is hovered. Opens the
+/// stream the way the tile's Watch does.
+fn watch_btn(
+    ui: &std::sync::Arc<super::super::Ui>,
+    owner: &str,
+    stream: u32,
+    group: &SharedString,
+) -> impl IntoElement {
+    let (ui, owner) = (ui.clone(), owner.to_string());
+    div()
+        .id(ElementId::Name(format!("watch-{owner}-{stream}").into()))
+        .absolute()
+        .top_0()
+        .right_0()
+        .h_full()
+        .flex()
+        .items_center()
+        .px(px(6.))
+        .bg(theme::c::VOID)
+        .rounded(px(4.))
+        .border_1()
+        .border_color(theme::BORDER_HOVER)
+        .font_family(theme::MONO_FONT)
+        .text_size(px(10.5))
+        .text_color(theme::TEXT_STRONG)
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .invisible()
+        .group_hover(group.clone(), |s| s.visible())
+        .hover(|s| s.border_color(theme::TEXT_STRONG))
+        .tooltip(tooltip("Watch stream"))
+        .child("WATCH")
+        .on_click(move |_: &ClickEvent, _, _| commands::set_watching(&ui, &owner, stream, true))
+        .test_support()
 }
 
 /// The self panel: who you are, how you are, and the mic, deafen and do-not-disturb toggles,
@@ -599,6 +656,61 @@ mod tests {
             music: None,
             slot: 0,
         }
+    }
+
+    /// Hovering a streamer in the voice list offers Watch for the stream not watched yet,
+    /// screen before camera. Revert to see it fail: drop `!st.watching` from the `watch`
+    /// filter (then it offers the screen that is already open).
+    #[gpui_kit::test]
+    fn a_streamer_in_the_call_offers_watch(cx: &mut gpui_kit::TestAppContext) {
+        use super::super::super::state::StreamState;
+        use gpui_kit::test::TestWindowExt;
+        let mut h = super::super::composer::window_tests::Harness::new(cx);
+        let id = "6f1c2c1e-3b1a-4c55-9a43-0d7c5e0f2a11";
+        let stream = |stream_id, watching, is_camera| StreamState {
+            owner: id.into(),
+            owner_name: "Sam".into(),
+            stream_id,
+            title: "Screen".into(),
+            width: 1920,
+            height: 1080,
+            watching,
+            is_audio: false,
+            is_camera,
+            volume: 1.0,
+        };
+        h.app.update(cx, |app, cx| {
+            let mut s = (*app.s).clone();
+            s.voice.joined = true;
+            s.peers = vec![PeerState {
+                id: id.into(),
+                ..peer("Sam", Presence::Online, true)
+            }];
+            s.streams = vec![
+                stream(3, false, true),
+                stream(4, true, false),
+                stream(5, false, false),
+            ];
+            app.s = std::sync::Arc::new(s);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let watch = format!("watch-{id}-5");
+        let visible = |cx: &mut gpui_kit::TestAppContext| {
+            h.with_window(cx, |window, cx| {
+                window.render_frame(cx);
+                window.find(watch.clone()).visible()
+            })
+        };
+        assert!(!visible(cx), "only on hover");
+        h.with_window(cx, |window, cx| window.hover(format!("voice-row-{id}"), cx));
+        assert!(visible(cx));
+        h.with_window(cx, |window, cx| window.click(watch.clone(), cx));
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [crate::engine::UiCommand::Kijken(_, 5)]
+        ));
     }
 
     /// The four answers of `voiceHint`; swapping the online check for `!call.is_empty()`
