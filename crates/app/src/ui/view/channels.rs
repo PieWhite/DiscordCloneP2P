@@ -155,17 +155,8 @@ fn channel_list(snap: &AppSnapshot) -> Vec<AnyElement> {
             Some(toggle.into_any_element()),
         ))
         .children(rows);
-
-    let known: Vec<&PeerState> = snap.known_peers().collect();
-    let mut list = vec![general];
-    if !known.is_empty() {
-        list.push(
-            div()
-                .child(group_head("Direct messages", known.len(), None))
-                .children(known.iter().map(|p| dm_row(snap, p, false))),
-        );
-    }
-    groups(list)
+    // Direct messages live only behind the @ in the rail.
+    groups(vec![general])
 }
 
 fn dm_list(snap: &AppSnapshot) -> Vec<AnyElement> {
