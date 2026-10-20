@@ -256,7 +256,7 @@ fn geluid_komt_in_de_clip_ook_als_de_opname_later_begint() {
     let _ = std::fs::remove_dir_all(&ring);
     let _ = std::fs::remove_dir_all(&clips);
 
-    let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+    let (pcm_tx, pcm_rx) = std::sync::mpsc::channel::<(Instant, Vec<f32>)>();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_draad = stop.clone();
     let geluid = std::thread::spawn(move || {
@@ -269,7 +269,7 @@ fn geluid_komt_in_de_clip_ook_als_de_opname_later_begint() {
                 chunk.push(s);
                 chunk.push(s);
             }
-            if pcm_tx.send(chunk).is_err() {
+            if pcm_tx.send((Instant::now(), chunk)).is_err() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));

@@ -2906,9 +2906,21 @@ vanaf daar. De andere vorm was het vorige segment open houden tot het geluid de 
 passeert: elk segment klopt dan op zichzelf, maar het kost een tweede open schrijver en een
 uitgestelde bewaarstap in de opnamelus. Losse ringsegmenten speelt niemand af.
 
-Test `geluid_van_voor_de_segmentgrens_blijft_op_zijn_plek`. Niet aangepakt: een bron die
-zonder stilte doorloopt wordt op zijn eigen samples aan elkaar geregen, dus klokdrift van de
-geluidskaart wordt pas gecorrigeerd als hij 200 ms achter raakt, en vóórlopen nooit.
+Test `geluid_van_voor_de_segmentgrens_blijft_op_zijn_plek`.
+
+**Daarna ook de tijd van het geluid zelf.** De taps stuurden kale stukken, en de opnamelus
+gaf ze de tijd waarop hij zijn kanaal las. Dat is tot 100 ms te laat bij een stilstaand
+scherm (`FRAME_WACHT`), en een hapering van de lus van meer dan 200 ms leek een stilte: alles
+erna kwam te laat in de clip. Een bron die doorliep werd daarbij op zijn eigen samples aan
+elkaar geregen, dus op de klok van de geluidskaart: vóórlopen werd nooit gecorrigeerd en
+achterlopen pas na 200 ms, met een gat van die lengte erin. Nu stempelt de tap elk stuk op zijn
+eigen draad (`fitcom_audio::TapStuk`), en `Menger::plaats` rijgt nog steeds sample-exact,
+maar schuift hooguit één sample per stuk naar de gemeten tijd zodra hij er meer dan 5 ms
+naast zit (`BIJSTUUR_GRENS_HNS`). Dat is 2000 ppm bijsturen bij stukken van 10 ms, ruim
+boven elke echte drift, en een verschuiving van één sample hoor je niet. Test
+`de_ketting_van_een_bron_volgt_de_tap_zonder_te_springen`. Niet de QPC-tijd van WASAPI
+zelf: of die klopt voor een proces-loopbackclient is niet zeker, en het moment van lezen
+op de tapdraad zit er een paar ms naast, ruim binnen de grens.
 
 ## Bugs die de tests eruit haalden
 

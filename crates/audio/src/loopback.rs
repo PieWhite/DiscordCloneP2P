@@ -4,9 +4,9 @@
 //! (zie `session::wasapi_capture`): alles wat naar de speakers gaat — dus ook het spel
 //! — behalve de eigen stem-weergave van deze app.
 //!
-//! De chunks zijn interleaved f32 op [`crate::mix::SAMPLE_RATE`]; frames tellen is de
-// klok. Dat is sample-exact en loopt nooit uit de pas met wat de AAC-encoder er later
-// van maakt.
+//! De chunks zijn interleaved f32 op [`crate::mix::SAMPLE_RATE`], elk met het moment
+//! waarop hij van het apparaat gelezen werd. De recorder legt ze op die tijd; hij leest
+//! zijn kanaal pas als zijn eigen lus eraan toe is, en dat is geen tijd van het geluid.
 
 #[cfg(windows)]
 use anyhow::{bail, Context, Result};
@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
 #[cfg(windows)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Vast op stereo, om dezelfde reden als bij het delen: `WaveFormat` dwingt WASAPI via
 /// `autoconvert` zelf tot deze indeling.
@@ -38,7 +38,7 @@ impl LoopbackTap {
     /// signaal komt ná het opzetten maar vóór de oneindige leeslus — anders wacht de
     /// aanroeper twee seconden voor niets en lijkt het geluid er nooit te zijn
     /// (precies de bug die dit module een revisie bezorgde).
-    pub fn start() -> Result<(Self, u32, std::sync::mpsc::Receiver<Vec<f32>>)> {
+    pub fn start() -> Result<(Self, u32, std::sync::mpsc::Receiver<crate::TapStuk>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
         let stop_draad = stop.clone();
@@ -122,11 +122,12 @@ fn lus(
     capture_client: &wasapi::AudioCaptureClient,
     event: &wasapi::Handle,
     stop: &AtomicBool,
-    tx: &std::sync::mpsc::Sender<Vec<f32>>,
+    tx: &std::sync::mpsc::Sender<crate::TapStuk>,
 ) {
     let mut bytes: VecDeque<u8> = VecDeque::new();
     while !stop.load(Ordering::Relaxed) {
-        if tx.send(chunks_lezen(capture_client, &mut bytes)).is_err() {
+        let chunk = chunks_lezen(capture_client, &mut bytes);
+        if tx.send((Instant::now(), chunk)).is_err() {
             break; // ontvanger weg: recorder gestopt
         }
         // `wait_for_event` faalt alleen op een time-out, en die is normaal: speelt er

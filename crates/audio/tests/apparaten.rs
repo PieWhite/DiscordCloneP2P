@@ -147,7 +147,7 @@ fn microfoon_tap_levert_chunks() {
     let mut samples = 0usize;
     let mut piek = 0f32;
     while begin.elapsed() < duur {
-        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(200)) {
+        if let Ok((_, chunk)) = rx.recv_timeout(Duration::from_millis(200)) {
             chunks += 1;
             samples += chunk.len();
             for s in chunk {

@@ -822,15 +822,16 @@ impl ClipInstellingen {
     }
 }
 
-/// Geluid voor in de clip, al genormaliseerd naar 48 kHz stereo door de taps zelf.
-/// Beide bronnen zijn optioneel — een clip zonder geluid is beter dan helemaal geen
-/// clip, en welke bron er ook faalt: de videoketen draait gewoon door.
+/// Geluid voor in de clip, al genormaliseerd naar 48 kHz stereo door de taps zelf, elk
+/// stuk met het moment waarop de tap het van het apparaat las. Beide bronnen zijn
+/// optioneel — een clip zonder geluid is beter dan helemaal geen clip, en welke bron er
+/// ook faalt: de videoketen draait gewoon door.
 #[derive(Default)]
 pub struct AudioBronnen {
     /// Systeem- en spelgeluid via de proces-exclusieve loopback-tap.
-    pub systeem: Option<std::sync::mpsc::Receiver<Vec<f32>>>,
+    pub systeem: Option<std::sync::mpsc::Receiver<(Instant, Vec<f32>)>>,
     /// De eigen microfoon via de microfoon-tap.
-    pub microfoon: Option<std::sync::mpsc::Receiver<Vec<f32>>>,
+    pub microfoon: Option<std::sync::mpsc::Receiver<(Instant, Vec<f32>)>>,
 }
 
 impl AudioBronnen {
@@ -875,6 +876,28 @@ impl Menger {
             Some(e) => e.max(einde),
             None => einde,
         });
+    }
+
+    /// Waar een stuk van `bron` begint. `gemeten` is zijn begin volgens de tap. Een bron
+    /// die doorloopt wordt sample-exact aan zijn vorige stuk geregen, maar zijn eigen
+    /// samples tellen is de klok van de geluidskaart, en die drijft van de procesklok weg.
+    /// Daarom schuift de ketting per stuk hooguit één sample naar `gemeten` zodra hij er
+    /// meer dan [`BIJSTUUR_GRENS_HNS`] naast zit: onhoorbaar, en ruim sneller dan drift.
+    /// Verder dan [`STILTE_GRENS_HNS`] ernaast is een nieuw begin na stilte.
+    fn plaats(&mut self, bron: usize, gemeten: i64, duur: i64) -> i64 {
+        let start = match self.klok[bron] {
+            Some(klok) if (gemeten - klok).abs() <= STILTE_GRENS_HNS => {
+                let afwijking = gemeten - klok;
+                if afwijking.abs() > BIJSTUUR_GRENS_HNS {
+                    klok + afwijking.signum() * (HNS_PER_SEC / 48_000)
+                } else {
+                    klok
+                }
+            }
+            _ => gemeten,
+        };
+        self.klok[bron] = Some(start + duur);
+        start
     }
 
     /// Tot welk frame hebben álle aanwezige bronnen geleverd? Daarvóór kan niet
@@ -999,8 +1022,16 @@ pub fn start_opname(
 /// WASAPI-periode (10 ms) en de haperingen van een drukke pc.
 const STILTE_GRENS_HNS: i64 = 2 * HNS_PER_SEC / 10;
 
+/// Hoe ver de ketting van een bron van zijn gemeten tijd mag liggen voor hij bijgestuurd
+/// wordt. Ruim boven de wektijd van een tapdraad, ruim onder wat lip-sync merkbaar maakt.
+const BIJSTUUR_GRENS_HNS: i64 = 5 * HNS_PER_SEC / 1000;
+
 fn nu_hns(begin: Instant) -> i64 {
-    (begin.elapsed().as_nanos() / 100) as i64
+    hns_op(begin, Instant::now())
+}
+
+fn hns_op(begin: Instant, moment: Instant) -> i64 {
+    (moment.saturating_duration_since(begin).as_nanos() / 100) as i64
 }
 
 /// Minimaal fps-tempo: beelden die sneller binnenkomen dan de gekozen framerate worden
@@ -1152,7 +1183,7 @@ fn opname_lus(
                 (1usize, audio.and_then(|a| a.microfoon.as_ref())),
             ] {
                 let Some(rx) = rx_opt else { continue };
-                while let Ok(chunk) = rx.try_recv() {
+                while let Ok((gelezen, chunk)) = rx.try_recv() {
                     if chunk.is_empty() {
                         continue;
                     }
@@ -1160,17 +1191,10 @@ fn opname_lus(
                     if duur == 0 {
                         continue;
                     }
-                    // Aansluiten op het vorige stuk, behalve na een stilte: dan hoort dit
-                    // geluid op zijn echte tijd. Vastplakken aan het vorige stuk schoof al
-                    // het geluid na elke stilte naar voren, weg van het beeld.
-                    let nu = nu_hns(begin);
-                    let start = match m.klok[bron_idx] {
-                        Some(klok) if nu - klok <= STILTE_GRENS_HNS => klok,
-                        Some(_) => nu - duur,
-                        None => nu,
-                    };
+                    // De tijd van de tap, niet die van deze lus: die leest het kanaal pas
+                    // als hij klaar is met wachten op een beeld (tot 100 ms) of coderen.
+                    let start = m.plaats(bron_idx, hns_op(begin, gelezen) - duur, duur);
                     m.voeg_toe(bron_idx, start, &chunk);
-                    m.klok[bron_idx] = Some(start + duur);
                     diag_geluid[bron_idx] += 1;
                 }
             }
@@ -1432,6 +1456,44 @@ mod tests {
         assert_eq!(m.veilig_tot_frame(50_000), 50_000 - grens);
         // Nog nooit iets geleverd: niets te coderen.
         assert_eq!(menger([None, None]).veilig_tot_frame(50_000), 0);
+    }
+
+    /// Een geluidskaart loopt nooit precies op de procesklok. De oude ketting telde alleen
+    /// samples: 1000 ppm te snel stond na een minuut 60 ms vóór het beeld, en te traag
+    /// sprong hij pas bij 200 ms achterstand, met een gat van 200 ms erin.
+    #[test]
+    fn de_ketting_van_een_bron_volgt_de_tap_zonder_te_springen() {
+        let sample = HNS_PER_SEC / 48_000;
+        let duur = 480 * sample; // 10 ms per stuk, zoals de taps leveren
+        for ppm in [1000, -1000] {
+            let mut m = Menger {
+                basis_hns: 0,
+                buffer: Vec::new(),
+                gecodeerd_tot_frame: 0,
+                klok: [None; 2],
+                bron_einde_frame: [None; 2],
+            };
+            let mut vorige = m.plaats(0, 0, duur);
+            // Een minuut; elk stuk duurt volgens de procesklok `duur` min de drift.
+            for i in 1..6000 {
+                let gemeten = i * (duur - duur * ppm / 1_000_000);
+                let start = m.plaats(0, gemeten, duur);
+                assert!(
+                    (start - vorige - duur).abs() <= sample,
+                    "{ppm} ppm, stuk {i}: sprong van {} hns",
+                    start - vorige - duur
+                );
+                assert!(
+                    (start - gemeten).abs() <= BIJSTUUR_GRENS_HNS + sample,
+                    "{ppm} ppm, stuk {i}: {} hns naast de tap",
+                    start - gemeten
+                );
+                vorige = start;
+            }
+            // Na een stilte begint het geluid op zijn gemeten tijd.
+            let na_stilte = vorige + HNS_PER_SEC;
+            assert_eq!(m.plaats(0, na_stilte, duur), na_stilte);
+        }
     }
 
     #[test]

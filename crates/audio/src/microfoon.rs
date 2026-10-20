@@ -7,7 +7,8 @@
 //! De chunks komen als 48 kHz STEREO f32 uit deze tap — dezelfde vorm als wat de
 //! loopback levert — zodat de menger in `fitcom_video::opname` geen tweede
 //! samplerate-hoofd hoeft te zijn. Het apparaat levert wat hij levert; naar-mono,
-//! hersampling en dupliceren gebeuren allemaal hier, in de driver-callback.
+//! hersampling en dupliceren gebeuren allemaal hier, in de driver-callback. Elke chunk
+//! draagt het moment van die callback, net als bij de loopback.
 
 #[cfg(windows)]
 use anyhow::{bail, Context, Result};
@@ -36,7 +37,7 @@ impl MicrofoonTap {
     /// `naam` is de gekozen microfoon uit `config.toml` (leeg = standaardapparaat).
     /// Dezelfde keuze als het gesprek gebruikt: wie in de instellingen een microfoon
     /// aanwijst verwacht die ook in zijn clips terug te horen.
-    pub fn start(naam: Option<&str>) -> Result<(Self, std::sync::mpsc::Receiver<Vec<f32>>)> {
+    pub fn start(naam: Option<&str>) -> Result<(Self, std::sync::mpsc::Receiver<crate::TapStuk>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
         let stop_draad = stop.clone();
@@ -88,7 +89,7 @@ impl Drop for MicrofoonTap {
 /// De beller houdt hem vast zolang er opgenomen wordt; een `cpal::Stream` die valt is een
 /// stream die stopt met leveren, en dat gebeurt zonder foutmelding.
 fn bouw_en_speel(
-    tx: &std::sync::mpsc::Sender<Vec<f32>>,
+    tx: &std::sync::mpsc::Sender<crate::TapStuk>,
     naam: Option<&str>,
 ) -> Result<cpal::Stream> {
     use anyhow::Context as _;
@@ -120,6 +121,7 @@ fn bouw_en_speel(
             device.build_input_stream::<f32, _, _>(
                 scfg,
                 move |data: &[f32], _| {
+                    let gelezen = std::time::Instant::now();
                     let mut mono = Vec::new();
                     naar_mono(data, kanalen, &mut mono);
                     if mono.is_empty() {
@@ -136,7 +138,7 @@ fn bouw_en_speel(
                         stereo.push(s);
                         stereo.push(s);
                     }
-                    let _ = zender.send(stereo);
+                    let _ = zender.send((gelezen, stereo));
                 },
                 fout_melden,
                 None,
@@ -148,6 +150,7 @@ fn bouw_en_speel(
             device.build_input_stream::<i16, _, _>(
                 scfg,
                 move |data: &[i16], _| {
+                    let gelezen = std::time::Instant::now();
                     let drijvend: Vec<f32> = data.iter().map(|&s| f32::from(s) / 32768.0).collect();
                     let mut mono = Vec::new();
                     naar_mono(&drijvend, kanalen, &mut mono);
@@ -165,7 +168,7 @@ fn bouw_en_speel(
                         stereo.push(s);
                         stereo.push(s);
                     }
-                    let _ = zender.send(stereo);
+                    let _ = zender.send((gelezen, stereo));
                 },
                 fout_melden,
                 None,
