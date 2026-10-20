@@ -81,15 +81,16 @@ fn card(icon: Div, name: &str, sub: Vec<AnyElement>, action: Option<AnyElement>)
     div()
         .flex()
         .items_center()
-        .gap(px(10.))
-        .mt(px(6.))
+        .gap(px(12.))
+        .mt(px(10.))
         .mb(px(2.))
-        .px(px(11.))
-        .py(px(9.))
+        .pl(px(14.))
+        .pr(px(12.))
+        .py(px(12.))
         .max_w(px(440.))
+        .rounded(theme::RADIUS_CARD)
         .border_1()
         .border_color(theme::BORDER)
-        .bg(c::INK)
         .child(icon)
         .child(
             div()
@@ -99,7 +100,9 @@ fn card(icon: Div, name: &str, sub: Vec<AnyElement>, action: Option<AnyElement>)
                 .flex_col()
                 .child(
                     div()
+                        .font_family(theme::MONO_FONT)
                         .text_size(px(13.))
+                        .text_color(theme::TEXT_STRONG)
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
@@ -111,45 +114,57 @@ fn card(icon: Div, name: &str, sub: Vec<AnyElement>, action: Option<AnyElement>)
         .into_any_element()
 }
 
-/// `.att-ico`: a 34px well; coral when the transfer failed.
+/// `.att-ico`: a 36px lift with a hairline; red when the transfer failed.
 fn glyph(icon: Icon, error: bool) -> Div {
     div()
-        .size(px(34.))
+        .size(px(36.))
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .bg(c::SPACE)
+        .rounded(theme::RADIUS_FIELD)
+        .bg(c::LIFT)
         .border_1()
-        .border_color(c::VIOLET)
-        .text_color(if error { theme::DANGER_TEXT } else { c::SILVER })
+        .border_color(theme::BORDER)
+        .text_color(if error {
+            theme::DANGER_TEXT
+        } else {
+            c::CHROME_DIM
+        })
         .child(icon.size(18.))
 }
 
 /// `.att-sub`.
 fn sub(text: impl Into<SharedString>, error: bool) -> AnyElement {
     div()
-        .text_size(px(11.5))
+        .text_size(px(12.))
         .line_height(relative(1.4))
-        .text_color(if error { theme::DANGER_TEXT } else { c::SILVER })
+        .text_color(if error {
+            theme::DANGER_TEXT
+        } else {
+            theme::TEXT_MUTED
+        })
         .child(text.into())
         .into_any_element()
 }
 
-/// `.bar`: the cells of a running transfer; silver while it waits for its sender.
+/// The progress pill of a running transfer; ash while it waits for its sender.
 fn bar(pct: f64, paused: bool) -> AnyElement {
     div()
         .mt(px(6.))
-        .h(px(6.))
-        .bg(c::SPACE)
-        .border_1()
-        .border_color(c::VIOLET)
+        .h(px(4.))
+        .rounded_full()
+        .bg(c::LIFT)
         .overflow_hidden()
         .child(
             div()
                 .h_full()
                 .w(relative(pct.clamp(0., 1.) as f32))
-                .bg(if paused { c::SILVER } else { theme::ACCENT }),
+                .bg(if paused {
+                    theme::TEXT_MUTED
+                } else {
+                    theme::ACCENT
+                }),
         )
         .into_any_element()
 }
@@ -345,9 +360,10 @@ fn render_shot(
             .mt(px(6.))
             .mb(px(2.))
             .max_w(px(420.))
+            .rounded(theme::RADIUS_CARD)
             .border_1()
             .border_color(theme::BORDER)
-            .bg(c::SPACE)
+            .bg(theme::BG_WELL)
             .overflow_hidden()
             .child(
                 div()
@@ -388,11 +404,14 @@ fn render_shot(
             )
             .child(
                 div()
-                    .px(px(9.))
-                    .py(px(5.))
+                    .px(px(12.))
+                    .py(px(6.))
+                    .border_t_1()
+                    .border_color(theme::BORDER)
+                    .font_family(theme::MONO_FONT)
                     .text_size(px(11.))
-                    .text_color(c::SILVER)
-                    .bg(c::INK)
+                    .text_color(theme::TEXT_MUTED)
+                    .bg(c::VOID)
                     .child(format!("{name} \u{00b7} {}", format::fmt_size(size))),
             )
             .into_any_element(),
@@ -440,9 +459,10 @@ pub(super) fn youtube_card(
             .mt(px(6.))
             .mb(px(2.))
             .max_w(px(440.))
+            .rounded(theme::RADIUS_CARD)
+            .overflow_hidden()
             .border_1()
             .border_color(theme::BORDER)
-            .bg(c::INK)
             .text_color(theme::TEXT)
             .cursor_pointer()
             .hover(|s| s.border_color(theme::ACCENT))
@@ -454,7 +474,7 @@ pub(super) fn youtube_card(
                     .w(px(160.))
                     .h(px(90.))
                     .overflow_hidden()
-                    .bg(c::SPACE)
+                    .bg(theme::BG_WELL)
                     // An explicit ratio, or the image's own 4:3 overrides the 90px height.
                     .child(
                         img(thumb)
@@ -479,10 +499,11 @@ pub(super) fn youtube_card(
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .bg(c::SPACE)
+                                    .rounded(theme::RADIUS_CONTROL)
+                                    .bg(c::VOID)
                                     .border_1()
-                                    .border_color(c::PAPER)
-                                    .text_color(c::PAPER)
+                                    .border_color(theme::BORDER)
+                                    .text_color(theme::TEXT_STRONG)
                                     .child(Icon::Play.size(20.)),
                             ),
                     ),
@@ -503,13 +524,16 @@ pub(super) fn youtube_card(
                             .line_clamp(2)
                             .child(p.title.clone()),
                     )
-                    .child(div().text_size(px(11.5)).text_color(c::SILVER).child(
-                        if p.author.is_empty() {
-                            "YouTube".to_string()
-                        } else {
-                            format!("YouTube \u{00b7} {}", p.author)
-                        },
-                    )),
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(theme::TEXT_MUTED)
+                            .child(if p.author.is_empty() {
+                                "YouTube".to_string()
+                            } else {
+                                format!("YouTube \u{00b7} {}", p.author)
+                            }),
+                    ),
             )
             .into_any_element(),
     )
@@ -524,9 +548,9 @@ pub fn render_clip_card(snap: &super::super::AppSnapshot, item: &TimelineItem) -
     let ui = snap.ui.clone();
     div()
         .id("clip-card")
+        .rounded(theme::RADIUS_CARD)
         .border_1()
         .border_color(theme::BORDER)
-        .bg(c::INK)
         .p(px(10.))
         .flex()
         .items_center()
@@ -540,7 +564,7 @@ pub fn render_clip_card(snap: &super::super::AppSnapshot, item: &TimelineItem) -
                 .child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(c::SILVER)
+                        .text_color(theme::TEXT_MUTED)
                         .child(if *shared {
                             format!("{} \u{00b7} shared in the chat", format::fmt_size(*size))
                         } else {
@@ -551,7 +575,7 @@ pub fn render_clip_card(snap: &super::super::AppSnapshot, item: &TimelineItem) -
         .when(!*shared, |d| {
             d.child(
                 Btn::new("clip-card-share", "Share")
-                    .kind(BtnKind::Accent)
+                    .kind(BtnKind::Primary)
                     .on_click(move |_, _, _| commands::share_last_clip(&ui)),
             )
         })

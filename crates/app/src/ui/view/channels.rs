@@ -9,16 +9,17 @@
 use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{ChannelState, PeerState, UiState};
-use super::super::theme::{self, c, Dither};
+use super::super::theme::{self, c};
 use super::widgets::{
-    avatar, badge, focus_ring, icon_btn, meter_view, pointer, tooltip, tracked, Btn, BtnKind, Dot,
+    avatar, badge, focus_ring, icon_btn, meter_view, pane_head, pane_title, selectable, tooltip,
+    tracked, Btn, BtnKind, Dot,
 };
 use super::{AppHandle, AppSnapshot, Dialog, PaneInit, View};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, radians, relative, AnyElement, App, ClickEvent, Context, Div,
-    ElementId, HighlightStyle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, StyledText,
-    Window,
+    ElementId, FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement,
+    Styled, StyledText, Window,
 };
 
 pub struct ChannelsPane {
@@ -46,7 +47,7 @@ impl Render for ChannelsPane {
             .size_full()
             .flex()
             .flex_col()
-            .bg(c::INK)
+            .bg(theme::BG_SIDEBAR)
             .border_r_1()
             .border_color(theme::BORDER)
             .child(head(
@@ -75,30 +76,18 @@ impl Render for ChannelsPane {
 
 // ------------------------------------------------------------------ head + lists
 
-/// `.chan-head`: the magenta title strip with the New channel button. The button stays in
-/// the DM view too, as it did.
+/// The pane head: the serif title with the New channel button. The button stays in the
+/// DM view too, as it did.
 fn head(snap: &AppSnapshot, title: &str) -> Div {
-    div()
-        .h(theme::HEAD_H)
-        .flex_none()
-        .flex()
-        .items_center()
+    pane_head()
         .justify_between()
-        .pl(px(14.))
-        .pr(px(8.))
-        .bg(c::MAGENTA)
-        .border_b_1()
-        .border_color(c::SPACE)
-        .text_color(c::SPACE)
-        .child(
-            div()
-                .text_size(px(13.))
-                .child(tracked(&title.to_uppercase(), 13., 0.08)),
-        )
+        .pl(px(18.))
+        .pr(px(12.))
+        .child(pane_title(title.to_string(), theme::DISPLAY_TEXT))
         .child(
             icon_btn("new-channel", Icon::Plus, false)
                 .tab_index(0)
-                .focus_visible(|s| s.shadow(focus_ring(c::MAGENTA, vec![])))
+                .focus_visible(|s| s.shadow(focus_ring()))
                 .tooltip(tooltip("New channel"))
                 .on_click(snap.app.listener(|app, _: &ClickEvent, window, cx| {
                     app.open_dialog(Dialog::new_channel(), window, cx)
@@ -106,18 +95,19 @@ fn head(snap: &AppSnapshot, title: &str) -> Div {
         )
 }
 
-/// `.group-head`: the small uppercase label with its count pushed right.
-fn group_head(label: &str, count: usize, lead: Option<AnyElement>) -> Div {
+/// The mono uppercase group label with its count pushed right.
+pub(super) fn group_head(label: &str, count: usize, lead: Option<AnyElement>) -> Div {
     div()
         .flex()
         .items_center()
         .gap(px(4.))
-        .px(px(6.))
-        .pb(px(6.))
-        .text_size(px(11.))
-        .text_color(c::SILVER)
+        .px(px(10.))
+        .pb(px(8.))
+        .font_family(theme::MONO_FONT)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
         .children(lead)
-        .child(tracked(&label.to_uppercase(), 11., 0.08))
+        .child(tracked(&label.to_uppercase(), 11.5, 0.04))
         .child(div().ml_auto().child(count.to_string()))
 }
 
@@ -135,12 +125,12 @@ fn channel_list(snap: &AppSnapshot) -> Vec<AnyElement> {
     let toggle = div()
         .id("collapse-general")
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .focus_visible(|s| s.shadow(focus_ring()))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(|s| s.text_color(theme::TEXT))
+        .hover(|s| s.text_color(theme::TEXT_STRONG))
         .tooltip(tooltip(if collapsed { "Expand" } else { "Collapse" }))
         .child(Icon::Chev.size(12.).when(collapsed, |i| {
             i.rotate(radians(-std::f32::consts::FRAC_PI_2))
@@ -188,7 +178,7 @@ fn dm_list(snap: &AppSnapshot) -> Vec<AnyElement> {
             .px(px(12.))
             .pb(px(10.))
             .text_size(px(12.))
-            .text_color(c::SILVER)
+            .text_color(theme::TEXT_MUTED)
             .child(
                 "No peer has introduced itself yet. Identities are learned on first contact, so a \
                  conversation appears here as soon as somebody connects.",
@@ -205,47 +195,45 @@ fn dm_list(snap: &AppSnapshot) -> Vec<AnyElement> {
         )])
 }
 
-/// `.chan-item`: 32px menu row. Hover is the violet slab with the ▶ marker; the current row
-/// inverts its cells instead and drops the marker; unread lifts the name to paper and puts
-/// a block on the left edge.
-fn menu_row(id: ElementId, group: SharedString, current: bool, unread: usize) -> Stateful<Div> {
-    div()
-        .id(id)
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
-        .group(group.clone())
-        .relative()
-        .w_full()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(8.))
-        .h(px(32.))
-        .px(px(8.))
-        .cursor_pointer()
-        .text_color(if current {
-            theme::ON_INVERT
-        } else if unread > 0 {
-            theme::TEXT
-        } else {
-            c::SILVER
-        })
-        .when(current, |d| d.bg(theme::BG_ACTIVE))
-        .when(!current, |d| {
-            d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT))
-                .child(pointer().opacity(0.).group_hover(group, |s| s.opacity(1.)))
-        })
-        .when(unread > 0, |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .left(px(-8.))
-                    .top(px(12.))
-                    .w(px(4.))
-                    .h(px(8.))
-                    .bg(c::PAPER),
-            )
-        })
+/// A 32px menu row. Hover lifts it; the current row is [`selectable`]'s selected look;
+/// unread lifts the name to white and puts a small mark on the left edge.
+fn menu_row(id: ElementId, current: bool, unread: usize) -> Stateful<Div> {
+    selectable(
+        div()
+            .id(id)
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(focus_ring()))
+            .relative()
+            .w_full()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(10.))
+            .h(px(32.))
+            .px(px(10.))
+            .cursor_pointer()
+            .text_color(if unread > 0 {
+                theme::TEXT_STRONG
+            } else {
+                theme::TEXT_MUTED
+            }),
+        current,
+    )
+    .when(!current, |d| {
+        d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
+    })
+    .when(unread > 0, |d| {
+        d.child(
+            div()
+                .absolute()
+                .left(px(-8.))
+                .top(px(11.))
+                .w(px(4.))
+                .h(px(8.))
+                .rounded_full()
+                .bg(theme::TEXT_STRONG),
+        )
+    })
 }
 
 fn row_name(name: &str) -> Div {
@@ -259,70 +247,50 @@ fn row_name(name: &str) -> Div {
         .child(name.to_string())
 }
 
-/// The count on a row; on the inverted current row it re-inverts, or paper would vanish.
-fn row_badge(count: usize, current: bool) -> Div {
-    badge(count, false).when(current, |b| b.bg(c::SPACE).text_color(c::PAPER))
-}
-
 fn channel_row(snap: &AppSnapshot, ch: &ChannelState) -> AnyElement {
     let current = snap.v.view == View::Channels && snap.v.channel == ch.key;
     let group = SharedString::from(format!("chan-{}", ch.key));
-    let icon_colour = if current {
-        theme::ON_INVERT
-    } else if ch.unread > 0 {
-        c::SILVER
-    } else {
-        c::STEEL
-    };
     let key = ch.key.clone();
-    menu_row(
-        ElementId::Name(group.clone()),
-        group.clone(),
-        current,
-        ch.unread,
-    )
-    .child(
-        div()
-            .text_color(icon_colour)
-            .when(!current, |d| {
-                d.group_hover(group, |s| s.text_color(c::SILVER))
-            })
-            .child(Icon::Hash.size(16.)),
-    )
-    .child(row_name(&ch.name))
-    .when(ch.unread > 0, |d| d.child(row_badge(ch.unread, current)))
-    .on_click(snap.app.listener({
-        let key = key.clone();
-        move |app, _: &ClickEvent, window, cx| app.open_channel(&key, window, cx)
-    }))
-    .when(ch.removable, |d| {
-        d.on_mouse_down(
-            MouseButton::Right,
-            snap.app
-                .listener(move |app, _: &MouseDownEvent, window, cx| {
-                    let Some(ch) = app
-                        .state()
-                        .channels
-                        .iter()
-                        .find(|c| c.key == key && c.removable)
-                    else {
-                        return;
-                    };
-                    let dialog = Dialog::rename_channel(ch);
-                    app.open_dialog(dialog, window, cx);
-                }),
+    menu_row(ElementId::Name(group), current, ch.unread)
+        .child(
+            div()
+                .text_color(theme::TEXT_DIM)
+                .child(Icon::Hash.size(16.)),
         )
-    })
-    .into_any_element()
+        .child(row_name(&ch.name))
+        .when(ch.unread > 0, |d| d.child(badge(ch.unread, false)))
+        .on_click(snap.app.listener({
+            let key = key.clone();
+            move |app, _: &ClickEvent, window, cx| app.open_channel(&key, window, cx)
+        }))
+        .when(ch.removable, |d| {
+            d.on_mouse_down(
+                MouseButton::Right,
+                snap.app
+                    .listener(move |app, _: &MouseDownEvent, window, cx| {
+                        let Some(ch) = app
+                            .state()
+                            .channels
+                            .iter()
+                            .find(|c| c.key == key && c.removable)
+                        else {
+                            return;
+                        };
+                        let dialog = Dialog::rename_channel(ch);
+                        app.open_dialog(dialog, window, cx);
+                    }),
+            )
+        })
+        .into_any_element()
 }
 
 fn dm_row(snap: &AppSnapshot, p: &PeerState, current: bool) -> AnyElement {
     let group = SharedString::from(format!("dm-{}", p.id));
     let id = p.id.clone();
-    menu_row(ElementId::Name(group.clone()), group, current, p.unread)
+    menu_row(ElementId::Name(group), current, p.unread)
         .child(avatar(&p.name, p.avatar, 20., Some(Dot::of_peer(p)), false))
         .child(row_name(&p.name))
-        .when(p.unread > 0, |d| d.child(row_badge(p.unread, current)))
+        .when(p.unread > 0, |d| d.child(badge(p.unread, false)))
         .on_click(
             snap.app
                 .listener(move |app, _: &ClickEvent, window, cx| app.open_dm(&id, window, cx)),
@@ -385,8 +353,7 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
         .flex()
         .flex_col()
         .border_t_1()
-        .border_color(theme::BORDER)
-        .bg(c::INK);
+        .border_color(theme::BORDER);
     let panel = if joined || !others.is_empty() {
         let mut rows: Vec<AnyElement> = Vec::new();
         if joined {
@@ -418,7 +385,8 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
                     .items_center()
                     .gap(px(6.))
                     .mb(px(8.))
-                    .text_size(px(11.))
+                    .font_family(theme::MONO_FONT)
+                    .text_size(theme::LABEL_TEXT)
                     .text_color(theme::ONLINE)
                     .child(Icon::Wave.size(13.))
                     .child(tracked(
@@ -427,16 +395,10 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
                         } else {
                             "CALL RUNNING"
                         },
-                        11.,
-                        0.08,
+                        11.5,
+                        0.04,
                     ))
-                    .child(
-                        div()
-                            .ml_auto()
-                            .text_color(c::SILVER)
-                            .font_family(theme::MONO_FONT)
-                            .child(worst),
-                    ),
+                    .child(div().ml_auto().text_color(theme::TEXT_MUTED).child(worst)),
             )
             .child(div().flex().flex_col().gap(px(2.)).children(rows))
             .when_some(sharing.first(), |d, (_, title)| {
@@ -487,7 +449,7 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
                     .px(px(12.))
                     .pb(px(10.))
                     .text_size(px(12.))
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_MUTED)
                     .child(voice_hint(&others, snap.online_peers().next().is_some())),
             )
     };
@@ -499,8 +461,8 @@ enum VoicePeer<'a> {
     Peer(&'a PeerState),
 }
 
-/// `.voice-peer`: one person in the call. The whole row is a meter view: the frame and
-/// the name's paper both follow the speaking level.
+/// One person in the call. The whole row is a meter view: the avatar's green ring and the
+/// name's white both follow the speaking level.
 fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut App) -> AnyElement {
     let s = &snap.s;
     let (key, name, hue, muted) = match who {
@@ -535,8 +497,12 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
             .h(px(28.))
             .px(px(6.))
             .text_size(px(13.))
-            .text_color(if speaking { theme::TEXT } else { c::SILVER })
-            .child(avatar(&monogram_of, hue, 24., None, speaking))
+            .text_color(if speaking {
+                theme::TEXT_STRONG
+            } else {
+                theme::TEXT
+            })
+            .child(avatar(&monogram_of, hue, 22., None, speaking))
             .child(
                 div()
                     .flex_1()
@@ -547,14 +513,18 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
                     .child(name.clone()),
             )
             .when(muted, |d| {
-                d.child(div().text_color(theme::DND).child(Icon::MicOff.size(14.)))
+                d.child(
+                    div()
+                        .text_color(theme::TEXT_DIM)
+                        .child(Icon::MicOff.size(14.)),
+                )
             })
             .into_any_element()
     })
     .into_any_element()
 }
 
-/// `.voice-share`: an accent glyph and a wrapping line with one name in paper.
+/// An accent glyph and a wrapping muted line with one name in white.
 fn share_line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
     let text = format!("{before}{title}{after}");
     let bold = before.len()..before.len() + title.len();
@@ -565,7 +535,7 @@ fn share_line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
         .mt(px(9.))
         .text_size(px(11.5))
         .line_height(relative(1.45))
-        .text_color(c::SILVER)
+        .text_color(theme::TEXT_MUTED)
         .child(
             div()
                 .flex_none()
@@ -580,7 +550,7 @@ fn share_line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
                 .child(StyledText::new(text).with_highlights(vec![(
                     bold,
                     HighlightStyle {
-                        color: Some(c::PAPER.into()),
+                        color: Some(theme::TEXT_STRONG.into()),
                         ..Default::default()
                     },
                 )])),
@@ -623,43 +593,31 @@ fn draw_row(snap: &AppSnapshot, sharing: &[(u32, String)], on: bool, has_lines: 
         .child(div().flex_1().min_w_0().child(clear))
 }
 
-/// `.join`: the one saturated fill in the resting window, magenta in a paper frame on the
-/// button chassis. Hover flips a quarter of the cells to paper; pressed sinks by a pixel.
+/// Join: the one primary action, a bone outline on void; hover whitens the line.
 fn join_button(snap: &AppSnapshot, id: &'static str, label: &'static str) -> Stateful<Div> {
     let ui = snap.ui.clone();
     div()
         .id(id)
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, theme::chassis_shadow(3.))))
-        .group(id)
-        .relative()
+        .focus_visible(|s| s.shadow(focus_ring()))
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
         .gap(px(7.))
         .m(px(10.))
-        .h(px(34.))
-        .bg(theme::PRIMARY)
-        .text_color(theme::ON_PRIMARY)
-        .border_2()
-        .border_color(c::PAPER)
-        .shadow(theme::chassis_shadow(3.))
-        .text_size(px(13.))
+        .h(px(38.))
+        .bg(c::VOID)
+        .text_color(theme::TEXT_STRONG)
+        .rounded(theme::RADIUS_CONTROL)
+        .border_1()
+        .border_color(c::BONE)
+        .text_size(px(14.))
+        .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
-        .active(|s| s.top(px(1.)).left(px(1.)).shadow(theme::chassis_shadow(2.)))
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .opacity(0.)
-                .group_hover(id, |s| s.opacity(1.))
-                .child(theme::dither(Dither::Quarter, c::PAPER, 2.)),
-        )
-        .child(div().relative().child(Icon::Wave.size(16.)))
-        .child(div().relative().child(label))
+        .hover(|s| s.border_color(c::WHITE))
+        .child(Icon::Wave.size(16.))
+        .child(label)
         .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&ui, true))
 }
 
@@ -671,7 +629,7 @@ fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
     let share = div()
         .id("btn-share")
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .focus_visible(|s| s.shadow(focus_ring()))
         .flex_1()
         .flex()
         .items_center()
@@ -679,17 +637,15 @@ fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
         .gap(px(6.))
         .h(px(30.))
         .px(px(8.))
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .text_color(theme::TEXT)
-        .text_size(px(12.5))
+        .border_color(theme::BORDER)
+        .text_color(theme::TEXT_STRONG)
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|s| {
-            s.bg(c::PAPER)
-                .border_color(c::PAPER)
-                .text_color(theme::ON_INVERT)
-        })
+        .hover(|s| s.border_color(theme::BORDER_HOVER))
         .child(if is_sharing { Icon::X } else { Icon::Share }.size(14.))
         .child(if is_sharing {
             "Stop sharing"
@@ -709,21 +665,23 @@ fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
     let leave = div()
         .id("btn-leave")
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .focus_visible(|s| s.shadow(focus_ring()))
         .flex_1()
         .flex()
         .items_center()
         .justify_center()
         .gap(px(7.))
         .h(px(30.))
-        .bg(c::SPACE)
+        .bg(c::VOID)
         .text_color(theme::DANGER_TEXT)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
         .border_color(theme::DANGER_LINE)
         .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|s| s.bg(c::CORAL).text_color(theme::ON_SIGNAL))
+        .hover(|s| s.border_color(theme::DANGER))
         .child(Icon::Leave.size(16.))
         .child("Leave")
         .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&ui, false));
@@ -743,17 +701,19 @@ fn spotify_button(snap: &AppSnapshot) -> Stateful<Div> {
     div()
         .id("btn-spotify")
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .focus_visible(|s| s.shadow(focus_ring()))
         .flex()
         .items_center()
         .justify_center()
         .gap(px(6.))
         .h(px(30.))
         .px(px(8.))
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .text_color(theme::TEXT)
-        .text_size(px(12.5))
+        .border_color(theme::BORDER)
+        .text_color(theme::TEXT_STRONG)
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
         .tooltip(tooltip(if on {
@@ -761,17 +721,13 @@ fn spotify_button(snap: &AppSnapshot) -> Stateful<Div> {
         } else {
             "Everyone in the call hears your Spotify, and only that"
         }))
-        .hover(|s| {
-            s.bg(c::PAPER)
-                .border_color(c::PAPER)
-                .text_color(theme::ON_INVERT)
-        })
+        .hover(|s| s.border_color(theme::BORDER_HOVER))
         .child(if on { Icon::X } else { Icon::Music }.size(14.))
         .child(if on { "Stop Spotify" } else { "Share Spotify" })
         .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&ui, !on))
 }
 
-/// `.self`: who you are, how you are, and the four toggles.
+/// The self panel: who you are, how you are, and the four toggles, in a hairline field.
 fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App) -> Div {
     let s = &snap.s;
     let name = s.me.name.clone();
@@ -796,26 +752,33 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
         div()
             .id(id)
             .tab_index(0)
-            .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+            .focus_visible(|s| s.shadow(focus_ring()))
             .w(px(if narrow { 24. } else { 26. }))
             .h(px(28.))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
+            .rounded(theme::RADIUS_CONTROL)
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
             .cursor_pointer()
-            .text_color(c::SILVER)
+            .text_color(theme::TEXT_MUTED)
             .tooltip(tooltip(title))
-            // Pressed is "something is switched off" in rose; the camera opts out, because
-            // a camera that is on is working, so it takes the live accent.
-            .when(pressed, |d| {
-                d.text_color(if live { theme::ACCENT } else { theme::DND })
-                    .bg(c::SPACE)
-                    .border_1()
-                    .border_color(c::VIOLET)
+            // Pressed is "something is switched off" in red; the camera opts out, because
+            // a camera that is on is working, so it takes the selected look instead.
+            .when(pressed && live, |d| {
+                d.text_color(theme::TEXT_STRONG)
+                    .bg(theme::BG_SELECTED)
+                    .border_color(theme::SELECTED_EDGE)
+            })
+            .when(pressed && !live, |d| {
+                d.text_color(theme::DANGER_TEXT)
+                    .bg(theme::DANGER_BG)
+                    .border_color(theme::DANGER_LINE)
             })
             .when(!pressed, |d| {
-                d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT))
+                d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
             })
             .child(icon.size(18.))
     };
@@ -824,8 +787,12 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
         .flex()
         .items_center()
         .gap(px(6.))
+        .m(px(8.))
         .p(px(8.))
         .when(narrow, |d| d.pr(px(6.)))
+        .rounded(theme::RADIUS_FIELD)
+        .border_1()
+        .border_color(theme::BORDER)
         .child(ring)
         .child(
             div()
@@ -834,6 +801,8 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
                 .child(
                     div()
                         .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_STRONG)
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
@@ -841,8 +810,9 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(c::SILVER)
+                        .font_family(theme::MONO_FONT)
+                        .text_size(theme::LABEL_TEXT)
+                        .text_color(theme::TEXT_MUTED)
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()

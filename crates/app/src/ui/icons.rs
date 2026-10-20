@@ -8,7 +8,7 @@
 //! through `currentColor`.
 //!
 //! ```ignore
-//! div().text_color(theme::c::SILVER).child(Icon::Mic.size(16.))
+//! div().text_color(theme::TEXT_MUTED).child(Icon::Mic.size(16.))
 //! ```
 
 use gpui_kit::{px, AssetSource, Result, SharedString, Styled};

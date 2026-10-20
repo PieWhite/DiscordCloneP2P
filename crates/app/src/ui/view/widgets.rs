@@ -1,29 +1,30 @@
-//! Small pieces more than one area draws, in the PC-98 grammar of `app.css`.
+//! Small pieces more than one area draws, in design B (see `theme`).
 //!
-//! | Piece | CSS | Use |
-//! |---|---|---|
-//! | [`avatar`] | `.avatar`, `.dot`, `.speak-ring` | every roster row, message gutter, DM row |
-//! | [`Btn`] | `.btn`, `--accent`, `--ghost`, `--danger`, dialog foot | text buttons |
-//! | [`icon_btn`] | `.icon-btn` | 28×28 square glyph buttons |
-//! | [`badge`] | `.badge`, `.badge--quiet` | unread counts |
-//! | [`pointer`] | the ▶ on menu-row hover | channel rows, settings tabs, picker rows |
-//! | [`WindowFrame`] | `dialog.confirm` | every dialog's chassis: paper frame, blue strip, foot |
-//! | [`modal_layer`] | `::backdrop` | the dithered dim plus the centred window |
-//! | [`meter_view`] | - | a tiny view that re-renders on a meters tick and nothing else |
-//! | [`tooltip`] | `title=""` | hover text |
+//! | Piece | Use |
+//! |---|---|
+//! | [`avatar`] | monogram in the identity hue, hairline ring (green while speaking), presence dot |
+//! | [`Btn`] | text buttons: ghost first, bone outline for the one primary action, red for danger |
+//! | [`icon_btn`] | 28×28 glyph buttons |
+//! | [`badge`] | unread counts |
+//! | [`selectable`] | the selected-row look: lift, hairline frame, white text |
+//! | [`pane_head`], [`pane_title`], [`section_label`] | pane heads and the mono group labels |
+//! | [`WindowFrame`] | every dialog's chassis: serif title, body, foot |
+//! | [`modal_layer`] | the flat dim plus the centred window |
+//! | [`meter_view`] | a tiny view that re-renders on a meters tick and nothing else |
+//! | [`tooltip`] | hover text |
 //!
 //! Hover is a flat colour change and snaps; nothing here animates.
 
 use super::super::bridge::Meters;
 use super::super::icons::Icon;
 use super::super::state::{PeerState, Presence, UiState};
-use super::super::theme::{self, c, Dither};
+use super::super::theme::{self, c};
 use super::format;
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Context, Div, ElementId, Entity,
-    FocusHandle, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Refineable,
-    Render, RenderOnce, Rgba, SharedString, Stateful, StatefulInteractiveElement, StyleRefinement,
-    Styled, Window,
+    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, Context, Div,
+    ElementId, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Pixels, Refineable, Render, RenderOnce, Rgba, SharedString, Stateful,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window,
 };
 use std::rc::Rc;
 
@@ -69,81 +70,75 @@ impl Dot {
     }
 }
 
-/// A sprite: a filled square in the identity hue with one monogram in space ink, optionally
-/// with the presence square notched into its corner and the speaking frame around it.
-/// `size` is one of 20, 24, 32, 40 (the font size follows the stylesheet).
+/// A circle with one monogram in the identity hue on a lift, a hairline ring that turns
+/// green while speaking, and optionally the presence dot on its corner. `size` is the
+/// diameter in px.
 pub fn avatar(name: &str, hue: u8, size: f32, dot: Option<Dot>, speaking: bool) -> Div {
     let font = match size as u32 {
-        0..=20 => 10.,
-        21..=24 => 11.,
-        25..=32 => 13.,
-        _ => 16.,
+        0..=22 => 11.,
+        23..=30 => 12.,
+        31..=34 => 13.,
+        _ => 15.,
     };
-    let square = div()
-        .size(px(size))
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::avatar_hue(hue))
-        .text_color(c::SPACE)
-        .text_size(px(font))
-        .line_height(px(size))
-        .child(format::monogram(name));
-
     div()
         .relative()
         .flex_none()
         .size(px(size))
-        .child(square)
-        // `.speak-ring::after`: inset -3px, a 2px ring outside that. It snaps on and off.
-        .when(speaking, |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .top(px(-5.))
-                    .left(px(-5.))
-                    .size(px(size + 10.))
-                    .border_2()
-                    .border_color(theme::ONLINE),
-            )
-        })
+        .child(
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(c::LIFT)
+                .border_1()
+                .border_color(if speaking {
+                    theme::ONLINE
+                } else {
+                    theme::BORDER
+                })
+                .text_color(theme::avatar_hue(hue))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(px(font))
+                .line_height(px(size))
+                .child(format::monogram(name)),
+        )
         .when_some(dot, |d, dot| d.child(presence_dot(dot)))
 }
 
-/// `.dot`: 9×9 with a 2px ink frame, sitting 2px outside the bottom-right corner.
+/// A 9px dot with a 2px void ring, 2px outside the bottom-right edge.
 fn presence_dot(dot: Dot) -> Div {
     let fill: Option<Rgba> = match dot {
         Dot::Online => Some(theme::ONLINE),
         Dot::Dnd | Dot::Busy => Some(theme::DND),
-        Dot::Away => Some(c::AMBER),
-        Dot::Offline => Some(c::INK),
+        Dot::Away => Some(theme::CONNECTING),
+        Dot::Offline => Some(theme::OFFLINE),
         Dot::Broken => None,
     };
     div()
         .absolute()
-        .right(px(-2.))
-        .bottom(px(-2.))
+        .right(px(-4.))
+        .bottom(px(-4.))
         .size(px(13.))
+        .rounded_full()
         .border_2()
-        .border_color(c::INK)
+        .border_color(c::VOID)
         .when_some(fill, |d, f| d.bg(f))
-        .when(dot == Dot::Offline, |d| {
-            d.child(div().size_full().border_2().border_color(theme::OFFLINE))
-        })
 }
 
 // ------------------------------------------------------------------ buttons
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BtnKind {
-    /// `.btn`: space ground, steel frame; hover inverts to paper.
+    /// Void ground, hairline frame, white text; hover whitens the frame.
     #[default]
     Plain,
-    /// `.btn--accent`: magenta in a paper frame; hover flips a quarter of the cells.
-    Accent,
-    /// `.btn--ghost`: no ground.
+    /// The one primary action: a bone outline instead of the hairline.
+    Primary,
+    /// No ground, hairline frame.
     Ghost,
-    /// `.btn--danger`: coral text and frame; hover fills coral.
+    /// Red text in a red line; hover brightens the line to red.
     Danger,
 }
 
@@ -187,7 +182,7 @@ impl Btn {
         self.icon = Some(icon);
         self
     }
-    /// The dialog-foot chassis: 32px tall, 2px frame, dark outer line plus a 2px drop.
+    /// The dialog-foot size: 32px tall.
     pub fn dialog(mut self) -> Self {
         self.dialog = true;
         self
@@ -209,87 +204,72 @@ impl Btn {
 
 impl RenderOnce for Btn {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let (bg, fg, frame): (Option<Rgba>, Rgba, Rgba) = match self.kind {
-            BtnKind::Plain => (Some(c::SPACE), theme::TEXT, theme::BORDER_STRONG),
-            BtnKind::Accent => (Some(theme::PRIMARY), theme::ON_PRIMARY, c::PAPER),
-            BtnKind::Ghost => (None, theme::TEXT, theme::BORDER_STRONG),
-            BtnKind::Danger => (Some(c::SPACE), theme::DANGER_TEXT, theme::DANGER_LINE),
+        let (bg, fg, frame, hover): (Option<Rgba>, Rgba, Rgba, Rgba) = match self.kind {
+            BtnKind::Plain => (
+                Some(c::VOID),
+                theme::TEXT_STRONG,
+                theme::BORDER,
+                theme::TEXT_STRONG,
+            ),
+            BtnKind::Primary => (Some(c::VOID), theme::TEXT_STRONG, c::BONE, c::WHITE),
+            BtnKind::Ghost => (None, theme::TEXT_STRONG, theme::BORDER, theme::TEXT_STRONG),
+            BtnKind::Danger => (
+                Some(c::VOID),
+                theme::DANGER_TEXT,
+                theme::DANGER_LINE,
+                theme::DANGER,
+            ),
         };
-        // GPUI paints a box shadow under the element too, where CSS clips it to the outside:
-        // a ghost dialog button would read as void-filled. Dialogs are ink, so fill with ink.
-        let bg = bg.or(self.dialog.then_some(c::INK));
-        let group: SharedString = format!("btn-{:?}", self.id).into();
         let enabled = !self.disabled;
-        let kind = self.kind;
         div()
             .id(self.id)
-            .group(group.clone())
-            .relative()
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
             .gap(px(6.))
-            .h(px(if self.dialog { 32. } else { 28. }))
-            .px(px(if self.dialog { 14. } else { 11. }))
+            .h(px(if self.dialog { 32. } else { 30. }))
+            .px(px(if self.dialog { 14. } else { 12. }))
             .when(self.full_width, |d| d.w_full())
             .when_some(bg, |d, bg| d.bg(bg))
-            .border(px(if self.dialog { 2. } else { 1. }))
+            .rounded(theme::RADIUS_CONTROL)
+            .border_1()
             .border_color(frame)
             .text_color(fg)
-            .text_size(px(12.5))
-            .when(self.dialog, |d| d.shadow(theme::chassis_shadow(2.)))
-            .when(self.disabled, |d| d.opacity(0.45))
+            .text_size(px(13.))
+            .font_weight(FontWeight::MEDIUM)
+            .whitespace_nowrap()
+            .when(self.disabled, |d| d.opacity(theme::DISABLED_OPACITY))
             .when(enabled, |d| {
-                d.cursor_pointer().hover(move |s| match kind {
-                    BtnKind::Plain | BtnKind::Ghost => s
-                        .bg(c::PAPER)
-                        .border_color(c::PAPER)
-                        .text_color(theme::ON_INVERT),
-                    BtnKind::Danger => s
-                        .bg(c::CORAL)
-                        .border_color(c::CORAL)
-                        .text_color(theme::ON_SIGNAL),
-                    BtnKind::Accent => s,
-                })
-            })
-            // The accent hover is a dither, not a colour: a quarter of the cells to paper.
-            .when(enabled && kind == BtnKind::Accent, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .opacity(0.)
-                        .group_hover(group.clone(), |s| s.opacity(1.))
-                        .child(theme::dither(Dither::Quarter, c::PAPER, 2.)),
-                )
+                d.cursor_pointer().hover(move |s| s.border_color(hover))
             })
             .when_some(self.icon, |d, icon| d.child(icon.size(14.)))
-            .child(div().relative().child(self.label))
+            .child(self.label)
             .when_some(self.on_click.filter(|_| enabled), |d, f| {
                 d.on_click(move |ev, window, cx| f(ev, window, cx))
             })
     }
 }
 
-/// `.icon-btn`: a 28×28 square glyph button; hover and pressed invert to paper.
+/// A 28×28 glyph button: muted glyph, hover lifts it; `pressed` is the selected look.
 pub fn icon_btn(id: impl Into<ElementId>, icon: Icon, pressed: bool) -> Stateful<Div> {
-    div()
-        .id(id)
-        .size(px(28.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .when(pressed, |d| d.bg(c::PAPER).text_color(theme::ON_INVERT))
-        .hover(|s| s.bg(c::PAPER).text_color(theme::ON_INVERT))
-        .child(icon.size(16.))
+    selectable(
+        div()
+            .id(id)
+            .size(px(28.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_color(theme::TEXT_MUTED)
+            .hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)),
+        pressed,
+    )
+    .child(icon.size(16.))
 }
 
-/// `.badge`: an inverted cell with the count; `quiet` is the violet variant.
+/// An unread count: a chrome pill with void mono figures; `quiet` is a lift with ash.
 pub fn badge(count: usize, quiet: bool) -> Div {
     div()
         .min_w(px(18.))
@@ -299,18 +279,38 @@ pub fn badge(count: usize, quiet: bool) -> Div {
         .flex_none()
         .items_center()
         .justify_center()
-        .bg(if quiet { c::VIOLET } else { c::PAPER })
-        .text_color(if quiet { c::SILVER } else { c::SPACE })
+        .rounded_full()
+        .bg(if quiet { c::LIFT } else { theme::ACCENT })
+        .text_color(if quiet {
+            theme::TEXT_MUTED
+        } else {
+            theme::ON_ACCENT
+        })
+        .font_family(theme::MONO_FONT)
+        .font_weight(FontWeight::MEDIUM)
         .text_size(px(11.))
         .line_height(px(18.))
         .child(count.to_string())
 }
 
+/// The row shape every list shares (6px corners, a 1px frame that is transparent until
+/// selected, so selecting never shifts the label) and the selected look: a lift, the
+/// hairline frame and white text.
+pub fn selectable<E: Styled + FluentBuilder>(e: E, selected: bool) -> E {
+    e.rounded(theme::RADIUS_CONTROL)
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .when(selected, |e| {
+            e.bg(theme::BG_SELECTED)
+                .border_color(theme::SELECTED_EDGE)
+                .text_color(theme::TEXT_STRONG)
+        })
+}
+
 /// `:focus-visible { outline: 2px solid accent; outline-offset: 2px }`. GPUI has no outline,
-/// so the ring is a 4px accent shadow with a 2px `ground` shadow over it (the gap shows the
-/// ground the element sits on), around the element's own `base` shadows. Use as
-/// `.tab_index(0).focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))`.
-pub fn focus_ring(ground: Rgba, base: Vec<gpui_kit::BoxShadow>) -> Vec<gpui_kit::BoxShadow> {
+/// so the ring is a 4px accent shadow with a 2px void shadow over it (the gap). Use as
+/// `.tab_index(0).focus_visible(|s| s.shadow(focus_ring()))`.
+pub fn focus_ring() -> Vec<gpui_kit::BoxShadow> {
     let ring = |colour: Rgba, spread: f32| gpui_kit::BoxShadow {
         color: colour.into(),
         offset: gpui_kit::point(px(0.), px(0.)),
@@ -318,54 +318,52 @@ pub fn focus_ring(ground: Rgba, base: Vec<gpui_kit::BoxShadow>) -> Vec<gpui_kit:
         spread_radius: px(spread),
         inset: false,
     };
-    // Later shadows paint over earlier ones; a frame line of the chassis (no offset) goes
-    // back on top so the ring only replaces what the outline covered.
-    let lines: Vec<gpui_kit::BoxShadow> = base
-        .iter()
-        .filter(|s| s.offset.x == px(0.))
-        .cloned()
-        .collect();
-    let mut all = base;
-    all.extend([ring(theme::ACCENT, 4.), ring(ground, 2.)]);
-    all.extend(lines);
-    all
+    vec![ring(theme::ACCENT, 4.), ring(c::VOID, 2.)]
 }
 
-/// `letter-spacing: <em>em` for the short uppercase labels, which GPUI's text cannot space:
-/// one cell per character, its advance plus the spacing wide. Every ASCII glyph of the UI
-/// face advances half an em, so the cell width is exact (a measured single glyph would be
-/// rounded up a pixel each). ASCII labels in `UI_FONT` at `size` px only.
-// ponytail: one element per character and the half-em advance hardcoded; replace with a
-// letter-spacing run style once GPUI's text layout grows one.
+/// `letter-spacing: <em>em` for the short uppercase mono labels, which GPUI's text cannot
+/// space: one cell per character, its advance plus the spacing wide. Every glyph of
+/// JetBrains Mono advances 0.6 em, so the cell width is exact. Sets `MONO_FONT` itself.
+// One element per character with the advance hardcoded; replace with a letter-spacing run
+// style once GPUI's text layout grows one.
 pub fn tracked(text: &str, size: f32, em: f32) -> Div {
-    div().flex().flex_none().children(text.chars().map(|ch| {
-        div()
-            .flex_none()
-            .w(px(size * (0.5 + em)))
-            .child(ch.to_string())
-    }))
+    div()
+        .flex()
+        .flex_none()
+        .font_family(theme::MONO_FONT)
+        .children(text.chars().map(|ch| {
+            div()
+                .flex_none()
+                .w(px(size * (0.6 + em)))
+                .child(ch.to_string())
+        }))
 }
 
-const POINTER_SVG: &[u8] =
-    br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5 8"><path d="M0 0 5 4 0 8z" fill="#000"/></svg>"##;
-
-/// The ▶ of a hovered menu row: a 5×8 cyan block at the row's left edge. Put it in a
-/// `relative()` row and show it on hover with a group (`.opacity(0.).group_hover(..)`).
-pub fn pointer() -> Div {
+/// The mono uppercase group label: `IN THE CALL`, `DEVICES`.
+pub fn section_label(text: &str) -> Div {
     div()
-        .absolute()
-        .left(px(1.))
-        .top_0()
-        .bottom_0()
-        .flex()
-        .items_center()
-        .text_color(c::CYAN)
-        .child(
-            gpui_kit::component::Icon::default()
-                .data(POINTER_SVG)
-                .w(px(5.))
-                .h(px(8.)),
-        )
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
+        .child(tracked(&text.to_uppercase(), 11.5, 0.04))
+}
+
+/// A pane's head: 60px of void that holds a [`pane_title`] and its buttons.
+pub fn pane_head() -> Div {
+    div().h(theme::HEAD_H).flex_none().flex().items_center()
+}
+
+/// The serif title of a pane, a dialog or a settings page.
+pub fn pane_title(text: impl Into<SharedString>, size: Pixels) -> Div {
+    div()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .font_family(theme::DISPLAY_FONT)
+        .text_size(size)
+        .line_height(relative(1.2))
+        .text_color(theme::TEXT_STRONG)
+        .child(text.into())
 }
 
 /// Hover text, the way `title=""` worked: `.tooltip(tooltip("Close to tray"))` on an
@@ -379,7 +377,7 @@ pub fn tooltip(
 
 // ------------------------------------------------------------------ dialog chassis
 
-/// A system window: paper frame, blue title strip, hard shadow in the void.
+/// A dialog: void ground, hairline frame, card corners, the soft shadow, a serif title.
 ///
 /// ```ignore
 /// WindowFrame::new("Delete this?").width(420.)
@@ -445,22 +443,22 @@ impl RenderOnce for WindowFrame {
             .flex()
             .flex_col()
             .when_some(self.width, |d, w| d.w(w.min(max)))
-            .bg(c::INK)
-            .border_2()
-            .border_color(c::PAPER)
+            .bg(c::VOID)
+            .border_1()
+            .border_color(theme::BORDER)
+            .rounded(theme::RADIUS_CARD)
             .text_color(theme::TEXT)
-            .shadow(theme::shadow_modal())
+            .shadow(theme::soft_shadow())
             .child(
                 div()
-                    .px(px(14.))
-                    .py(px(8.))
-                    .bg(c::BLUE)
-                    .border_b_1()
-                    .border_color(c::SPACE)
-                    .text_color(c::PAPER)
-                    .text_size(px(14.))
+                    .px(px(22.))
+                    .pt(px(18.))
+                    .font_family(theme::DISPLAY_FONT)
+                    .text_size(theme::DISPLAY_TEXT)
+                    .line_height(relative(1.2))
+                    .text_color(theme::TEXT_STRONG)
                     .when(self.truncate_title, |d| d.truncate())
-                    .child(self.title.to_uppercase()),
+                    .child(self.title),
             )
             .children(self.children)
             .when(!self.foot.is_empty(), |d| {
@@ -480,7 +478,7 @@ impl RenderOnce for WindowFrame {
     }
 }
 
-/// The modal layer: the window dimmed by an ordered dither of the void, `content` centred
+/// The modal layer: the window dimmed by a flat [`theme::BACKDROP`], `content` centred
 /// on it, and every click and scroll stopped from reaching what is underneath. Tracks
 /// `focus` so keys typed while it is open go to it (attach `on_key_down` to `content`).
 /// `on_backdrop` runs for a click beside the window (the lightbox closes that way; the
@@ -501,7 +499,7 @@ pub fn modal_layer(
         .left_0()
         .size_full()
         .occlude()
-        .child(theme::dither(Dither::Half, c::SPACE, 2.))
+        .bg(theme::BACKDROP)
         .child(
             div()
                 .id("modal-backdrop")
@@ -579,39 +577,4 @@ impl Render for MeterView {
         let copy = self.meters.read(cx).clone();
         render(&copy, window, cx)
     }
-}
-
-// ------------------------------------------------------------------ placeholders
-
-/// Foundation stand-in for an area a slice has not drawn yet: the zone's title strip in its
-/// tint, and a label. Remove from a file once its real render lands.
-pub fn placeholder(title: &str, tint: Option<Rgba>, label: &str) -> Div {
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .when_some(tint, |d, tint| {
-            d.child(
-                div()
-                    .h(theme::HEAD_H)
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px(px(14.))
-                    .bg(tint)
-                    .border_b_1()
-                    .border_color(c::SPACE)
-                    .text_color(if tint == c::BLUE { c::PAPER } else { c::SPACE })
-                    .text_size(px(13.))
-                    .child(title.to_uppercase()),
-            )
-        })
-        .child(
-            div()
-                .flex_1()
-                .p(px(14.))
-                .text_color(c::SILVER)
-                .text_size(px(12.))
-                .child(label.to_string()),
-        )
 }

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Main window B, in a call</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#000}
+a{color:#B8BCC2}a:hover{color:#fff}
+.ib{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:6px;background:transparent;color:#A1A4A5;cursor:pointer;padding:0}
+.ib:hover{background:#0B0E14;color:#fff}
+.dk{width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #292D30;border-radius:6px;background:#000;color:#F0F0F0;cursor:pointer;padding:0}
+.dk:hover{border-color:#6E727A;color:#fff}
+.row{display:flex;align-items:center;gap:10px;height:32px;padding:0 10px;border-radius:6px;color:#A1A4A5;text-decoration:none;font-size:14px;border:0;background:transparent;font-family:inherit;text-align:left;width:100%;box-sizing:border-box;cursor:pointer}
+.row:hover{background:#0B0E14;color:#fff}
+.btn{height:30px;padding:0 12px;border-radius:6px;border:1px solid #292D30;background:#000;color:#fff;font:500 13px Inter,sans-serif;cursor:pointer}
+.btn:hover{border-color:#fff}
+.msg:hover{background:#05070A}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+input[type=range]{accent-color:{{accent}};width:100%;margin:0}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid {{accent}};outline-offset:2px}
+</style>
+</helmet>
+<div style="position: relative; min-height: 800px; height: 800px; display: flex; flex-direction: column; background: #000; color: #F0F0F0; font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+
+<!-- titlebar -->
+<div style="height: 36px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 16px; border-bottom: 1px solid #292D30">
+<div style="display: flex; align-items: center; gap: 10px; font-size: 13px">
+<span style="width: 16px; height: 16px; border-radius: 5px; background: linear-gradient(135deg, #F5F6F7, #6E737A)"></span>
+<span style="color: #fff; font-weight: 500">FitCommunication</span>
+</div>
+<div style="display: flex">
+<button class="ib" aria-label="Minimise" style="width: 46px; height: 35px; border-radius: 0"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10" stroke="currentColor" stroke-width="1"/></svg></button>
+<button class="ib" aria-label="Maximise" style="width: 46px; height: 35px; border-radius: 0"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1"/></svg></button>
+<button class="ib" aria-label="Close" style="width: 46px; height: 35px; border-radius: 0"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1"/></svg></button>
+</div>
+</div>
+
+<div style="flex: 1; min-height: 0; display: flex; flex-wrap: wrap">
+
+<!-- rail -->
+<nav aria-label="Sections" style="width: 60px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; border-right: 1px solid #292D30">
+<button class="ib" aria-label="Channels" aria-current="page" style="width: 40px; height: 40px; border: 1px solid #292D30; background: #0B0E14; color: #fff"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4 3.5V17A2 2 0 0 1 4 15z"/></svg></button>
+<div style="position: relative">
+<button class="ib" aria-label="Direct messages, 2 unread" style="width: 40px; height: 40px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg></button>
+<span class="mono" style="position: absolute; top: 2px; right: 0; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 99px; background: {{accent}}; color: #000; font-size: 11px; font-weight: 500; line-height: 18px; text-align: center; box-shadow: 0 0 0 2px #000">2</span>
+</div>
+<div style="flex: 1"></div>
+<button class="ib" aria-label="Settings" style="width: 40px; height: 40px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg></button>
+</nav>
+
+<!-- channels -->
+<aside aria-label="Channels" style="width: 248px; flex: none; display: flex; flex-direction: column; border-right: 1px solid #292D30">
+<div style="height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 18px">
+<h2 style="margin: 0; font: 400 26px 'Instrument Serif', Georgia, serif; color: #fff; letter-spacing: -0.01em">Channels</h2>
+<button class="ib" aria-label="New channel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+</div>
+<div style="flex: 1; overflow: auto; padding: 0 8px; display: flex; flex-direction: column; gap: 2px">
+<a class="row" href="#" aria-current="page" style="background: #0B0E14; color: #fff; box-shadow: inset 0 0 0 1px #292D30"><span class="mono" style="color: #6E727A">#</span>general</a>
+<a class="row" href="#"><span class="mono">#</span>games<span style="margin-left: auto; width: 6px; height: 6px; border-radius: 99px; background: #fff"></span></a>
+<a class="row" href="#"><span class="mono">#</span>links</a>
+<a class="row" href="#"><span class="mono">#</span>wordle</a>
+
+<div class="mono" style="margin: 24px 10px 8px; display: flex; align-items: center; font-size: 11.5px; letter-spacing: 0.04em; color: #A1A4A5"><span style="flex: 1">VOICE</span><span style="display: inline-flex; align-items: center; gap: 6px; color: #3AD389"><span style="width: 5px; height: 5px; border-radius: 99px; background: #3AD389"></span>connected</span></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div class="row" style="color: #F0F0F0"><span style="width: 22px; height: 22px; border-radius: 99px; background: #0B0E14; border: 1px solid #3AD389; box-sizing: border-box; color: #70B8FF; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center">S</span><span style="flex: 1">Sander</span><span class="mono" style="font-size: 10.5px; color: #FF9592; border: 1px solid #5A2A2A; border-radius: 4px; padding: 0 5px">LIVE</span></div>
+<div class="row" style="color: #F0F0F0"><span style="width: 22px; height: 22px; border-radius: 99px; background: #0B0E14; border: 1px solid #292D30; box-sizing: border-box; color: #FFCA16; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center">J</span><span style="flex: 1">Joost</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6E727A" stroke-width="1.5" stroke-linecap="round" role="img" aria-label="Microphone muted"><path d="M15 9.3V5a3 3 0 0 0-5.9-.6M9 9v3a3 3 0 0 0 5.1 2.1M19 11a7 7 0 0 1-1.2 3.9M5 11a7 7 0 0 0 11.2 5.6M12 18v3M4 4l16 16"/></svg></div>
+<div class="row" style="color: #F0F0F0"><span style="width: 22px; height: 22px; border-radius: 99px; background: #0B0E14; border: 1px solid #292D30; box-sizing: border-box; color: #3AD389; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center">R</span><span style="flex: 1">Rick</span></div>
+</div>
+</div>
+
+<!-- self -->
+<div style="margin: 8px; padding: 8px; border-radius: 10px; border: 1px solid #292D30; display: flex; align-items: center; gap: 10px">
+<span style="position: relative; width: 32px; height: 32px; border-radius: 99px; background: #0B0E14; border: 1px solid #292D30; box-sizing: border-box; color: #3AD389; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center">R<span style="position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 99px; background: #3AD389; box-shadow: 0 0 0 2px #000"></span></span>
+<div style="flex: 1; min-width: 0; line-height: 1.25"><div style="font-weight: 500; color: #fff">Rick</div><div class="mono" style="font-size: 11.5px; color: #A1A4A5">online</div></div>
+<button class="ib" aria-label="Status: do not disturb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></button>
+</div>
+</aside>
+
+<!-- timeline -->
+<main style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column">
+<header style="height: 60px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 20px 0 28px; border-bottom: 1px solid #292D30">
+<h1 style="margin: 0; font: 400 26px 'Instrument Serif', Georgia, serif; color: #fff; letter-spacing: -0.01em"># general</h1>
+<span style="color: #A1A4A5; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Evenings, links and whatever is on someone's screen</span>
+</header>
+
+<!-- call stage -->
+<section aria-label="Call" style="flex: none; display: flex; flex-direction: column; gap: 14px; padding: 16px 28px 18px; border-bottom: 1px solid #292D30">
+<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+<div class="mono" style="display: flex; align-items: center; gap: 10px; font-size: 12px; color: #A1A4A5"><span style="width: 5px; height: 5px; border-radius: 99px; background: #3AD389"></span><span style="color: #fff">in call</span><span>3 people</span><span>12 ms</span></div>
+<div style="flex: 1"></div>
+<div role="toolbar" aria-label="Call controls" style="display: flex; align-items: center; gap: 6px">
+<button class="dk" aria-label="Mute microphone" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+<button class="dk" aria-label="Deafen" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg></button>
+<span style="width: 1px; height: 22px; background: #292D30; margin: 0 4px"></span>
+<button class="dk" aria-label="Turn the camera on" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="M15.5 10.5l6-3.5v10l-6-3.5"/></svg></button>
+<button class="dk" aria-label="Share screen" aria-haspopup="menu"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+<button class="dk" aria-label="Share Spotify" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg></button>
+<span style="width: 1px; height: 22px; background: #292D30; margin: 0 4px"></span>
+<button style="height: 40px; padding: 0 14px; border: 1px solid #5A2A2A; border-radius: 6px; background: #000; color: #FF9592; font: 500 13px Inter, sans-serif; cursor: pointer">Leave</button>
+</div>
+</div>
+<div style="display: flex; gap: 12px; overflow-x: auto">
+<div style="width: 240px; flex: none; border-radius: 16px; overflow: hidden; border: 1px solid {{accent}}">
+<div style="position: relative; height: 128px; background: #0B0E14; display: flex; align-items: center; justify-content: center; color: #6E727A; font-size: 12px">[Sander's screen]
+<span class="mono" style="position: absolute; top: 10px; left: 10px; font-size: 10.5px; color: #FF9592; background: #000; border: 1px solid #5A2A2A; border-radius: 4px; padding: 0 6px">LIVE</span>
+</div>
+<div style="display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 12px; border-top: 1px solid #292D30">
+<span style="flex: 1; font-size: 13px">Sander <span style="color: #6E727A">/ screen</span></span>
+<button class="ib" aria-label="Screen audio volume, 80%" style="width: 28px; height: 28px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+<button class="btn" style="height: 28px; padding: 0 10px; font-size: 12px">Stop watching</button>
+</div>
+</div>
+<div style="width: 240px; flex: none; border-radius: 16px; overflow: hidden; border: 1px solid #292D30">
+<div style="height: 128px; background: #05070A; display: flex; align-items: center; justify-content: center; color: #6E727A; font-size: 12px">[Joost's camera]</div>
+<div style="display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 12px; border-top: 1px solid #292D30">
+<span style="flex: 1; font-size: 13px">Joost <span style="color: #6E727A">/ camera</span></span>
+<button class="btn" style="height: 28px; padding: 0 10px; font-size: 12px">Watch</button>
+</div>
+</div>
+</div>
+</section>
+
+<!-- messages -->
+<div style="flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; justify-content: flex-end; padding: 8px 0 12px">
+<div class="msg" style="display: flex; gap: 14px; padding: 8px 28px">
+<span style="width: 36px; height: 36px; flex: none; border-radius: 99px; background: #0B0E14; border: 1px solid #292D30; box-sizing: border-box; color: #FFCA16; font-weight: 600; display: flex; align-items: center; justify-content: center">J</span>
+<div style="min-width: 0; flex: 1; max-width: 72ch">
+<div style="display: flex; align-items: baseline; gap: 10px"><span style="font-weight: 500; color: #fff">Joost</span><span class="mono" style="font-size: 11.5px; color: #6E727A">20:43</span></div>
+<div style="color: #F0F0F0">Probably this, the retry never resets:</div>
+<div style="margin: 10px 0 4px; border-radius: 16px; border: 1px solid #292D30; overflow: hidden">
+<div class="mono" style="display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid #292D30; font-size: 11.5px; color: #70B8FF"><span style="width: 8px; height: 8px; border-radius: 99px; background: #292D30"></span><span style="width: 8px; height: 8px; border-radius: 99px; background: #292D30"></span><span style="width: 8px; height: 8px; border-radius: 99px; background: #292D30"></span><span style="margin-left: 8px">net/mesh.rs</span></div>
+<pre class="mono" style="margin: 0; padding: 12px 14px; font-size: 12.5px; line-height: 1.6; color: #F0F0F0; overflow-x: auto"><span style="color: #D4D7DB">if</span> pogingen &gt; <span style="color: #B8BCC2">5</span> { wacht = Duration::from_secs(<span style="color: #B8BCC2">30</span>); }</pre>
+</div>
+</div>
+</div>
+<div class="mono" style="display: flex; align-items: center; gap: 14px; margin: 10px 28px; color: {{accent}}; font-size: 11.5px; letter-spacing: 0.04em"><span style="flex: 1; height: 1px; background: {{accent}}; opacity: 0.5"></span>NEW</div>
+<div class="msg" style="display: flex; gap: 14px; padding: 8px 28px">
+<span style="width: 36px; height: 36px; flex: none; border-radius: 99px; background: #0B0E14; border: 1px solid #292D30; box-sizing: border-box; color: #3AD389; font-weight: 600; display: flex; align-items: center; justify-content: center">R</span>
+<div style="min-width: 0; flex: 1">
+<div style="display: flex; align-items: baseline; gap: 10px"><span style="font-weight: 500; color: #fff">Rick</span><span class="mono" style="font-size: 11.5px; color: #6E727A">20:47</span></div>
+<div style="max-width: 72ch">Log from my side, same moment:</div>
+<div style="width: 420px; max-width: 100%; margin-top: 10px; display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 14px; border-radius: 16px; border: 1px solid #292D30">
+<span style="width: 36px; height: 36px; flex: none; border-radius: 10px; background: linear-gradient(135deg, #2C2F33, #0E1013); box-shadow: 0 0 0 1px rgba(176,199,217,0.145); display: flex; align-items: center; justify-content: center; color: #B8BCC2"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg></span>
+<div style="flex: 1; min-width: 0; line-height: 1.3"><div class="mono" style="font-size: 13px; color: #fff">fitcom-2026-10-20.log</div><div class="mono" style="font-size: 11.5px; color: #A1A4A5">184 KB</div></div>
+<button class="btn">Download</button>
+</div>
+</div>
+</div>
+</div>
+
+<!-- composer -->
+<div style="flex: none; padding: 0 28px 18px">
+<div style="display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 8px; border-radius: 10px; border: 1px solid #292D30">
+<button class="ib" aria-label="Share a file"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+<label for="composerB" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Message</label>
+<input id="composerB" placeholder="Message #general" style="flex: 1; min-width: 0; height: 32px; border: 0; background: transparent; color: #fff; font: 14px Inter, sans-serif; outline: none">
+</div>
+</div>
+</main>
+
+<!-- members -->
+<aside aria-label="Members" style="flex: 1 1 232px; max-width: 240px; display: flex; flex-direction: column; border-left: 1px solid #292D30">
+<div style="height: 60px; display: flex; align-items: center; padding: 0 18px">
+<h2 style="margin: 0; font: 400 26px 'Instrument Serif', Georgia, serif; color: #fff; letter-spacing: -0.01em">Members</h2>
+</div>
+<div style="padding: 0 8px; display: flex; flex-direction: column; gap: 2px">
+<div class="mono" style="margin: 4px 10px 6px; font-size: 11.5px; letter-spacing: 0.04em; color: #A1A4A5">IN THE CALL · 3</div>
+<button class="row" aria-expanded="true" style="height: 46px; color: #fff; background: #0B0E14; box-shadow: inset 0 0 0 1px #292D30">
+<span style="width: 30px; height: 30px; flex: none; border-radius: 99px; border: 1px solid #3AD389; box-sizing: border-box; color: #70B8FF; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">S</span>
+<span style="flex: 1; line-height: 1.3"><span style="display: block">Sander</span><span class="mono" style="display: block; font-size: 11.5px; color: #3AD389">speaking · screen</span></span>
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#A1A4A5" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+</button>
+<button class="row" style="height: 46px; color: #F0F0F0">
+<span style="width: 30px; height: 30px; flex: none; border-radius: 99px; border: 1px solid #292D30; box-sizing: border-box; color: #FFCA16; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">J</span>
+<span style="flex: 1; line-height: 1.3"><span style="display: block">Joost</span><span class="mono" style="display: block; font-size: 11.5px; color: #A1A4A5">muted · camera</span></span>
+</button>
+<button class="row" style="height: 46px; color: #F0F0F0">
+<span style="width: 30px; height: 30px; flex: none; border-radius: 99px; border: 1px solid #292D30; box-sizing: border-box; color: #3AD389; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">R</span>
+<span style="flex: 1; line-height: 1.3"><span style="display: block">Rick <span style="color: #6E727A">(you)</span></span><span class="mono" style="display: block; font-size: 11.5px; color: #A1A4A5">in call</span></span>
+</button>
+<div class="mono" style="margin: 16px 10px 6px; font-size: 11.5px; letter-spacing: 0.04em; color: #A1A4A5">OFFLINE · 1</div>
+<button class="row" style="height: 46px">
+<span style="width: 30px; height: 30px; flex: none; border-radius: 99px; border: 1px dashed #464A4D; box-sizing: border-box; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">B</span>
+<span style="flex: 1; line-height: 1.3"><span style="display: block">Bram</span><span class="mono" style="display: block; font-size: 11.5px">seen yesterday</span></span>
+</button>
+</div>
+</aside>
+</div>
+
+<!-- status bar -->
+<div class="mono" style="height: 28px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 16px; font-size: 11.5px; color: #A1A4A5; border-top: 1px solid #292D30">
+<span style="display: inline-flex; align-items: center; gap: 6px"><span style="width: 5px; height: 5px; border-radius: 99px; background: #3AD389"></span>3/4 peers</span>
+<span style="flex: 1"></span>
+<span>up to date</span>
+</div>
+
+<!-- per-person audio popover -->
+<div role="dialog" aria-label="Audio for Sander" style="position: absolute; top: 140px; right: 252px; width: 284px; padding: 16px; border-radius: 16px; background: #000; border: 1px solid #292D30; box-shadow: 0 0 0 8px #000, 0 20px 50px rgba(0,0,0,0.8); display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="width: 28px; height: 28px; border-radius: 99px; border: 1px solid #292D30; box-sizing: border-box; color: #70B8FF; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">S</span>
+<span style="flex: 1; font: 400 21px 'Instrument Serif', Georgia, serif; color: #fff">Sander</span>
+<span class="mono" style="font-size: 11px; color: #6E727A">only for you</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; font-size: 13px"><label for="bv-voice" style="flex: 1">Voice</label><span class="mono" style="font-size: 11.5px; color: #A1A4A5">100%</span></div>
+<div style="display: flex; align-items: center; gap: 8px"><button class="ib" aria-label="Mute Sander for you" style="width: 28px; height: 28px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button><input id="bv-voice" type="range" min="0" max="200" value="100"></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; font-size: 13px"><label for="bv-screen" style="flex: 1">Screen audio</label><span class="mono" style="font-size: 11.5px; color: #A1A4A5">80%</span></div>
+<div style="display: flex; align-items: center; gap: 8px"><button class="ib" aria-label="Mute Sander's screen audio" style="width: 28px; height: 28px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button><input id="bv-screen" type="range" min="0" max="200" value="80"></div>
+</div>
+<div style="font-size: 12px; color: #A1A4A5; border-top: 1px solid #292D30; padding-top: 12px">Spotify appears here while Sander plays it.</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#D4D7DB","options":["#D4D7DB","#B8BCC2","#70B8FF","#3AD389"]},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+renderVals() {
+return { accent: this.props.accent ?? '#D4D7DB' };
+}
+}
+</script>
+</body>
+</html>

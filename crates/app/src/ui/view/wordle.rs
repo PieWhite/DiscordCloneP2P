@@ -11,7 +11,7 @@
 use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{TimelineItem, WordleBoard, WordleScore, WordleState};
-use super::super::theme::{self, c, Dither};
+use super::super::theme::{self, c};
 use super::format;
 use super::widgets::{Btn, BtnKind};
 use super::{AppSnapshot, AppView, Dialog, ViewState};
@@ -149,10 +149,10 @@ fn pips(pattern: &str) -> Option<Div> {
         return None;
     }
     let rows = cells.chunks(WORD_LEN).map(|row| {
-        div()
-            .flex()
-            .gap(px(2.))
-            .children(row.iter().map(|m| div().size(px(8.)).bg(mark_colour(*m))))
+        div().flex().gap(px(2.)).children(
+            row.iter()
+                .map(|m| div().size(px(8.)).rounded(px(2.)).bg(mark_colour(*m))),
+        )
     });
     // 6px margin plus the 3px the old inline-grid gained from sitting on a line box.
     Some(
@@ -174,6 +174,15 @@ fn mark_colour(m: u8) -> gpui_kit::Rgba {
     }
 }
 
+/// The letter on a marked square: void on green and amber, white on the hairline miss.
+fn on_mark(m: u8) -> gpui_kit::Rgba {
+    if m == 0 {
+        theme::TEXT_STRONG
+    } else {
+        c::VOID
+    }
+}
+
 /// The card's one button (`wordleButton`). Every action that is not "waiting" opens the
 /// dialog, whatever day the card is: the dialog always shows today.
 fn card_button(snap: &AppSnapshot, day: u32, action: &str, progress: u8) -> Btn {
@@ -185,11 +194,11 @@ fn card_button(snap: &AppSnapshot, day: u32, action: &str, progress: u8) -> Btn 
         Btn::new(("wdl-btn", day), label).icon(icon).kind(kind)
     };
     match action {
-        "play" => btn("Play today's puzzle".into(), Icon::Play, BtnKind::Accent).on_click(open),
+        "play" => btn("Play today's puzzle".into(), Icon::Play, BtnKind::Primary).on_click(open),
         "continue" => btn(
             format!("Continue \u{00b7} {progress}/{tries}"),
             Icon::Play,
-            BtnKind::Accent,
+            BtnKind::Primary,
         )
         .on_click(open),
         "done" => btn("Show the board".into(), Icon::Tiles, BtnKind::Ghost).on_click(open),
@@ -235,10 +244,11 @@ pub fn render_card(
                 .flex_1()
                 .min_w_0()
                 .p(px(6.))
+                .rounded(theme::RADIUS_FIELD)
                 .border_1()
-                .border_color(if won { c::PAPER } else { c::VIOLET })
-                .bg(if won { theme::BG_ACTIVE } else { c::SPACE })
-                .text_color(if won { theme::ON_INVERT } else { theme::TEXT })
+                .border_color(if won { theme::ONLINE } else { theme::BORDER })
+                .when(won, |d| d.bg(theme::BG_SELECTED))
+                .text_color(if won { theme::TEXT_STRONG } else { theme::TEXT })
                 .flex()
                 .flex_col()
                 .items_center()
@@ -251,7 +261,8 @@ pub fn render_card(
                 .child(
                     div()
                         .mt(px(1.))
-                        .text_color(if won { theme::ON_INVERT } else { c::SILVER })
+                        .font_family(theme::MONO_FONT)
+                        .text_color(theme::TEXT_MUTED)
                         .child(result_line(r, tries)),
                 )
                 .when_some(spoilers.then(|| pips(&r.pattern)).flatten(), |d, grid| {
@@ -289,28 +300,29 @@ pub fn render_card(
         .flex()
         .items_center()
         .gap(px(8.))
-        .px(px(10.))
-        .py(px(6.))
-        .bg(c::BLUE)
+        .px(px(14.))
+        .py(px(8.))
         .border_b_1()
-        .border_color(c::SPACE)
-        .text_color(c::PAPER)
-        .child(Icon::Tiles.size(14.))
+        .border_color(theme::BORDER)
+        .child(div().text_color(theme::ACCENT).child(Icon::Tiles.size(14.)))
         .child(
             div()
-                .text_size(px(12.))
-                .child(card_title(*number).to_uppercase()),
+                .text_size(px(13.))
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .text_color(theme::TEXT_STRONG)
+                .child(card_title(*number)),
         )
         .child(
             div()
                 .ml_auto()
-                .text_size(px(11.5))
-                .opacity(0.8)
+                .font_family(theme::MONO_FONT)
+                .text_size(theme::LABEL_TEXT)
+                .text_color(theme::TEXT_MUTED)
                 .child(format::fmt_day(*at)),
         );
 
     let body = div()
-        .p(px(10.))
+        .p(px(12.))
         .flex()
         .flex_col()
         .when(!past, |d| {
@@ -324,7 +336,7 @@ pub fn render_card(
                 div()
                     .mt(px(8.))
                     .text_size(px(11.5))
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_MUTED)
                     .line_height(relative(1.45))
                     .child(note),
             )
@@ -343,9 +355,10 @@ pub fn render_card(
         .mt(px(6.))
         .mb(px(2.))
         .max_w(px(440.))
+        .rounded(theme::RADIUS_CARD)
+        .overflow_hidden()
         .border_1()
         .border_color(theme::BORDER)
-        .bg(c::INK)
         .child(head)
         .child(body)
         .into_any_element()
@@ -373,7 +386,7 @@ fn best_marks(board: Option<&WordleBoard>) -> HashMap<char, u8> {
     best
 }
 
-/// A board cell: empty, typed (paper edge) or marked (a filled square, the colour is the
+/// A board cell: empty, typed (iron edge) or marked (a filled square, the colour is the
 /// answer).
 fn cell(letter: String, mark: Option<u8>, live: bool) -> Div {
     let base = div()
@@ -381,18 +394,24 @@ fn cell(letter: String, mark: Option<u8>, live: bool) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .border_2()
+        .rounded(theme::RADIUS_CONTROL)
+        .border_1()
         .text_size(px(20.))
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .line_height(px(20.));
     match mark {
         Some(m) => base
             .bg(mark_colour(m))
             .border_color(mark_colour(m))
-            .text_color(theme::ON_INVERT)
+            .text_color(on_mark(m))
             .child(letter),
         None => base
-            .bg(c::SPACE)
-            .border_color(if live { theme::BORDER_INPUT } else { c::VIOLET })
+            .bg(c::VOID)
+            .border_color(if live {
+                theme::BORDER_HOVER
+            } else {
+                theme::BORDER
+            })
             .text_color(theme::TEXT)
             .child(letter),
     }
@@ -439,14 +458,14 @@ fn board(w: &WordleState, typed: &str) -> Div {
         }))
 }
 
-/// One `.wdl-line` paragraph, optionally with one stretch in paper (the `<b>` of the old
+/// One `.wdl-line` paragraph, optionally with one stretch in white (the `<b>` of the old
 /// markup).
 fn line(text: String, bold: Option<std::ops::Range<usize>>, error: bool) -> Div {
     let styled = StyledText::new(text).with_highlights(bold.map(|range| {
         (
             range,
             HighlightStyle {
-                color: Some(c::PAPER.into()),
+                color: Some(theme::TEXT_STRONG.into()),
                 ..Default::default()
             },
         )
@@ -456,7 +475,11 @@ fn line(text: String, bold: Option<std::ops::Range<usize>>, error: bool) -> Div 
         .min_h(px(18.))
         .text_size(px(12.5))
         .text_center()
-        .text_color(if error { theme::DANGER_TEXT } else { c::SILVER })
+        .text_color(if error {
+            theme::DANGER_TEXT
+        } else {
+            theme::TEXT_MUTED
+        })
         .child(styled)
 }
 
@@ -513,6 +536,7 @@ fn keyboard(snap: &AppSnapshot, w: &WordleState) -> Option<Div> {
             .flex()
             .items_center()
             .justify_center()
+            .rounded(theme::RADIUS_CONTROL)
             .border_1()
             .text_size(px(if wide { 11. } else { 12.5 }))
             .cursor_pointer()
@@ -521,27 +545,22 @@ fn keyboard(snap: &AppSnapshot, w: &WordleState) -> Option<Div> {
                     .listener(move |app, _: &ClickEvent, _, cx| press(app, k, cx)),
             );
         let d = match mark {
+            // A ruled-out letter stays readable: a hairline fill with dim glyphs.
             Some(0) => d
                 .bg(theme::WDL_MISS)
                 .border_color(theme::WDL_MISS)
-                .text_color(c::SILVER)
-                // A ruled-out letter is half-density dither, not faded: it stays readable.
-                .child(theme::dither(Dither::Half, c::SPACE, 2.)),
+                .text_color(theme::TEXT_DIM),
             Some(m) => d
                 .bg(mark_colour(m))
                 .border_color(mark_colour(m))
-                .text_color(theme::ON_INVERT),
+                .text_color(on_mark(m)),
             None => d
-                .bg(c::SPACE)
-                .border_color(theme::BORDER_STRONG)
+                .bg(c::VOID)
+                .border_color(theme::BORDER)
                 .text_color(theme::TEXT),
         };
-        d.hover(|s| {
-            s.bg(c::PAPER)
-                .border_color(c::PAPER)
-                .text_color(theme::ON_INVERT)
-        })
-        .child(div().relative().child(label.to_uppercase()))
+        d.hover(|s| s.border_color(theme::TEXT_STRONG))
+            .child(div().relative().child(label.to_uppercase()))
     };
     let rows = KEYS.iter().enumerate().map(|(i, row)| {
         div()
@@ -597,7 +616,7 @@ fn standings(w: &WordleState) -> Div {
             div()
                 .mb(px(6.))
                 .text_size(px(11.))
-                .text_color(c::SILVER)
+                .text_color(theme::TEXT_MUTED)
                 .child("STANDINGS"),
         );
     if w.standings.is_empty() {
@@ -605,7 +624,7 @@ fn standings(w: &WordleState) -> Div {
             div()
                 .my(px(12.))
                 .text_size(px(12.))
-                .text_color(c::SILVER)
+                .text_color(theme::TEXT_MUTED)
                 .line_height(relative(1.5))
                 .child(
                     "Nobody has finished a puzzle yet. A day is worth one point to whoever solved it in the fewest guesses, and on a tie to whoever was quickest \u{2014} and only when at least two of you played.",
@@ -626,7 +645,7 @@ fn standings(w: &WordleState) -> Div {
                     .min_w(px(46.))
                     .flex()
                     .justify_end()
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_MUTED)
                     .child(played),
             )
             .child(
@@ -634,7 +653,7 @@ fn standings(w: &WordleState) -> Div {
                     .min_w(px(46.))
                     .flex()
                     .justify_end()
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_MUTED)
                     .child(solved),
             )
     };
@@ -646,7 +665,7 @@ fn standings(w: &WordleState) -> Div {
             "SOLVED".into(),
         )
         .text_size(px(10.5))
-        .text_color(c::SILVER),
+        .text_color(theme::TEXT_MUTED),
     )
     .children(w.standings.iter().map(|st| {
         row(

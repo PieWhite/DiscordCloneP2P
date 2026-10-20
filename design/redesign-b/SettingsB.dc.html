@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings B, Audio</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#000}
+.nav{display:flex;align-items:center;height:34px;padding:0 12px;border-radius:6px;color:#A1A4A5;text-decoration:none;font-size:14px}
+.nav:hover{background:#0B0E14;color:#fff}
+.sel{height:38px;border-radius:6px;border:1px solid #292D30;background:#000;color:#fff;font:14px Inter,sans-serif;padding:0 10px;width:100%}
+input[type=range]{accent-color:#D4D7DB;width:100%;margin:0}
+input[type=checkbox]{accent-color:#D4D7DB;width:16px;height:16px;margin:0}
+a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #D4D7DB;outline-offset:2px}
+</style>
+</helmet>
+<div style="width: 980px; height: 720px; display: flex; background: #000; color: #F0F0F0; font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+<nav aria-label="Settings sections" style="width: 220px; flex: none; padding: 28px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #292D30">
+<h1 style="margin: 0 12px 18px; font: 400 32px 'Instrument Serif', Georgia, serif; color: #fff; letter-spacing: -0.01em">Settings</h1>
+<a class="nav" href="#">Account</a>
+<a class="nav" href="#" aria-current="page" style="background: #0B0E14; color: #fff; box-shadow: inset 0 0 0 1px #292D30">Audio</a>
+<a class="nav" href="#">Video</a>
+<a class="nav" href="#">Controls</a>
+<a class="nav" href="#">Clips</a>
+<a class="nav" href="#">Files</a>
+<a class="nav" href="#">Network</a>
+<a class="nav" href="#">Recap</a>
+</nav>
+<div style="flex: 1; min-width: 0; padding: 28px 40px; overflow: auto; display: flex; flex-direction: column; gap: 24px">
+<h2 style="margin: 0; font: 400 32px 'Instrument Serif', Georgia, serif; color: #fff; letter-spacing: -0.01em">Audio</h2>
+
+<section style="display: flex; flex-direction: column; gap: 16px; max-width: 580px; padding: 24px; border: 1px solid #292D30; border-radius: 16px">
+<h3 style="margin: 0; font: 11.5px 'JetBrains Mono', monospace; letter-spacing: 0.04em; color: #A1A4A5">DEVICES</h3>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 6px"><label for="bin" style="font-size: 13px">Microphone</label><select id="bin" class="sel"><option>Windows default</option></select></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><label for="bout" style="font-size: 13px">Output</label><select id="bout" class="sel"><option>Windows default</option></select></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; font-size: 13px"><span style="flex: 1">Input level</span><span style="font: 11.5px 'JetBrains Mono', monospace; color: #A1A4A5">speak to test</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 99px; background: #0B0E14; box-shadow: inset 0 0 0 1px #292D30; overflow: hidden"><div style="width: 42%; height: 100%; background: #3AD389"></div></div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 16px; max-width: 580px; padding: 24px; border: 1px solid #292D30; border-radius: 16px">
+<h3 style="margin: 0; font: 11.5px 'JetBrains Mono', monospace; letter-spacing: 0.04em; color: #A1A4A5">SOUNDS</h3>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: end">
+<div style="display: flex; flex-direction: column; gap: 6px"><label for="bset" style="font-size: 13px">Sound set</label><select id="bset" class="sel"><option>Classic</option></select></div>
+<div style="display: flex; flex-direction: column; gap: 12px"><div style="display: flex; font-size: 13px"><label for="bvol" style="flex: 1">Volume</label><span style="font: 11.5px 'JetBrains Mono', monospace; color: #A1A4A5">60%</span></div><input id="bvol" type="range" value="60"></div>
+</div>
+<label style="display: flex; align-items: center; gap: 12px"><input type="checkbox" checked><span>Mute sounds while do not disturb is on</span></label>
+</section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":980,"height":720}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

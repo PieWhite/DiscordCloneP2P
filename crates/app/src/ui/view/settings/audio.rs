@@ -80,16 +80,15 @@ impl SettingsPane {
             div()
                 .relative()
                 .w_full()
-                .h(px(6.))
+                .h(px(4.))
                 .overflow_hidden()
-                .bg(c::SPACE)
-                .border_1()
-                .border_color(c::VIOLET)
+                .rounded_full()
+                .bg(c::LIFT)
                 .child(
                     div()
                         .h_full()
                         .w(relative((m.self_level() * 3.).clamp(0., 1.)))
-                        .bg(theme::ACCENT),
+                        .bg(theme::ONLINE),
                 )
                 .into_any_element()
         });
@@ -121,28 +120,33 @@ impl SettingsPane {
                     .pl(px(12.))
                     .pr(px(10.))
                     .py(px(10.))
+                    .rounded(theme::RADIUS_FIELD)
                     .border_1()
                     .border_color(if pressed {
                         theme::ACCENT
                     } else {
-                        theme::BORDER_STRONG
+                        theme::BORDER
                     })
-                    .bg(if pressed { c::SPACE } else { c::INK })
-                    .when(pressed, |d| d.shadow(theme::hard_shadow(2.)))
+                    .when(pressed, |d| d.bg(theme::BG_SELECTED))
                     .when(!pressed, |d| d.hover(|s| s.bg(theme::BG_HOVER)))
                     .cursor_pointer()
                     .on_click(move |_, _, _| commands::set_sound_settings(&ui, &id, volume))
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(if pressed { theme::ACCENT } else { c::SILVER })
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(if pressed {
+                                theme::TEXT_STRONG
+                            } else {
+                                theme::TEXT
+                            })
                             .child(set.name.clone()),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
                             .line_height(relative(1.4))
-                            .text_color(c::SILVER)
+                            .text_color(theme::TEXT_MUTED)
                             .child(set.description.clone()),
                     )
             }));

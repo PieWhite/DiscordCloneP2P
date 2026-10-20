@@ -1,6 +1,6 @@
 //! Slice E: the dialog layer, drawn by `AppView` as a `deferred` layer above everything.
-//! Every dialog is the same system window (`widgets::WindowFrame`: paper frame, blue title
-//! strip, hard shadow) on the dithered backdrop (`widgets::modal_layer`):
+//! Every dialog is the same card (`widgets::WindowFrame`: hairline frame, serif title, the
+//! soft shadow) on the flat backdrop (`widgets::modal_layer`):
 //!
 //! | Dialog | Old code | Does |
 //! |---|---|---|
@@ -16,7 +16,7 @@ use super::super::commands::SourceOption;
 use super::super::icons::Icon;
 use super::super::state::OpRef;
 use super::super::theme::{self, c};
-use super::widgets::{modal_layer, pointer, BackdropHandler, Btn, BtnKind, WindowFrame};
+use super::widgets::{modal_layer, BackdropHandler, Btn, BtnKind, WindowFrame};
 use super::wordle::{self, WordleKey};
 use super::{AppHandle, AppSnapshot, ConfirmAction, Dialog, PromptAction};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -82,8 +82,8 @@ fn paragraph(text: impl Into<SharedString>) -> impl IntoElement {
         .px(px(22.))
         .pt(px(16.))
         .pb(px(4.))
-        .text_size(px(13.5))
-        .text_color(c::PAPER)
+        .text_size(px(14.))
+        .text_color(theme::TEXT)
         .line_height(relative(1.55))
         .child(text.into())
 }
@@ -103,7 +103,7 @@ fn confirm(
         .kind(if danger {
             BtnKind::Danger
         } else {
-            BtnKind::Accent
+            BtnKind::Primary
         })
         .dialog()
         .on_click(snap.app.listener(move |app, _: &ClickEvent, window, cx| {
@@ -197,30 +197,31 @@ fn prompt(
     }
     let focused = input.read(cx).focus_handle(cx).is_focused(window);
 
-    // `.text-input`: a void well with a steel edge, silver on hover, cyan with focus.
+    // A void box with a hairline edge, iron on hover, chrome with focus.
     let well = div()
         .id("prompt-input")
         .mx(px(22.))
         .mt(px(12.))
         .mb(px(4.))
-        .h(px(32.))
+        .h(px(38.))
         .flex()
         .items_center()
         .px(px(10.))
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
         .border_color(if focused {
             theme::ACCENT
         } else {
-            theme::BORDER_STRONG
+            theme::BORDER
         })
         .when(!focused, |d| {
-            d.hover(|s| s.border_color(theme::BORDER_INPUT))
+            d.hover(|s| s.border_color(theme::BORDER_HOVER))
         })
-        .bg(c::SPACE)
+        .bg(c::VOID)
         .child(
             Input::new(&input)
                 .appearance(false)
-                .text_size(px(13.5))
+                .text_size(px(14.))
                 .text_color(theme::TEXT)
                 .px_0()
                 .py_0(),
@@ -229,7 +230,7 @@ fn prompt(
     let (app, submit_action) = (snap.app.clone(), action.clone());
     let save_input = input.clone();
     let yes = Btn::new("prompt-yes", ok.to_string())
-        .kind(BtnKind::Accent)
+        .kind(BtnKind::Primary)
         .dialog()
         .on_click(move |_, window, cx| {
             let value = save_input.read(cx).value().to_string();
@@ -254,7 +255,7 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
             .pt(px(12.))
             .pb(px(16.))
             .text_size(px(13.))
-            .text_color(c::SILVER)
+            .text_color(theme::TEXT_MUTED)
             .child("Nothing was offered to capture.")
             .into_any_element()
     } else {
@@ -270,10 +271,8 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
             .gap(px(2.))
             .children(sources.iter().map(|s| {
                 let index = s.index;
-                let group: SharedString = format!("picker-{index}").into();
                 div()
                     .id(("picker-item", index))
-                    .group(group.clone())
                     .relative()
                     .flex()
                     .flex_none()
@@ -281,16 +280,12 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
                     .gap(px(8.))
                     .w_full()
                     .h(px(32.))
-                    .px(px(8.))
+                    .px(px(10.))
+                    .rounded(theme::RADIUS_CONTROL)
                     .text_size(px(14.))
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_MUTED)
                     .cursor_pointer()
-                    .hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT))
-                    .child(
-                        pointer()
-                            .opacity(0.)
-                            .group_hover(group, |st| st.opacity(1.)),
-                    )
+                    .hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
                     .child(
                         (if s.is_window {
                             Icon::File
@@ -395,7 +390,7 @@ fn lightbox(
         .flex()
         .max_w(bounds.width)
         .max_h(bounds.height)
-        .bg(c::SPACE)
+        .bg(theme::BG_WELL)
         .when(actual_size, |d| {
             d.overflow_scroll().items_start().justify_start()
         })
@@ -437,7 +432,7 @@ fn lightbox(
             snap,
             "lightbox-close",
             "Close",
-            BtnKind::Accent,
+            BtnKind::Primary,
         ));
 
     let window_frame = WindowFrame::new(name.to_string())
@@ -476,7 +471,7 @@ fn wordle_dialog(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyEl
             snap,
             "wordle-close",
             "Close",
-            BtnKind::Accent,
+            BtnKind::Primary,
         )]);
     // Typing goes to the board while its window is open; the drawn keys take the same path.
     modal_layer(frame, &snap.dialog_focus, None)

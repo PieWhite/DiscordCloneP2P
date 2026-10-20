@@ -7,7 +7,7 @@ use super::controls::{
 use super::{SettingsPane, AUTO_MONITOR};
 use crate::ui::commands;
 use crate::ui::icons::Icon;
-use crate::ui::theme::{self, c};
+use crate::ui::theme;
 use crate::ui::view::widgets::{Btn, BtnKind};
 use crate::ui::view::AppSnapshot;
 use gpui_kit::{
@@ -144,14 +144,14 @@ impl SettingsPane {
             if waiting {
                 theme::ACCENT
             } else {
-                theme::BORDER_INPUT
+                theme::BORDER_HOVER
             },
         )
         .min_w(px(200.))
         .track_focus(&self.hotkey_focus)
         .cursor_pointer()
         .when(waiting, |d| {
-            d.border_color(theme::ACCENT).text_color(c::CYAN)
+            d.border_color(theme::ACCENT).text_color(theme::TEXT_STRONG)
         })
         .on_click(cx.listener(|this, _, window, cx| {
             this.pending_mods.clear();
@@ -272,7 +272,7 @@ impl SettingsPane {
                         control_row()
                             .child(
                                 Btn::new("clip-now", format!("Save last {}", length_short(clips.window_sec)))
-                                    .kind(BtnKind::Accent)
+                                    .kind(BtnKind::Primary)
                                     .icon(Icon::Play)
                                     .disabled(!clips.enabled)
                                     .on_click(move |_, _, _| commands::clip_now(&ui_now)),

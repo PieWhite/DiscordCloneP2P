@@ -4,7 +4,7 @@ use super::controls::{code_inline, control_row, help, help_rich_units, label, ri
 use super::SettingsPane;
 use crate::ui::commands;
 use crate::ui::icons::Icon;
-use crate::ui::theme::c;
+use crate::ui::theme;
 use crate::ui::view::widgets::{Btn, BtnKind};
 use crate::ui::view::{AppSnapshot, Dialog};
 use gpui_kit::{div, px, ParentElement, Styled};
@@ -67,7 +67,7 @@ impl SettingsPane {
                             .child(
                                 div()
                                     .text_size(px(12.))
-                                    .text_color(c::SILVER)
+                                    .text_color(theme::TEXT_MUTED)
                                     .child("Only clears them from this machine."),
                             ),
                     ),

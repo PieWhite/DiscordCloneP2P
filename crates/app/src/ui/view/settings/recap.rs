@@ -4,7 +4,7 @@ use super::controls::{control_row, help, label, rich, Body, Piece};
 use super::SettingsPane;
 use crate::ui::icons::Icon;
 use crate::ui::state::RecapRow;
-use crate::ui::theme::{self, c};
+use crate::ui::theme;
 use crate::ui::view::format;
 use crate::ui::view::widgets::{avatar, Btn, BtnKind};
 use crate::ui::view::AppSnapshot;
@@ -71,8 +71,10 @@ impl SettingsPane {
         } else {
             div()
                 .max_w(px(520.))
+                .rounded(theme::RADIUS_FIELD)
                 .border_1()
                 .border_color(theme::BORDER)
+                .overflow_hidden()
                 .children(recap.rows.iter().enumerate().map(|(i, r)| recap_row(i, r)))
         };
 
@@ -115,22 +117,23 @@ fn recap_row(index: usize, r: &RecapRow) -> Div {
         .gap(px(10.))
         .px(px(12.))
         .py(px(10.))
-        .bg(c::INK)
         .when(index > 0, |d| d.border_t_1().border_color(theme::BORDER))
         .child(avatar(&r.name, r.avatar, 24., None, false))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .child(div().text_size(px(13.)).child(format!(
-                    "{}{}",
-                    r.name,
-                    if r.mine { " (you)" } else { "" }
-                )))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_STRONG)
+                        .child(format!("{}{}", r.name, if r.mine { " (you)" } else { "" })),
+                )
                 .child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(c::SILVER)
+                        .text_color(theme::TEXT_MUTED)
                         .child(if line.is_empty() {
                             "quiet week".to_string()
                         } else {

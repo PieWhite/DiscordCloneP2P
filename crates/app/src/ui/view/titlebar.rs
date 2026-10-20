@@ -1,5 +1,5 @@
-//! The titlebar: brand, drag region, window buttons, and the 3px horizon band along its
-//! bottom edge. Slice A owns the look; the window mechanics below are the foundation's and
+//! The titlebar: brand, drag region, window buttons, a hairline along its bottom edge.
+//! Slice A owns the look; the window mechanics below are the foundation's and
 //! should stay as they are.
 //!
 //! - **macOS**: native traffic lights (placed by `traffic_light_position` in
@@ -11,7 +11,7 @@
 //!   request going through `on_window_should_close` and thus `commands::close_window`).
 
 use super::super::icons::Icon;
-use super::super::theme::{self, c};
+use super::super::theme;
 use super::AppSnapshot;
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, InteractiveElement, IntoElement, MouseButton,
@@ -27,13 +27,14 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
     let brand = div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .child(div().text_color(c::CYAN).child(Icon::Brand.size(16.)))
+        .gap(px(10.))
+        .child(div().text_color(theme::ACCENT).child(Icon::Brand.size(16.)))
         .child(
             div()
-                .text_size(px(12.))
-                .text_color(c::SILVER)
-                .child(super::widgets::tracked("FITCOMMUNICATION", 12., 0.04)),
+                .text_size(px(13.))
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .text_color(theme::TEXT_STRONG)
+                .child("FitCommunication"),
         );
 
     div()
@@ -43,11 +44,13 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
         .flex_none()
         .flex()
         .items_center()
-        .bg(c::INK)
+        .bg(theme::BG_SIDEBAR)
+        .border_b_1()
+        .border_color(theme::BORDER)
         .pl(if mac {
             theme::MAC_TITLEBAR_INSET
         } else {
-            px(10.)
+            px(16.)
         })
         .when(mac, |d| {
             let down = pressed.clone();
@@ -84,18 +87,10 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
                 .child(brand),
         )
         .when(!mac, |d| d.child(window_buttons()))
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .bottom_0()
-                .w_full()
-                .child(theme::band(px(3.))),
-        )
         .into_any_element()
 }
 
-/// `.win-btn`: 46×29, silver glyphs; hover inverts to paper, the close button to coral.
+/// 46×35, muted glyphs; hover lifts the button, the close button goes red.
 /// No click handlers on purpose: the OS acts on the hit-test area.
 fn window_buttons() -> impl IntoElement {
     use gpui_kit::WindowControlArea as Area;
@@ -103,17 +98,17 @@ fn window_buttons() -> impl IntoElement {
         div()
             .id(id)
             .w(px(46.))
-            .h(px(29.))
+            .h(px(35.))
             .flex()
             .items_center()
             .justify_center()
-            .text_color(c::SILVER)
+            .text_color(theme::TEXT_MUTED)
             .window_control_area(area)
             .hover(move |s| {
                 if close {
-                    s.bg(theme::CLOSE_HOVER).text_color(theme::ON_SIGNAL)
+                    s.bg(theme::DANGER_BG).text_color(theme::DANGER_TEXT)
                 } else {
-                    s.bg(c::PAPER).text_color(theme::ON_INVERT)
+                    s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)
                 }
             })
             .child(icon.size(16.))

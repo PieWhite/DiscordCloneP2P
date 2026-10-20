@@ -78,7 +78,7 @@ impl SettingsPane {
                     .child(
                         control_row().child(text_field(&self.name, 240.)).child(
                             Btn::new("save-name", "Save")
-                                .kind(BtnKind::Accent)
+                                .kind(BtnKind::Primary)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     let name = this.name.read(cx).value();
                                     commands::set_display_name(&this.ui, &name);
@@ -174,7 +174,7 @@ impl SettingsPane {
                                     .max_w(super::controls::ch(12., 58.))
                                     .text_size(px(12.))
                                     .line_height(relative(1.5))
-                                    .text_color(crate::ui::theme::c::SILVER)
+                                    .text_color(crate::ui::theme::TEXT_MUTED)
                                     .child(update_word(s.update.as_ref())),
                             ),
                     ),

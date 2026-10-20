@@ -19,10 +19,9 @@ use gpui_kit::{
 };
 use std::ops::Range;
 
-/// `.msg-text { max-width: 72ch }` at 15px in the bitmap face, whose ASCII is half-width
-/// (7.5px). GPUI's wrapper counts the space after the last word of a line, so the measure
-/// holds 72 characters plus that space (547.5px) but not 73 plus one (555px).
-pub const TEXT_MEASURE: f32 = 548.;
+/// `.msg-text { max-width: 72ch }` at 14px in Inter, whose `0` is 0.63 em (8.8px): about
+/// 636px, a little more than a line of 72 average characters.
+pub const TEXT_MEASURE: f32 = 636.;
 /// `.code { max-width: 72ch }`, a box and not a line of text: the plain 540px.
 const CODE_MEASURE: f32 = 540.;
 
@@ -375,9 +374,9 @@ fn watch_v(q: &str) -> Option<&str> {
 
 fn span_style(kind: &SpanKind) -> HighlightStyle {
     let color = match kind {
-        SpanKind::Mention => c::AMBER,
-        SpanKind::MentionSelf => c::CYAN,
-        SpanKind::Link(_) => theme::ACCENT,
+        SpanKind::Mention => theme::TEXT_STRONG,
+        SpanKind::MentionSelf => theme::ACCENT,
+        SpanKind::Link(_) => theme::LINK,
     };
     HighlightStyle {
         color: Some(color.into()),
@@ -390,7 +389,7 @@ fn tok_style(tok: Tok) -> HighlightStyle {
         Tok::Key => theme::CODE_KEY,
         Tok::Str => theme::CODE_STR,
         Tok::Num => theme::CODE_NUM,
-        Tok::Com => c::SILVER,
+        Tok::Com => theme::TEXT_MUTED,
     };
     HighlightStyle {
         color: Some(color.into()),
@@ -427,8 +426,7 @@ pub fn render_body(
 }
 
 /// `.mention { padding: 0 3px }` has no counterpart in a text run, so the padding is a
-/// thin plus a hair space on each side (about 3px at 15px in the fallback face; the
-/// bitmap face has neither), drawn on the plate and left out of a copy. Returns the text
+/// thin plus a hair space on each side (about 3px at 14px), drawn on the plate and left out of a copy. Returns the text
 /// to draw, the spans moved along, the plate ranges (padding included) and the byte
 /// offsets of the inserted characters.
 pub fn pad_mentions(
@@ -486,14 +484,14 @@ fn render_text(key: &SharedString, i: usize, text: String, spans: Vec<Span>) -> 
         .collect();
     div()
         .max_w(px(TEXT_MEASURE))
-        .text_size(px(15.))
-        .line_height(relative(1.5))
-        .text_color(c::PAPER)
+        .text_size(theme::BASE_TEXT)
+        .line_height(relative(theme::BASE_LINE_HEIGHT))
+        .text_color(theme::TEXT)
         .child(
             RichText::new(ElementId::NamedInteger(key.clone(), i as u64), text)
                 .highlights(highlights)
                 .links(links)
-                .plates(plates, c::SPACE)
+                .plates(plates, c::LIFT)
                 .no_copy(pads),
         )
         .into_any_element()
@@ -514,6 +512,7 @@ fn render_code(
         .mt(px(6.))
         .mb(px(2.))
         .max_w(px(CODE_MEASURE))
+        .rounded(theme::RADIUS_CARD)
         .border_1()
         .border_color(theme::BORDER)
         .bg(theme::BG_CODE)
@@ -522,13 +521,13 @@ fn render_code(
             div()
                 .flex()
                 .items_center()
-                .px(px(10.))
-                .py(px(5.))
+                .px(px(14.))
+                .py(px(8.))
                 .border_b_1()
                 .border_color(theme::BORDER)
-                .bg(c::INK)
-                .text_size(px(11.))
-                .text_color(c::SILVER)
+                .font_family(theme::MONO_FONT)
+                .text_size(theme::LABEL_TEXT)
+                .text_color(theme::CODE_KEY)
                 .child(if info.is_empty() {
                     "code".to_string()
                 } else {
@@ -542,9 +541,9 @@ fn render_code(
                         ))
                         .ml_auto()
                         .cursor_pointer()
-                        .text_size(px(11.))
-                        .text_color(c::SILVER)
-                        .hover(|s| s.text_color(theme::TEXT))
+                        .text_size(theme::LABEL_TEXT)
+                        .text_color(theme::TEXT_MUTED)
+                        .hover(|s| s.text_color(theme::TEXT_STRONG))
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                         })
@@ -558,12 +557,12 @@ fn render_code(
                     i as u64,
                 ))
                 .overflow_x_scroll()
-                .px(px(12.))
-                .py(px(10.))
+                .px(px(14.))
+                .py(px(12.))
                 .font_family(theme::MONO_FONT)
                 .text_size(px(12.5))
                 .line_height(relative(1.6))
-                .text_color(c::PAPER)
+                .text_color(theme::TEXT)
                 .whitespace_nowrap()
                 .child(
                     RichText::new(ElementId::NamedInteger(key.clone(), i as u64), code)
@@ -610,7 +609,7 @@ mod tests {
     }
 
     /// Mentions win over links (B-49); only existing names; `\b` after the name; mine only
-    /// lights cyan when the message mentions me.
+    /// lights chrome when the message mentions me.
     #[test]
     fn mentions_and_links() {
         let names = ["Rick", "Sander", "Joost"];

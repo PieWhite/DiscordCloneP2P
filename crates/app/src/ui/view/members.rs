@@ -6,16 +6,18 @@
 use super::super::commands::{self, MusicAction};
 use super::super::icons::Icon;
 use super::super::state::{PeerState, Presence};
-use super::super::theme::{self, c, Dither};
-use super::channels::self_dot;
-use super::widgets::{avatar, focus_ring, meter_view, tooltip, tracked, Dot};
+use super::super::theme::{self, c};
+use super::channels::{group_head, self_dot};
+use super::widgets::{
+    avatar, focus_ring, meter_view, pane_head, pane_title, tooltip, tracked, Dot,
+};
 use super::{format, AppHandle, AppSnapshot, PaneInit};
 use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::base::{Slider as BaseSlider, SliderIndicator, SliderThumb, SliderTrack};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, relative, AnyElement, App, AppContext, ClickEvent, Context,
-    Div, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window,
+    Div, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -133,17 +135,7 @@ impl Render for MembersPane {
             rendered.push(
                 div()
                     .when(i > 0, |d| d.mt(px(18.)))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .px(px(6.))
-                            .pb(px(6.))
-                            .text_size(px(11.))
-                            .text_color(c::SILVER)
-                            .child(tracked(&group.label.to_uppercase(), 11., 0.08))
-                            .child(div().ml_auto().child(group.rows.len().to_string())),
-                    )
+                    .child(group_head(group.label, group.rows.len(), None))
                     .children(rows)
                     .into_any_element(),
             );
@@ -154,29 +146,19 @@ impl Render for MembersPane {
             .size_full()
             .flex()
             .flex_col()
-            .bg(c::INK)
+            .bg(theme::BG_SIDEBAR)
             .border_l_1()
             .border_color(theme::BORDER)
             .child(
-                div()
-                    .h(theme::HEAD_H)
-                    .flex_none()
-                    .flex()
-                    .items_center()
+                pane_head()
                     .justify_between()
-                    .px(px(14.))
-                    .bg(c::GREEN)
-                    .border_b_1()
-                    .border_color(c::SPACE)
-                    .text_color(c::SPACE)
+                    .px(px(18.))
+                    .child(pane_title("Members", theme::DISPLAY_TEXT))
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .child(tracked("MEMBERS", 13., 0.08)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
+                            .font_family(theme::MONO_FONT)
+                            .text_size(theme::LABEL_TEXT)
+                            .text_color(theme::TEXT_MUTED)
                             .child((snap.known_peers().count() + 1).to_string()),
                     ),
             )
@@ -361,48 +343,39 @@ fn mute_toggle(volume: f32, remembered: Option<f32>) -> (f32, Option<f32>) {
 
 // ------------------------------------------------------------------ rows
 
-/// `.mem[data-quiet]`: half the cells of the status words go to ink, in 1px cells; hovering
-/// the row lifts it.
-fn quiet_screen(group: SharedString) -> Div {
+/// A row's mono second line; a quiet (offline) peer's goes one tier dimmer.
+fn mem_sub(content: impl IntoElement, quiet: bool) -> Div {
     div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .group_hover(group, |s| s.opacity(0.))
-        .child(theme::dither(Dither::Half, c::INK, 1.))
-}
-
-/// `.mem-sub`.
-fn mem_sub(content: impl IntoElement, quiet: Option<SharedString>) -> Div {
-    div()
-        .relative()
         .flex()
         .items_center()
         .gap(px(5.))
-        .text_size(px(11.5))
-        .text_color(c::SILVER)
+        .font_family(theme::MONO_FONT)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(if quiet {
+            theme::TEXT_DIM
+        } else {
+            theme::TEXT_MUTED
+        })
         // A text flex item may shrink to its longest word in CSS; here it has to be told,
         // or a peer's problem sentence runs out of the column instead of wrapping.
         .child(div().flex_1().min_w_0().child(content))
-        .when_some(quiet, |d, g| d.child(quiet_screen(g)))
 }
 
-/// `.vol-num`.
+/// The percentage next to a slider.
 fn vol_num(value: u32) -> Div {
     div()
         .flex_none()
         .min_w(px(26.))
         .flex()
         .justify_end()
-        .text_size(px(11.5))
-        .text_color(c::SILVER)
+        .font_family(theme::MONO_FONT)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
         .child(value.to_string())
 }
 
-/// `input[type=range]` as Chromium drew it: 2px of margin, a 6px track (1px violet frame
-/// included) that is cyan up to the value and void after it, and a 10×14 paper thumb with
-/// a one-pixel drop, travelling inside the track's frame. The frame is its own element:
+/// A volume slider: a 6px pill (1px hairline frame included) on a lift, chrome up to the
+/// value, and a 12px white thumb travelling inside the frame. The frame is its own element:
 /// GPUI paints a border over the children, and the thumb must cover it.
 fn range(state: &Entity<SliderState>, cx: &App) -> impl IntoElement {
     let pct = state.read(cx).percentage().end.clamp(0., 1.);
@@ -431,9 +404,10 @@ fn range(state: &Entity<SliderState>, cx: &App) -> impl IntoElement {
                                 .top_0()
                                 .left_0()
                                 .size_full()
-                                .bg(c::SPACE)
+                                .rounded_full()
+                                .bg(c::LIFT)
                                 .border_1()
-                                .border_color(c::VIOLET),
+                                .border_color(theme::BORDER),
                         )
                         .child(
                             div()
@@ -449,20 +423,18 @@ fn range(state: &Entity<SliderState>, cx: &App) -> impl IntoElement {
                                         .bottom_0()
                                         .left_0()
                                         .w(relative(pct))
+                                        .rounded_full()
                                         .bg(theme::ACCENT),
                                 )
                                 .child(
                                     SliderThumb::new(state)
                                         .absolute()
-                                        .top(px(-5.))
+                                        .top(px(-4.))
                                         .left(relative(pct))
-                                        .ml(px(-10. * pct))
-                                        .w(px(10.))
-                                        .h(px(14.))
-                                        .bg(c::PAPER)
-                                        .border_1()
-                                        .border_color(c::SPACE)
-                                        .shadow(theme::shadow_thumb()),
+                                        .ml(px(-12. * pct))
+                                        .size(px(12.))
+                                        .rounded_full()
+                                        .bg(c::WHITE),
                                 ),
                         ),
                 ),
@@ -500,7 +472,6 @@ impl MembersPane {
         let me = peer.is_none();
         let quiet = peer.is_some_and(|p| p.presence != Presence::Online);
         let group = SharedString::from(format!("mem-{key}"));
-        let quiet_group = quiet.then(|| group.clone());
         let peer_id = peer.map(|p| p.id.clone()).unwrap_or_default();
 
         // No screen over a quiet sprite: the stylesheet meant one, but `.speak-ring::after`
@@ -534,12 +505,11 @@ impl MembersPane {
             .map(|g| format!("Playing {g}"));
         let sub: Option<AnyElement> = match &row.sub {
             Sub::None => None,
-            Sub::Text(t) => Some(mem_sub(t.clone(), quiet_group.clone()).into_any_element()),
+            Sub::Text(t) => Some(mem_sub(t.clone(), quiet).into_any_element()),
             Sub::Call => {
                 let muted = s.voice.muted;
                 let volume = peer.map_or(1.0, |p| p.volume);
                 let id = peer_id.clone();
-                let quiet_group = quiet_group.clone();
                 Some(
                     meter_view(
                         ElementId::Name(format!("mem-sub-{key}").into()),
@@ -552,7 +522,8 @@ impl MembersPane {
                             } else {
                                 m.speaking(&id)
                             };
-                            mem_sub(call_sub(me, muted, speaking, volume), quiet_group.clone())
+                            mem_sub(call_sub(me, muted, speaking, volume), quiet)
+                                .when(speaking, |d| d.text_color(theme::ONLINE))
                                 .into_any_element()
                         },
                     )
@@ -583,19 +554,23 @@ impl MembersPane {
                             div()
                                 .id(ElementId::Name(format!("pmute-{}", p.id).into()))
                                 .tab_index(0)
-                                .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+                                .focus_visible(|s| s.shadow(focus_ring()))
                                 .size(px(24.))
                                 .flex()
                                 .flex_none()
                                 .items_center()
                                 .justify_center()
+                                .rounded(theme::RADIUS_CONTROL)
                                 .cursor_pointer()
-                                .text_color(if muted { theme::DND } else { c::SILVER })
-                                .hover(move |st| {
-                                    st.bg(c::PAPER).text_color(if muted {
-                                        theme::DND
-                                    } else {
-                                        theme::ON_INVERT
+                                .text_color(if muted {
+                                    theme::DANGER_TEXT
+                                } else {
+                                    theme::TEXT_MUTED
+                                })
+                                .when(muted, |d| d.bg(theme::DANGER_BG))
+                                .when(!muted, |d| {
+                                    d.hover(|st| {
+                                        st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)
                                     })
                                 })
                                 .tooltip(tooltip(label))
@@ -639,7 +614,7 @@ impl MembersPane {
                             div()
                                 .text_size(px(9.5))
                                 .line_height(relative(1.1))
-                                .text_color(c::SILVER)
+                                .text_color(theme::TEXT_MUTED)
                                 .child(tracked("SCREEN AUDIO", 9.5, 0.04)),
                         )
                         .child(
@@ -676,7 +651,7 @@ impl MembersPane {
                                 div()
                                     .text_size(px(9.5))
                                     .line_height(relative(1.1))
-                                    .text_color(c::SILVER)
+                                    .text_color(theme::TEXT_MUTED)
                                     .child(tracked("SPOTIFY", 9.5, 0.04)),
                             )
                             .child(
@@ -767,14 +742,13 @@ impl MembersPane {
         };
 
         div()
-            .id(ElementId::Name(group.clone()))
-            .group(group)
-            .relative()
+            .id(ElementId::Name(group))
             .flex()
-            .gap(px(9.))
-            .pt(px(6.))
-            .px(px(6.))
+            .gap(px(10.))
+            .pt(px(7.))
+            .px(px(10.))
             .pb(px(7.))
+            .rounded(theme::RADIUS_CONTROL)
             .hover(|st| st.bg(theme::BG_HOVER))
             .child(div().flex_none().w(px(32.)).child(ring))
             .child(
@@ -792,7 +766,9 @@ impl MembersPane {
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .text_size(px(13.5))
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::TEXT_STRONG)
                                     .child(name),
                             )
                             .when(me, |d| {
@@ -800,17 +776,13 @@ impl MembersPane {
                                     div()
                                         .flex_none()
                                         .text_size(px(10.))
-                                        .text_color(c::SILVER)
+                                        .text_color(theme::TEXT_DIM)
                                         .child(tracked("YOU", 10., 0.05)),
                                 )
                             }),
                     )
-                    .when_some(status, |d, label| {
-                        d.child(mem_sub(label, quiet_group.clone()))
-                    })
-                    .when_some(playing, |d, line| {
-                        d.child(mem_sub(line, quiet_group.clone()))
-                    })
+                    .when_some(status, |d, label| d.child(mem_sub(label, quiet)))
+                    .when_some(playing, |d, line| d.child(mem_sub(line, quiet)))
                     .children(sub)
                     .children(tools)
                     .children(desk)
@@ -836,21 +808,22 @@ fn music_btn(
             format!("music-{}-{}-{:?}", p.id, stream, action).into(),
         ))
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .focus_visible(|s| s.shadow(focus_ring()))
         .size(px(22.))
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
+        .rounded(theme::RADIUS_CONTROL)
         .cursor_pointer()
-        .text_color(c::SILVER)
-        .hover(|st| st.bg(c::PAPER).text_color(theme::ON_INVERT))
+        .text_color(theme::TEXT_MUTED)
+        .hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
         .tooltip(tooltip(label))
         .child(icon.size(13.))
         .on_click(move |_: &ClickEvent, _, _| commands::music_control(&ui, &dj, stream, action))
 }
 
-/// `.share-chip`: an accent-framed chip whose verb and source break apart, never inside
+/// A hairline chip in the button grammar whose verb and source break apart, never inside
 /// the source; a very long source ellipsises on its own line.
 fn share_chip(
     id: ElementId,
@@ -861,7 +834,7 @@ fn share_chip(
     div()
         .id(id)
         .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])))
+        .focus_visible(|s| s.shadow(focus_ring()))
         .mt(px(7.))
         .flex()
         .flex_wrap()
@@ -873,13 +846,15 @@ fn share_chip(
         .pr(px(8.))
         .pb(px(3.))
         .pl(px(6.))
-        .bg(c::SPACE)
-        .text_color(theme::ACCENT)
+        .bg(c::VOID)
+        .text_color(theme::TEXT_STRONG)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
-        .border_color(theme::ACCENT)
-        .text_size(px(11.5))
+        .border_color(theme::BORDER)
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
-        .hover(|s| s.bg(theme::ACCENT).text_color(theme::ON_ACCENT))
+        .hover(|s| s.border_color(theme::TEXT_STRONG))
         .child(icon.size(12.))
         .child(div().whitespace_nowrap().child(verb))
         .child(

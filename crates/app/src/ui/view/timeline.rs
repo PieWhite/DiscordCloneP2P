@@ -1,4 +1,4 @@
-//! Slice B: the timeline window: its blue head (icon, title, topic, member-list toggle)
+//! Slice B: the timeline window: its head (serif title, topic, member-list toggle)
 //! and the message log: grouping (7 minutes), day lines, the unread "new" line
 //! (`v.unread_at_open`), mention frames, replies, reactions and the quick emoji bar
 //! (`v.emoji_for`), hover actions (reply sets `v.reply_to`, edit sets `v.editing`, delete
@@ -19,13 +19,13 @@ use super::super::icons::Icon;
 use super::super::state::{OpRef, PeerState, TimelineItem};
 use super::super::theme::{self, c};
 use super::super::Ui;
-use super::widgets::tooltip;
+use super::widgets::{icon_btn, pane_head, pane_title, tooltip};
 use super::{format, markup, AppHandle, AppSnapshot, PaneInit, View};
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::{
-    div, list, prelude::FluentBuilder, px, AnyElement, App, Context, InteractiveElement,
-    IntoElement, ListAlignment, ListState, ParentElement, Pixels, Point, Render,
-    StatefulInteractiveElement, Styled, WeakEntity, Window,
+    div, list, prelude::FluentBuilder, px, AnyElement, App, Context, IntoElement, ListAlignment,
+    ListState, ParentElement, Pixels, Point, Render, StatefulInteractiveElement, Styled,
+    WeakEntity, Window,
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -469,49 +469,33 @@ impl Render for TimelinePane {
     }
 }
 
-/// The thin steel elevator the webview drew (4px, 3px off the edge), silver under the
-/// pointer. Same width in every state, so the kit has no width animation to run.
+/// A thin charcoal pill (4px, 3px off the edge), iron under the pointer. Same width in
+/// every state, so the kit has no width animation to run.
 fn timeline_scrollbar(list: &ListState) -> Scrollbar {
     let thumb = |colour: gpui_kit::Rgba| {
         move |t: gpui_kit::base::ScrollbarThumbStyle| {
-            t.bg(colour).width(px(4.)).inset(px(3.)).radius(px(0.))
+            t.bg(colour).width(px(4.)).inset(px(3.)).radius(px(2.))
         }
     };
     Scrollbar::vertical(list)
         .id("timeline-scrollbar")
         .mode(ScrollbarMode::Always)
         .styles(|s| {
-            s.thumb(thumb(c::STEEL))
-                .thumb_hover(thumb(c::SILVER))
-                .thumb_active(thumb(c::SILVER))
+            s.thumb(thumb(c::CHARCOAL))
+                .thumb_hover(thumb(c::IRON))
+                .thumb_active(thumb(c::IRON))
         })
 }
 
 // ------------------------------------------------------------------ head
 
-/// A 28px square in the blue strip. Pressed on blue is pressed *in*: the void.
-fn head_btn(id: &'static str, icon: Icon, pressed: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(id)
-        .size(px(28.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .when(pressed, |d| d.bg(c::SPACE).text_color(c::PAPER))
-        .hover(|s| s.bg(c::PAPER).text_color(theme::ON_INVERT))
-        .child(icon.size(16.))
-}
-
-/// `renderHead`: the 44px blue strip on top of the timeline window.
+/// `renderHead`: the pane head on top of the timeline window, with a hairline under it.
 pub fn render_head(snap: &AppSnapshot, window: &mut Window, _cx: &mut App) -> AnyElement {
     let dm = (snap.v.view == View::Dms)
         .then_some(())
         .and(snap.v.dm.as_ref());
-    let (icon, title, topic) = match dm {
+    let (title, topic) = match dm {
         Some(id) => (
-            Icon::At,
             snap.peer(id).map(|p| p.name.clone()).unwrap_or_default(),
             "Direct message \u{00b7} never relayed through the third peer",
         ),
@@ -523,44 +507,29 @@ pub fn render_head(snap: &AppSnapshot, window: &mut Window, _cx: &mut App) -> An
                 "Sub-channel \u{00b7} everyone sees this too"
             };
             (
-                Icon::Hash,
-                channel.map_or_else(|| "general".to_string(), |c| c.name.clone()),
+                format!(
+                    "# {}",
+                    channel.map_or_else(|| "general".to_string(), |c| c.name.clone())
+                ),
                 topic,
             )
         }
     };
     let narrow = window.viewport_size().width <= theme::NARROW_CHANNELS;
-    div()
-        .h(theme::HEAD_H)
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .pl(px(16.))
-        .pr(px(8.))
+    pane_head()
+        .gap(px(14.))
+        .pl(px(28.))
+        .pr(px(20.))
         .min_w_0()
-        .bg(c::BLUE)
         .border_b_1()
-        .border_color(c::SPACE)
-        .text_color(c::PAPER)
-        .child(icon.size(18.))
-        .child(
-            div()
-                .flex_none()
-                .text_size(px(15.))
-                .whitespace_nowrap()
-                .child(title),
-        )
+        .border_color(theme::BORDER)
+        .child(pane_title(title, theme::DISPLAY_TEXT).flex_none())
         .when(!narrow, |d| {
             d.child(
                 div()
                     .min_w_0()
-                    .pl(px(12.))
-                    .ml(px(4.))
-                    .border_l_1()
-                    .border_color(c::SKY)
                     .text_size(px(13.))
-                    .text_color(c::PAPER)
+                    .text_color(theme::TEXT_MUTED)
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
@@ -574,9 +543,9 @@ pub fn render_head(snap: &AppSnapshot, window: &mut Window, _cx: &mut App) -> An
                 .flex_none()
                 .gap(px(2.))
                 // The webview's Search button had no handler; kept as the same dead square.
-                .child(head_btn("search", Icon::Search, false).tooltip(tooltip("Search")))
+                .child(icon_btn("search", Icon::Search, false).tooltip(tooltip("Search")))
                 .child(
-                    head_btn("toggle-members", Icon::Users, snap.v.members)
+                    icon_btn("toggle-members", Icon::Users, snap.v.members)
                         .tooltip(tooltip("Toggle member list"))
                         .on_click(snap.app.listener(|app, _, _, cx| app.toggle_members(cx))),
                 ),

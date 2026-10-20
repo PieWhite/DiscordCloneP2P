@@ -45,7 +45,7 @@ impl RichText {
             text,
             links: Rc::new(Vec::new()),
             plates: Vec::new(),
-            plate_color: c::SPACE.into(),
+            plate_color: c::LIFT.into(),
             no_copy: Rc::new(Vec::new()),
         }
     }
@@ -326,9 +326,9 @@ impl Element for RichText {
         for plate in &prepaint.plates {
             window.paint_quad(quad(*plate, self.plate_color));
         }
-        // `::selection` inverted the cells; a translucent paper wash is the closest a quad
-        // under unchanged glyph colours gets.
-        let wash = Hsla::from(c::PAPER).opacity(0.35);
+        // A translucent chrome wash: a quad under unchanged glyph colours, the same tint
+        // the kit's own selection uses.
+        let wash = Hsla::from(c::CHROME).opacity(0.25);
         for range in projection.ranges().iter().flatten().cloned() {
             for b in selection_quads(&layout, range, bounds) {
                 window.paint_quad(quad(b, wash));
@@ -354,7 +354,7 @@ impl Element for RichText {
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let line_height = layout.line_height();
         let drop = (line_height + font_size) / 2. + px(0.5);
-        let accent: Hsla = theme::ACCENT.into();
+        let accent: Hsla = theme::LINK.into();
         let mut painted = Vec::with_capacity(prepaint.links.len());
         for (_, hitbox, rect) in prepaint.links.iter() {
             window.set_cursor_style(CursorStyle::PointingHand, hitbox);

@@ -3,13 +3,13 @@
 
 use super::super::super::icons::Icon;
 use super::super::super::state::{OpRef, PeerState, ReactionState, TimelineItem};
-use super::super::super::theme::{self, c, Dither};
-use super::super::widgets::{avatar, tooltip};
+use super::super::super::theme::{self, c};
+use super::super::widgets::{avatar, tooltip, tracked};
 use super::super::{commands, format, markup, wordle, Dialog, ReplyTo};
 use super::{attachment, Row, RowCtx};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, ClipboardItem, Div,
-    ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
+    ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window,
 };
 
@@ -54,7 +54,7 @@ pub(super) fn render_row(ctx: &RowCtx, ix: usize, window: &mut Window, cx: &mut 
             TimelineItem::Clip { .. } => div()
                 .w_full()
                 .max_w(px(440.))
-                .ml(px(16.))
+                .ml(px(28.))
                 .mt(px(6.))
                 .mb(px(2.))
                 .child(attachment::render_clip_card(&ctx.snap, item))
@@ -64,7 +64,7 @@ pub(super) fn render_row(ctx: &RowCtx, ix: usize, window: &mut Window, cx: &mut 
         .into_any_element()
 }
 
-/// `.day`: the date between two hairlines.
+/// `.day`: the mono date between two hairlines.
 fn day_line(day: String) -> Div {
     let rule = || div().flex_1().h(px(1.)).bg(theme::BORDER);
     div()
@@ -73,35 +73,28 @@ fn day_line(day: String) -> Div {
         .gap(px(12.))
         .mt(px(22.))
         .mb(px(18.))
-        .mx(px(16.))
-        .text_size(px(11.))
-        .text_color(c::SILVER)
+        .mx(px(28.))
+        .font_family(theme::MONO_FONT)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
         .child(rule())
         .child(day.to_uppercase())
         .child(rule())
 }
 
-/// `.newline`: "New" in magenta between two dithered 2px rules, the right one 24px.
+/// `.newline`: a chrome hairline at half strength, then "NEW" in mono chrome.
 fn new_line() -> Div {
-    let rule = || {
-        div()
-            .relative()
-            .h(px(2.))
-            .bg(c::MAGENTA)
-            .child(theme::dither(Dither::Half, c::SPACE, 2.))
-    };
     div()
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(px(14.))
         .mt(px(22.))
         .mb(px(18.))
-        .mx(px(16.))
-        .text_size(px(11.))
-        .text_color(c::MAGENTA)
-        .child(rule().flex_1())
-        .child("NEW")
-        .child(rule().w(px(24.)).flex_none())
+        .mx(px(28.))
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::ACCENT)
+        .child(div().flex_1().h(px(1.)).bg(theme::ACCENT).opacity(0.5))
+        .child(tracked("NEW", 11.5, 0.04))
 }
 
 struct Who {
@@ -179,7 +172,7 @@ fn render_message(
     let pane = ctx.pane.clone();
 
     let gutter = div()
-        .w(px(40.))
+        .w(px(36.))
         .flex_none()
         .flex()
         .flex_col()
@@ -187,12 +180,13 @@ fn render_message(
         .map(|d| {
             if grouped {
                 d.pt(px(4.))
+                    .font_family(theme::MONO_FONT)
                     .text_size(px(10.))
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_DIM)
                     .when(!hovered, |d| d.invisible())
                     .child(time.clone())
             } else {
-                d.child(avatar(&who.name, who.avatar, 40., None, false))
+                d.child(avatar(&who.name, who.avatar, 36., None, false))
             }
         });
 
@@ -208,18 +202,20 @@ fn render_message(
             div()
                 .flex()
                 .items_baseline()
-                .gap(px(8.))
+                .gap(px(10.))
                 .mb(px(1.))
                 .child(
                     div()
                         .text_size(px(14.))
-                        .text_color(theme::avatar_hue(who.avatar))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_STRONG)
                         .child(author_name.clone()),
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(c::SILVER)
+                        .font_family(theme::MONO_FONT)
+                        .text_size(theme::LABEL_TEXT)
+                        .text_color(theme::TEXT_DIM)
                         .child(time.clone()),
                 )
                 .when(edited, |d| d.child(edited_mark())),
@@ -253,23 +249,25 @@ fn render_message(
         .relative()
         .flex()
         .flex_row()
-        .gap(px(12.))
-        .px(px(16.))
+        .gap(px(14.))
+        .px(px(28.))
         .py(px(if grouped { 1. } else { 2. }))
         .when(!grouped, |d| d.mt(px(14.)))
         .when(hovered, |d| d.bg(theme::BG_MSG_HOVER))
-        // Inset by 12px so the inner padding is 4px: the avatar stays on the same x.
+        // Inset by 12px and a 1px frame, so the inner padding is 15px: the avatar stays on
+        // the same x.
         .when(mentions_you, |d| {
             d.bg(theme::MENTION_BG)
+                .rounded(theme::RADIUS_FIELD)
                 .border_1()
                 .border_color(theme::MENTION_BORDER)
                 .mt(px(14.))
                 .mx(px(12.))
                 .mb(px(2.))
                 .pt(px(8.))
-                .pr(px(12.))
+                .pr(px(15.))
                 .pb(px(10.))
-                .pl(px(3.))
+                .pl(px(15.))
         })
         .on_hover(move |hovered, _, cx| {
             let _ = pane.update(cx, |p, cx| p.set_hover_row(ix, *hovered, cx));
@@ -283,7 +281,7 @@ fn render_message(
 fn edited_mark() -> Div {
     div()
         .text_size(px(10.))
-        .text_color(c::SILVER)
+        .text_color(theme::TEXT_MUTED)
         .child("(edited)")
 }
 
@@ -312,8 +310,8 @@ fn quote(
         .pr(px(10.))
         .pl(px(8.))
         .border_l_2()
-        .border_color(theme::BORDER_STRONG)
-        .text_color(c::SILVER)
+        .border_color(theme::BORDER)
+        .text_color(theme::TEXT_MUTED)
         .text_size(px(12.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::BG_HOVER))
@@ -325,7 +323,8 @@ fn quote(
                 .child(
                     div()
                         .flex_none()
-                        .text_color(c::PAPER)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_STRONG)
                         .child(s.author_name.clone()),
                 )
                 // `white-space: nowrap` folded the parent's line breaks into spaces.
@@ -418,10 +417,19 @@ fn pill(id: ElementId, mine: bool) -> gpui_kit::Stateful<Div> {
         .gap(px(5.))
         .px(px(8.))
         .py(px(1.))
+        .rounded_full()
         .border_1()
-        .border_color(if mine { c::STEEL } else { theme::BORDER })
-        .bg(if mine { c::VIOLET } else { theme::BG_CANVAS })
-        .text_color(if mine { c::PAPER } else { c::SILVER })
+        .border_color(if mine {
+            theme::BORDER_HOVER
+        } else {
+            theme::BORDER
+        })
+        .bg(if mine { c::LIFT } else { theme::BG_CANVAS })
+        .text_color(if mine {
+            theme::TEXT_STRONG
+        } else {
+            theme::TEXT_MUTED
+        })
         .text_size(px(12.))
         .line_height(px(18.))
         .cursor_pointer()
@@ -507,9 +515,10 @@ fn emoji_bar(ctx: &RowCtx, key: &SharedString, op: &OpRef) -> AnyElement {
         .mt(px(2.))
         .p(px(4.))
         .bg(theme::BG_RAISED)
+        .rounded(theme::RADIUS_FIELD)
         .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .shadow(theme::shadow_popover())
+        .border_color(theme::BORDER)
+        .shadow(theme::soft_shadow())
         .on_mouse_down_out(move |ev, _, cx| {
             let _ = pane.update(cx, |p, _| {
                 p.emoji_closed_by = Some((closing.clone(), ev.position))
@@ -527,6 +536,7 @@ fn emoji_bar(ctx: &RowCtx, key: &SharedString, op: &OpRef) -> AnyElement {
                 .id(ElementId::Name(format!("{key}-emoji-{e}").into()))
                 .px(px(6.))
                 .py(px(4.))
+                .rounded(theme::RADIUS_CONTROL)
                 .text_size(px(16.))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::BG_HOVER))
@@ -569,22 +579,25 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
             .flex()
             .items_center()
             .justify_center()
-            .text_color(c::SILVER)
+            .rounded(theme::RADIUS_CONTROL)
+            .text_color(theme::TEXT_MUTED)
             .cursor_pointer()
     };
-    let plain =
-        |d: gpui_kit::Stateful<Div>| d.hover(|s| s.bg(c::PAPER).text_color(theme::ON_INVERT));
+    let plain = |d: gpui_kit::Stateful<Div>| {
+        d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
+    };
     let pane = ctx.pane.clone();
     let mut strip = div()
         .id(ElementId::Name(format!("{key}-actions").into()))
         .absolute()
         .top(px(-12.))
-        .right(px(16.))
+        .right(px(28.))
         .flex()
-        .bg(c::INK)
+        .p(px(1.))
+        .bg(c::VOID)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .shadow(theme::shadow_bar())
+        .border_color(theme::BORDER)
         .block_mouse_except_scroll()
         .on_hover(move |hovered, _, cx| {
             let _ = pane.update(cx, |p, cx| p.set_hover_strip(ix, *hovered, cx));
@@ -660,7 +673,7 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
         let op = id.clone();
         strip = strip.child(
             button("delete")
-                .hover(|s| s.bg(c::CORAL).text_color(theme::ON_SIGNAL))
+                .hover(|s| s.bg(theme::DANGER_BG).text_color(theme::DANGER_TEXT))
                 .tooltip(tooltip("Delete"))
                 .on_click(ctx.snap.app.listener(move |app, _, window, cx| {
                     app.open_dialog(Dialog::delete_message(op.clone()), window, cx)
@@ -687,17 +700,25 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
 pub(super) fn render_dm_intro(peer: &PeerState) -> Div {
     div()
         .pt(px(6.))
-        .px(px(16.))
+        .px(px(28.))
         .pb(px(4.))
         .child(avatar(&peer.name, peer.avatar, 40., None, false))
-        .child(div().mt(px(10.)).mb(px(4.)).text_size(px(19.)).child(peer.name.clone()))
+        .child(
+            div()
+                .mt(px(10.))
+                .mb(px(4.))
+                .font_family(theme::DISPLAY_FONT)
+                .text_size(theme::DISPLAY_TEXT)
+                .text_color(theme::TEXT_STRONG)
+                .child(peer.name.clone()),
+        )
         .child(
             // `max-width: 60ch` at 13px, plus the trailing space GPUI's wrapper counts.
             div()
                 .max_w(px(397.))
                 .text_size(px(13.))
                 .line_height(relative(1.55))
-                .text_color(c::SILVER)
+                .text_color(theme::TEXT_MUTED)
                 .child("This conversation stays between the two of you. It is never relayed through the third peer, because there is no encryption on the wire and relaying would mean letting them read it."),
         )
 }
@@ -720,9 +741,9 @@ pub(super) fn render_dm_empty(peer: &PeerState) -> Div {
         .child(
             div()
                 .mt(px(20.))
-                .mx(px(16.))
+                .mx(px(28.))
                 .text_size(px(13.))
-                .text_color(c::SILVER)
+                .text_color(theme::TEXT_MUTED)
                 .child(format!(
                     "No messages yet. Anything you send reaches {} {when}.",
                     peer.name
@@ -746,11 +767,10 @@ pub(super) fn render_empty(name: &str) -> Div {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(c::INK)
+                    .rounded(theme::RADIUS_CARD)
                     .border_1()
-                    .border_color(c::VIOLET)
-                    .shadow(theme::hard_shadow(3.))
-                    .text_color(c::SILVER)
+                    .border_color(theme::BORDER)
+                    .text_color(theme::TEXT_MUTED)
                     .child(Icon::Hash.size(20.)),
             )
             .child(
@@ -758,8 +778,13 @@ pub(super) fn render_empty(name: &str) -> Div {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .child(div().text_size(px(16.)).child(format!("#{name} is empty")))
-                    .child(div().mt(px(8.)).w(px(96.)).child(theme::band(px(4.)))),
+                    .child(
+                        div()
+                            .font_family(theme::DISPLAY_FONT)
+                            .text_size(theme::DISPLAY_TEXT)
+                            .text_color(theme::TEXT_STRONG)
+                            .child(format!("#{name} is empty")),
+                    ),
             )
             .child(
                 // `max-width: 44ch` at 13px, plus the trailing space GPUI's wrapper counts.
@@ -767,7 +792,7 @@ pub(super) fn render_empty(name: &str) -> Div {
                     .max_w(px(293.))
                     .text_size(px(13.))
                     .line_height(relative(1.55))
-                    .text_color(c::SILVER)
+                    .text_color(theme::TEXT_MUTED)
                     .text_center()
                     .child("Nothing has been posted here yet. Anything you send stays in this channel and reaches the others as soon as they are online."),
             ),

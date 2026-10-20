@@ -12,7 +12,7 @@
 use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{OpRef, PeerState, UiState};
-use super::super::theme::{self, c, Dither};
+use super::super::theme::{self, c};
 use super::widgets::{self, avatar};
 use super::{active_channel, AppHandle, AppSnapshot, Overlay, PaneInit, View, ViewState};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
@@ -32,7 +32,7 @@ gpui_kit::actions!(composer, [AcNext, AcPrev, AcAccept, SwallowTab]);
 /// `maxlength="4096"` on the old textarea, which counted UTF-16 units. The engine's own
 /// limit (`MAX_BERICHT_LEN`) is in bytes and stays the engine's to enforce.
 const MAX_LEN_UTF16: usize = 4096;
-/// `max-height: 168px` at 22.5px a line plus 8px padding: seven whole rows.
+/// Seven whole rows, then the input scrolls.
 const MAX_ROWS: usize = 7;
 /// One "typing" notification per window while typing continuously.
 const TYPING_THROTTLE: Duration = Duration::from_millis(2500);
@@ -228,15 +228,15 @@ fn new_input(
     })
 }
 
-/// The text field itself: no frame of its own (the parent draws it), 15px on 1.5, the
+/// The text field itself: no frame of its own (the parent draws it), 14px on 20, the
 /// kit's smallest paddings so the stylesheet's 4px/2px can be added outside.
 fn textarea(input: &Entity<TextareaState>) -> Textarea {
     Textarea::new(input)
         .appearance(false)
         .bordered(false)
         .with_size(Size::XSmall)
-        .text_size(px(15.))
-        .line_height(px(22.5))
+        .text_size(theme::BASE_TEXT)
+        .line_height(px(20.))
 }
 
 /// Puts `text` in `input` without it counting as typing, the caret at the end like a
@@ -516,14 +516,14 @@ impl ComposerPane {
             .pr(px(6.))
             .pb(px(6.))
             .pl(px(8.))
-            .bg(c::INK)
+            .bg(c::VOID)
+            .rounded(theme::RADIUS_FIELD)
             .border_1()
             .border_color(if focused {
                 theme::ACCENT
             } else {
-                theme::BORDER_STRONG
+                theme::BORDER
             })
-            .shadow(theme::chassis_shadow(2.))
             .child(
                 composer_btn("composer-attach", Icon::Clip, "Share a file").on_click(
                     move |_, _, cx| {
@@ -611,7 +611,7 @@ impl Render for ComposerPane {
         let names = snap.typing_names();
         let popover = self.render_popover(&snap, cx);
         div()
-            .px(px(16.))
+            .px(px(28.))
             .pb(px(18.))
             .when_some(snap.s.error.clone(), |d, error| {
                 d.child(render_error(&snap, error))
@@ -648,22 +648,24 @@ impl ComposerPane {
                 .px(px(10.))
                 .py(px(5.))
                 .bg(theme::BG_RAISED)
+                .rounded_t(theme::RADIUS_FIELD)
                 .border_1()
                 .border_b_0()
                 .border_color(theme::BORDER)
                 .text_size(px(12.))
-                .text_color(c::SILVER)
+                .text_color(theme::TEXT_MUTED)
                 .child(
                     div()
                         .flex_none()
-                        .text_size(px(10.))
-                        .text_color(c::STEEL)
-                        .child("REPLYING TO"),
+                        .text_size(px(10.5))
+                        .text_color(theme::TEXT_DIM)
+                        .child(widgets::tracked("REPLYING TO", 10.5, 0.04)),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_color(c::PAPER)
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_STRONG)
                         .child(name.to_string()),
                 )
                 // `white-space: nowrap` folded line breaks into spaces; GPUI would break on them.
@@ -680,8 +682,8 @@ impl ComposerPane {
                         .flex_none()
                         .p(px(2.))
                         .cursor_pointer()
-                        .text_color(c::SILVER)
-                        .hover(|s| s.text_color(c::PAPER))
+                        .text_color(theme::TEXT_MUTED)
+                        .hover(|s| s.text_color(theme::TEXT_STRONG))
                         .tooltip(widgets::tooltip("Cancel reply"))
                         .child(Icon::X.size(14.))
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -696,7 +698,7 @@ impl ComposerPane {
     }
 }
 
-/// `renderError`: the engine's error line in coral, with its dismiss cross.
+/// `renderError`: the engine's error line in red, with its dismiss cross.
 fn render_error(snap: &AppSnapshot, error: String) -> impl IntoElement {
     let ui = snap.ui.clone();
     div()
@@ -707,9 +709,10 @@ fn render_error(snap: &AppSnapshot, error: String) -> impl IntoElement {
         .mb(px(8.))
         .px(px(10.))
         .py(px(8.))
+        .rounded(theme::RADIUS_FIELD)
         .border_1()
         .border_color(theme::DANGER_LINE)
-        .bg(c::SPACE)
+        .bg(theme::DANGER_BG)
         .text_color(theme::DANGER_TEXT)
         .text_size(px(13.))
         .child(div().flex_none().child(Icon::Alert.size(16.)))
@@ -722,9 +725,10 @@ fn render_error(snap: &AppSnapshot, error: String) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
+                .rounded(theme::RADIUS_CONTROL)
                 .cursor_pointer()
                 .text_color(theme::DANGER_TEXT)
-                .hover(|s| s.bg(c::CORAL).text_color(theme::ON_SIGNAL))
+                .hover(|s| s.bg(c::VOID))
                 .tooltip(widgets::tooltip("Dismiss"))
                 .child(Icon::X.size(13.))
                 .on_click(move |_, _, _| commands::dismiss_error(&ui)),
@@ -753,7 +757,7 @@ fn render_typing(
         .px(px(14.))
         .pb(px(4.))
         .text_size(px(11.5))
-        .text_color(c::SILVER)
+        .text_color(theme::TEXT_MUTED)
         .child(dots)
         .child(text)
 }
@@ -804,13 +808,14 @@ impl Render for TypingDots {
             .children(BLINK_DELAYS_MS.map(|delay| {
                 div()
                     .size(px(5.))
-                    .bg(c::SILVER)
+                    .rounded_full()
+                    .bg(theme::TEXT_MUTED)
                     .opacity(dot_opacity(t, delay))
             }))
     }
 }
 
-/// `.composer-btn`: a 30×30 glyph cell, silver, inverted on hover.
+/// A 30×30 glyph button, muted; hover lifts it.
 fn composer_btn(
     id: &'static str,
     icon: Icon,
@@ -823,14 +828,16 @@ fn composer_btn(
         .flex_none()
         .items_center()
         .justify_center()
+        .rounded(theme::RADIUS_CONTROL)
         .cursor_pointer()
-        .text_color(c::SILVER)
-        .hover(|s| s.bg(c::PAPER).text_color(theme::ON_INVERT))
+        .text_color(theme::TEXT_MUTED)
+        .hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
         .tooltip(widgets::tooltip(title))
         .child(icon.size(18.))
 }
 
-/// `.ac`: the popover over the composer that the member list and the `+` menu share.
+/// The popover over the composer that the member list and the `+` menu share: a card with
+/// the soft shadow and a mono label.
 fn popover(head: String) -> gpui_kit::Div {
     div()
         .absolute()
@@ -842,45 +849,41 @@ fn popover(head: String) -> gpui_kit::Div {
         .flex()
         .flex_col()
         .overflow_hidden()
+        .p(px(6.))
+        .rounded(theme::RADIUS_CARD)
         .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .bg(c::INK)
-        .shadow(theme::shadow_popover())
+        .border_color(theme::BORDER)
+        .bg(theme::BG_RAISED)
+        .shadow(theme::soft_shadow())
         .occlude()
         .child(
-            div()
-                .px(px(11.))
-                .py(px(6.))
-                .bg(c::BLUE)
-                .border_b_1()
-                .border_color(c::SPACE)
-                .text_size(px(10.5))
-                .text_color(c::PAPER)
-                .child(head.to_uppercase()),
+            widgets::section_label(&head)
+                .px(px(8.))
+                .pt(px(4.))
+                .pb(px(6.)),
         )
 }
 
-/// `.ac-item`; `selected` is the inverted `aria-selected` row.
+/// A popover row; `selected` is the `aria-selected` row in the selected look.
 fn popover_item(
     id: impl Into<gpui_kit::ElementId>,
     selected: bool,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap(px(9.))
-        .w_full()
-        .px(px(11.))
-        .py(px(7.))
-        .cursor_pointer()
-        .text_size(px(13.5))
-        .text_color(if selected {
-            theme::ON_INVERT
-        } else {
-            c::SILVER
-        })
-        .when(selected, |d| d.bg(c::PAPER))
+    widgets::selectable(
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .w_full()
+            .px(px(10.))
+            .py(px(6.))
+            .cursor_pointer()
+            .text_size(px(14.))
+            .text_color(theme::TEXT_MUTED)
+            .hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)),
+        selected,
+    )
 }
 
 fn item_note(text: &'static str) -> impl IntoElement {
@@ -904,11 +907,11 @@ pub fn render_drop_overlay(snap: &AppSnapshot, _window: &mut Window, _cx: &mut A
         .left(px(8.))
         .right(px(8.))
         .bottom(px(8.))
-        .bg(c::INDIGO)
-        .border_2()
+        .bg(theme::BACKDROP)
+        .rounded(theme::RADIUS_CARD)
+        .border_1()
         .border_dashed()
         .border_color(theme::ACCENT)
-        .child(theme::dither(Dither::Half, c::SPACE, 2.))
         .child(
             div()
                 .relative()
@@ -919,11 +922,17 @@ pub fn render_drop_overlay(snap: &AppSnapshot, _window: &mut Window, _cx: &mut A
                 .justify_center()
                 .gap(px(8.))
                 .child(div().text_color(theme::ACCENT).child(Icon::Share.size(30.)))
-                .child(div().text_size(px(15.)).child("Drop to share"))
+                .child(
+                    div()
+                        .font_family(theme::DISPLAY_FONT)
+                        .text_size(theme::DISPLAY_TEXT)
+                        .text_color(theme::TEXT_STRONG)
+                        .child("Drop to share"),
+                )
                 .child(
                     div()
                         .text_size(px(12.5))
-                        .text_color(c::SILVER)
+                        .text_color(theme::TEXT_MUTED)
                         .child(format!("The file is offered to everyone in {target}")),
                 ),
         )
@@ -1014,13 +1023,14 @@ impl Render for EditBox {
                     .w_full()
                     .px(px(9.))
                     .py(px(7.))
+                    .rounded(theme::RADIUS_FIELD)
                     .border_1()
                     .border_color(if focused {
                         theme::ACCENT
                     } else {
-                        theme::BORDER_STRONG
+                        theme::BORDER
                     })
-                    .bg(c::SPACE)
+                    .bg(c::VOID)
                     .text_color(theme::TEXT)
                     .child(div().mx(px(-4.)).child(textarea(&self.input))),
             )
@@ -1029,10 +1039,10 @@ impl Render for EditBox {
                     .mt(px(5.))
                     .flex()
                     .text_size(px(11.))
-                    .text_color(c::SILVER)
-                    .child(div().text_color(c::PAPER).child("Enter"))
+                    .text_color(theme::TEXT_MUTED)
+                    .child(div().text_color(theme::TEXT).child("Enter"))
                     .child("\u{00a0}saves \u{00b7} ")
-                    .child(div().text_color(c::PAPER).child("Esc"))
+                    .child(div().text_color(theme::TEXT).child("Esc"))
                     .child("\u{00a0}cancels \u{00b7} empty deletes"),
             )
     }

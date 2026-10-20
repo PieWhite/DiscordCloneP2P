@@ -1,13 +1,14 @@
-//! The settings form in the grammar of `app.css`: the window-in-a-window chassis (`.set-inner`
-//! with its blue heading strips and horizon band), fields, text pieces with inline code, and
-//! the controls (`select`, `.text-input`, `.seg`, `.switch`, `input[type=range]`, `.note`).
+//! The settings form in design B: the page (a serif title, then one hairline card per
+//! section with its mono label), fields, text pieces with inline code, and the controls
+//! (select, text box, segmented control, switch, range, note).
 //!
 //! The slider, switch and segmented control are drawn here and not taken from gpui-kit's
-//! styled ones: those animate (a spring on the thumb, a pill shape) and this world snaps.
-//! The kit's `Select` and `Input` are used, dressed with the palette.
+//! styled ones: those animate (a spring on the thumb) and this world snaps. The kit's
+//! `Select` and `Input` are used, dressed with the palette.
 
 use crate::ui::icons::Icon;
 use crate::ui::theme::{self, c};
+use crate::ui::view::widgets::{focus_ring, pane_title, section_label};
 use gpui_kit::base::slider::{
     Slider as BaseSlider, SliderEvent, SliderIndicator, SliderState, SliderThumb, SliderTrack,
 };
@@ -20,24 +21,27 @@ use gpui_kit::{
 };
 use std::rc::Rc;
 
-/// `max-width: Nch` in the stylesheet. The face's `0` is half an em wide. A browser lets
+/// `max-width: Nch` in the stylesheet. Inter's `0` is 0.63 em wide. A browser lets
 /// the space after the last word of a line hang past the edge; GPUI counts it, so a line
 /// of exactly N glyphs would wrap. One more space of width puts the wraps where the
 /// stylesheet's were.
 pub fn ch(font_px: f32, n: f32) -> Pixels {
-    px(font_px * 0.5 * (n + 1.) + 0.5)
+    px(font_px * 0.63 * (n + 1.) + 0.5)
 }
 
 // ------------------------------------------------------------------ the chassis
 
-/// The content of one tab: heading strips, paragraphs and fields in `.set-inner`.
+/// The content of one tab: the page title, then sections of paragraphs and fields.
 #[derive(Default)]
 pub struct Body {
+    title: Option<String>,
+    sections: Vec<Section>,
+}
+
+#[derive(Default)]
+struct Section {
+    label: Option<String>,
     items: Vec<AnyElement>,
-    fields: usize,
-    /// The last thing added was a paragraph: the next one's top margin collapses into its
-    /// bottom margin, as margins do between siblings.
-    after_p: bool,
 }
 
 impl Body {
@@ -54,90 +58,93 @@ impl Body {
         }
     }
 
-    /// `.set-body h2`: the blue strip across the whole window. A second one in the same tab
-    /// sits 32px lower (`style="margin-top:32px"`).
+    /// The first heading is the page's serif title; every later one opens a new card with
+    /// it as the mono label.
     pub fn h2(mut self, text: &str) -> Self {
-        let lower = !self.items.is_empty();
-        self.after_p = false;
-        self.items.push(
-            div()
-                .when(lower, |d| d.mt(px(32.)))
-                .px(px(16.))
-                .py(px(10.))
-                .bg(c::BLUE)
-                .border_b_1()
-                .border_color(c::SPACE)
-                .text_color(c::PAPER)
-                .text_size(px(14.))
-                .child(text.to_uppercase())
-                .into_any_element(),
-        );
+        let label = match self.title {
+            None => {
+                self.title = Some(text.to_string());
+                None
+            }
+            Some(_) => Some(text.to_string()),
+        };
+        self.sections.push(Section {
+            label,
+            items: Vec::new(),
+        });
         self
     }
 
-    /// `.set-body > .set-inner > p`.
+    fn push(&mut self, item: AnyElement) {
+        if self.sections.is_empty() {
+            self.sections.push(Section::default());
+        }
+        self.sections
+            .last_mut()
+            .expect("pushed above")
+            .items
+            .push(item);
+    }
+
+    /// A paragraph of muted text.
     pub fn p(mut self, text: impl IntoElement) -> Self {
-        let collapsed = std::mem::replace(&mut self.after_p, true);
-        self.items.push(
+        self.push(
             div()
-                .mx(px(20.))
-                .mt(px(if collapsed { 0. } else { 14. }))
-                .mb(px(22.))
                 .w_full() // GPUI sizes a wrapping text block that has only a max-width a line too tall
                 .max_w(ch(13.5, 62.))
                 .text_size(px(13.5))
-                .text_color(c::SILVER)
+                .text_color(theme::TEXT_MUTED)
                 .child(text)
                 .into_any_element(),
         );
         self
     }
 
-    /// `.field`: a hairline above every one but the first of the tab.
     pub fn field(mut self, content: impl IntoElement) -> Self {
-        self.after_p = false;
-        let first = self.fields == 0;
-        self.fields += 1;
-        self.items.push(
-            div()
-                .mx(px(20.))
-                .py(px(16.))
-                .when(!first, |d| d.border_t_1().border_color(theme::BORDER))
-                .child(content)
-                .into_any_element(),
-        );
+        self.push(div().child(content).into_any_element());
         self
     }
 
-    /// `.set-inner`: ink ground, violet frame, hard shadow, the band flush along the bottom.
+    /// The page: title, then one hairline card per section that has anything in it.
     pub fn into_element(self) -> Div {
         div()
             .w_full()
-            .max_w(px(640.))
             .flex()
             .flex_col()
-            .bg(c::INK)
-            .border_1()
-            .border_color(c::VIOLET)
-            .shadow(theme::hard_shadow(3.))
-            .children(self.items)
-            // `::after { margin-top: 20px }` collapses into a paragraph's 22px above it.
-            .child(
-                div()
-                    .mt(px(if self.after_p { 0. } else { 20. }))
-                    .child(theme::band(px(4.))),
+            .gap(px(24.))
+            .when_some(self.title, |d, t| {
+                d.child(pane_title(t, theme::DISPLAY_TEXT_LARGE))
+            })
+            .children(
+                self.sections
+                    .into_iter()
+                    .filter(|s| !s.items.is_empty())
+                    .map(|s| {
+                        div()
+                            .w_full()
+                            .max_w(px(640.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .p(px(24.))
+                            .rounded(theme::RADIUS_CARD)
+                            .border_1()
+                            .border_color(theme::BORDER)
+                            .when_some(s.label, |d, l| d.child(section_label(&l)))
+                            .children(s.items)
+                    }),
             )
     }
 }
 
 // ------------------------------------------------------------------ text
 
-/// `.field-label`.
+/// A field's label.
 pub fn label(text: impl Into<SharedString>) -> Div {
     div()
-        .mb(px(3.))
+        .mb(px(6.))
         .text_size(px(13.))
-        .text_color(c::PAPER)
+        .text_color(theme::TEXT)
         .child(text.into())
 }
 
@@ -148,7 +155,7 @@ fn help_box() -> Div {
         .max_w(ch(12., 58.))
         .text_size(px(12.))
         .line_height(relative(1.5))
-        .text_color(c::SILVER)
+        .text_color(theme::TEXT_MUTED)
 }
 
 /// `.field-help`.
@@ -172,7 +179,7 @@ pub enum Piece<'a> {
     Text(&'a str),
     /// `<code class="mono">`: the mono face, nothing else.
     Mono(&'a str),
-    /// `.note code`: a small sky-blue chip on the void.
+    /// A small sky-blue mono chip on a lift.
     Chip(&'a str),
 }
 
@@ -209,9 +216,9 @@ impl RenderOnce for Rich {
         let mut runs = Vec::with_capacity(self.runs.len());
         for (kind, piece) in &self.runs {
             let (family, color, background) = match kind {
-                RunKind::Text => (theme::UI_FONT, c::SILVER, None),
-                RunKind::Mono => (theme::MONO_FONT, c::SILVER, None),
-                RunKind::Chip => (theme::MONO_FONT, c::SKY, Some(c::SPACE)),
+                RunKind::Text => (theme::UI_FONT, theme::TEXT_MUTED, None),
+                RunKind::Mono => (theme::MONO_FONT, theme::TEXT_MUTED, None),
+                RunKind::Chip => (theme::MONO_FONT, theme::CODE_KEY, Some(c::LIFT)),
             };
             runs.push(TextRun {
                 len: piece.len(),
@@ -259,8 +266,9 @@ pub fn rich_units(size: f32, pieces: &[Piece]) -> Div {
             Piece::Chip(_) => div()
                 .px(px(4.))
                 .py(px(1.))
-                .bg(c::SPACE)
-                .text_color(c::SKY)
+                .rounded(px(4.))
+                .bg(c::LIFT)
+                .text_color(theme::CODE_KEY)
                 .font_family(theme::MONO_FONT)
                 .text_size(px(size * 0.92))
                 .child(word.to_string()),
@@ -310,18 +318,19 @@ pub fn control_row() -> Div {
         .gap(px(10.))
 }
 
-/// `.code-inline`: an identifier or a path in the mono face, on the void.
+/// An identifier or a path in the mono face, in a hairline box.
 pub fn code_inline(text: &str) -> Div {
     div()
         .min_w_0()
         .max_w_full()
         .px(px(9.))
         .py(px(6.))
-        .bg(c::SPACE)
+        .bg(c::VOID)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
         .border_color(theme::BORDER)
         .text_size(px(12.))
-        .text_color(c::SKY)
+        .text_color(theme::CODE_KEY)
         .font_family(theme::MONO_FONT)
         .child(
             div().flex().flex_row().flex_wrap().children(
@@ -332,32 +341,32 @@ pub fn code_inline(text: &str) -> Div {
         )
 }
 
-/// `.readout`.
+/// A mono value next to a control.
 pub fn readout(text: impl Into<SharedString>) -> Div {
     div()
         .flex_none()
-        .text_size(px(13.))
-        .text_color(c::PAPER)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
         .font_family(theme::MONO_FONT)
         .child(text.into())
 }
 
-/// `.note`: an amber alert glyph and a small paragraph in a violet frame.
+/// A note: an amber alert glyph and a small paragraph in a hairline field.
 pub fn note(pieces: &[Piece]) -> Div {
     div()
         .mt(px(10.))
         .w_full()
-        .max_w(px(12.5 * 0.5 * 58.))
+        .max_w(ch(12.5, 58.))
         .flex()
         .gap(px(9.))
         .px(px(12.))
         .py(px(10.))
+        .rounded(theme::RADIUS_FIELD)
         .border_1()
         .border_color(theme::BORDER)
-        .bg(c::INK)
         .text_size(px(12.5))
         .line_height(relative(1.5))
-        .text_color(c::SILVER)
+        .text_color(theme::TEXT_MUTED)
         .child(
             div()
                 .flex_none()
@@ -377,19 +386,20 @@ pub fn note(pieces: &[Piece]) -> Div {
 
 // ------------------------------------------------------------------ boxes
 
-/// `.text-input` / `select`: 32px, steel frame, void ground; on hover the frame goes to
-/// `hover_edge` (silver, or cyan while a box is listening).
+/// A text box: 38px, hairline frame, void ground; on hover the frame goes to `hover_edge`
+/// (iron, or chrome while a box is listening).
 pub fn input_box(id: impl Into<ElementId>, hover_edge: Rgba) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
         .items_center()
-        .h(px(32.))
+        .h(px(38.))
         .px(px(10.))
-        .bg(c::SPACE)
+        .bg(c::VOID)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
-        .border_color(theme::BORDER_STRONG)
-        .text_size(px(13.5))
+        .border_color(theme::BORDER)
+        .text_size(px(14.))
         .text_color(theme::TEXT)
         .hover(move |s| s.border_color(hover_edge))
 }
@@ -444,21 +454,22 @@ impl Choices {
     }
 }
 
-/// The select, 32px high, `width` wide. The device selects were wrapped with a chevron
+/// The select, 38px high, `width` wide. The device selects were wrapped with a chevron
 /// (`.select-wrap`); the status and screen selects were bare, so theirs is covered.
 pub fn select(id: &'static str, choices: &Choices, width: f32, chevron: bool) -> Div {
     div()
         .relative()
         .w(px(width))
-        .h(px(32.))
+        .h(px(38.))
         .flex_none()
         .child(
             Select::new(choices.state())
                 .id(id)
-                .h(px(32.))
+                .h(px(38.))
                 .px(px(10.))
-                .bg(c::SPACE)
-                .text_size(px(13.5))
+                .rounded(theme::RADIUS_CONTROL)
+                .bg(c::VOID)
+                .text_size(px(14.))
                 .icon(Icon::Chev.size(14.)),
         )
         .when(!chevron, |d| {
@@ -469,18 +480,19 @@ pub fn select(id: &'static str, choices: &Choices, width: f32, chevron: bool) ->
                     .right(px(1.))
                     .bottom(px(1.))
                     .w(px(28.))
-                    .bg(c::SPACE),
+                    .rounded_r(theme::RADIUS_CONTROL)
+                    .bg(c::VOID),
             )
         })
 }
 
 /// A native select is as wide as its longest option; `min_w` is the stylesheet's
-/// `min-width`. Padding and chevron take 40px, a glyph of the 13.5px face half its size.
-/// ponytail: counts characters, not glyph widths, so a list of wide (CJK) names comes out a
-/// little narrow; measuring the shaped text would need the text system here.
+/// `min-width`. Padding and chevron take 40px, an average Inter glyph at 14px 0.55 em.
+/// Counts characters, not glyph widths, so a list of wide (CJK) names comes out a little
+/// narrow; measuring the shaped text would need the text system here.
 pub fn auto_width(items: &[String], min_w: f32) -> f32 {
     let longest = items.iter().map(|i| i.chars().count()).max().unwrap_or(0) as f32;
-    min_w.max(40. + longest * 13.5 * 0.5)
+    min_w.max(40. + longest * 14. * 0.55)
 }
 
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -488,30 +500,28 @@ type KeyHandler = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
 
 // ------------------------------------------------------------------ switch
 
-/// `.switch`: 38x22, the knob jumps 16px. A switch with no handler is the disabled kind
-/// the account tab shows for the two config-file settings.
+/// A 38x22 pill, the knob jumps 16px: chrome with a void knob when on, a lift with an ash
+/// knob when off. A switch with no handler is the disabled kind the account tab shows for
+/// the two config-file settings.
 pub fn switch(id: &'static str, on: bool, on_click: Option<Handler>) -> Stateful<Div> {
-    let edge = if on {
-        theme::ACCENT
-    } else {
-        theme::BORDER_STRONG
-    };
     div()
         .id(id)
         .relative()
         .flex_none()
         .w(px(38.))
         .h(px(22.))
-        .bg(if on { theme::ACCENT } else { c::SPACE })
+        .rounded_full()
+        .bg(if on { theme::ACCENT } else { c::LIFT })
         .border_1()
-        .border_color(edge)
+        .border_color(if on { theme::ACCENT } else { theme::BORDER })
         .child(
             div()
                 .absolute()
                 .top(px(2.))
                 .left(px(if on { 18. } else { 2. }))
                 .size(px(16.))
-                .bg(if on { c::SPACE } else { c::SILVER }),
+                .rounded_full()
+                .bg(if on { c::VOID } else { theme::TEXT_MUTED }),
         )
         .when_some(on_click, |d, f| {
             d.cursor_pointer()
@@ -521,7 +531,7 @@ pub fn switch(id: &'static str, on: bool, on_click: Option<Handler>) -> Stateful
 
 // ------------------------------------------------------------------ segmented control
 
-/// `.seg`: buttons in one frame; the pressed one is inverted.
+/// Buttons in one hairline frame; the pressed one is a lift with white text.
 #[derive(IntoElement)]
 pub struct Seg {
     id: &'static str,
@@ -556,8 +566,10 @@ impl RenderOnce for Seg {
             div()
                 .flex()
                 .flex_none()
+                .rounded(theme::RADIUS_CONTROL)
                 .border_1()
-                .border_color(theme::BORDER_STRONG)
+                .border_color(theme::BORDER)
+                .overflow_hidden()
                 .children(
                     self.options
                         .into_iter()
@@ -570,14 +582,16 @@ impl RenderOnce for Seg {
                                 .flex()
                                 .items_center()
                                 .text_size(px(13.))
-                                .text_color(c::SILVER)
+                                .text_color(theme::TEXT_MUTED)
                                 .cursor_pointer()
-                                .when(i < last, |d| {
-                                    d.border_r_1().border_color(theme::BORDER_STRONG)
+                                .when(i < last, |d| d.border_r_1().border_color(theme::BORDER))
+                                .when(pressed, |d| {
+                                    d.bg(theme::BG_SELECTED).text_color(theme::TEXT_STRONG)
                                 })
-                                .when(pressed, |d| d.bg(c::PAPER).text_color(theme::ON_INVERT))
                                 .when(!pressed, |d| {
-                                    d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT))
+                                    d.hover(|s| {
+                                        s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)
+                                    })
                                 })
                                 .on_click(move |ev, window, cx| f(ev, window, cx))
                                 .child(label)
@@ -665,8 +679,8 @@ impl Ranged {
     }
 }
 
-/// `input[type=range]`: a 6px well with a cyan fill up to the thumb, a 10x14 paper thumb
-/// with a hard shadow, a ring on the thumb for keyboard focus. Takes the width the row
+/// A range: a 6px pill on a lift with a chrome fill up to the thumb, a 14px white round
+/// thumb, the focus ring on the thumb for keyboard focus. Takes the width the row
 /// leaves it, at most `max_w`.
 #[derive(IntoElement)]
 pub struct Range {
@@ -692,7 +706,7 @@ impl Range {
     }
 }
 
-const THUMB_W: f32 = 10.;
+const THUMB_W: f32 = 14.;
 
 impl RenderOnce for Range {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -709,37 +723,17 @@ impl RenderOnce for Range {
             .left_0()
             .h_full()
             .w(relative(pct))
+            .rounded_full()
             .bg(theme::ACCENT);
         let thumb = SliderThumb::new(&state)
             .absolute()
             .top(px(-5.))
             .left(thumb_left)
             .ml(thumb_nudge)
-            .w(px(THUMB_W))
-            .h(px(14.))
-            .bg(c::PAPER)
-            .border_1()
-            .border_color(c::SPACE)
-            .shadow(if ring {
-                vec![
-                    gpui_kit::BoxShadow {
-                        color: c::INK.into(),
-                        offset: gpui_kit::point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(2.),
-                        inset: false,
-                    },
-                    gpui_kit::BoxShadow {
-                        color: theme::ACCENT.into(),
-                        offset: gpui_kit::point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(4.),
-                        inset: false,
-                    },
-                ]
-            } else {
-                theme::shadow_thumb()
-            });
+            .size(px(THUMB_W))
+            .rounded_full()
+            .bg(c::WHITE)
+            .when(ring, |t| t.shadow(focus_ring()));
 
         div()
             .id(("range", self.state.entity_id()))
@@ -775,9 +769,10 @@ impl RenderOnce for Range {
                                     .relative()
                                     .w_full()
                                     .h(px(6.))
-                                    .bg(c::SPACE)
+                                    .rounded_full()
+                                    .bg(c::LIFT)
                                     .border_1()
-                                    .border_color(c::VIOLET)
+                                    .border_color(theme::BORDER)
                                     .child(fill)
                                     .child(thumb),
                             ),

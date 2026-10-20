@@ -90,10 +90,9 @@ impl Render for StripPane {
             .flex()
             .flex_none()
             .min_w_0()
-            .gap(px(10.))
-            .px(px(16.))
-            .py(px(10.))
-            .bg(c::INK)
+            .gap(px(12.))
+            .px(px(28.))
+            .py(px(14.))
             .border_b_1()
             .border_color(theme::BORDER)
             .overflow_x_scroll()
@@ -115,46 +114,55 @@ fn render_tile(t: Tile, image: Option<Arc<RenderImage>>) -> impl IntoElement {
             .w(px(TILE_INNER_W))
             .h(px(TILE_INNER_W * 9. / 16.))
             .object_fit(ObjectFit::Cover)
-            .bg(c::SPACE)
+            .bg(theme::BG_WELL)
             .into_any_element(),
         None => div()
             .w(px(TILE_INNER_W))
             .h(px(TILE_INNER_W * 9. / 16.))
+            .bg(theme::BG_WELL)
             .flex()
             .items_center()
             .justify_center()
-            .text_color(c::SILVER)
+            .text_color(theme::TEXT_MUTED)
             .child(icon.size(20.))
             .into_any_element(),
     };
+    // A watched stream wears the accent outline; our own tiles keep the hairline.
+    let watched = !t.key.starts_with("self-");
     div()
         .id(SharedString::from(format!("tile-{}", t.key)))
         .relative()
         .w(px(176.))
         .flex_none()
         .overflow_hidden()
+        .rounded(theme::RADIUS_CARD)
         .border_1()
-        .border_color(theme::BORDER)
-        .bg(c::SPACE)
-        .hover(|s| s.border_color(c::CYAN))
+        .border_color(if watched {
+            theme::ACCENT
+        } else {
+            theme::BORDER
+        })
+        .bg(c::VOID)
+        .hover(|s| s.border_color(theme::TEXT_STRONG))
         .child(picture)
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .px(px(7.))
-                .py(px(5.))
-                .bg(c::INK)
-                .text_size(px(11.))
-                .text_color(c::SILVER)
+                .px(px(10.))
+                .py(px(6.))
+                .border_t_1()
+                .border_color(theme::BORDER)
+                .text_size(px(12.))
+                .text_color(theme::TEXT)
                 .child(icon.size(12.))
                 .child(div().min_w_0().truncate().child(caption)),
         )
         .when(t.live, |d| d.child(live_tag()))
 }
 
-/// `.live-tag`: a void cell with a magenta frame and square. No letter-spacing in GPUI.
+/// The LIVE tag: red mono on void in a red line.
 fn live_tag() -> impl IntoElement {
     div()
         .absolute()
@@ -162,17 +170,14 @@ fn live_tag() -> impl IntoElement {
         .left(px(6.))
         .flex()
         .items_center()
-        .gap(px(4.))
-        .pt(px(2.))
-        .pb(px(2.))
-        .pl(px(5.))
-        .pr(px(6.))
-        .bg(c::SPACE)
+        .px(px(6.))
+        .bg(c::VOID)
+        .rounded(px(4.))
         .border_1()
-        .border_color(c::MAGENTA)
-        .text_size(px(10.))
-        .text_color(c::PAPER)
-        .child(div().size(px(5.)).bg(c::MAGENTA))
+        .border_color(theme::DANGER_LINE)
+        .font_family(theme::MONO_FONT)
+        .text_size(px(10.5))
+        .text_color(theme::DANGER_TEXT)
         .child("LIVE")
 }
 

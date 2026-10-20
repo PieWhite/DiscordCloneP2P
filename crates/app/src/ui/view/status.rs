@@ -27,31 +27,26 @@ pub fn render(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyEleme
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(14.))
-        .px(px(12.))
-        .bg(c::INK)
+        .gap(px(16.))
+        .px(px(16.))
+        .bg(theme::BG_SIDEBAR)
         .border_t_1()
         .border_color(theme::BORDER)
-        .text_size(px(11.5))
-        .text_color(c::SILVER)
+        .font_family(theme::MONO_FONT)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
         .overflow_hidden()
         .children(links)
         .child(div().flex_1())
         .when_some(update_chip(snap), |d, chip| d.child(chip))
-        .child(
-            div()
-                .flex_none()
-                .whitespace_nowrap()
-                .font_family(theme::MONO_FONT)
-                .child(format!(
-                    "v{} \u{00b7} protocol {}",
-                    snap.s.app_version, snap.s.protocol_version
-                )),
-        )
+        .child(div().flex_none().whitespace_nowrap().child(format!(
+            "v{} \u{00b7} protocol {}",
+            snap.s.app_version, snap.s.protocol_version
+        )))
         .into_any_element()
 }
 
-/// `.link`: the 6px presence square, the name in paper, and what the link is doing.
+/// One link: the 5px presence dot, the name in bone, and what the link is doing.
 fn link(
     snap: &AppSnapshot,
     index: usize,
@@ -59,11 +54,11 @@ fn link(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let square = div().size(px(6.)).flex_none();
+    let square = div().size(px(5.)).flex_none().rounded_full();
     let square = match p.presence {
         Presence::Online => square.bg(theme::ONLINE),
-        Presence::Offline => square.border(px(1.5)).border_color(theme::OFFLINE),
-        // The stylesheet has no rule for a broken link: the square's place stays empty.
+        Presence::Offline => square.bg(theme::OFFLINE),
+        // The stylesheet has no rule for a broken link: the dot's place stays empty.
         Presence::Broken => square,
     };
     let state: AnyElement = match p.presence {
@@ -89,14 +84,14 @@ fn link(
         .gap(px(6.))
         .whitespace_nowrap()
         .child(square)
-        .child(div().text_color(c::PAPER).child(p.name.clone()))
+        .child(div().text_color(theme::TEXT).child(p.name.clone()))
         .child(state)
         .into_any_element()
 }
 
-/// `.update-chip`, in the five shapes the update state can take. Only "ready" and the two
-/// answers are buttons; the running states are plain chips (hover still inverts them, as
-/// the stylesheet's rule did not care).
+/// The update chip, in the five shapes the update state can take. Only "ready" and the
+/// two answers are buttons; the running states are plain chips (hover still whitens the
+/// frame, as the stylesheet's rule did not care).
 fn update_chip(snap: &AppSnapshot) -> Option<AnyElement> {
     let pct =
         |received: u64, total: u64| (100.0 * received as f64 / total.max(1) as f64).round() as u64;
@@ -146,15 +141,16 @@ fn update_chip(snap: &AppSnapshot) -> Option<AnyElement> {
         .flex_none()
         .items_center()
         .gap(px(6.))
-        .h(px(19.))
+        .h(px(20.))
         .px(px(8.))
-        .bg(c::SPACE)
+        .bg(c::VOID)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
-        .border_color(theme::ACCENT)
+        .border_color(theme::BORDER)
         .text_color(theme::ACCENT)
         .text_size(px(11.))
         .whitespace_nowrap()
-        .hover(|s| s.bg(theme::ACCENT).text_color(theme::ON_ACCENT))
+        .hover(|s| s.border_color(theme::TEXT_STRONG))
         .child(icon.size(12.))
         .child(text)
         .when_some(title.filter(|t| !t.is_empty()), |d, t| {
@@ -162,9 +158,7 @@ fn update_chip(snap: &AppSnapshot) -> Option<AnyElement> {
         })
         .when_some(click, |d, click| {
             let app = snap.app.clone();
-            let d = d
-                .tab_index(0)
-                .focus_visible(|s| s.shadow(focus_ring(c::INK, vec![])));
+            let d = d.tab_index(0).focus_visible(|s| s.shadow(focus_ring()));
             let ui = snap.ui.clone();
             d.cursor_pointer()
                 .on_click(move |_: &ClickEvent, window, cx| match &click {

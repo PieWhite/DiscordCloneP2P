@@ -28,6 +28,7 @@ impl SettingsPane {
             .map(|(i, p)| peer_row(snap, i, p, window, cx));
         let table = div()
             .max_w(px(520.))
+            .rounded(theme::RADIUS_FIELD)
             .border_1()
             .border_color(theme::BORDER)
             .overflow_hidden()
@@ -39,12 +40,12 @@ impl SettingsPane {
                     div()
                         .mb(px(4.))
                         .text_size(px(12.))
-                        .text_color(c::SILVER)
+                        .text_color(theme::TEXT_MUTED)
                         .child(title),
                 )
                 .child(
                     // An `<input>` is 20 characters wide whatever `min-width` says.
-                    input_box(id, theme::BORDER_INPUT)
+                    input_box(id, theme::BORDER_HOVER)
                         .w(px(190.))
                         .font_family(theme::MONO_FONT)
                         .child(value.to_string()),
@@ -88,7 +89,7 @@ impl SettingsPane {
                             .mt(px(8.))
                             .child(
                                 Btn::new("add-codes", "Add")
-                                    .kind(BtnKind::Accent)
+                                    .kind(BtnKind::Primary)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let text = this.codes.read(cx).value();
                                         commands::add_peer_codes(&this.ui, &text);
@@ -102,7 +103,7 @@ impl SettingsPane {
                                     div()
                                         .max_w(px(420.))
                                         .text_size(px(12.))
-                                        .text_color(c::SILVER)
+                                        .text_color(theme::TEXT_MUTED)
                                         .whitespace_normal()
                                         .child(result),
                                 )
@@ -144,7 +145,7 @@ impl SettingsPane {
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(c::SILVER)
+                            .text_color(theme::TEXT_MUTED)
                             .font_family(theme::MONO_FONT)
                             .child(
                                 s.router
@@ -168,11 +169,12 @@ fn code_block(code: &str) -> Div {
         .max_w(px(420.))
         .px(px(9.))
         .py(px(6.))
-        .bg(c::SPACE)
+        .bg(c::VOID)
+        .rounded(theme::RADIUS_CONTROL)
         .border_1()
         .border_color(theme::BORDER)
         .text_size(px(12.))
-        .text_color(c::SKY)
+        .text_color(theme::CODE_KEY)
         .font_family(theme::MONO_FONT)
         .child(
             div().flex().flex_row().flex_wrap().children(
@@ -183,7 +185,7 @@ fn code_block(code: &str) -> Div {
         )
 }
 
-/// `.peer-row`: avatar, name over address and version, and the link on the right.
+/// One peer: avatar, name over address and version, and the link on the right.
 fn peer_row(
     snap: &AppSnapshot,
     index: usize,
@@ -205,18 +207,23 @@ fn peer_row(
         .gap(px(10.))
         .px(px(12.))
         .py(px(10.))
-        .bg(c::INK)
         .when(index > 0, |d| d.border_t_1().border_color(theme::BORDER))
         .child(avatar(&p.name, p.avatar, 24., Some(Dot::of_peer(p)), false))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .child(div().text_size(px(13.)).child(p.name.clone()))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_STRONG)
+                        .child(p.name.clone()),
+                )
                 .child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(c::SILVER)
+                        .text_color(theme::TEXT_MUTED)
                         .font_family(theme::MONO_FONT)
                         .child(address),
                 ),
@@ -224,7 +231,7 @@ fn peer_row(
         .child(link(snap, p, window, cx))
 }
 
-/// `.link`: the state square and its word. Only the RTT of an online peer moves with the
+/// The link: the state dot and its word. Only the RTT of an online peer moves with the
 /// meters, so only that cell is a meter view. The problem text of a broken peer wraps in a
 /// column of its own instead of running over the address (a defect of the old window).
 fn link(
@@ -238,8 +245,9 @@ fn link(
             .flex_none()
             .mt(px(7.))
             .size(px(6.))
+            .rounded_full()
             .when_some(fill, |d, f| d.bg(f))
-            .when(ring, |d| d.border(px(1.5)).border_color(theme::OFFLINE))
+            .when(ring, |d| d.bg(theme::OFFLINE))
     };
     let (dot, text) = match p.presence {
         Presence::Online => {
@@ -269,7 +277,9 @@ fn link(
         .items_start()
         .gap(px(6.))
         .max_w(px(230.))
-        .text_color(c::SILVER)
+        .font_family(theme::MONO_FONT)
+        .text_size(theme::LABEL_TEXT)
+        .text_color(theme::TEXT_MUTED)
         .child(dot)
         .child(
             text.min_w_0()

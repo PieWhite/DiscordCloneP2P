@@ -18,7 +18,7 @@ mod recap;
 mod video;
 
 use super::super::theme::{self, c};
-use super::widgets::pointer;
+use super::widgets::{pane_title, selectable};
 use super::{AppHandle, AppSnapshot, PaneInit, SettingsTab};
 use crate::ui::commands;
 use crate::ui::Ui;
@@ -240,25 +240,18 @@ impl SettingsPane {
             .h_full()
             .flex()
             .flex_col()
-            .bg(c::INK)
+            .pt(px(28.))
+            .px(px(12.))
+            .bg(theme::BG_SIDEBAR)
             .border_r_1()
             .border_color(theme::BORDER)
             .child(
-                div()
-                    .h(theme::HEAD_H)
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px(px(14.))
-                    .bg(c::AMBER)
-                    .border_b_1()
-                    .border_color(c::SPACE)
-                    .text_color(c::SPACE)
-                    .text_size(px(13.))
-                    .child("SETTINGS"),
+                pane_title("Settings", theme::DISPLAY_TEXT_LARGE)
+                    .mx(px(12.))
+                    .mb(px(18.)),
             )
             .child(
-                div().flex().flex_col().px(px(8.)).pt(px(8.)).children(
+                div().flex().flex_col().gap(px(2.)).children(
                     SettingsTab::ALL
                         .into_iter()
                         .map(|tab| tab_row(snap, tab, tab == current)),
@@ -273,33 +266,31 @@ fn should_pull_name(synced: Option<&str>, engine: &str, typing: bool) -> bool {
     !typing && synced != Some(engine)
 }
 
-/// `.set-tab`: silver row; hover a violet slab with the pointer; current inverted.
+/// A settings tab: a muted row; hover lifts it; current is the selected look.
 fn tab_row(snap: &AppSnapshot, tab: SettingsTab, current: bool) -> impl IntoElement {
-    let group = format!("set-tab-{}", tab.id());
-    div()
-        .id(tab.id())
-        .group(group.clone())
-        .relative()
-        .flex()
-        .items_center()
-        .gap(px(9.))
-        .w_full()
-        .h(px(32.))
-        .px(px(8.))
-        .text_size(px(13.5))
-        .text_color(c::SILVER)
-        .cursor_pointer()
-        .when(current, |d| d.bg(c::PAPER).text_color(theme::ON_INVERT))
-        .when(!current, |d| {
-            d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT))
-                .child(pointer().opacity(0.).group_hover(group, |s| s.opacity(1.)))
-        })
-        .on_click(
-            snap.app
-                .listener(move |app, _, _, cx| app.set_settings_tab(tab, cx)),
-        )
-        .child(tab.icon().size(16.))
-        .child(tab.name())
+    selectable(
+        div()
+            .id(tab.id())
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .w_full()
+            .h(px(34.))
+            .px(px(12.))
+            .text_size(px(14.))
+            .text_color(theme::TEXT_MUTED)
+            .cursor_pointer(),
+        current,
+    )
+    .when(!current, |d| {
+        d.hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
+    })
+    .on_click(
+        snap.app
+            .listener(move |app, _, _, cx| app.set_settings_tab(tab, cx)),
+    )
+    .child(tab.icon().size(16.))
+    .child(tab.name())
 }
 
 impl Render for SettingsPane {
@@ -349,7 +340,7 @@ impl Render for SettingsPane {
                             .child(
                                 div()
                                     .flex_none()
-                                    .px(px(32.))
+                                    .px(px(40.))
                                     .pt(px(28.))
                                     .pb(px(40.))
                                     .child(body.into_element()),
@@ -368,24 +359,26 @@ impl Render for SettingsPane {
     }
 }
 
-/// The paste field for invite codes: `.text-input`, several rows.
+/// The paste field for invite codes, several rows.
 fn codes_field(input: &Entity<TextareaState>) -> impl IntoElement {
     Textarea::new(input)
         .w(px(520.))
         .px(px(10.))
-        .bg(c::SPACE)
+        .rounded(theme::RADIUS_CONTROL)
+        .bg(c::VOID)
         .text_size(px(12.))
         .font_family(theme::MONO_FONT)
 }
 
-/// The text field with the shape of `.text-input`, 240px by default.
+/// A one-line text field, 240px by default.
 fn text_field(input: &Entity<InputState>, width: f32) -> impl IntoElement {
     Input::new(input)
         .w(px(width))
-        .h(px(32.))
+        .h(px(38.))
         .px(px(10.))
-        .bg(c::SPACE)
-        .text_size(px(13.5))
+        .rounded(theme::RADIUS_CONTROL)
+        .bg(c::VOID)
+        .text_size(px(14.))
 }
 
 #[cfg(test)]
