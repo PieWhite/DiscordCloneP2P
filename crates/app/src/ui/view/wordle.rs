@@ -13,7 +13,7 @@ use super::super::icons::Icon;
 use super::super::state::{TimelineItem, WordleBoard, WordleScore, WordleState};
 use super::super::theme::{self, c};
 use super::format;
-use super::widgets::{Btn, BtnKind};
+use super::widgets::{section_label, Btn, BtnKind};
 use super::{AppSnapshot, AppView, Dialog, ViewState};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, Context, Div,
@@ -612,13 +612,7 @@ fn standings(w: &WordleState) -> Div {
         .pt(px(10.))
         .border_t_1()
         .border_color(theme::BORDER)
-        .child(
-            div()
-                .mb(px(6.))
-                .text_size(px(11.))
-                .text_color(theme::TEXT_MUTED)
-                .child("STANDINGS"),
-        );
+        .child(section_label("Standings").mb(px(6.)));
     if w.standings.is_empty() {
         return wrap.child(
             div()
@@ -639,9 +633,17 @@ fn standings(w: &WordleState) -> Div {
             .px(px(6.))
             .py(px(4.))
             .child(div().flex_1().min_w_0().child(name))
-            .child(div().min_w(px(26.)).flex().justify_end().child(pts))
             .child(
                 div()
+                    .font_family(theme::MONO_FONT)
+                    .min_w(px(26.))
+                    .flex()
+                    .justify_end()
+                    .child(pts),
+            )
+            .child(
+                div()
+                    .font_family(theme::MONO_FONT)
                     .min_w(px(46.))
                     .flex()
                     .justify_end()
@@ -650,6 +652,7 @@ fn standings(w: &WordleState) -> Div {
             )
             .child(
                 div()
+                    .font_family(theme::MONO_FONT)
                     .min_w(px(46.))
                     .flex()
                     .justify_end()
@@ -664,6 +667,7 @@ fn standings(w: &WordleState) -> Div {
             "PLAYED".into(),
             "SOLVED".into(),
         )
+        .font_family(theme::MONO_FONT)
         .text_size(px(10.5))
         .text_color(theme::TEXT_MUTED),
     )
