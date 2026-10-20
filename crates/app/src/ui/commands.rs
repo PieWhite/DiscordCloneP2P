@@ -247,6 +247,11 @@ pub fn remove_peer(ui: &Ui, slot: usize) {
     send(ui, UiCommand::VerwijderPeer(slot));
 }
 
+/// Share the window of the game we are playing, as Discord's in-game stream button does.
+pub fn share_game(ui: &Ui) {
+    send(ui, UiCommand::DeelSpel);
+}
+
 pub fn stop_sharing(ui: &Ui, stream: u32) {
     send(ui, UiCommand::StopDelen(stream));
 }

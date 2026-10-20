@@ -215,6 +215,9 @@ impl Rust {
 pub struct Zoeker {
     #[cfg(windows)]
     namen: std::collections::HashMap<String, Option<String>>,
+    /// Het venster (`HWND`) van het laatst gevonden spel, voor "Stream <spel>". Blijft staan
+    /// als je naar ons venster klikt: dan staat het spel juist niet meer vooraan.
+    pub venster: Option<isize>,
 }
 
 impl Zoeker {
@@ -222,7 +225,9 @@ impl Zoeker {
     pub fn voorgrond_spel(&mut self) -> Option<String> {
         #[cfg(windows)]
         {
-            win::voorgrond_spel(&mut self.namen)
+            let (naam, hwnd) = win::voorgrond_spel(&mut self.namen)?;
+            self.venster = Some(hwnd);
+            Some(naam)
         }
         #[cfg(not(windows))]
         {
@@ -252,7 +257,7 @@ mod win {
     };
     use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
-    pub fn voorgrond_spel(namen: &mut HashMap<String, Option<String>>) -> Option<String> {
+    pub fn voorgrond_spel(namen: &mut HashMap<String, Option<String>>) -> Option<(String, isize)> {
         // Wat "schermvullend vooraan" is staat op één plek; de tekenlaag bij een gedeeld
         // scherm wijkt voor precies hetzelfde (beslissing 45).
         let (hwnd, _) = fitcom_video::tekenlaag::schermvullend_vooraan()?;
@@ -272,10 +277,8 @@ mod win {
                 return None;
             }
 
-            if let Some(naam) = namen.get(&pad) {
-                if naam.is_some() {
-                    return naam.clone();
-                }
+            if let Some(Some(naam)) = namen.get(&pad) {
+                return Some((naam.clone(), hwnd.0 as isize));
             }
             // Bewust nooit de venstertitel: die kan een documentnaam bevatten en gaat naar
             // alle peers. Beschrijving van de exe, anders de exe-naam.
@@ -286,7 +289,7 @@ mod win {
             if naam.is_some() {
                 namen.insert(pad, naam.clone());
             }
-            naam
+            naam.map(|n| (n, hwnd.0 as isize))
         }
     }
 

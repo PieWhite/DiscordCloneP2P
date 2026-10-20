@@ -246,6 +246,8 @@ pub struct Snapshot {
     pub push_to_talk: PushToTalkConfig,
     /// Meesturen welk spel er vooraan staat (`Config::share_activity`).
     pub deel_activiteit: bool,
+    /// Het spel dat bij ons vooraan staat (`speelt::Rust::huidig`), voor "Stream <spel>".
+    pub eigen_spel: Option<String>,
     /// Mogen kijkers op je scherm tekenen (`Config::allow_drawing`).
     pub tekenen: bool,
     /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
@@ -329,6 +331,8 @@ pub enum UiCommand {
     /// Een scherm of venster gaan delen. Er wordt nog niets opgenomen. Bureaubladgeluid
     /// gaat vanzelf mee als je in het gesprek zit — geen apart commando meer (fase 10).
     DeelBron(Bron),
+    /// Het venster van het spel dat we spelen delen, met één klik (`speelt::Zoeker::venster`).
+    DeelSpel,
     StopDelen(u32),
     /// De camera aan (`true`) of uit (`false`). Eén schakelaar in plaats van de UI laten
     /// uitzoeken welke bron de camera is; bureaubladgeluid blijft er buiten.
@@ -2403,6 +2407,16 @@ impl Engine {
             UiCommand::DeelBron(bron) => {
                 self.deel_bron(bron);
             }
+            UiCommand::DeelSpel => {
+                let spel = self.speelt_rust.huidig().map(str::to_owned);
+                if let (Some(naam), Some(handle)) = (spel, self.speelt_zoeker.venster) {
+                    self.deel_bron(Bron {
+                        naam,
+                        soort: BronSoort::Venster,
+                        handle,
+                    });
+                }
+            }
             UiCommand::StreamVolume(peer, id, vol) => {
                 self.stream_volumes.insert((peer, id), vol);
                 if let Some(v) = &self.voice {
@@ -3458,6 +3472,7 @@ impl Engine {
             geluid: self.cfg.sound.clone(),
             push_to_talk: self.cfg.push_to_talk.clone(),
             deel_activiteit: self.cfg.share_activity,
+            eigen_spel: self.speelt_rust.huidig().map(str::to_owned),
             tekenen: self.cfg.allow_drawing,
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),

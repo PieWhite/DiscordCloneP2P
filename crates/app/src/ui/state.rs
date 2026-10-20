@@ -147,6 +147,9 @@ pub struct SelfState {
     pub avatar: u8,
     /// Our own chosen status: "online", "away" or "busy".
     pub status: String,
+    /// The game we have in front, for the "Stream <game>" button. Only moves on a switch.
+    #[serde(default)]
+    pub playing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -904,6 +907,7 @@ impl UiState {
                 name: my_name,
                 avatar: hues.get(&c.me).copied().unwrap_or(1),
                 status: snap.eigen_status.to_string(),
+                playing: snap.eigen_spel.clone(),
             },
             peers,
             voice: VoiceState {

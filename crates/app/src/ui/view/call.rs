@@ -1,14 +1,14 @@
 //! The voice-connected panel at the foot of the channel column, above the self panel, drawn
 //! only while joined (decision 48, moved there as in Discord on 2026-10-20): the call's size
 //! and worst link with Leave beside it, then camera, screen share and Spotify in one row, and
-//! under that one quiet line per shared Spotify. These are the only homes of those controls;
+//! under that one quiet line per screen you share (with its own stop) and per shared Spotify. These are the only homes of those controls;
 //! the drawing switch for your shared screens is in Settings → Video.
 
 use super::super::commands::{self, MusicAction};
 use super::super::icons::Icon;
 use super::super::state::PeerState;
 use super::super::theme;
-use super::widgets::{dk_btn, meter_view, tooltip};
+use super::widgets::{dk_btn, meter_view, tooltip, Btn};
 use super::{format, AppSnapshot};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Div, ElementId, FontWeight,
@@ -85,10 +85,48 @@ pub fn render_panel(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> An
                 .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&u_leave, false)),
         );
 
-    let mut music: Vec<AnyElement> = Vec::new();
+    let mut lines: Vec<AnyElement> = Vec::new();
+    // Each shared screen with its own stop, as in Discord, besides the toggle above.
+    for st in snap
+        .s
+        .own_streams
+        .iter()
+        .filter(|st| !st.is_audio && !st.is_camera)
+    {
+        let (ui, stream) = (snap.ui.clone(), st.stream_id);
+        lines.push(
+            line(
+                Icon::Monitor,
+                "You share ",
+                &st.title,
+                &format!(" \u{00b7} {} watching", st.viewers),
+            )
+            .child(
+                div()
+                    .id(ElementId::Name(format!("stop-share-{stream}").into()))
+                    .tab_index(0)
+                    .focus_visible(|s| s.shadow(super::widgets::focus_ring()))
+                    .size(px(22.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme::RADIUS_CONTROL)
+                    .cursor_pointer()
+                    .text_color(theme::DANGER_TEXT)
+                    .hover(|s| s.bg(theme::DANGER_BG))
+                    .tooltip(tooltip("Stop streaming"))
+                    .child(Icon::X.size(13.))
+                    .on_click(move |_: &ClickEvent, _, _| commands::stop_sharing(&ui, stream))
+                    .test_support(),
+            )
+            .into_any_element(),
+        );
+    }
     if let Some(own) = snap.own_music() {
-        music.push(
-            music_line(
+        lines.push(
+            line(
+                Icon::Music,
                 "You share ",
                 &own.title,
                 &format!(" \u{00b7} {} listening", own.viewers),
@@ -99,8 +137,8 @@ pub fn render_panel(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> An
     // Everyone in the call hears it without a click, so the line only says what plays.
     for p in &others {
         let Some(m) = &p.music else { continue };
-        music.push(
-            music_line(&format!("{} plays ", p.name), &m.title, "")
+        lines.push(
+            line(Icon::Music, &format!("{} plays ", p.name), &m.title, "")
                 // Anyone in the call may pause or skip, at once; the DJ checks that and does
                 // it in their own Spotify.
                 .when(m.listening, |d| {
@@ -138,8 +176,9 @@ pub fn render_panel(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> An
         .border_color(theme::BORDER)
         .child(head)
         .child(toolbar(snap))
-        .when(!music.is_empty(), |d| {
-            d.child(div().flex().flex_col().children(music))
+        .when_some(game_btn(snap), |d, b| d.child(b))
+        .when(!lines.is_empty(), |d| {
+            d.child(div().flex().flex_col().children(lines))
         })
         .test_support()
         .into_any_element()
@@ -217,8 +256,29 @@ fn toolbar(snap: &AppSnapshot) -> Div {
         ))
 }
 
+/// "Stream <game>" while a game is in front and no screen is shared yet: one click shares
+/// that game's window, without the picker.
+fn game_btn(snap: &AppSnapshot) -> Option<impl IntoElement> {
+    let game = snap.s.me.playing.as_ref()?;
+    if snap.sharing_self() {
+        return None;
+    }
+    let ui = snap.ui.clone();
+    Some(
+        div()
+            .id("stream-game")
+            .child(
+                Btn::new("stream-game-btn", format!("Stream {game}"))
+                    .icon(Icon::Monitor)
+                    .full_width()
+                    .on_click(move |_, _, _| commands::share_game(&ui)),
+            )
+            .test_support(),
+    )
+}
+
 /// One muted line with the title in white.
-fn music_line(before: &str, title: &str, after: &str) -> Div {
+fn line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
     let text = format!("{before}{title}{after}");
     let bold = before.len()..before.len() + title.len();
     div()
@@ -232,10 +292,11 @@ fn music_line(before: &str, title: &str, after: &str) -> Div {
             div()
                 .flex_none()
                 .text_color(theme::TEXT_DIM)
-                .child(Icon::Music.size(13.)),
+                .child(icon.size(13.)),
         )
         .child(
             div()
+                .flex_1()
                 .min_w_0()
                 .truncate()
                 .child(StyledText::new(text).with_highlights(vec![(
@@ -339,5 +400,84 @@ mod tests {
             h.drain().as_slice(),
             [crate::engine::UiCommand::StopDelen(6)]
         ));
+    }
+
+    /// Each shared screen has its own stop on its line, besides the toggle. Revert to see it
+    /// fail: drop the `.child(..)` with `stop-share-` from the screen lines.
+    #[gpui_kit::test]
+    fn a_shared_screen_has_its_own_stop(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.app.update(cx, |app, cx| {
+            let mut s = (*app.s).clone();
+            s.voice.joined = true;
+            s.own_streams = vec![OwnStreamState {
+                stream_id: 6,
+                title: "Elden Ring".into(),
+                viewers: 2,
+                is_audio: false,
+                is_camera: false,
+                is_music: false,
+                drawing: false,
+                has_drawing: false,
+            }];
+            app.s = Arc::new(s);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("stop-share-6", cx)
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [crate::engine::UiCommand::StopDelen(6)]
+        ));
+    }
+
+    /// In a game and not sharing: one click streams it, no picker; while sharing the
+    /// button is gone. Revert to see it fail: drop the `sharing_self` check in `game_btn`.
+    #[gpui_kit::test]
+    fn the_game_in_front_streams_with_one_click(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        let set = |sharing: bool, h: &Harness, cx: &mut TestAppContext| {
+            h.app.update(cx, |app, cx| {
+                let mut s = (*app.s).clone();
+                s.voice.joined = true;
+                s.me.playing = Some("Elden Ring".into());
+                s.own_streams = sharing
+                    .then(|| OwnStreamState {
+                        stream_id: 6,
+                        title: "Elden Ring".into(),
+                        viewers: 0,
+                        is_audio: false,
+                        is_camera: false,
+                        is_music: false,
+                        drawing: false,
+                        has_drawing: false,
+                    })
+                    .into_iter()
+                    .collect();
+                app.s = Arc::new(s);
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        set(false, &h, cx);
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("stream-game", cx)
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [crate::engine::UiCommand::DeelSpel]
+        ));
+        set(true, &h, cx);
+        let shown = h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.try_find("stream-game").is_some()
+        });
+        assert!(!shown, "not while a screen is shared");
     }
 }
