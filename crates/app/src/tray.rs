@@ -152,57 +152,16 @@ fn venster() -> Option<windows::Win32::Foundation::HWND> {
     }
 }
 
-/// Hetzelfde 16x16-rooster als `crates/app/icons/icon.svg`, als rauwe RGBA. Klein genoeg
-/// om in de code te houden; een los icoonbestand zou meegekopieerd moeten worden en dat
-/// botst met "één exe". Beide platforms bouwen hun tray-icoon hieruit op.
+/// Het tray-icoon als rauwe RGBA (32x32): `icons/tray-32.png`, de kleine snede van
+/// `icons/icon.svg` zonder de prompt. Ingebakken, want een los bestand botst met "één exe".
+/// Beide platforms bouwen hun tray-icoon hieruit op.
 pub fn icoon_rgba() -> (Vec<u8>, u32) {
-    const GRID: [&str; 16] = [
-        "BBBBBBBBBBBBBBBB",
-        "BB######BBBBBBBB",
-        "BBBBBBBBBBBBBBBB",
-        ",,,,,,,,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,sssssssssss,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,ssssssss,,,,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,ssssssssss,,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,",
-        "11122BBBMMMoooaa",
-    ];
-    debug_assert!(GRID.iter().all(|r| r.len() == 16), "rooster is niet 16x16");
-
-    fn kleur(c: char) -> [u8; 4] {
-        let (r, g, b) = match c {
-            '#' => (0xEF, 0xE9, 0xD5), // paper
-            ',' => (0x10, 0x12, 0x2A), // ink
-            '1' => (0x19, 0x1D, 0x3A), // indigo
-            '2' => (0x2E, 0x34, 0x64), // violet
-            'B' => (0x3B, 0x58, 0xC4), // blue
-            's' => (0xA7, 0xAE, 0xCC), // silver
-            'M' => (0xD4, 0x60, 0xA2), // magenta
-            'o' => (0xE0, 0x8A, 0x48), // orange
-            'a' => (0xE7, 0xBC, 0x5D), // amber
-            _ => unreachable!("onbekende roostercel {c:?}"),
-        };
-        [r, g, b, 255]
-    }
-
-    // 2x nearest-neighbour: elke roostercel wordt een 2x2 blok, geen vervaging.
-    const SCHAAL: u32 = 2;
-    const N: u32 = 16 * SCHAAL;
-    let mut rgba = Vec::with_capacity((N * N * 4) as usize);
-    for y in 0..N {
-        let rij: Vec<char> = GRID[(y / SCHAAL) as usize].chars().collect();
-        for x in 0..N {
-            rgba.extend_from_slice(&kleur(rij[(x / SCHAAL) as usize]));
-        }
-    }
-    (rgba, N)
+    let png = image::load_from_memory(include_bytes!("../icons/tray-32.png"))
+        .expect("ingebakken tray-icoon is een geldige PNG")
+        .into_rgba8();
+    let n = png.width();
+    debug_assert_eq!(n, png.height(), "tray-icoon is niet vierkant");
+    (png.into_raw(), n)
 }
 
 #[cfg(windows)]
@@ -335,4 +294,14 @@ pub fn toon_fout(tekst: &str) {
 #[cfg(not(windows))]
 pub fn toon_fout(tekst: &str) {
     eprintln!("FitCommunication kon niet starten: {tekst}");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn het_ingebakken_tray_icoon_is_32_bij_32_rgba() {
+        let (rgba, n) = super::icoon_rgba();
+        assert_eq!(n, 32);
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+    }
 }

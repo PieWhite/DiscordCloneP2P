@@ -24,18 +24,30 @@ pub fn render(_snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElem
     // recipe: moving with the button held hands the drag to the window manager.
     let pressed = window.use_keyed_state("titlebar-pressed", cx, |_, _| false);
 
+    // The wordmark: "Fit" in the display serif, "com" in mono, then the cursor bar. GPUI has
+    // no baseline alignment, so the three sit on the bottom edge with the descent as margin.
     let brand = div()
         .flex()
-        .items_center()
-        .gap(px(10.))
-        .child(div().text_color(theme::ACCENT).child(Icon::Brand.size(16.)))
+        .items_end()
+        .gap(px(2.))
         .child(
             div()
-                .text_size(px(13.))
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .font_family(theme::DISPLAY_FONT)
+                .text_size(px(20.))
+                .line_height(px(20.))
                 .text_color(theme::TEXT_STRONG)
-                .child("FitCommunication"),
-        );
+                .child("Fit"),
+        )
+        .child(
+            div()
+                .mb(px(2.))
+                .font_family(theme::MONO_FONT)
+                .text_size(px(11.))
+                .line_height(px(11.))
+                .text_color(theme::TEXT_MUTED)
+                .child("com"),
+        )
+        .child(div().mb(px(4.)).w(px(6.)).h(px(1.5)).bg(theme::ACCENT));
 
     div()
         .id("titlebar")

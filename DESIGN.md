@@ -242,6 +242,15 @@ visual weight, rendered at 12 to 20px with size set by the caller. Toggling stat
 pairs with the same silhouette plus a slash. Color is never hardcoded; icons inherit
 `currentColor`.
 
+
+## Logo
+
+The wordmark is "Fit" in Instrument Serif (white) followed by "com" in JetBrains Mono (ash)
+and a static chrome cursor bar: the app's two type voices in one name. It sits in the
+titlebar at 20px. The app icon is a black tile (#16191E to #000, radius 36/160, hairline
+edge) carrying `>Fit_`: a mono prompt in iron, the serif "Fit", the chrome cursor. At 48px
+and below the prompt drops. Source: `crates/app/icons/icon.svg` (glyphs as outlines);
+`icon.png`, `icon.ico` and `tray-32.png` are renders of it.
 ## Components
 
 ### Buttons

@@ -1,4 +1,4 @@
-//! The icon set from `frontend/index.html` (`<g id="i-*">`), plus the brand mark, as SVG
+//! The icon set from `frontend/index.html` (`<g id="i-*">`), as SVG
 //! files baked into the binary and served by [`Assets`].
 //!
 //! The rules of the set still hold: 24×24 grid, stroke 2, no fill, square caps, miter
@@ -91,8 +91,6 @@ icons! {
     /// Watch / Stop watching on a stream tile.
     Eye => "eye",
     EyeOff => "eye-off",
-    /// The titlebar mark: three nodes on a 16×16 grid, filled, with faint links.
-    Brand => "brand",
 }
 
 impl Icon {
