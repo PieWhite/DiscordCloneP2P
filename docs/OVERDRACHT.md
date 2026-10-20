@@ -2817,9 +2817,10 @@ DND is rood. `design/main-window.html` en `design/shots/` blijven oudere anti-re
 
 - **Eigen paneel** (onder de kanaalkolom): avatar, naam, status, mic, deafen en DND. Mic en
   deafen blijven daar altijd; dat was Ricks keuze ("mic and deafen should stay in selfpanel").
-- **Gespreksbalk** alleen terwijl je in het gesprek zit, bovenaan de tijdlijnkolom boven de
-  streamstrook: links "in call · N people · worst RTT", rechts camera, scherm delen, Spotify
-  en Leave. Tijdens delen opent de deelknop een menu (Stop sharing, Allow drawing, Clear
+- **Voice-connected-paneel** alleen terwijl je in het gesprek zit, in de kanaalkolom tussen
+  de spraaksectie en het eigen paneel, gestapeld als in Discord (Rick, 2026-10-20: de knoppen
+  "in het midden bovenaan" moesten naar linksonder). Boven "Voice connected" met "N people ·
+  worst RTT" en Leave, eronder één rij even brede knoppen: camera, scherm delen, Spotify. Tijdens delen opent de deelknop een menu (Stop sharing, Allow drawing, Clear
   drawing); de "now sharing"-regels zijn uit de kanaalkolom. Eronder, alleen bij gedeelde
   Spotify, één regel: "You share …" bij de DJ, "X plays …" met pauze/volgende bij een
   luisteraar. Die twee knoppen staan nergens anders.

@@ -194,13 +194,14 @@ span the column.
 Each control has one home, so a screenshare is never crowded.
 - **Self panel** (bottom of the channels column): avatar, name, status, mic, deafen and
   do-not-disturb. Mic and deafen stay here always, joined or not.
-- **Call bar** (only while joined): a "call stage" section at the top of the timeline
-  column, above the stream strip. Left: "in call · N people · worst RTT" in mono. Right:
-  camera, share screen, Spotify, Leave.
+- **Voice-connected panel** (only while joined): in the channels column between the voice
+  roster and the self panel, stacked as in Discord. Top: "Voice connected" in green, "N
+  people · worst RTT" in mono under it, Leave on the right. Under that one row of equal
+  buttons: camera, share screen, Spotify.
 - **Share menu:** while a screen is shared, the share button opens a menu with Stop
   sharing, Allow drawing and (when something is drawn) Clear drawing; while not sharing it
   opens the picker. The "now sharing" lines are not in the channels column.
-- **Music line:** under the call bar, only while Spotify is shared: "You share <title> ·
+- **Music line:** inside the voice-connected panel, only while Spotify is shared: "You share <title> ·
   N listening" for the DJ, "<name> plays <title>" with play/pause and next for a listener.
   Those two buttons live nowhere else.
 - **Channels column, voice section:** only who is in the call (avatar, name, LIVE and
@@ -282,7 +283,7 @@ is a normal state.
 - **Do** make selection a lift ground, a 1px hairline inset and white text.
 - **Do** give every volume exactly one home, the per-person audio popover.
 - **Do** keep mic and deafen in the self panel and the rest of the call controls in the
-  call bar while joined.
+  voice-connected panel right above it while joined.
 - **Do** keep icons on the 24×24 stroke 1.5 round grid, colored by `currentColor`.
 - **Do** state changes instantly; the speaking ring and the typing indicator are the only
   moving things, and neither loops while nothing happens.

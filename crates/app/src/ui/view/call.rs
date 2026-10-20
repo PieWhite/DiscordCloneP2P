@@ -1,23 +1,23 @@
-//! The call stage at the top of the timeline column, drawn only while joined (decision 48):
-//! one bar with the call's size and worst link on the left and the call controls on the
-//! right, and under it one quiet line per shared Spotify. These are the only homes of the
-//! camera, screen share, drawing, Spotify and Leave controls.
+//! The voice-connected panel at the foot of the channel column, above the self panel, drawn
+//! only while joined (decision 48, moved there as in Discord on 2026-10-20): the call's size
+//! and worst link with Leave beside it, then camera, screen share and Spotify in one row, and
+//! under that one quiet line per shared Spotify. These are the only homes of those controls.
 
 use super::super::commands::{self, MusicAction};
 use super::super::icons::Icon;
 use super::super::state::PeerState;
 use super::super::theme;
-use super::widgets::{dk_btn, meter_view, popover_item, popover_surface, tooltip, Btn, BtnKind};
+use super::widgets::{dk_btn, meter_view, popover_item, popover_surface, tooltip};
 use super::{format, AppSnapshot};
 use gpui_kit::base::Popover;
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Div, ElementId, HighlightStyle,
-    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, StyledText,
-    TestSupportExt, Window,
+    div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Div, ElementId, FontWeight,
+    HighlightStyle, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled, StyledText, TestSupportExt, Window,
 };
 
-/// The call stage. Call only while `s.voice.joined`.
-pub fn render_bar(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The voice-connected panel. Call only while `s.voice.joined`.
+pub fn render_panel(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyElement {
     let others: Vec<&PeerState> = snap.call_peers().collect();
     let people = others.len() + 1;
     let call_ids: Vec<String> = others.iter().map(|p| p.id.clone()).collect();
@@ -33,24 +33,57 @@ pub fn render_bar(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyE
         .items_center()
         .gap(px(4.))
         .font_family(theme::MONO_FONT)
-        .text_size(theme::LABEL_TEXT)
+        .text_size(px(11.5))
         .text_color(theme::TEXT_MUTED)
         .whitespace_nowrap()
         .child(format!(
-            "in call \u{00b7} {people} {} \u{00b7}",
+            "{people} {} \u{00b7}",
             if people == 1 { "person" } else { "people" }
         ))
         .child(worst);
-
-    let bar = div()
+    let u_leave = snap.ui.clone();
+    let head = div()
         .flex()
         .items_center()
-        .gap(px(12.))
-        .h(px(56.))
-        .px(px(28.))
-        .child(summary)
-        .child(div().flex_1())
-        .child(toolbar(snap));
+        .gap(px(8.))
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme::ONLINE)
+                .child(Icon::Signal.size(18.)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::ONLINE)
+                        .truncate()
+                        .child("Voice connected"),
+                )
+                .child(summary),
+        )
+        .child(
+            div()
+                .id("call-leave")
+                .tab_index(0)
+                .focus_visible(|s| s.shadow(super::widgets::focus_ring()))
+                .size(px(32.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(theme::RADIUS_CONTROL)
+                .cursor_pointer()
+                .text_color(theme::DANGER_TEXT)
+                .hover(|s| s.bg(theme::DANGER_BG))
+                .tooltip(tooltip("Leave the call"))
+                .child(Icon::Leave.size(18.))
+                .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&u_leave, false)),
+        );
 
     let mut music: Vec<AnyElement> = Vec::new();
     if let Some(own) = snap.own_music() {
@@ -94,27 +127,25 @@ pub fn render_bar(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> AnyE
 
     div()
         .id("call-bar")
-        .flex_none()
         .flex()
         .flex_col()
-        .border_b_1()
+        .gap(px(8.))
+        .mx(px(8.))
+        .mt(px(8.))
+        .p(px(8.))
+        .rounded(theme::RADIUS_FIELD)
+        .border_1()
         .border_color(theme::BORDER)
-        .child(bar)
+        .child(head)
+        .child(toolbar(snap))
         .when(!music.is_empty(), |d| {
-            d.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .px(px(28.))
-                    .pb(px(10.))
-                    .children(music),
-            )
+            d.child(div().flex().flex_col().children(music))
         })
         .test_support()
         .into_any_element()
 }
 
-/// Camera, screen share (with its menu while sharing), Spotify, Leave.
+/// Camera, screen share (with its menu while sharing) and Spotify, in equal widths.
 fn toolbar(snap: &AppSnapshot) -> Div {
     let camera = snap.own_camera().is_some();
     let spotify = snap.own_music().is_some();
@@ -126,10 +157,12 @@ fn toolbar(snap: &AppSnapshot) -> Div {
         .filter(|st| !st.is_audio && !st.is_camera)
         .map(|st| (st.stream_id, st.drawing, st.has_drawing))
         .collect();
-    let (u_cam, u_spot, u_leave) = (snap.ui.clone(), snap.ui.clone(), snap.ui.clone());
+    let (u_cam, u_spot) = (snap.ui.clone(), snap.ui.clone());
 
     let share: AnyElement = if screens.is_empty() {
         dk_btn("call-share", Icon::Monitor, false)
+            .w_full()
+            .h(px(36.))
             .tooltip(tooltip("Share screen"))
             .on_click(
                 snap.app
@@ -139,7 +172,7 @@ fn toolbar(snap: &AppSnapshot) -> Div {
     } else {
         let (app, snap) = (snap.app.clone(), snap.clone());
         Popover::new("share-menu")
-            .anchor(gpui_kit::Anchor::TopRight)
+            .anchor(gpui_kit::Anchor::BottomLeft)
             .offset(px(6.))
             .open(snap.v.share_menu)
             .on_open_change(move |open, _, cx| {
@@ -151,6 +184,8 @@ fn toolbar(snap: &AppSnapshot) -> Div {
             })
             .trigger_with(|_, _, _| {
                 dk_btn("call-share", Icon::Monitor, true)
+                    .w_full()
+                    .h(px(36.))
                     .tooltip(tooltip("Sharing your screen"))
                     .test_support()
                     .into_any_element()
@@ -159,41 +194,40 @@ fn toolbar(snap: &AppSnapshot) -> Div {
             .into_any_element()
     };
 
+    let cell = |el: AnyElement| div().flex_1().min_w_0().child(el);
     div()
         .flex()
-        .flex_none()
         .items_center()
         .gap(px(6.))
-        .child(
+        .child(cell(
             dk_btn(
                 "call-cam",
                 if camera { Icon::Cam } else { Icon::CamOff },
                 camera,
             )
+            .w_full()
+            .h(px(36.))
             .tooltip(tooltip(if camera {
                 "Turn the camera off"
             } else {
                 "Turn the camera on"
             }))
-            .on_click(move |_: &ClickEvent, _, _| commands::set_camera(&u_cam, !camera)),
-        )
-        .child(share)
-        .child(
+            .on_click(move |_: &ClickEvent, _, _| commands::set_camera(&u_cam, !camera))
+            .into_any_element(),
+        ))
+        .child(cell(share))
+        .child(cell(
             dk_btn("call-spotify", Icon::Music, spotify)
+                .w_full()
+                .h(px(36.))
                 .tooltip(tooltip(if spotify {
                     "Stop sending Spotify to the call"
                 } else {
                     "Everyone in the call hears your Spotify, and only that"
                 }))
-                .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&u_spot, !spotify)),
-        )
-        .child(div().w(px(1.)).h(px(22.)).mx(px(4.)).bg(theme::BORDER))
-        .child(
-            Btn::new("call-leave", "Leave")
-                .kind(BtnKind::Danger)
-                .dialog()
-                .on_click(move |_, _, _| commands::set_joined(&u_leave, false)),
-        )
+                .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&u_spot, !spotify))
+                .into_any_element(),
+        ))
 }
 
 /// The share button's menu while a screen is shared. Drawing is one switch for every screen
@@ -318,10 +352,10 @@ mod tests {
     use gpui_kit::TestAppContext;
     use std::sync::Arc;
 
-    /// Revert to see it fail: drop the `.when(snap.s.voice.joined, ..)` around
-    /// `call::render_bar` in `AppView::render` (the bar then shows before joining).
+    /// Revert to see it fail: drop the `.when(joined, ..)` around `call::render_panel` in
+    /// `channels::voice_panel` (the panel then shows before joining).
     #[gpui_kit::test]
-    fn the_call_bar_shows_only_while_joined(cx: &mut TestAppContext) {
+    fn the_call_panel_shows_only_while_joined(cx: &mut TestAppContext) {
         let h = Harness::new(cx);
         let present = |cx: &mut TestAppContext| {
             h.with_window(cx, |window, cx| {
@@ -329,7 +363,7 @@ mod tests {
                 window.try_find("call-bar").is_some()
             })
         };
-        assert!(!present(cx), "no call bar before joining");
+        assert!(!present(cx), "no call panel before joining");
         h.app.update(cx, |app, cx| {
             let mut s = (*app.s).clone();
             s.voice.joined = true;
@@ -337,7 +371,7 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(present(cx), "the call bar once joined");
+        assert!(present(cx), "the call panel once joined");
     }
 
     /// While a screen is shared, the share button opens its menu with Stop sharing and Allow

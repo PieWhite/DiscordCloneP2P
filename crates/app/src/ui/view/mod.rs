@@ -358,7 +358,7 @@ pub struct ViewState {
     pub volume_before_mute: HashMap<members::VolumeKey, f32>,
     /// The peer whose "Audio for" popover is open: the one home of their volumes.
     pub audio_for: Option<String>,
-    /// The call bar's share menu is open. Only while a screen is shared.
+    /// The call panel's share menu is open. Only while a screen is shared.
     pub share_menu: bool,
     pub focused: bool,
     /// Unread count of the conversation at the moment it was opened, for the "new" line.
@@ -1272,9 +1272,6 @@ impl Render for AppView {
             .flex_col()
             .bg(theme::BG_CANVAS)
             .child(timeline::render_head(&snap, window, cx))
-            .when(snap.s.voice.joined, |d| {
-                d.child(call::render_bar(&snap, window, cx))
-            })
             .child(self.panes.strip.clone())
             .child(div().flex_1().min_h_0().child(cached(&self.panes.timeline)))
             .child(self.panes.composer.clone())

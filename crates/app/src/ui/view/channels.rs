@@ -1,7 +1,7 @@
 //! The channel column (`renderChannels`, `renderVoice`): the channel list with unread badges
 //! and the collapsible general group, the DM list, and at the bottom the voice section (who
-//! is in the call, Join) and the self panel (mic, deafen, do-not-disturb). Every other call
-//! control lives in the call bar (`call.rs`).
+//! is in the call, Join), the voice-connected panel while joined (`call.rs`) and the self
+//! panel (mic, deafen, do-not-disturb), stacked as in Discord.
 //!
 //! Right-click on a removable sub-channel opens the rename prompt straight away, as the old
 //! `contextmenu` handler did; there is no menu in between.
@@ -327,8 +327,8 @@ fn voice_hint(call: &[&PeerState], anyone_online: bool) -> String {
     "Nobody is in the call.".into()
 }
 
-/// The voice section: who is in the call, and Join while you are not. No other controls:
-/// the call bar owns them while joined (decision 48).
+/// The voice section: who is in the call, Join while you are not, and the call controls
+/// in the voice-connected panel while you are (decision 48).
 fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App) -> Div {
     let s = &snap.s;
     let joined = s.voice.joined;
@@ -379,6 +379,9 @@ fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut A
                     .text_color(theme::TEXT_MUTED)
                     .child(voice_hint(&others, snap.online_peers().next().is_some())),
             )
+        })
+        .when(joined, |d| {
+            d.child(super::call::render_panel(snap, window, cx))
         })
         .child(self_row(snap, narrow, window, cx))
 }

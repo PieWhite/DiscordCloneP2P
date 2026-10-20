@@ -260,7 +260,7 @@ pub struct DebugView {
     pub hover: Option<String>,
     /// `audio=<peer id>` or `audio=first`: that peer's audio popover open.
     pub audio_for: Option<String>,
-    /// `menu=share`: the call bar's share menu open (the fixture must share a screen).
+    /// `menu=share`: the call panel's share menu open (the fixture must share a screen).
     pub share_menu: bool,
 }
 

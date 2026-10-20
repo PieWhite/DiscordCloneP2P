@@ -5,7 +5,7 @@
 //! | [`avatar`] | monogram in the identity hue, hairline ring (green while speaking), presence dot |
 //! | [`Btn`] | text buttons: ghost first, bone outline for the one primary action, red for danger |
 //! | [`icon_btn`] | 28×28 glyph buttons |
-//! | [`dk_btn`] | the call bar's 40×40 framed glyph buttons |
+//! | [`dk_btn`] | the call panel's framed glyph buttons |
 //! | [`live_pill`] | the red LIVE mark on a tile and in the voice list |
 //! | [`popover_surface`], [`popover_item`] | the ground of every popover and menu, and its rows |
 //! | [`badge`] | unread counts |
