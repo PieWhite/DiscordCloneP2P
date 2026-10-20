@@ -597,6 +597,7 @@ mod tests {
             desktop_volume: None,
             desktop_stream: None,
             music: None,
+            slot: 0,
         }
     }
 

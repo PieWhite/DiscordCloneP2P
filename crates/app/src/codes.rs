@@ -100,6 +100,7 @@ mod tests {
             control_port: 41650,
             public_key: sleutel.map(|k| bytes_naar_hex(&k)),
             addresses: Vec::new(),
+            verwijderd: false,
         }
     }
 
@@ -153,6 +154,24 @@ mod tests {
             ),
             Ok(Koppeling::Bestaand(0))
         );
+    }
+
+    /// Na verwijderen is zijn code, ook met een nieuwe sleutel, een nieuwe peer: de
+    /// grafsteen ervoor wordt nooit gekozen. Revert om te zien falen: laat `PeerConfig::vergeet`
+    /// de pin staan (dan `SleutelWijkt`, of `Bestaand(0)` op de grafsteen).
+    #[test]
+    fn een_verwijderde_peer_komt_terug_als_nieuwe() {
+        let (ik, sam) = (PeerId::new_random(), PeerId::new_random());
+        let mut weg = peer("100.64.0.2", Some(sam), Some([1; 32]));
+        weg.addresses = vec!["84.1.2.3:41650".parse().unwrap()];
+        weg.vergeet();
+        let peers = [weg];
+        for sleutel in [[1; 32], [9; 32]] {
+            assert_eq!(
+                koppel(&peers, ik, &code(sam, sleutel, "100.64.0.2:41650")),
+                Ok(Koppeling::Nieuw)
+            );
+        }
     }
 
     #[test]

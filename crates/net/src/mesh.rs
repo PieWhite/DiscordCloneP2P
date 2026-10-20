@@ -269,6 +269,10 @@ pub enum MeshCommand {
         public_key: [u8; 32],
         kandidaten: Vec<SocketAddr>,
     },
+    /// De gebruiker verwijderde deze peer. Het nummer blijft bezet (de dialers en de app
+    /// tellen op plek), maar het target belt niet meer, neemt niemand meer aan en leert
+    /// niets meer, ook niet over het tailnet. Een nieuwe code maakt een nieuw target.
+    Vergeet(usize),
 }
 
 impl std::fmt::Debug for MeshCommand {
@@ -287,6 +291,7 @@ impl std::fmt::Debug for MeshCommand {
             Self::WerkBij { target, .. } => {
                 f.debug_struct("WerkBij").field("target", target).finish()
             }
+            Self::Vergeet(target) => f.debug_tuple("Vergeet").field(target).finish(),
         }
     }
 }
@@ -673,6 +678,10 @@ struct TargetState {
     code: Vec<SocketAddr>,
     /// Van peers gehoord (B4), de nieuwste eerst, begrensd op [`Addresses::MAX`].
     geleerd: Vec<SocketAddr>,
+    /// `None` in tests zonder netwerk.
+    dialer: Option<tokio::task::AbortHandle>,
+    /// Verwijderd ([`MeshCommand::Vergeet`]): een grafsteen, nooit uit de lijst gehaald.
+    weg: bool,
 }
 
 impl TargetState {
@@ -808,6 +817,8 @@ enum Weigering {
     Identiteit { expected: PeerId, got: PeerId },
     /// Nog niets vastgepind, en het adres ligt buiten het tailnet.
     NietTeLeren,
+    /// De gebruiker verwijderde dit target ([`MeshCommand::Vergeet`]).
+    Verwijderd,
 }
 
 impl Weigering {
@@ -816,6 +827,7 @@ impl Weigering {
             Self::Dubbel(_) => "dubbele identiteit in config",
             Self::Identiteit { .. } => "identiteit veranderd",
             Self::NietTeLeren => "sleutel onbekend buiten het tailnet",
+            Self::Verwijderd => "peer verwijderd",
         }
     }
 
@@ -826,6 +838,9 @@ impl Weigering {
             },
             Self::Identiteit { expected, got } => PeerStatus::IdentityChanged { expected, got },
             Self::NietTeLeren => PeerStatus::UnknownKey,
+            Self::Verwijderd => PeerStatus::Offline {
+                reason: "verwijderd".to_string(),
+            },
         }
     }
 }
@@ -933,6 +948,9 @@ impl Actor {
         while let Some(msg) = rx.recv().await {
             match msg {
                 Internal::Command(c) => self.on_command(c).await,
+                // Een verwijderd target leert nooit meer een adres: daarvandaan zou het een
+                // sleutel kunnen leren.
+                Internal::Resolved { target, .. } if self.targets[target].weg => {}
                 Internal::Resolved { target, addr } => {
                     self.targets[target].resolved = Some(addr);
                     // Nu er een adres bekend is kan een geparkeerde verbinding alsnog
@@ -988,10 +1006,12 @@ impl Actor {
             last_status: None,
             code: t.kandidaten.clone(),
             geleerd: Vec::new(),
+            dialer: None,
+            weg: false,
         });
         let Some(s) = &self.spawner else { return };
         let Some(int) = s.int.upgrade() else { return };
-        tokio::spawn(dial_loop(
+        let dialer = tokio::spawn(dial_loop(
             s.endpoint.clone(),
             self.cfg.clone(),
             target,
@@ -1001,6 +1021,7 @@ impl Actor {
             connected_rx,
             s.stop.clone(),
         ));
+        self.targets[target].dialer = Some(dialer.abort_handle());
     }
 
     /// Waar deze pc zijn control-poort of zijn mediapoort bereikbaar denkt: wat de router
@@ -1048,7 +1069,7 @@ impl Actor {
                 public_key,
                 kandidaten,
             } => {
-                let Some(t) = self.targets.get_mut(target) else {
+                let Some(t) = self.targets.get_mut(target).filter(|t| !t.weg) else {
                     return;
                 };
                 // De app controleerde dit al tegen de config; hier nog eens tegen wat de actor
@@ -1066,6 +1087,7 @@ impl Actor {
                 // Een geparkeerde beller kan nu op zijn sleutel gekoppeld worden.
                 self.retry_pending().await;
             }
+            MeshCommand::Vergeet(target) => self.vergeet(target).await,
             MeshCommand::Send { to, msg } => {
                 if let Some(a) = self.active.get(&to) {
                     let _ = a.out.try_send(msg);
@@ -1194,7 +1216,10 @@ impl Actor {
         sleutel: &[u8; 32],
         remote: SocketAddr,
     ) -> Koppeling {
-        let zoek = |pred: &dyn Fn(&TargetState) -> bool| self.targets.iter().position(pred);
+        // Een verwijderd target koppelt nooit, ook niet om te laten wachten.
+        let levend = || self.targets.iter().enumerate().filter(|(_, t)| !t.weg);
+        let zoek =
+            |pred: &dyn Fn(&TargetState) -> bool| levend().find(|(_, t)| pred(t)).map(|(i, _)| i);
         if let Some(i) = zoek(&|t| t.public_key == Some(*sleutel)) {
             return Koppeling::Target(i);
         }
@@ -1220,20 +1245,12 @@ impl Actor {
 
         // Alleen het IP, maar uitsluitend als dat ondubbelzinnig één peer aanwijst. Vangt
         // het geval af waarin een NAT onderweg de bronpoort herschrijft.
-        let mut hits = self
-            .targets
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| nieuw(t) && zelfde_ip(t));
+        let mut hits = levend().filter(|(_, t)| nieuw(t) && zelfde_ip(t));
         if let (Some((i, _)), None) = (hits.next(), hits.next()) {
             return Koppeling::Target(i);
         }
 
-        if self
-            .targets
-            .iter()
-            .any(|t| ongepind(t) && t.resolved.is_none())
-        {
+        if levend().any(|(_, t)| ongepind(t) && t.resolved.is_none()) {
             Koppeling::Wacht
         } else {
             Koppeling::Geen
@@ -1258,6 +1275,11 @@ impl Actor {
             return Err(Weigering::Dubbel(ander));
         }
         let t = &self.targets[target];
+        // Een belpoging die nog liep toen hij verwijderd werd: zonder pin zou hij hieronder
+        // over het tailnet opnieuw geleerd worden.
+        if t.weg {
+            return Err(Weigering::Verwijderd);
+        }
         if let Some(verwacht) = t.known_id.filter(|&k| k != peer_id) {
             return Err(Weigering::Identiteit {
                 expected: verwacht,
@@ -1598,6 +1620,32 @@ impl Actor {
         }
     }
 
+    /// Zie [`MeshCommand::Vergeet`]. Eerst losmaken langs de gewone weg, zodat de app een
+    /// laatste `Offline` krijgt en de mediasleutels weg zijn; dan de grafsteen, zonder pin,
+    /// zonder adressen en zonder dialer.
+    async fn vergeet(&mut self, target: usize) {
+        let Some(t) = self.targets.get_mut(target).filter(|t| !t.weg) else {
+            return;
+        };
+        if let Some(dialer) = t.dialer.take() {
+            dialer.abort();
+        }
+        if let Some(conn_id) = t.bound {
+            if let Some(a) = self.active.values().find(|a| a.conn_id == conn_id) {
+                a.conn.close(0u32.into(), b"verwijderd");
+            }
+            self.on_closed(conn_id, "verwijderd".into()).await;
+        }
+        let t = &mut self.targets[target];
+        t.weg = true;
+        t.known_id = None;
+        t.public_key = None;
+        t.resolved = None;
+        t.code.clear();
+        t.geleerd.clear();
+        tracing::info!(target, "peer verwijderd");
+    }
+
     async fn on_closed(&mut self, conn_id: u64, reason: String) {
         self.media.vergeet(conn_id);
 
@@ -1677,8 +1725,9 @@ impl Actor {
     }
 
     async fn set_status(&mut self, target: usize, status: PeerStatus) {
-        // Voorkomt dat de UI elke seconde een identiek statusbericht krijgt.
-        if self.targets[target].last_status.as_ref() == Some(&status) {
+        // Voorkomt dat de UI elke seconde een identiek statusbericht krijgt. Over een
+        // verwijderd target zeggen we niets meer.
+        if self.targets[target].weg || self.targets[target].last_status.as_ref() == Some(&status) {
             return;
         }
         self.targets[target].last_status = Some(status.clone());
@@ -2635,6 +2684,8 @@ mod tests {
                 last_status: None,
                 code: Vec::new(),
                 geleerd: Vec::new(),
+                dialer: None,
+                weg: false,
             });
         }
         let actor = Actor {
@@ -2960,6 +3011,47 @@ mod tests {
         assert_eq!(
             actor.koppel_inkomend(peer(1), &[9; 32], b),
             Koppeling::Target(0)
+        );
+    }
+
+    /// Een verwijderde peer komt met zijn oude pin niet meer binnen, en ook niet door opnieuw
+    /// te leren vanaf zijn tailnet-adres. Revert om te zien falen: haal `!t.weg` uit
+    /// `levend` in `koppel_inkomend` (dan wacht hij en leert hij na `Resolved` opnieuw).
+    #[tokio::test]
+    async fn een_verwijderd_target_koppelt_niet_en_leert_niet() {
+        let (mut actor, mut events, _vlaggen) = kale_actor(2);
+        let a: SocketAddr = "100.64.0.1:41000".parse().unwrap();
+        actor.targets[0].known_id = Some(peer(1));
+        actor.targets[0].public_key = Some([1; 32]);
+        actor.targets[0].resolved = Some(a);
+        actor.targets[0].bound = Some(7);
+        actor.targets[1].resolved = Some("100.64.0.2:41000".parse().unwrap());
+
+        actor.on_command(MeshCommand::Vergeet(0)).await;
+
+        let t = &actor.targets[0];
+        assert_eq!((t.known_id, t.public_key, t.resolved), (None, None, None));
+        assert!(!*t.connected.borrow(), "losgemaakt");
+        assert!(matches!(
+            events.try_recv(),
+            Ok(MeshEvent::Status {
+                target: 0,
+                status: PeerStatus::Offline { .. }
+            })
+        ));
+        // Oude pin, vanaf zijn oude adres: nergens bij, en niet eens wachten.
+        assert_eq!(actor.koppel_inkomend(peer(1), &[1; 32], a), Koppeling::Geen);
+        // Een late `Resolved` en een late belpoging leren niets.
+        actor.targets[0].resolved = Some(a);
+        assert_eq!(actor.koppel_inkomend(peer(1), &[1; 32], a), Koppeling::Geen);
+        assert_eq!(
+            actor.beoordeel(0, peer(1), &[1; 32], a.ip()),
+            Err(Weigering::Verwijderd)
+        );
+        actor.set_status(0, PeerStatus::Connecting).await;
+        assert!(
+            events.try_recv().is_err(),
+            "geen status meer na verwijderen"
         );
     }
 

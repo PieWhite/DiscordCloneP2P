@@ -466,9 +466,24 @@ pub struct PeerConfig {
     /// vervangt ze.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<std::net::SocketAddr>,
+
+    /// Verwijderd in Settings → Network. Blijft tot de volgende start in de lijst staan,
+    /// want de plek is het targetnummer van de mesh; [`Config::save`] schrijft hem niet weg.
+    #[serde(skip)]
+    pub verwijderd: bool,
 }
 
 impl PeerConfig {
+    /// Verwijderen: ook pin, `PeerId` en adressen weg, zodat [`crate::codes::koppel`] hier
+    /// nooit meer op uitkomt en zijn code weer een nieuwe peer is.
+    pub fn vergeet(&mut self) {
+        self.verwijderd = true;
+        self.known_id = None;
+        self.public_key = None;
+        self.address.clear();
+        self.addresses.clear();
+    }
+
     /// De vastgepinde sleutel. Een kapotte waarde telt als niet vastgepind, met een
     /// waarschuwing: de config is van de gebruiker, en een tikfout mag de app niet laten
     /// weigeren te starten. Leren gebeurt dan opnieuw, en alleen over het tailnet.
@@ -532,7 +547,9 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let text = toml::to_string_pretty(self)?;
+        let mut cfg = self.clone();
+        cfg.peers.retain(|p| !p.verwijderd);
+        let text = toml::to_string_pretty(&cfg)?;
         std::fs::write(path, text)
             .with_context(|| format!("config schrijven naar {}", path.display()))
     }

@@ -3,14 +3,15 @@
 use super::controls::{control_row, help, help_rich, input_box, label, Body, Piece};
 use super::{codes_field, SettingsPane};
 use crate::ui::commands;
+use crate::ui::icons::Icon;
 use crate::ui::state::{PeerState, Presence};
 use crate::ui::theme::{self, c};
 use crate::ui::view::format;
-use crate::ui::view::widgets::{avatar, meter_view, Btn, BtnKind, Dot};
-use crate::ui::view::AppSnapshot;
+use crate::ui::view::widgets::{avatar, focus_ring, meter_view, tooltip, Btn, BtnKind, Dot};
+use crate::ui::view::{AppSnapshot, Dialog};
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, ClipboardItem, Context, Div, IntoElement, ParentElement,
-    SharedString, Styled, Window,
+    div, prelude::FluentBuilder, px, ClipboardItem, Context, Div, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 
 impl SettingsPane {
@@ -229,6 +230,33 @@ fn peer_row(
                 ),
         )
         .child(link(snap, p, window, cx))
+        .child(remove_btn(snap, p))
+}
+
+/// Remove, behind a confirm: one click must not drop a friend.
+fn remove_btn(snap: &AppSnapshot, p: &PeerState) -> gpui_kit::Stateful<Div> {
+    let dialog = Dialog::remove_peer(p);
+    div()
+        .id(gpui_kit::ElementId::Name(
+            format!("remove-peer-{}", p.slot).into(),
+        ))
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .size(px(28.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(theme::RADIUS_CONTROL)
+        .cursor_pointer()
+        .text_color(theme::TEXT_MUTED)
+        .hover(|s| s.bg(theme::DANGER_BG).text_color(theme::DANGER_TEXT))
+        .tooltip(tooltip("Remove this peer"))
+        .child(Icon::Trash.size(15.))
+        .on_click(
+            snap.app
+                .listener(move |app, _, window, cx| app.open_dialog(dialog.clone(), window, cx)),
+        )
 }
 
 /// The link: the state dot and its word. Only the RTT of an online peer moves with the

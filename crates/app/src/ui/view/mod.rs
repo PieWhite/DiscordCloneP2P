@@ -239,6 +239,8 @@ pub enum ConfirmAction {
     ApplyUpdate,
     DeleteAllImages,
     DeleteMessage(OpRef),
+    /// `PeerState::slot`.
+    RemovePeer(usize),
 }
 
 impl ConfirmAction {
@@ -247,6 +249,7 @@ impl ConfirmAction {
             ConfirmAction::ApplyUpdate => commands::apply_update(ui),
             ConfirmAction::DeleteAllImages => commands::delete_all_images(ui),
             ConfirmAction::DeleteMessage(op) => commands::delete_message(ui, op),
+            ConfirmAction::RemovePeer(slot) => commands::remove_peer(ui, *slot),
         }
     }
 }
@@ -302,6 +305,16 @@ impl Dialog {
             ok_label: "Delete them".into(),
             danger: true,
             action: ConfirmAction::DeleteAllImages,
+        }
+    }
+
+    pub fn remove_peer(p: &PeerState) -> Self {
+        Dialog::Confirm {
+            title: format!("Remove {}?", p.name),
+            text: "They stop connecting to you, from any address, and disappear from your lists. Messages stay. Only on this machine: the others keep them until they remove them too. Paste their invite code to add them back.".into(),
+            ok_label: "Remove".into(),
+            danger: true,
+            action: ConfirmAction::RemovePeer(p.slot),
         }
     }
 

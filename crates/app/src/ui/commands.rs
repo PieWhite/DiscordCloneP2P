@@ -242,6 +242,11 @@ pub fn share_source(ui: &Ui, index: usize) {
     }
 }
 
+/// Forget a peer on this machine: no more connections, pin and addresses gone.
+pub fn remove_peer(ui: &Ui, slot: usize) {
+    send(ui, UiCommand::VerwijderPeer(slot));
+}
+
 pub fn stop_sharing(ui: &Ui, stream: u32) {
     send(ui, UiCommand::StopDelen(stream));
 }

@@ -125,6 +125,9 @@ pub struct PeerState {
     /// The Spotify this peer shares, whether or not we are in the call to hear it.
     #[serde(default)]
     pub music: Option<MusicState>,
+    /// The engine's place for this peer, for Remove. Not the position in `peers`.
+    #[serde(default)]
+    pub slot: usize,
 }
 
 /// A peer's shared Spotify: what plays, and its own volume while we listen.
@@ -873,6 +876,7 @@ impl UiState {
                     desktop_volume: desk.map(|d| d.1),
                     desktop_stream: desk.map(|d| d.0),
                     music: id.and_then(music),
+                    slot: p.plek,
                 }
             })
             .collect();
@@ -1779,6 +1783,7 @@ mod tests {
                 volume: 1.0,
                 user_status: None,
                 activiteit: None,
+                plek: 0,
             })
             .collect();
         // Three peers plus me is four identities, so one hue repeats — but never within

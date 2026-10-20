@@ -43,6 +43,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
             control_port: ander,
             public_key: None,
             addresses: Vec::new(),
+            verwijderd: false,
         }],
         video: VideoConfig::default(),
         sound: Default::default(),

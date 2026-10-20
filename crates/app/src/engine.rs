@@ -106,6 +106,9 @@ pub struct PeerView {
     /// Het spel dat bij deze peer vooraan staat, zoals hij het meldde en door `speelt::schoon`
     /// gehaald. `None` zonder spel, of offline. Wisselt alleen als hij van spel wisselt.
     pub activiteit: Option<String>,
+    /// Zijn plek in `cfg.peers` (het targetnummer), gezet in de momentopname. Verwijderde
+    /// peers staan daar niet in, dus de positie in die lijst is het niet.
+    pub plek: usize,
 }
 
 impl PeerView {
@@ -123,6 +126,7 @@ impl PeerView {
             volume: 1.0,
             user_status: None,
             activiteit: None,
+            plek: 0,
         }
     }
 }
@@ -422,6 +426,8 @@ pub enum UiCommand {
     ZetClipMap(PathBuf),
     /// Geplakte tekst met één of meer uitnodigingscodes (fase B1).
     VoegCodesToe(String),
+    /// Een peer verwijderen (`PeerView::plek`). Alleen hier; de anderen houden hem.
+    VerwijderPeer(usize),
 }
 
 pub struct EngineHandle {
@@ -952,21 +958,7 @@ impl Engine {
                     }
                     _ => {
                         if let Some(id) = self.peers.get(target).and_then(|p| p.peer_id) {
-                            self.verbonden.remove(&id);
-                            // Weg is weg: uit het gesprek halen, anders blijven we
-                            // audio naar een dood adres sturen. Wegvallen klinkt hetzelfde
-                            // als weggaan — voor wie meepraat is dat hetzelfde.
-                            if self.peers_in_voice.remove(&id) {
-                                self.geluid(geluid::Geluid::PeerLeave);
-                            }
-                            // Zijn vluchtige statussen zijn ze ook waard: een typindicatie
-                            // van een peer die er niet meer is klopt per definitie niet.
-                            self.typing_tot.retain(|(p, _), _| *p != id);
-                            self.peer_status.remove(&id);
-                            self.peer_activiteit.remove(&id);
-                            let (cmds, acties) = self.streams.bij_verbreking(id);
-                            self.stuur_alles(cmds);
-                            self.voer_uit(acties);
+                            self.peer_weg(id);
                         }
                     }
                 }
@@ -2596,6 +2588,7 @@ impl Engine {
             UiCommand::DownloadBestand(file) => self.download_bestand(file),
             UiCommand::ZetNaam(naam) => self.zet_naam(&naam),
             UiCommand::VoegCodesToe(tekst) => self.voeg_codes_toe(&tekst),
+            UiCommand::VerwijderPeer(plek) => self.verwijder_peer(plek),
             UiCommand::NietStoren(aan) => self.niet_storen = aan,
             UiCommand::VerwijderAlleAfbeeldingen => self.verwijder_alle_afbeeldingen(),
             UiCommand::MaakKanaal(titel) => {
@@ -2873,6 +2866,51 @@ impl Engine {
         self.codes_uitslag = Some(uitslag);
     }
 
+    /// Alles wat bij een verbonden peer hoort opruimen: hij viel weg of werd verwijderd.
+    fn peer_weg(&mut self, id: PeerId) {
+        self.verbonden.remove(&id);
+        // Weg is weg: uit het gesprek halen, anders blijven we audio naar een dood adres
+        // sturen. Wegvallen klinkt hetzelfde als weggaan — voor wie meepraat is dat hetzelfde.
+        if self.peers_in_voice.remove(&id) {
+            self.geluid(geluid::Geluid::PeerLeave);
+        }
+        // Zijn vluchtige statussen zijn ze ook waard: een typindicatie van een peer die er
+        // niet meer is klopt per definitie niet.
+        self.typing_tot.retain(|(p, _), _| *p != id);
+        self.peer_status.remove(&id);
+        self.peer_activiteit.remove(&id);
+        let (cmds, acties) = self.streams.bij_verbreking(id);
+        self.stuur_alles(cmds);
+        self.voer_uit(acties);
+    }
+
+    /// Mesh eerst: neemt hij het niet aan, dan blijft de peer ook hier staan. De mesh meldt
+    /// nog een laatste `Offline`, maar opruimen gebeurt hier al: daarna is de `PeerId` van
+    /// deze plek weg, zodat een opnieuw toegevoegde peer niet op de grafsteen terechtkomt.
+    fn verwijder_peer(&mut self, plek: usize) {
+        if !self.cfg.peers.get(plek).is_some_and(|p| !p.verwijderd) {
+            return;
+        }
+        if self
+            .mesh
+            .commands
+            .try_send(MeshCommand::Vergeet(plek))
+            .is_err()
+        {
+            self.fout =
+                Some("peer verwijderen: de verbindingslaag is bezet, probeer het opnieuw".into());
+            return;
+        }
+        self.cfg.peers[plek].vergeet();
+        if let Some(id) = self.peers[plek].peer_id.take() {
+            self.peer_weg(id);
+        }
+        if let Err(e) = self.cfg.save(&self.config_path) {
+            self.fout = Some(format!("config opslaan: {e:#}"));
+        }
+        tracing::info!(plek, "peer verwijderd");
+    }
+
     /// Eén code toepassen. `Ok(true)`: een nieuwe peer; `Ok(false)`: een bestaande bijgewerkt.
     ///
     /// Config, mesh en `self.peers` houden dezelfde volgorde aan: het targetnummer van de
@@ -2944,6 +2982,7 @@ impl Engine {
                     control_port: config::DEFAULT_CONTROL_PORT,
                     public_key: Some(sleutel),
                     addresses: u.adressen,
+                    verwijderd: false,
                 });
                 self.peers
                     .push(PeerView::nieuw(label, adres, Some(u.peer_id)));
@@ -3318,7 +3357,15 @@ impl Engine {
     fn publiceer(&mut self) {
         let niveaus = self.voice.as_ref().map(|v| v.niveaus()).unwrap_or_default();
 
-        let mut peers = self.peers.clone();
+        // Een verwijderde peer verdwijnt overal: leden, DM's, gesprek, Network. Zijn ops blijven
+        // in de store (invariant 6).
+        let mut peers: Vec<PeerView> = self
+            .peers
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.cfg.peers.get(*i).is_some_and(|c| c.verwijderd))
+            .map(|(plek, p)| PeerView { plek, ..p.clone() })
+            .collect();
         for p in &mut peers {
             if let Some(id) = p.peer_id {
                 p.in_voice = self.peers_in_voice.contains(&id);

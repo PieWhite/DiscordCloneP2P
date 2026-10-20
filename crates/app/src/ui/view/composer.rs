@@ -1255,6 +1255,7 @@ pub(super) mod window_tests {
             desktop_volume: None,
             desktop_stream: None,
             music: None,
+            slot: 0,
         }
     }
 
