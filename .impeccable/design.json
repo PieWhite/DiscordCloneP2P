@@ -1,55 +1,352 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-12T21:30:00+02:00",
+  "generatedAt": "2026-10-20T12:00:00+02:00",
   "title": "Design System: FitCommunication",
   "extensions": {
     "colorMeta": {
-      "space":   { "role": "neutral", "displayName": "The Void",        "canonical": "#070810", "tonalRamp": ["oklch(from #070810 15% c h)", "oklch(from #070810 26% c h)", "oklch(from #070810 38% c h)", "oklch(from #070810 49% c h)", "oklch(from #070810 60% c h)", "oklch(from #070810 72% c h)", "oklch(from #070810 84% c h)", "oklch(from #070810 95% c h)"] },
-      "ink":     { "role": "neutral", "displayName": "Window Ink",      "canonical": "#10122A", "tonalRamp": ["oklch(from #10122A 15% c h)", "oklch(from #10122A 26% c h)", "oklch(from #10122A 38% c h)", "oklch(from #10122A 49% c h)", "oklch(from #10122A 60% c h)", "oklch(from #10122A 72% c h)", "oklch(from #10122A 84% c h)", "oklch(from #10122A 95% c h)"] },
-      "indigo":  { "role": "neutral", "displayName": "Canvas Indigo",   "canonical": "#191D3A", "tonalRamp": ["oklch(from #191D3A 15% c h)", "oklch(from #191D3A 26% c h)", "oklch(from #191D3A 38% c h)", "oklch(from #191D3A 49% c h)", "oklch(from #191D3A 60% c h)", "oklch(from #191D3A 72% c h)", "oklch(from #191D3A 84% c h)", "oklch(from #191D3A 95% c h)"] },
-      "violet":  { "role": "neutral", "displayName": "Structure Violet","canonical": "#2E3464", "tonalRamp": ["oklch(from #2E3464 15% c h)", "oklch(from #2E3464 26% c h)", "oklch(from #2E3464 38% c h)", "oklch(from #2E3464 49% c h)", "oklch(from #2E3464 60% c h)", "oklch(from #2E3464 72% c h)", "oklch(from #2E3464 84% c h)", "oklch(from #2E3464 95% c h)"] },
-      "steel":   { "role": "neutral", "displayName": "Edge Steel",      "canonical": "#4A5490", "tonalRamp": ["oklch(from #4A5490 15% c h)", "oklch(from #4A5490 26% c h)", "oklch(from #4A5490 38% c h)", "oklch(from #4A5490 49% c h)", "oklch(from #4A5490 60% c h)", "oklch(from #4A5490 72% c h)", "oklch(from #4A5490 84% c h)", "oklch(from #4A5490 95% c h)"] },
-      "silver":  { "role": "neutral", "displayName": "Quiet Silver",    "canonical": "#A7AECC", "tonalRamp": ["oklch(from #A7AECC 15% c h)", "oklch(from #A7AECC 26% c h)", "oklch(from #A7AECC 38% c h)", "oklch(from #A7AECC 49% c h)", "oklch(from #A7AECC 60% c h)", "oklch(from #A7AECC 72% c h)", "oklch(from #A7AECC 84% c h)", "oklch(from #A7AECC 95% c h)"] },
-      "paper":   { "role": "neutral", "displayName": "Paper",           "canonical": "#EFE9D5", "tonalRamp": ["oklch(from #EFE9D5 15% c h)", "oklch(from #EFE9D5 26% c h)", "oklch(from #EFE9D5 38% c h)", "oklch(from #EFE9D5 49% c h)", "oklch(from #EFE9D5 60% c h)", "oklch(from #EFE9D5 72% c h)", "oklch(from #EFE9D5 84% c h)", "oklch(from #EFE9D5 95% c h)"] },
-      "blue":    { "role": "secondary", "displayName": "Title-Strip Blue", "canonical": "#3B58C4", "tonalRamp": ["oklch(from #3B58C4 15% c h)", "oklch(from #3B58C4 26% c h)", "oklch(from #3B58C4 38% c h)", "oklch(from #3B58C4 49% c h)", "oklch(from #3B58C4 60% c h)", "oklch(from #3B58C4 72% c h)", "oklch(from #3B58C4 84% c h)", "oklch(from #3B58C4 95% c h)"] },
-      "cyan":    { "role": "secondary", "displayName": "Working Cyan",  "canonical": "#5FD3E0", "tonalRamp": ["oklch(from #5FD3E0 15% c h)", "oklch(from #5FD3E0 26% c h)", "oklch(from #5FD3E0 38% c h)", "oklch(from #5FD3E0 49% c h)", "oklch(from #5FD3E0 60% c h)", "oklch(from #5FD3E0 72% c h)", "oklch(from #5FD3E0 84% c h)", "oklch(from #5FD3E0 95% c h)"] },
-      "sky":     { "role": "tertiary", "displayName": "Identity Sky",   "canonical": "#8FB8F0", "tonalRamp": ["oklch(from #8FB8F0 15% c h)", "oklch(from #8FB8F0 26% c h)", "oklch(from #8FB8F0 38% c h)", "oklch(from #8FB8F0 49% c h)", "oklch(from #8FB8F0 60% c h)", "oklch(from #8FB8F0 72% c h)", "oklch(from #8FB8F0 84% c h)", "oklch(from #8FB8F0 95% c h)"] },
-      "magenta": { "role": "primary", "displayName": "Action Magenta",  "canonical": "#D460A2", "tonalRamp": ["oklch(from #D460A2 15% c h)", "oklch(from #D460A2 26% c h)", "oklch(from #D460A2 38% c h)", "oklch(from #D460A2 49% c h)", "oklch(from #D460A2 60% c h)", "oklch(from #D460A2 72% c h)", "oklch(from #D460A2 84% c h)", "oklch(from #D460A2 95% c h)"] },
-      "coral":   { "role": "tertiary", "displayName": "Failure Coral",  "canonical": "#F0716B", "tonalRamp": ["oklch(from #F0716B 15% c h)", "oklch(from #F0716B 26% c h)", "oklch(from #F0716B 38% c h)", "oklch(from #F0716B 49% c h)", "oklch(from #F0716B 60% c h)", "oklch(from #F0716B 72% c h)", "oklch(from #F0716B 84% c h)", "oklch(from #F0716B 95% c h)"] },
-      "orange":  { "role": "tertiary", "displayName": "Mention Orange", "canonical": "#E08A48", "tonalRamp": ["oklch(from #E08A48 15% c h)", "oklch(from #E08A48 26% c h)", "oklch(from #E08A48 38% c h)", "oklch(from #E08A48 49% c h)", "oklch(from #E08A48 60% c h)", "oklch(from #E08A48 72% c h)", "oklch(from #E08A48 84% c h)", "oklch(from #E08A48 95% c h)"] },
-      "amber":   { "role": "tertiary", "displayName": "Connecting Amber","canonical": "#E7BC5D", "tonalRamp": ["oklch(from #E7BC5D 15% c h)", "oklch(from #E7BC5D 26% c h)", "oklch(from #E7BC5D 38% c h)", "oklch(from #E7BC5D 49% c h)", "oklch(from #E7BC5D 60% c h)", "oklch(from #E7BC5D 72% c h)", "oklch(from #E7BC5D 84% c h)", "oklch(from #E7BC5D 95% c h)"] },
-      "lime":    { "role": "tertiary", "displayName": "Identity Lime",  "canonical": "#C4DC78", "tonalRamp": ["oklch(from #C4DC78 15% c h)", "oklch(from #C4DC78 26% c h)", "oklch(from #C4DC78 38% c h)", "oklch(from #C4DC78 49% c h)", "oklch(from #C4DC78 60% c h)", "oklch(from #C4DC78 72% c h)", "oklch(from #C4DC78 84% c h)", "oklch(from #C4DC78 95% c h)"] },
-      "green":   { "role": "tertiary", "displayName": "Presence Green", "canonical": "#62CE82", "tonalRamp": ["oklch(from #62CE82 15% c h)", "oklch(from #62CE82 26% c h)", "oklch(from #62CE82 38% c h)", "oklch(from #62CE82 49% c h)", "oklch(from #62CE82 60% c h)", "oklch(from #62CE82 72% c h)", "oklch(from #62CE82 84% c h)", "oklch(from #62CE82 95% c h)"] }
+      "void": {
+        "role": "neutral",
+        "displayName": "The Void",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "oklch(from #000000 15% c h)",
+          "oklch(from #000000 26% c h)",
+          "oklch(from #000000 38% c h)",
+          "oklch(from #000000 49% c h)",
+          "oklch(from #000000 60% c h)",
+          "oklch(from #000000 72% c h)",
+          "oklch(from #000000 84% c h)",
+          "oklch(from #000000 95% c h)"
+        ]
+      },
+      "lift": {
+        "role": "neutral",
+        "displayName": "Lift",
+        "canonical": "#0B0E14",
+        "tonalRamp": [
+          "oklch(from #0B0E14 15% c h)",
+          "oklch(from #0B0E14 26% c h)",
+          "oklch(from #0B0E14 38% c h)",
+          "oklch(from #0B0E14 49% c h)",
+          "oklch(from #0B0E14 60% c h)",
+          "oklch(from #0B0E14 72% c h)",
+          "oklch(from #0B0E14 84% c h)",
+          "oklch(from #0B0E14 95% c h)"
+        ]
+      },
+      "well": {
+        "role": "neutral",
+        "displayName": "Well",
+        "canonical": "#05070A",
+        "tonalRamp": [
+          "oklch(from #05070A 15% c h)",
+          "oklch(from #05070A 26% c h)",
+          "oklch(from #05070A 38% c h)",
+          "oklch(from #05070A 49% c h)",
+          "oklch(from #05070A 60% c h)",
+          "oklch(from #05070A 72% c h)",
+          "oklch(from #05070A 84% c h)",
+          "oklch(from #05070A 95% c h)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#292D30",
+        "tonalRamp": [
+          "oklch(from #292D30 15% c h)",
+          "oklch(from #292D30 26% c h)",
+          "oklch(from #292D30 38% c h)",
+          "oklch(from #292D30 49% c h)",
+          "oklch(from #292D30 60% c h)",
+          "oklch(from #292D30 72% c h)",
+          "oklch(from #292D30 84% c h)",
+          "oklch(from #292D30 95% c h)"
+        ]
+      },
+      "charcoal": {
+        "role": "neutral",
+        "displayName": "Charcoal",
+        "canonical": "#464A4D",
+        "tonalRamp": [
+          "oklch(from #464A4D 15% c h)",
+          "oklch(from #464A4D 26% c h)",
+          "oklch(from #464A4D 38% c h)",
+          "oklch(from #464A4D 49% c h)",
+          "oklch(from #464A4D 60% c h)",
+          "oklch(from #464A4D 72% c h)",
+          "oklch(from #464A4D 84% c h)",
+          "oklch(from #464A4D 95% c h)"
+        ]
+      },
+      "iron": {
+        "role": "neutral",
+        "displayName": "Iron",
+        "canonical": "#6E727A",
+        "tonalRamp": [
+          "oklch(from #6E727A 15% c h)",
+          "oklch(from #6E727A 26% c h)",
+          "oklch(from #6E727A 38% c h)",
+          "oklch(from #6E727A 49% c h)",
+          "oklch(from #6E727A 60% c h)",
+          "oklch(from #6E727A 72% c h)",
+          "oklch(from #6E727A 84% c h)",
+          "oklch(from #6E727A 95% c h)"
+        ]
+      },
+      "ash": {
+        "role": "neutral",
+        "displayName": "Ash, muted text",
+        "canonical": "#A1A4A5",
+        "tonalRamp": [
+          "oklch(from #A1A4A5 15% c h)",
+          "oklch(from #A1A4A5 26% c h)",
+          "oklch(from #A1A4A5 38% c h)",
+          "oklch(from #A1A4A5 49% c h)",
+          "oklch(from #A1A4A5 60% c h)",
+          "oklch(from #A1A4A5 72% c h)",
+          "oklch(from #A1A4A5 84% c h)",
+          "oklch(from #A1A4A5 95% c h)"
+        ]
+      },
+      "bone": {
+        "role": "neutral",
+        "displayName": "Bone, body text",
+        "canonical": "#F0F0F0",
+        "tonalRamp": [
+          "oklch(from #F0F0F0 15% c h)",
+          "oklch(from #F0F0F0 26% c h)",
+          "oklch(from #F0F0F0 38% c h)",
+          "oklch(from #F0F0F0 49% c h)",
+          "oklch(from #F0F0F0 60% c h)",
+          "oklch(from #F0F0F0 72% c h)",
+          "oklch(from #F0F0F0 84% c h)",
+          "oklch(from #F0F0F0 95% c h)"
+        ]
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "White, headings",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "oklch(from #FFFFFF 15% c h)",
+          "oklch(from #FFFFFF 26% c h)",
+          "oklch(from #FFFFFF 38% c h)",
+          "oklch(from #FFFFFF 49% c h)",
+          "oklch(from #FFFFFF 60% c h)",
+          "oklch(from #FFFFFF 72% c h)",
+          "oklch(from #FFFFFF 84% c h)",
+          "oklch(from #FFFFFF 95% c h)"
+        ]
+      },
+      "chrome": {
+        "role": "primary",
+        "displayName": "Chrome, the one accent",
+        "canonical": "#D4D7DB",
+        "tonalRamp": [
+          "oklch(from #D4D7DB 15% c h)",
+          "oklch(from #D4D7DB 26% c h)",
+          "oklch(from #D4D7DB 38% c h)",
+          "oklch(from #D4D7DB 49% c h)",
+          "oklch(from #D4D7DB 60% c h)",
+          "oklch(from #D4D7DB 72% c h)",
+          "oklch(from #D4D7DB 84% c h)",
+          "oklch(from #D4D7DB 95% c h)"
+        ]
+      },
+      "chrome-dim": {
+        "role": "secondary",
+        "displayName": "Chrome Dim",
+        "canonical": "#B8BCC2",
+        "tonalRamp": [
+          "oklch(from #B8BCC2 15% c h)",
+          "oklch(from #B8BCC2 26% c h)",
+          "oklch(from #B8BCC2 38% c h)",
+          "oklch(from #B8BCC2 49% c h)",
+          "oklch(from #B8BCC2 60% c h)",
+          "oklch(from #B8BCC2 72% c h)",
+          "oklch(from #B8BCC2 84% c h)",
+          "oklch(from #B8BCC2 95% c h)"
+        ]
+      },
+      "green": {
+        "role": "tertiary",
+        "displayName": "Presence Green",
+        "canonical": "#3AD389",
+        "tonalRamp": [
+          "oklch(from #3AD389 15% c h)",
+          "oklch(from #3AD389 26% c h)",
+          "oklch(from #3AD389 38% c h)",
+          "oklch(from #3AD389 49% c h)",
+          "oklch(from #3AD389 60% c h)",
+          "oklch(from #3AD389 72% c h)",
+          "oklch(from #3AD389 84% c h)",
+          "oklch(from #3AD389 95% c h)"
+        ]
+      },
+      "red": {
+        "role": "tertiary",
+        "displayName": "Live / Error Red",
+        "canonical": "#FF9592",
+        "tonalRamp": [
+          "oklch(from #FF9592 15% c h)",
+          "oklch(from #FF9592 26% c h)",
+          "oklch(from #FF9592 38% c h)",
+          "oklch(from #FF9592 49% c h)",
+          "oklch(from #FF9592 60% c h)",
+          "oklch(from #FF9592 72% c h)",
+          "oklch(from #FF9592 84% c h)",
+          "oklch(from #FF9592 95% c h)"
+        ]
+      },
+      "red-line": {
+        "role": "tertiary",
+        "displayName": "Red Line",
+        "canonical": "#5A2A2A",
+        "tonalRamp": [
+          "oklch(from #5A2A2A 15% c h)",
+          "oklch(from #5A2A2A 26% c h)",
+          "oklch(from #5A2A2A 38% c h)",
+          "oklch(from #5A2A2A 49% c h)",
+          "oklch(from #5A2A2A 60% c h)",
+          "oklch(from #5A2A2A 72% c h)",
+          "oklch(from #5A2A2A 84% c h)",
+          "oklch(from #5A2A2A 95% c h)"
+        ]
+      },
+      "red-bg": {
+        "role": "tertiary",
+        "displayName": "Red Ground",
+        "canonical": "#1A0B0B",
+        "tonalRamp": [
+          "oklch(from #1A0B0B 15% c h)",
+          "oklch(from #1A0B0B 26% c h)",
+          "oklch(from #1A0B0B 38% c h)",
+          "oklch(from #1A0B0B 49% c h)",
+          "oklch(from #1A0B0B 60% c h)",
+          "oklch(from #1A0B0B 72% c h)",
+          "oklch(from #1A0B0B 84% c h)",
+          "oklch(from #1A0B0B 95% c h)"
+        ]
+      },
+      "amber": {
+        "role": "tertiary",
+        "displayName": "Connecting Amber",
+        "canonical": "#FFCA16",
+        "tonalRamp": [
+          "oklch(from #FFCA16 15% c h)",
+          "oklch(from #FFCA16 26% c h)",
+          "oklch(from #FFCA16 38% c h)",
+          "oklch(from #FFCA16 49% c h)",
+          "oklch(from #FFCA16 60% c h)",
+          "oklch(from #FFCA16 72% c h)",
+          "oklch(from #FFCA16 84% c h)",
+          "oklch(from #FFCA16 95% c h)"
+        ]
+      },
+      "sky": {
+        "role": "tertiary",
+        "displayName": "Identity Sky",
+        "canonical": "#70B8FF",
+        "tonalRamp": [
+          "oklch(from #70B8FF 15% c h)",
+          "oklch(from #70B8FF 26% c h)",
+          "oklch(from #70B8FF 38% c h)",
+          "oklch(from #70B8FF 49% c h)",
+          "oklch(from #70B8FF 60% c h)",
+          "oklch(from #70B8FF 72% c h)",
+          "oklch(from #70B8FF 84% c h)",
+          "oklch(from #70B8FF 95% c h)"
+        ]
+      }
     },
     "typographyMeta": {
-      "body":  { "displayName": "Body",  "purpose": "Messages and the composer; DotGothic16 bitmap face, one weight, font-synthesis none. Measure bounded at 72ch on the text itself." },
-      "title": { "displayName": "Title", "purpose": "Blue title strips: paper, uppercase, .06-.08em tracking. What makes a column a window." },
-      "label": { "displayName": "Label", "purpose": "Group heads, day dividers, hints, sub-lines: silver, 10-11.5px, uppercase where sectional." },
-      "code":  { "displayName": "Code",  "purpose": "JetBrains Mono in bordered code windows on the void; also tabular figures (tnum). The one non-bitmap face, by named concession." }
+      "body": {
+        "displayName": "Body",
+        "purpose": "Messages and the composer; Inter 14px, line-height 1.45, names and buttons 500. Measure bounded at 72ch on the text itself."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Instrument Serif Regular for pane titles (Channels, Members, # channel, Settings, dialog titles, the popover name); 26px in panes, 32px in settings."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "JetBrains Mono, UPPERCASE 11.5px tracked, ash: section labels, timestamps, counts, ms, status bar."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "JetBrains Mono on well; keys sky, numbers chrome dim, comments ash. Also file names and sizes."
+      }
     },
     "materials": [
-      { "name": "bg-hover",    "value": "repeating-conic-gradient(#2E3464 0% 25%, #191D3A 25% 50%) / 2px cells", "purpose": "Row hover: an ordered violet-on-indigo dither. A texture, never a lightening." },
-      { "name": "dither-half", "value": "repeating-conic-gradient(#070810 0% 25%, transparent 25% 50%)", "purpose": "Half-density void checker: 'unavailable', and the pixel-breaker riding on the horizon band at 4px." },
-      { "name": "backdrop",    "value": "repeating-conic-gradient(#070810 0% 25%, transparent 25% 50%) 0 0 / 4px 4px", "purpose": "The modal dim: dithering instead of alpha, the way a 1992 machine dimmed what it could not blend." },
-      { "name": "band",        "value": "linear-gradient(90deg, #191D3A 0 18%, #2E3464 0 34%, #3B58C4 0 50%, #D460A2 0 66%, #E08A48 0 84%, #E7BC5D 0 100%)", "purpose": "The horizon band, always paired with dither-half at 4px. Exactly three homes: titlebar bottom edge (3px), settings window bottom edge (4px), empty-state heading underline (4px x 96px)." }
+      {
+        "name": "lift",
+        "value": "#0B0E14",
+        "purpose": "Hover and selected ground, paired with a 1px hairline inset and white text when selected. A flat tone, never a gradient."
+      },
+      {
+        "name": "backdrop",
+        "value": "rgba(0,0,0,.85)",
+        "purpose": "The modal dim: flat void at about 85% alpha. The only translucency in the system."
+      },
+      {
+        "name": "disabled",
+        "value": "opacity .45",
+        "purpose": "Unavailable controls."
+      }
     ],
     "shadows": [
-      { "name": "shadow-thumb",   "value": "1px 1px 0 #070810", "purpose": "The range-slider thumb." },
-      { "name": "shadow-bar",     "value": "3px 3px 0 #070810", "purpose": "Floating toolbars, the settings card, the empty-state icon block." },
-      { "name": "shadow-popover", "value": "4px 4px 0 #070810", "purpose": "Autocomplete and anchored popovers." },
-      { "name": "shadow-modal",   "value": "8px 8px 0 #070810", "purpose": "Dialogs." },
-      { "name": "chassis",        "value": "0 0 0 1px #070810, 3px 3px 0 #070810", "purpose": "The double-frame button chassis: dark outer line plus cast shadow; :active shortens to 2px and translates 1px,1px." }
+      {
+        "name": "shadow-float",
+        "value": "0 20px 50px rgba(0,0,0,.8)",
+        "purpose": "The one soft black shadow, popovers and dialogs only. Everything else is flat with a hairline."
+      }
     ],
     "motion": [
-      { "name": "ease",        "value": "cubic-bezier(.16,.84,.44,1)", "purpose": "The only curve; used solely on the primary button's 90ms press transform." },
-      { "name": "snap-2",      "value": "steps(2, jump-end), 100-120ms", "purpose": "State snaps: rail marker, speaking frame, switch color. Palette-swap motion, never a fade." },
-      { "name": "snap-3",      "value": "steps(3, jump-end), 120ms", "purpose": "The switch knob crossing its track." },
-      { "name": "snap-8",      "value": "steps(8, jump-end), 400ms", "purpose": "Progress fill advancing in cells (transform scaleX, never width)." },
-      { "name": "no-infinite", "value": "0 infinite animations", "purpose": "Gaming wins: nothing repaints on the idle path; prefers-reduced-motion collapses all durations." }
+      {
+        "name": "instant",
+        "value": "no transition",
+        "purpose": "State changes snap. Gaming wins: nothing eases a layout property or springs."
+      },
+      {
+        "name": "no-infinite",
+        "value": "0 infinite animations",
+        "purpose": "Nothing repaints on the idle path. The typing indicator blinks on a stepped timer only while someone types."
+      }
     ],
     "breakpoints": [
-      { "name": "narrow", "value": "820px", "purpose": "Channel column 200px, topic drops, self toggles slim to 24px." },
-      { "name": "members-drop", "value": "1080px", "purpose": "Member list dropped by setting state in the script (matchMedia), never a CSS override." }
+      {
+        "name": "narrow",
+        "value": "820px",
+        "purpose": "Channel column narrows, topic drops."
+      },
+      {
+        "name": "members-drop",
+        "value": "1080px",
+        "purpose": "Member list dropped by setting state, never a style override."
+      }
+    ],
+    "radii": [
+      {
+        "name": "control",
+        "value": "6px",
+        "purpose": "Buttons, inputs, rows."
+      },
+      {
+        "name": "field",
+        "value": "10px",
+        "purpose": "Composer and self panel."
+      },
+      {
+        "name": "card",
+        "value": "16px",
+        "purpose": "Stream tiles, attachment/picture/link cards, code blocks, popovers, dialogs, settings sections."
+      },
+      {
+        "name": "full",
+        "value": "9999px",
+        "purpose": "Avatars, dots, badges."
+      }
     ]
   },
   "components": [
@@ -57,107 +354,109 @@
       "name": "Join Button (primary)",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "The one solid magenta fill in the resting window: magenta in a paper frame set in a dark outer line. Hover brightens by dither; active presses in.",
-      "html": "<button class=\"ds-join\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"square\" stroke-linejoin=\"miter\"><path d=\"M6 4.5h6.5v15H6zM12.5 9h5.5v6h-5.5z\"/></svg>Join the call</button>",
-      "css": ".ds-join { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 18px; background: #D460A2; color: #070810; border: 2px solid #EFE9D5; border-radius: 0; box-shadow: 0 0 0 1px #070810, 3px 3px 0 #070810; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 13px; font-weight: 400; cursor: pointer; transition: transform 90ms cubic-bezier(.16,.84,.44,1); } .ds-join:hover { background-image: repeating-conic-gradient(#EFE9D5 0% 25%, transparent 0% 100%); background-size: 4px 4px; } .ds-join:active { transform: translate(1px, 1px); box-shadow: 0 0 0 1px #070810, 2px 2px 0 #070810; } .ds-join:focus-visible { outline: 2px solid #5FD3E0; outline-offset: 2px; } .ds-icon { width: 14px; height: 14px; }"
+      "description": "Ghost button with a 1px bone outline; the call entry point.",
+      "html": "<button class=\"ds-join\">Join the call</button>",
+      "css": ".ds-join { height: 30px; padding: 0 12px; background: #000; color: #fff; border: 1px solid #F0F0F0; border-radius: 6px; font-family: Inter, system-ui, sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; } .ds-join:hover { border-color: #fff; } .ds-join:focus-visible { outline: 2px solid #D4D7DB; outline-offset: 2px; }"
     },
     {
       "name": "Standard Button",
       "kind": "button",
       "refersTo": "button-secondary",
-      "description": "The workhorse: space fill, steel border, paper text. Hover is a full inversion to paper.",
-      "html": "<button class=\"ds-btn\">Download</button>",
-      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; background: #070810; border: 1px solid #4A5490; border-radius: 0; color: #EFE9D5; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 12.5px; font-weight: 400; white-space: nowrap; cursor: pointer; } .ds-btn:hover { background: #EFE9D5; border-color: #EFE9D5; color: #070810; } .ds-btn:focus-visible { outline: 2px solid #5FD3E0; outline-offset: 2px; } .ds-btn:disabled { opacity: .45; cursor: default; }"
+      "description": "The workhorse: void ground, hairline border, white text; hover moves the border to white.",
+      "html": "<button class=\"ds-btn\">Watch</button>",
+      "css": ".ds-btn { height: 30px; padding: 0 12px; background: #000; border: 1px solid #292D30; border-radius: 6px; color: #fff; font-family: Inter, system-ui, sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; } .ds-btn:hover { border-color: #fff; } .ds-btn:focus-visible { outline: 2px solid #D4D7DB; outline-offset: 2px; } .ds-btn:disabled { opacity: .45; cursor: default; }"
     },
     {
       "name": "Danger Button",
       "kind": "button",
       "refersTo": "button-danger",
-      "description": "Failure and leave actions only: coral outline on the void; hover fills coral.",
-      "html": "<button class=\"ds-btn-danger\">Leave call</button>",
-      "css": ".ds-btn-danger { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 30px; padding: 0 14px; background: #070810; color: #F0716B; border: 1px solid #F0716B; border-radius: 0; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 13px; font-weight: 400; cursor: pointer; } .ds-btn-danger:hover { background: #F0716B; color: #070810; } .ds-btn-danger:focus-visible { outline: 2px solid #5FD3E0; outline-offset: 2px; }"
+      "description": "Leave and failure actions only: red text on a red-line border.",
+      "html": "<button class=\"ds-btn-danger\">Leave</button>",
+      "css": ".ds-btn-danger { height: 30px; padding: 0 12px; background: #000; color: #FF9592; border: 1px solid #5A2A2A; border-radius: 6px; font-family: Inter, system-ui, sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; } .ds-btn-danger:hover { border-color: #FF9592; } .ds-btn-danger:focus-visible { outline: 2px solid #D4D7DB; outline-offset: 2px; }"
     },
     {
       "name": "Channel Row",
       "kind": "nav",
       "refersTo": "badge-count",
-      "description": "The menu-row grammar: silver at rest, dither on hover, full cell inversion when current; the count badge re-inverts on the inverted row.",
-      "html": "<div class=\"ds-nav\"><button class=\"ds-row\"><svg class=\"ds-row-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"square\"><path d=\"M4.5 8.5h15M3.5 15.5h15M9.5 3.5 7.5 20.5M16.5 3.5 14.5 20.5\"/></svg><span class=\"ds-row-name\">general</span></button><button class=\"ds-row\" aria-current=\"true\"><svg class=\"ds-row-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"square\"><path d=\"M4.5 8.5h15M3.5 15.5h15M9.5 3.5 7.5 20.5M16.5 3.5 14.5 20.5\"/></svg><span class=\"ds-row-name\">plannen</span><span class=\"ds-badge\">3</span></button></div>",
-      "css": ".ds-nav { display: flex; flex-direction: column; gap: 2px; width: 224px; background: #10122A; padding: 8px; } .ds-row { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; background: none; border: 0; border-radius: 0; color: #A7AECC; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 14px; font-weight: 400; text-align: left; cursor: pointer; } .ds-row:hover { background: repeating-conic-gradient(#2E3464 0% 25%, #191D3A 25% 50%) 0 0 / 2px 2px; color: #EFE9D5; } .ds-row[aria-current=\"true\"] { background: #EFE9D5; color: #070810; } .ds-row:focus-visible { outline: 2px solid #5FD3E0; outline-offset: 2px; } .ds-row-ico { width: 16px; height: 16px; flex: none; color: #4A5490; } .ds-row:hover .ds-row-ico { color: #A7AECC; } .ds-row[aria-current=\"true\"] .ds-row-ico { color: #070810; } .ds-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-badge { min-width: 18px; height: 18px; padding: 0 5px; background: #EFE9D5; color: #070810; font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; } .ds-row[aria-current=\"true\"] .ds-badge { background: #070810; color: #EFE9D5; }"
+      "description": "Ash at rest, lift on hover, lift plus a hairline inset and white text when current; the count is a chrome badge.",
+      "html": "<div class=\"ds-nav\"><button class=\"ds-row\"># general</button><button class=\"ds-row\" aria-current=\"true\"># plannen<span class=\"ds-badge\">3</span></button></div>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 2px; width: 224px; background: #000; padding: 8px; } .ds-row { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; background: none; border: 0; border-radius: 6px; color: #A1A4A5; font-family: Inter, system-ui, sans-serif; font-size: 14px; text-align: left; cursor: pointer; } .ds-row:hover { background: #0B0E14; color: #fff; } .ds-row[aria-current=\"true\"] { background: #0B0E14; box-shadow: inset 0 0 0 1px #292D30; color: #fff; } .ds-row:focus-visible { outline: 2px solid #D4D7DB; outline-offset: 2px; } .ds-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9999px; background: #D4D7DB; color: #000; font-size: 11px; font-weight: 500; }"
     },
     {
       "name": "Composer Input",
       "kind": "input",
       "refersTo": "input-field",
-      "description": "A bordered input line from 1992: ink window in the double chassis, cyan caret, border lifts to cyan on focus.",
-      "html": "<div class=\"ds-composer\"><textarea class=\"ds-composer-ta\" rows=\"1\" placeholder=\"Message #general\"></textarea><button class=\"ds-composer-btn\" aria-label=\"Attach\"><svg class=\"ds-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"square\"><path d=\"M20 11.5 12.3 19.2a4.6 4.6 0 0 1-6.5-6.5l7.6-7.6a3.1 3.1 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l6.9-6.8\"/></svg></button></div>",
-      "css": ".ds-composer { display: flex; align-items: flex-end; gap: 4px; width: 360px; padding: 6px 6px 6px 8px; border: 1px solid #4A5490; border-radius: 0; box-shadow: 0 0 0 1px #070810, 2px 2px 0 #070810; background: #10122A; } .ds-composer:focus-within { border-color: #5FD3E0; } .ds-composer-ta { flex: 1; min-height: 26px; padding: 4px 4px 4px 2px; border: 0; background: none; resize: none; outline: none; color: #EFE9D5; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 15px; line-height: 1.5; caret-color: #5FD3E0; } .ds-composer-ta::placeholder { color: #A7AECC; } .ds-composer-btn { width: 30px; height: 30px; display: grid; place-items: center; background: none; border: 0; color: #A7AECC; cursor: pointer; } .ds-composer-btn:hover { background: #EFE9D5; color: #070810; } .ds-icon { width: 16px; height: 16px; }"
+      "description": "A void field with a hairline border, radius 10; the border stays, a chrome ring shows on focus.",
+      "html": "<div class=\"ds-composer\"><textarea class=\"ds-composer-ta\" rows=\"1\" placeholder=\"Message #general\"></textarea></div>",
+      "css": ".ds-composer { display: flex; width: 360px; padding: 6px 8px; border: 1px solid #292D30; border-radius: 10px; background: #000; } .ds-composer:focus-within { outline: 2px solid #D4D7DB; outline-offset: 2px; } .ds-composer-ta { flex: 1; min-height: 26px; border: 0; background: none; resize: none; outline: none; color: #F0F0F0; font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 1.45; caret-color: #D4D7DB; } .ds-composer-ta::placeholder { color: #A1A4A5; }"
     },
     {
-      "name": "Avatar Sprite + Presence",
+      "name": "Avatar + Presence",
       "kind": "custom",
-      "description": "Identity as a sprite: filled square in the peer hue with a space-ink monogram; presence is a lit square notched into the corner. Offline is an unlit square, not a warning.",
-      "html": "<div class=\"ds-avrow\"><span class=\"ds-avwrap\"><span class=\"ds-avatar ds-av-1\">D</span><span class=\"ds-dot ds-dot-online\"></span></span><span class=\"ds-avwrap\"><span class=\"ds-avatar ds-av-2\">R</span><span class=\"ds-dot ds-dot-dnd\"></span></span><span class=\"ds-avwrap\"><span class=\"ds-avatar ds-av-3\">M</span><span class=\"ds-dot ds-dot-offline\"></span></span></div>",
-      "css": ".ds-avrow { display: flex; gap: 14px; padding: 8px; background: #10122A; } .ds-avwrap { position: relative; display: inline-flex; } .ds-avatar { width: 32px; height: 32px; display: grid; place-items: center; color: #070810; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 13px; border-radius: 0; user-select: none; } .ds-av-1 { background: #8FB8F0; } .ds-av-2 { background: #C4DC78; } .ds-av-3 { background: #E08A48; } .ds-dot { position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border: 2px solid #10122A; box-sizing: content-box; } .ds-dot-online { background: #62CE82; } .ds-dot-dnd { background: #D460A2; } .ds-dot-offline { background: #10122A; box-shadow: inset 0 0 0 2px #4A5490; }"
+      "description": "A monogram in the peer hue on void with a hairline ring; green ring while speaking. Presence is a round dot; offline is an unlit iron dot, not a warning.",
+      "html": "<div class=\"ds-avrow\"><span class=\"ds-avwrap\"><span class=\"ds-avatar\" style=\"color:#70B8FF\">S</span><span class=\"ds-dot ds-dot-online\"></span></span><span class=\"ds-avwrap\"><span class=\"ds-avatar ds-speaking\" style=\"color:#FFCA16\">J</span><span class=\"ds-dot ds-dot-online\"></span></span><span class=\"ds-avwrap\"><span class=\"ds-avatar\" style=\"color:#3AD389\">R</span><span class=\"ds-dot ds-dot-offline\"></span></span></div>",
+      "css": ".ds-avrow { display: flex; gap: 14px; padding: 8px; background: #000; } .ds-avwrap { position: relative; display: inline-flex; } .ds-avatar { width: 32px; height: 32px; display: grid; place-items: center; background: #000; border: 1px solid #292D30; border-radius: 9999px; font-family: Inter, system-ui, sans-serif; font-size: 13px; font-weight: 500; } .ds-speaking { border-color: #3AD389; } .ds-dot { position: absolute; right: -1px; bottom: -1px; width: 9px; height: 9px; border: 2px solid #000; border-radius: 9999px; box-sizing: content-box; } .ds-dot-online { background: #3AD389; } .ds-dot-offline { background: #6E727A; opacity: .6; }"
     },
     {
-      "name": "Toggle Switch",
-      "kind": "input",
-      "description": "A square switch whose knob steps across the track — steps(3), never a slide-and-ease; on is cyan ground with a space knob.",
-      "html": "<button class=\"ds-switch\" role=\"switch\" aria-checked=\"true\" aria-label=\"Setting\"></button> <button class=\"ds-switch\" role=\"switch\" aria-checked=\"false\" aria-label=\"Setting off\"></button>",
-      "css": ".ds-switch { position: relative; width: 38px; height: 22px; background: #070810; border: 1px solid #4A5490; border-radius: 0; cursor: pointer; } .ds-switch::after { content: \"\"; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #A7AECC; transition: transform 120ms steps(3, jump-end), background 120ms steps(2, jump-end); } .ds-switch[aria-checked=\"true\"] { background: #5FD3E0; border-color: #5FD3E0; } .ds-switch[aria-checked=\"true\"]::after { transform: translateX(16px); background: #070810; } .ds-switch:focus-visible { outline: 2px solid #5FD3E0; outline-offset: 2px; }"
-    },
-    {
-      "name": "Accent Chip",
-      "kind": "chip",
-      "description": "Cyan-owned chips (update available, watching a share): outlined on the void, hover inverts into the accent.",
-      "html": "<button class=\"ds-chip\"><svg class=\"ds-chip-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"square\"><path d=\"M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15\"/></svg>Update 1.0.2</button>",
-      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 6px; height: 19px; padding: 0 8px; background: #070810; border: 1px solid #5FD3E0; border-radius: 0; color: #5FD3E0; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 11px; font-weight: 400; cursor: pointer; } .ds-chip:hover { background: #5FD3E0; color: #070810; } .ds-chip:focus-visible { outline: 2px solid #5FD3E0; outline-offset: 2px; } .ds-chip-ico { width: 12px; height: 12px; }"
-    },
-    {
-      "name": "Titled Window",
+      "name": "Card",
       "kind": "card",
-      "description": "The signature container: blue title strip with paper uppercase text, 1px space under-edge, violet border, horizon band on the bottom edge, hard shadow when floating.",
-      "html": "<div class=\"ds-window\"><h3 class=\"ds-window-title\">Channels</h3><div class=\"ds-window-body\">Every zone is a window because it wears this strip. Text is paper; the quiet tier is silver.</div></div>",
-      "css": ".ds-window { width: 300px; background: #10122A; border: 1px solid #2E3464; border-radius: 0; box-shadow: 3px 3px 0 #070810; } .ds-window-title { margin: 0; padding: 10px 14px; background: #3B58C4; border-bottom: 1px solid #070810; color: #EFE9D5; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 13px; font-weight: 400; letter-spacing: .08em; text-transform: uppercase; } .ds-window-body { padding: 14px; color: #A7AECC; font-family: 'DotGothic16', system-ui, sans-serif; font-size: 13.5px; line-height: 1.5; } .ds-window::after { content: \"\"; display: block; height: 4px; background: repeating-conic-gradient(#070810 0% 25%, transparent 25% 50%) 0 0 / 4px 4px, linear-gradient(90deg, #191D3A 0 18%, #2E3464 0 34%, #3B58C4 0 50%, #D460A2 0 66%, #E08A48 0 84%, #E7BC5D 0 100%); }"
+      "description": "Radius 16, hairline, lift ground; titled in Instrument Serif. Stream tiles, popovers, dialogs and settings sections share it.",
+      "html": "<div class=\"ds-card\"><h3 class=\"ds-card-title\">Audio for Sander</h3><div class=\"ds-card-body\">Voice, Screen audio and Spotify each have a slider here and nowhere else.</div></div>",
+      "css": ".ds-card { width: 300px; background: #0B0E14; border: 1px solid #292D30; border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,.8); } .ds-card-title { margin: 0; padding: 14px 16px 0; color: #fff; font-family: 'Instrument Serif', Georgia, serif; font-size: 26px; font-weight: 400; } .ds-card-body { padding: 8px 16px 16px; color: #A1A4A5; font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 1.45; }"
     }
   ],
   "narrative": {
-    "northStar": "The Sixteen-Color Evening Machine",
-    "overview": "FitCommunication is drawn as a Japanese sixteen-color PC screen of the early nineties (PC-98 lineage, seed key c9bbaaa4, 2026-08-12): a locked sixteen-color palette on deep indigo, paper text, blue title strips on square double-bordered windows, and a machine that answers instantly — state changes snap like a palette swap, nothing fades, nothing pulses. This world replaced 'The Well-Made Standard' wholesale; design/main-window.html and design/shots/ document the replaced world and are anti-reference for this one.\n\nThe material logic is the pixel grid. There is no translucency, no blur, no gradient blend anywhere in the resting system: every mid-tone is an ordered 2px dither of exactly two palette colors, hover is a texture rather than a lightening, the modal backdrop is a checker of the void, and 'unavailable' is a half-density dither laid over the thing itself. Depth is a hard offset shadow in the void, the way a sprite casts one. Selection is a full cell inversion — paper ground, space ink.\n\nProduct truth binds the world: no network fetch ever (fonts are bundled woff2), 'gaming wins' (no layout-property transitions, zero infinite animations), offline and reconnecting are normal states and are never alarm-colored, and the theme is fixed dark with color-scheme: dark.",
+    "northStar": "Black Chrome",
+    "overview": "FitCommunication is pure black glass with hairlines: a void ground, one lifted tone for what is selected or hovered, one-pixel borders, white for what matters and ash for the rest, and a single pale-chrome accent. Titles are set in a serif, measurements in a mono, everything else in a plain grotesque. It replaced The Sixteen-Color Evening Machine (PC-98) on 2026-10-20 because Rick was done with retro and the call controls and volume sliders were cluttered while screensharing. design/main-window.html and design/shots/ are older anti-references; design/redesign-b/ holds the B mockups. Product truth binds it: no network fetch, fonts bundled in the binary, gaming wins (no animation, no infinite motion), offline and reconnecting never alarm-colored.",
     "keyCharacteristics": [
-      "Sixteen locked colors; every other value is an alias into the table or a 2px ordered dither of two entries",
-      "Square everything: all radius tokens exist and are all zero",
-      "Blue title strips make each zone a titled window; the chrome is the composition",
-      "One bitmap face at one weight; hierarchy is size, color and inversion",
-      "Hard offset shadows, no blur; motion in steps(), never eased fades",
-      "One decorative signature: the dithered dusk horizon band"
+      "Dark only: void ground, hairline borders, no hard shadows, no dither, no horizon band",
+      "One accent, chrome; green, red, amber and sky are signals only",
+      "Selected is a lift ground, a 1px hairline inset and white text, never an inversion",
+      "Inter for everything, Instrument Serif for pane titles, JetBrains Mono for figures and labels",
+      "Radii on a ladder of 6, 10, 16 and full",
+      "Every volume has exactly one home, the per-person audio popover"
     ],
     "rules": [
-      { "name": "The Sixteen-Color Lock", "body": "Every color on screen is one of the sixteen --c-* values or an ordered 2px dither of exactly two of them. A color that is not — an rgba(), a blend, a seventeenth hue — is a bug, not a variation.", "section": "colors" },
-      { "name": "The One Magenta Fill Rule", "body": "Join the call is the only solid magenta fill in the resting window. Counts and badges are inverted paper cells; DND, LIVE and the pressed 'off' toggles use magenta only as small marks. A second magenta fill demotes the first.", "section": "colors" },
-      { "name": "The Dither-Not-Blend Rule", "body": "A mid-tone is repeating-conic-gradient(A 0% 25%, B 25% 50%) at 2px (4px when riding the band): hover is violet-on-indigo cells, the modal backdrop is space-on-window cells, primary-button hover flips a quarter of its cells to paper. No alpha, no gradient blends, no color-mix.", "section": "colors" },
-      { "name": "The One Weight Rule", "body": "There is no bold. font-weight: 400 everywhere, <b> elements are explicitly reset to 400 and speak through color. Emphasis is size, color, casing or inversion.", "section": "typography" },
-      { "name": "The Two Tiers Rule", "body": "Text is paper or silver — the old four-step grey ladder collapsed to two. A third grey is a bug.", "section": "typography" },
-      { "name": "The Hard Offset Rule", "body": "Every shadow is Xpx Xpx 0 in space — zero blur, and only on floating surfaces. A blurred or ambient shadow does not exist in this world.", "section": "elevation" }
+      {
+        "name": "The One Accent Rule",
+        "body": "Chrome is the only accent. A second accent hue for an action or a state is a bug; green, red, amber and sky mark state and identity only."
+      },
+      {
+        "name": "The Offline-Is-Not-Red Rule",
+        "body": "Offline is an iron unlit dot, connecting is amber. Red means LIVE, error, Leave, DND and pressed-off, never a missing peer."
+      },
+      {
+        "name": "The Token Rule",
+        "body": "Every color is a theme::c value. An inline hex, or a translucent blend other than the modal backdrop, is a bug."
+      },
+      {
+        "name": "The Three Jobs Rule",
+        "body": "Serif for pane titles, mono for figures and labels, Inter for the rest."
+      },
+      {
+        "name": "The One Shadow Rule",
+        "body": "One soft black shadow, popovers and dialogs only. No hard offset shadows, no glow."
+      },
+      {
+        "name": "The One Home Rule",
+        "body": "Mic, deafen and DND live in the self panel; camera, share, Spotify and Leave in the call bar while joined; Watch on stream tiles; every volume slider in the per-person audio popover; Allow drawing in the share menu."
+      }
     ],
     "dos": [
-      "Do build every color from the sixteen --c-* tokens; a new mid-tone is an ordered 2px repeating-conic-gradient of exactly two of them.",
-      "Do make selection an inversion (paper ground, space ink) and re-invert anything that sits on an inverted row.",
-      "Do snap state changes with steps() (90-400ms) and keep every transition on compositor properties (transform, opacity); honor prefers-reduced-motion.",
-      "Do give a new surface the window grammar: blue title strip, 1px space under-edge, violet/steel border, square corners, hard offset shadow only if it floats.",
-      "Do keep icons on the 24x24 stroke-2 square-cap miter grid, colored by currentColor; draw a missing glyph to these rules rather than substituting.",
-      "Do keep JetBrains Mono for code blocks and tabular figures — the one non-bitmap face, by concession."
+      "Do take every color from theme::c; chrome is the only accent.",
+      "Do make selection a lift ground, a 1px hairline inset and white text.",
+      "Do give every volume exactly one home, the per-person audio popover.",
+      "Do keep mic and deafen in the self panel and the other call controls in the call bar while joined.",
+      "Do keep icons on the 24x24 stroke 1.5 round grid, colored by currentColor.",
+      "Do change state instantly; only the speaking ring and the typing indicator move, and neither loops while idle."
     ],
     "donts": [
-      "Don't use alpha, blur, gradient blends, or color-mix — no translucency exists in this world; dim by dithering (the modal backdrop is the model).",
-      "Don't add a second solid magenta fill to the resting window, and don't let magenta (DND, LIVE, primary) and coral (failure) trade jobs — they must never share a value.",
-      "Don't round a corner, blur a shadow, or synthesize a bold — all radii are 0, all shadows are hard offsets in space, and the face has one weight.",
-      "Don't run an infinite animation or transition a layout property — 'gaming wins' is a product invariant; the speaking frame appears, it never pulses.",
-      "Don't dither an absent peer's name — sprite and status word only; the name stays legible in a dark room.",
-      "Don't alarm-color offline or reconnecting: offline is an unlit steel square, connecting is amber, and neither is coral.",
-      "Don't derive values from design/main-window.html or design/shots/ — they document the replaced 2026-08-04 world and are anti-reference here.",
-      "Don't fetch a font or any asset from the network; faces ship as bundled woff2."
+      "Don't add a dither, a horizon band, a hard offset shadow, or an inversion as selection.",
+      "Don't add a second accent, or let red mean offline or reconnecting.",
+      "Don't run an infinite animation, ease a layout property or add a spring: gaming wins.",
+      "Don't put a slider, chip or button inline in a member row, or a call control in the channels column.",
+      "Don't fetch a font or any asset from the network; faces ship as bundled TTF inside the binary.",
+      "Don't derive values from design/main-window.html or design/shots/; they are anti-references."
     ]
   }
 }

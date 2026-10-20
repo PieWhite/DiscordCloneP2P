@@ -5,6 +5,9 @@
 //! | [`avatar`] | monogram in the identity hue, hairline ring (green while speaking), presence dot |
 //! | [`Btn`] | text buttons: ghost first, bone outline for the one primary action, red for danger |
 //! | [`icon_btn`] | 28×28 glyph buttons |
+//! | [`dk_btn`] | the call bar's 40×40 framed glyph buttons |
+//! | [`live_pill`] | the red LIVE mark on a tile and in the voice list |
+//! | [`popover_surface`], [`popover_item`] | the ground of every popover and menu, and its rows |
 //! | [`badge`] | unread counts |
 //! | [`selectable`] | the selected-row look: lift, hairline frame, white text |
 //! | [`pane_head`], [`pane_title`], [`section_label`] | pane heads and the mono group labels |
@@ -267,6 +270,80 @@ pub fn icon_btn(id: impl Into<ElementId>, icon: Icon, pressed: bool) -> Stateful
         pressed,
     )
     .child(icon.size(16.))
+}
+
+/// A 40×40 call-bar button: hairline frame, bone glyph, hover an iron frame and a white
+/// glyph; `pressed` is the selected look.
+pub fn dk_btn(id: impl Into<ElementId>, icon: Icon, pressed: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .size(px(40.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(theme::RADIUS_CONTROL)
+        .border_1()
+        .border_color(theme::BORDER)
+        .bg(c::VOID)
+        .cursor_pointer()
+        .text_color(theme::TEXT)
+        .when(pressed, |d| {
+            d.bg(theme::BG_SELECTED).text_color(theme::TEXT_STRONG)
+        })
+        .hover(|s| {
+            s.border_color(theme::BORDER_HOVER)
+                .text_color(theme::TEXT_STRONG)
+        })
+        .child(icon.size(17.))
+}
+
+/// The LIVE mark: red mono on void in a red line.
+pub fn live_pill() -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .px(px(6.))
+        .bg(c::VOID)
+        .rounded(px(4.))
+        .border_1()
+        .border_color(theme::DANGER_LINE)
+        .font_family(theme::MONO_FONT)
+        .text_size(px(10.5))
+        .text_color(theme::DANGER_TEXT)
+        .child("LIVE")
+}
+
+/// A popover's ground: card corners, the hairline, the one soft shadow.
+pub fn popover_surface() -> Div {
+    div()
+        .rounded(theme::RADIUS_CARD)
+        .border_1()
+        .border_color(theme::BORDER)
+        .bg(theme::BG_RAISED)
+        .shadow(theme::soft_shadow())
+}
+
+/// A popover row; `selected` is the `aria-selected` row in the selected look.
+pub fn popover_item(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
+    selectable(
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .w_full()
+            .px(px(10.))
+            .py(px(6.))
+            .cursor_pointer()
+            .text_size(px(14.))
+            .text_color(theme::TEXT_MUTED)
+            .hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)),
+        selected,
+    )
 }
 
 /// An unread count: a chrome pill with void mono figures; `quiet` is a lift with ash.

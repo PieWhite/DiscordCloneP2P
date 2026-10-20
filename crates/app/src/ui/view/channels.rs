@@ -1,7 +1,7 @@
 //! The channel column (`renderChannels`, `renderVoice`): the channel list with unread badges
-//! and the collapsible general group, the DM list, and the voice panel at the bottom
-//! (join/leave, the people in the call with their speaking frame, share and camera lines,
-//! the self row with mute, camera, deafen and do-not-disturb).
+//! and the collapsible general group, the DM list, and at the bottom the voice section (who
+//! is in the call, Join) and the self panel (mic, deafen, do-not-disturb). Every other call
+//! control lives in the call bar (`call.rs`).
 //!
 //! Right-click on a removable sub-channel opens the rename prompt straight away, as the old
 //! `contextmenu` handler did; there is no menu in between.
@@ -9,17 +9,16 @@
 use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{ChannelState, PeerState, UiState};
-use super::super::theme::{self, c};
+use super::super::theme;
 use super::widgets::{
-    avatar, badge, focus_ring, icon_btn, meter_view, pane_head, pane_title, selectable, tooltip,
-    tracked, Btn, BtnKind, Dot,
+    avatar, badge, focus_ring, icon_btn, live_pill, meter_view, pane_head, pane_title, selectable,
+    tooltip, tracked, Btn, BtnKind, Dot,
 };
 use super::{AppHandle, AppSnapshot, Dialog, PaneInit, View};
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, radians, relative, AnyElement, App, ClickEvent, Context, Div,
-    ElementId, FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement,
-    Styled, StyledText, Window,
+    div, prelude::FluentBuilder, px, radians, AnyElement, App, ClickEvent, Context, Div, ElementId,
+    FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
+    Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
 };
 
 pub struct ChannelsPane {
@@ -328,132 +327,60 @@ fn voice_hint(call: &[&PeerState], anyone_online: bool) -> String {
     "Nobody is in the call.".into()
 }
 
+/// The voice section: who is in the call, and Join while you are not. No other controls:
+/// the call bar owns them while joined (decision 48).
 fn voice_panel(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App) -> Div {
     let s = &snap.s;
     let joined = s.voice.joined;
     let others: Vec<&PeerState> = snap.call_peers().collect();
-    // Screens only: the camera has its own button and line, so it must not turn "Share
-    // screen" into "Stop sharing".
-    let sharing: Vec<(u32, String)> = s
-        .own_streams
-        .iter()
-        .filter(|st| !st.is_audio && !st.is_camera)
-        .map(|st| (st.stream_id, st.title.clone()))
-        .collect();
-    let screens = || {
-        s.own_streams
-            .iter()
-            .filter(|st| !st.is_audio && !st.is_camera)
+    let mut rows: Vec<AnyElement> = Vec::new();
+    if joined {
+        rows.push(voice_peer(snap, VoicePeer::Me, window, cx));
+    }
+    for p in &others {
+        rows.push(voice_peer(snap, VoicePeer::Peer(p), window, cx));
+    }
+    let count = rows.len();
+    let join = |label: &'static str| {
+        let ui = snap.ui.clone();
+        div().px(px(10.)).pt(px(4.)).child(
+            Btn::new("btn-join", label)
+                .kind(BtnKind::Primary)
+                .icon(Icon::Wave)
+                .full_width()
+                .on_click(move |_, _, _| commands::set_joined(&ui, true)),
+        )
     };
-    let drawing = screens().any(|st| st.drawing);
-    let has_drawing = screens().any(|st| st.has_drawing);
-
-    let panel = div()
+    div()
         .flex_none()
         .flex()
         .flex_col()
+        .pt(px(12.))
         .border_t_1()
-        .border_color(theme::BORDER);
-    let panel = if joined || !others.is_empty() {
-        let mut rows: Vec<AnyElement> = Vec::new();
-        if joined {
-            rows.push(voice_peer(snap, VoicePeer::Me, window, cx));
-        }
-        for p in &others {
-            rows.push(voice_peer(snap, VoicePeer::Peer(p), window, cx));
-        }
-        // The head reports the worst link in the call, not a number of its own.
-        let call_ids: Vec<String> = others.iter().map(|p| p.id.clone()).collect();
-        let worst = meter_view("worst-rtt", &snap.meters, window, cx, move |m, _, _| {
+        .border_color(theme::BORDER)
+        .child(group_head("Voice", count, None))
+        .child(
             div()
-                .child(super::format::fmt_rtt(
-                    m.worst_rtt(call_ids.iter().map(String::as_str)),
-                ))
-                .into_any_element()
-        });
-        let live = div()
-            .flex()
-            .flex_col()
-            .pt(px(10.))
-            .px(px(10.))
-            .pb(px(8.))
-            .border_b_1()
-            .border_color(theme::BORDER)
-            .child(
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .px(px(8.))
+                .children(rows),
+        )
+        .when(!joined && !others.is_empty(), |d| {
+            d.child(join("Join the call"))
+        })
+        .when(!joined && others.is_empty(), |d| {
+            d.child(join("Join voice")).child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .mb(px(8.))
-                    .font_family(theme::MONO_FONT)
-                    .text_size(theme::LABEL_TEXT)
-                    .text_color(theme::ONLINE)
-                    .child(Icon::Wave.size(13.))
-                    .child(tracked(
-                        if joined {
-                            "VOICE CONNECTED"
-                        } else {
-                            "CALL RUNNING"
-                        },
-                        11.5,
-                        0.04,
-                    ))
-                    .child(div().ml_auto().text_color(theme::TEXT_MUTED).child(worst)),
-            )
-            .child(div().flex().flex_col().gap(px(2.)).children(rows))
-            .when_some(sharing.first(), |d, (_, title)| {
-                let more = if sharing.len() > 1 {
-                    format!(" and {} more", sharing.len() - 1)
-                } else {
-                    String::new()
-                };
-                d.child(share_line(
-                    Icon::Monitor,
-                    "Sharing ",
-                    title,
-                    &format!("{more} \u{00b7} desktop audio follows automatically"),
-                ))
-                .child(draw_row(snap, &sharing, drawing, has_drawing))
-            })
-            .when_some(snap.own_camera(), |d, cam| {
-                d.child(share_line(Icon::Cam, "Camera on \u{00b7} ", &cam.title, ""))
-            })
-            .when_some(snap.own_music(), |d, m| {
-                d.child(share_line(
-                    Icon::Music,
-                    "Sharing ",
-                    &m.title,
-                    &format!(" \u{00b7} {} listening", m.viewers),
-                ))
-            })
-            // Everyone in the call hears it without a click, so the line only says what.
-            .children(others.iter().filter_map(|p| {
-                p.music
-                    .as_ref()
-                    .map(|m| share_line(Icon::Music, &format!("{} plays ", p.name), &m.title, ""))
-            }));
-        let live = if joined {
-            live.child(voice_acts(snap, &sharing))
-        } else {
-            live.child(join_button(snap, "btn-join", "Join the call"))
-        };
-        panel.child(live)
-    } else {
-        panel
-            .child(join_button(snap, "btn-join", "Join voice"))
-            // The hint is a `<p>`: its 12px top margin collapsed with the button's 10px.
-            .child(
-                div()
-                    .mt(px(2.))
-                    .mb(px(12.))
+                    .mt(px(8.))
                     .px(px(12.))
-                    .pb(px(10.))
                     .text_size(px(12.))
                     .text_color(theme::TEXT_MUTED)
                     .child(voice_hint(&others, snap.online_peers().next().is_some())),
             )
-    };
-    panel.child(self_row(snap, narrow, window, cx))
+        })
+        .child(self_row(snap, narrow, window, cx))
 }
 
 enum VoicePeer<'a> {
@@ -461,27 +388,26 @@ enum VoicePeer<'a> {
     Peer(&'a PeerState),
 }
 
-/// One person in the call. The whole row is a meter view: the avatar's green ring and the
-/// name's white both follow the speaking level.
+/// One person in the call: avatar with the speaking ring, name, LIVE while they show a
+/// screen or camera, the mic-off glyph when muted. The whole row is a meter view: the ring
+/// and the name's white both follow the speaking level.
 fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut App) -> AnyElement {
     let s = &snap.s;
-    let (key, name, hue, muted) = match who {
+    let (key, name, hue, muted, live) = match who {
         VoicePeer::Me => (
             None,
-            format!("{} (you)", s.me.name),
+            s.me.name.clone(),
             s.me.avatar,
             s.voice.muted,
+            s.own_streams.iter().any(|st| !st.is_audio),
         ),
         VoicePeer::Peer(p) => (
             Some(p.id.clone()),
             p.name.clone(),
             p.avatar,
             p.volume == 0.0,
+            s.streams.iter().any(|st| st.owner == p.id && !st.is_audio),
         ),
-    };
-    let monogram_of = match who {
-        VoicePeer::Me => s.me.name.clone(),
-        VoicePeer::Peer(p) => p.name.clone(),
     };
     let id: ElementId =
         ElementId::Name(format!("voice-peer-{}", key.as_deref().unwrap_or("@self")).into());
@@ -493,16 +419,16 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
         div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .h(px(28.))
-            .px(px(6.))
-            .text_size(px(13.))
+            .gap(px(10.))
+            .h(px(32.))
+            .px(px(10.))
+            .text_size(px(14.))
             .text_color(if speaking {
                 theme::TEXT_STRONG
             } else {
                 theme::TEXT
             })
-            .child(avatar(&monogram_of, hue, 22., None, speaking))
+            .child(avatar(&name, hue, 22., None, speaking))
             .child(
                 div()
                     .flex_1()
@@ -512,6 +438,7 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
                     .text_ellipsis()
                     .child(name.clone()),
             )
+            .when(live, |d| d.child(live_pill()))
             .when(muted, |d| {
                 d.child(
                     div()
@@ -524,210 +451,8 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
     .into_any_element()
 }
 
-/// An accent glyph and a wrapping muted line with one name in white.
-fn share_line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
-    let text = format!("{before}{title}{after}");
-    let bold = before.len()..before.len() + title.len();
-    div()
-        .flex()
-        .items_start()
-        .gap(px(7.))
-        .mt(px(9.))
-        .text_size(px(11.5))
-        .line_height(relative(1.45))
-        .text_color(theme::TEXT_MUTED)
-        .child(
-            div()
-                .flex_none()
-                .mt(px(1.))
-                .text_color(theme::ACCENT)
-                .child(icon.size(13.)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(StyledText::new(text).with_highlights(vec![(
-                    bold,
-                    HighlightStyle {
-                        color: Some(theme::TEXT_STRONG.into()),
-                        ..Default::default()
-                    },
-                )])),
-        )
-}
-
-/// Under "Sharing": whether viewers may draw on your screen, and wiping what they drew
-/// (decision 45). One switch for every screen you share; blocking also wipes.
-fn draw_row(snap: &AppSnapshot, sharing: &[(u32, String)], on: bool, has_lines: bool) -> Div {
-    let streams: Vec<u32> = sharing.iter().map(|(id, _)| *id).collect();
-    let (ui, ui_clear) = (snap.ui.clone(), snap.ui.clone());
-    let clear_streams = streams.clone();
-    let toggle = Btn::new(
-        "btn-drawing",
-        if on { "Block drawing" } else { "Allow drawing" },
-    )
-    .kind(BtnKind::Ghost)
-    .icon(Icon::Edit)
-    .full_width()
-    .on_click(move |_, _, _| {
-        for stream in &streams {
-            commands::set_drawing(&ui, *stream, !on);
-        }
-    });
-    let clear = Btn::new("btn-clear-drawing", "Clear")
-        .kind(BtnKind::Ghost)
-        .icon(Icon::Trash)
-        .full_width()
-        .disabled(!has_lines)
-        .on_click(move |_, _, _| {
-            for stream in &clear_streams {
-                commands::clear_drawing(&ui_clear, *stream);
-            }
-        });
-    div()
-        .flex()
-        .gap(px(6.))
-        .mt(px(7.))
-        .child(div().flex_1().min_w_0().child(toggle))
-        .child(div().flex_1().min_w_0().child(clear))
-}
-
-/// Join: the one primary action, a bone outline on void; hover whitens the line.
-fn join_button(snap: &AppSnapshot, id: &'static str, label: &'static str) -> Stateful<Div> {
-    let ui = snap.ui.clone();
-    div()
-        .id(id)
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring()))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .gap(px(7.))
-        .m(px(10.))
-        .h(px(38.))
-        .bg(c::VOID)
-        .text_color(theme::TEXT_STRONG)
-        .rounded(theme::RADIUS_CONTROL)
-        .border_1()
-        .border_color(c::BONE)
-        .text_size(px(14.))
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .hover(|s| s.border_color(c::WHITE))
-        .child(Icon::Wave.size(16.))
-        .child(label)
-        .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&ui, true))
-}
-
-/// `.voice-acts`: Share screen / Stop sharing and Leave, side by side.
-fn voice_acts(snap: &AppSnapshot, sharing: &[(u32, String)]) -> Div {
-    let streams: Vec<u32> = sharing.iter().map(|(id, _)| *id).collect();
-    let is_sharing = !streams.is_empty();
-    let ui = snap.ui.clone();
-    let share = div()
-        .id("btn-share")
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring()))
-        .flex_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .h(px(30.))
-        .px(px(8.))
-        .rounded(theme::RADIUS_CONTROL)
-        .border_1()
-        .border_color(theme::BORDER)
-        .text_color(theme::TEXT_STRONG)
-        .text_size(px(13.))
-        .font_weight(FontWeight::MEDIUM)
-        .whitespace_nowrap()
-        .cursor_pointer()
-        .hover(|s| s.border_color(theme::BORDER_HOVER))
-        .child(if is_sharing { Icon::X } else { Icon::Share }.size(14.))
-        .child(if is_sharing {
-            "Stop sharing"
-        } else {
-            "Share screen"
-        })
-        // Screens only: stopping "sharing" must not switch the camera off as a side effect.
-        .on_click(snap.app.listener(move |app, _: &ClickEvent, window, cx| {
-            if streams.is_empty() {
-                app.open_picker(window, cx);
-            } else {
-                for stream in &streams {
-                    commands::stop_sharing(app.ui(), *stream);
-                }
-            }
-        }));
-    let leave = div()
-        .id("btn-leave")
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring()))
-        .flex_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(7.))
-        .h(px(30.))
-        .bg(c::VOID)
-        .text_color(theme::DANGER_TEXT)
-        .rounded(theme::RADIUS_CONTROL)
-        .border_1()
-        .border_color(theme::DANGER_LINE)
-        .text_size(px(13.))
-        .font_weight(FontWeight::MEDIUM)
-        .whitespace_nowrap()
-        .cursor_pointer()
-        .hover(|s| s.border_color(theme::DANGER))
-        .child(Icon::Leave.size(16.))
-        .child("Leave")
-        .on_click(move |_: &ClickEvent, _, _| commands::set_joined(&ui, false));
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .mt(px(9.))
-        .child(div().flex().gap(px(6.)).child(share).child(leave))
-        .child(spotify_button(snap))
-}
-
-/// Share Spotify / Stop Spotify: only Spotify's sound, for everyone in the call.
-fn spotify_button(snap: &AppSnapshot) -> Stateful<Div> {
-    let on = snap.own_music().is_some();
-    let ui = snap.ui.clone();
-    div()
-        .id("btn-spotify")
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring()))
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .h(px(30.))
-        .px(px(8.))
-        .rounded(theme::RADIUS_CONTROL)
-        .border_1()
-        .border_color(theme::BORDER)
-        .text_color(theme::TEXT_STRONG)
-        .text_size(px(13.))
-        .font_weight(FontWeight::MEDIUM)
-        .whitespace_nowrap()
-        .cursor_pointer()
-        .tooltip(tooltip(if on {
-            "Stop sending Spotify to the call"
-        } else {
-            "Everyone in the call hears your Spotify, and only that"
-        }))
-        .hover(|s| s.border_color(theme::BORDER_HOVER))
-        .child(if on { Icon::X } else { Icon::Music }.size(14.))
-        .child(if on { "Stop Spotify" } else { "Share Spotify" })
-        .on_click(move |_: &ClickEvent, _, _| commands::set_spotify(&ui, !on))
-}
-
-/// The self panel: who you are, how you are, and the four toggles, in a hairline field.
+/// The self panel: who you are, how you are, and the mic, deafen and do-not-disturb toggles,
+/// in a hairline field. Mic and deafen live here whether or not you are in a call.
 fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App) -> Div {
     let s = &snap.s;
     let name = s.me.name.clone();
@@ -739,16 +464,15 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
     let sub = if s.do_not_disturb {
         "Do not disturb"
     } else if s.voice.joined {
-        "In the call"
+        "In call"
     } else {
         "Online"
     };
     let muted = s.voice.muted;
     let deafened = s.voice.deafened;
     let dnd = s.do_not_disturb;
-    let camera = snap.own_camera().is_some();
     let ui = snap.ui.clone();
-    let btn = |id: &'static str, icon: Icon, pressed: bool, live: bool, title: &'static str| {
+    let btn = |id: &'static str, icon: Icon, pressed: bool, title: &'static str| {
         div()
             .id(id)
             .tab_index(0)
@@ -765,14 +489,8 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
             .cursor_pointer()
             .text_color(theme::TEXT_MUTED)
             .tooltip(tooltip(title))
-            // Pressed is "something is switched off" in red; the camera opts out, because
-            // a camera that is on is working, so it takes the selected look instead.
-            .when(pressed && live, |d| {
-                d.text_color(theme::TEXT_STRONG)
-                    .bg(theme::BG_SELECTED)
-                    .border_color(theme::SELECTED_EDGE)
-            })
-            .when(pressed && !live, |d| {
+            // Pressed is "something is switched off", in red.
+            .when(pressed, |d| {
                 d.text_color(theme::DANGER_TEXT)
                     .bg(theme::DANGER_BG)
                     .border_color(theme::DANGER_LINE)
@@ -782,7 +500,7 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
             })
             .child(icon.size(18.))
     };
-    let (u1, u2, u3, u4) = (ui.clone(), ui.clone(), ui.clone(), ui);
+    let (u1, u3, u4) = (ui.clone(), ui.clone(), ui);
     div()
         .flex()
         .items_center()
@@ -810,8 +528,7 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
                 )
                 .child(
                     div()
-                        .font_family(theme::MONO_FONT)
-                        .text_size(theme::LABEL_TEXT)
+                        .text_size(px(12.))
                         .text_color(theme::TEXT_MUTED)
                         .overflow_hidden()
                         .whitespace_nowrap()
@@ -829,7 +546,6 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
                         "btn-mic",
                         if muted { Icon::MicOff } else { Icon::Mic },
                         muted,
-                        false,
                         if muted {
                             "Unmute microphone"
                         } else {
@@ -840,24 +556,9 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
                 )
                 .child(
                     btn(
-                        "btn-cam",
-                        if camera { Icon::Cam } else { Icon::CamOff },
-                        camera,
-                        true,
-                        if camera {
-                            "Turn the camera off"
-                        } else {
-                            "Turn the camera on"
-                        },
-                    )
-                    .on_click(move |_: &ClickEvent, _, _| commands::set_camera(&u2, !camera)),
-                )
-                .child(
-                    btn(
                         "btn-deaf",
                         if deafened { Icon::HeadOff } else { Icon::Head },
                         deafened,
-                        false,
                         if deafened { "Undeafen" } else { "Deafen" },
                     )
                     .on_click(move |_: &ClickEvent, _, _| commands::set_deafened(&u3, !deafened)),
@@ -867,7 +568,6 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
                         "btn-dnd",
                         Icon::Moon,
                         dnd,
-                        false,
                         if dnd {
                             "Turn off do not disturb"
                         } else {

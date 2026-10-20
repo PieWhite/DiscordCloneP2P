@@ -79,7 +79,7 @@ crates/app/src/ui/mod.rs       Bootstrap: app + venster, tray, sluiten-naar-tray
 crates/app/src/ui/bridge.rs    De drie feeds: state, meters, miniaturen
 crates/app/src/ui/state.rs     Snapshot -> UiState, NL -> EN vertaling
 crates/app/src/ui/commands.rs  Eén functie per UiCommand, plus kiezers en vensterknoppen
-crates/app/src/ui/theme.rs     De zestien kleuren en alle tokens, maten, schaduwen, fonts
+crates/app/src/ui/theme.rs     De B-palet en alle tokens, maten, radii, de ene schaduw, fonts
 crates/app/src/ui/icons.rs     Iconen als ingebedde SVG; bestanden in ui/assets/
 crates/app/src/ui/fixture.rs   Alleen debug: het venster gevoed uit JSON
 crates/app/src/ui/view/        AppView (de wortel) en één bestand per gebied
@@ -106,10 +106,13 @@ crates/app/src/ui/view/        AppView (de wortel) en één bestand per gebied
   de webview, nu als regel in code. Het venster haalt nooit iets van internet.
 - **Er staat geen runtime naast de exe.** WebView2 Evergreen was de prijs van Tauri; met
   GPUI is er niets meer om te installeren of vast te pinnen, en "losse exe in een zip" blijft.
-- **Het ontwerp is het zestienkleurenveld:** `DESIGN.md` + `.impeccable/design.json`, in
-  Rust `ui/theme.rs`. Een kleurwaarde of radius die niet uit een token komt is een bug.
-  `design/main-window.html` en `design/shots/` zijn de oudere grijze wereld en geen
-  referentie meer; vergelijken doe je in de fixturemodus (zie Bouwen).
+- **Het ontwerp is B, "Black chrome" (2026-10-20):** `DESIGN.md` + `.impeccable/design.json`, in
+  Rust `ui/theme.rs`. Zwart, hairlines, één accent (chrome), Inter + Instrument Serif +
+  JetBrains Mono. Een kleurwaarde of radius die niet uit een token komt is een bug. Geen
+  dither, horizonband, harde schaduw of inversie als selectie meer. Elke volumeschuif woont
+  in de audio-popover per persoon, mic en deafen blijven in het eigen paneel (beslissing 48).
+  `design/main-window.html` en `design/shots/` zijn oudere anti-referenties; `design/redesign-b/`
+  heeft de B-mockups; vergelijken doe je in de fixturemodus (zie Bouwen).
 - **Venstergedrag heeft headless tests** (gpui-kit `test-support`, naast de views):
   toetsenbord, plakken, slepen. `cargo test -p fitcom` draait ze mee.
 - **UI-taal is Engels**, motor en overige crates blijven Nederlands.

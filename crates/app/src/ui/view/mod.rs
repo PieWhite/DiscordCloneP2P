@@ -24,6 +24,7 @@
 //! - Read speaking level and RTT only from `snap.meters` (see `widgets::meter_view`), never
 //!   from `s`, and never observe `Meters` from a pane's root.
 
+pub mod call;
 pub mod channels;
 pub mod composer;
 pub mod dialogs;
@@ -352,9 +353,13 @@ pub struct ViewState {
     /// Half-typed messages of the conversations that are *not* open, per channel key. The
     /// open one's text lives in the composer itself.
     pub drafts: HashMap<String, String>,
-    /// Muting a peer is volume 0 with the old level remembered here, because that is all
-    /// the engine has: there is no separate per-peer mute on the wire.
-    pub volume_before_mute: HashMap<String, f32>,
+    /// Muting a volume is setting it to 0 with the old level remembered here, because that
+    /// is all the engine has: there is no separate per-peer mute on the wire.
+    pub volume_before_mute: HashMap<members::VolumeKey, f32>,
+    /// The peer whose "Audio for" popover is open: the one home of their volumes.
+    pub audio_for: Option<String>,
+    /// The call bar's share menu is open. Only while a screen is shared.
+    pub share_menu: bool,
     pub focused: bool,
     /// Unread count of the conversation at the moment it was opened, for the "new" line.
     pub unread_at_open: usize,
@@ -391,6 +396,8 @@ impl Default for ViewState {
             ac_query: String::new(),
             drafts: HashMap::new(),
             volume_before_mute: HashMap::new(),
+            audio_for: None,
+            share_menu: false,
             focused: true,
             unread_at_open: 0,
             collapsed: false,
@@ -793,6 +800,12 @@ impl AppView {
             self.v_mut().dm = first;
         }
 
+        // A share that ended elsewhere (window closed, call left) takes its menu along, so
+        // the next share does not open with it.
+        if self.v.share_menu && !(self.s.voice.joined && self.snapshot().sharing_self()) {
+            self.v_mut().share_menu = false;
+        }
+
         if active_channel(&self.v) != before {
             self.after_conversation_change(window, cx);
         } else if previous.timeline_revision != self.s.timeline_revision {
@@ -921,6 +934,15 @@ impl AppView {
     pub fn refresh_recap(&mut self) {
         let recap = commands::get_recap(&self.ui);
         self.v_mut().recap = Some(recap);
+    }
+
+    /// Opens a peer's audio popover. It hangs off their member row, so the member list
+    /// opens with it (a speaker button on a stream tile can ask while the list is closed).
+    pub fn open_audio_for(&mut self, peer: &str, cx: &mut Context<Self>) {
+        let v = self.v_mut();
+        v.audio_for = Some(peer.to_string());
+        v.members = true;
+        cx.notify();
     }
 
     pub fn toggle_members(&mut self, cx: &mut Context<Self>) {
@@ -1170,6 +1192,24 @@ impl AppView {
         if let Some(dialog) = dialog {
             self.open_dialog(dialog, window, cx);
         }
+        if d.share_menu {
+            self.v_mut().share_menu = true;
+        }
+        if let Some(peer) = &d.audio_for {
+            let first = self
+                .s
+                .peers
+                .iter()
+                .find(|p| p.in_call)
+                .map(|p| p.id.clone());
+            if let Some(id) = if peer == "first" {
+                first
+            } else {
+                Some(peer.clone())
+            } {
+                self.open_audio_for(&id, cx);
+            }
+        }
         if let Some(text) = &d.composer_text {
             self.panes
                 .composer
@@ -1232,6 +1272,9 @@ impl Render for AppView {
             .flex_col()
             .bg(theme::BG_CANVAS)
             .child(timeline::render_head(&snap, window, cx))
+            .when(snap.s.voice.joined, |d| {
+                d.child(call::render_bar(&snap, window, cx))
+            })
             .child(self.panes.strip.clone())
             .child(div().flex_1().min_h_0().child(cached(&self.panes.timeline)))
             .child(self.panes.composer.clone())

@@ -141,15 +141,15 @@ pub fn last_seen_line(last_seen: Option<i64>) -> String {
 
 fn last_seen_line_at(last_seen: Option<i64>, now: DateTime<Local>) -> String {
     let Some(ms) = last_seen.filter(|ms| *ms != 0) else {
-        return "Offline".into();
+        return "offline".into();
     };
     let Some(d) = local(ms) else {
-        return "Offline".into();
+        return "offline".into();
     };
     if fmt_day_at(ms, now) == "Today" {
-        format!("Last seen {}", fmt_time(ms))
+        format!("seen {}", fmt_time(ms))
     } else {
-        format!("Last seen {}, {}", fmt_time(ms), day_month(&d))
+        format!("seen {}, {}", fmt_time(ms), day_month(&d))
     }
 }
 
@@ -240,12 +240,9 @@ mod tests {
         assert_eq!(fmt_day_at(today, now), "Today");
         assert_eq!(fmt_day_at(yesterday, now), "Yesterday");
         assert_eq!(fmt_day_at(older, now), "28 July");
-        assert_eq!(last_seen_line_at(Some(today), now), "Last seen 22:14");
-        assert_eq!(
-            last_seen_line_at(Some(older), now),
-            "Last seen 09:05, 28 July"
-        );
-        assert_eq!(last_seen_line_at(None, now), "Offline");
+        assert_eq!(last_seen_line_at(Some(today), now), "seen 22:14");
+        assert_eq!(last_seen_line_at(Some(older), now), "seen 09:05, 28 July");
+        assert_eq!(last_seen_line_at(None, now), "offline");
         assert_eq!(fmt_day_num(20_260_803), "3 August");
         assert_eq!(fmt_day_num(0), "");
     }

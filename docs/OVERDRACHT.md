@@ -675,10 +675,10 @@ crates/app/src/ui/state.rs     Snapshot → UiState. Puur, met eigen tests; ook 
                                voor de fixturemodus. MAX_INLINE_SIDE (B-61).
 crates/app/src/ui/commands.rs  Eén functie per UiCommand-variant, op &Ui. De kiezers en
                                youtube_preview lopen op de tokio-runtime.
-crates/app/src/ui/theme.rs     De zestien kleuren en elk aliastoken uit de oude app.css,
-                               maten, harde schaduwen, de 2px-dither, de horizonband, fonts.
+crates/app/src/ui/theme.rs     Het B-palet (void tot chrome plus signalen), radii 6/10/16/full,
+                               maten, de ene zachte schaduw, fonts (sinds beslissing 48).
 crates/app/src/ui/icons.rs     35 iconen plus het merkteken, als SVG uit ui/assets/icons/.
-crates/app/src/ui/assets/      DotGothic16 en JetBrains Mono als TTF (omgezet uit de woff2).
+crates/app/src/ui/assets/      Inter, Instrument Serif en JetBrains Mono als TTF (beslissing 48).
 crates/app/src/ui/fixture.rs   Alleen debug: de fixturemodus.
 crates/app/src/ui/view/        mod.rs (AppView, ViewState = het oude V-object, navigatie),
                                widgets, format, titlebar, rail, channels (+ spraakpaneel),
@@ -715,7 +715,7 @@ oplevert of een overdracht van status wisselt); verandert die, of wissel je van 
 haalt `AppView` het open gesprek op met `commands::get_timeline`. Een view vraagt dat nooit
 zelf.
 
-**Er loopt niets door.** Het zestienkleurenveld klikt in stappen en fadet niet, dus er is
+**Er loopt niets door.** Het ontwerp klikt in stappen en fadet niet (B net zo goed als het zestienkleurenveld), dus er is
 geen animatie per beeld. De typindicator knippert op een getrapte timer van 275 ms, en
 alleen terwijl iemand typt. Schuiven en schakelaars zijn uit gpui-base-primitieven getekend,
 omdat die van gpui-kit met veren animeren.
@@ -2781,6 +2781,60 @@ De "Bekende grenzen" uit het plan gelden onverkort. Nieuw gevonden en niet aange
 - Port mapping: eens per vijf minuten proben, en UPnP uit zolang de router PCP of NAT-PMP
   spreekt. Anders is de mapping na het eerste vernieuwen weg.
 - `Hello.voor` niet op het configadres zetten.
+
+### 48. Van het zestienkleurenveld naar B, "Black chrome" (2026-10-20)
+
+Op Ricks verzoek: hij was klaar met retro. Daarbovenop waren de gespreksknoppen en de
+volumeschuiven rommelig geworden zodra je een scherm deelde. Rick koos ontwerp B uit het
+canvas ("B · Black chrome"); de mockups staan in `design/redesign-b/` (`MainB`, `SettingsB`,
+`TokensB`, als `.dc.html`). `DESIGN.md` en `.impeccable/design.json` zijn herschreven. De
+informatiestructuur (rail, kanalen, tijdlijn, leden), de `Snapshot`/`UiCommand`-grens en alle
+motorgedrag bleven staan.
+
+**Wat verdween.** Het zestienkleurenslot, de 2px-dither (ook voor hover, backdrop en "niet
+beschikbaar"), de horizonband, de één-gewicht-regel, inversie als selectie, de harde
+offset-schaduwen en de vierkante hoeken. DotGothic16 is eruit, en magenta bestaat niet meer:
+DND is rood. `design/main-window.html` en `design/shots/` blijven oudere anti-referenties.
+
+**Wat erbij kwam.**
+
+- **Palet** (`theme::c`, hernoemd, nooit oude namen hergebruikt): VOID #000000, LIFT #0B0E14,
+  WELL #05070A, HAIRLINE #292D30, CHARCOAL #464A4D, IRON #6E727A, ASH #A1A4A5, BONE #F0F0F0,
+  WHITE #FFFFFF, CHROME #D4D7DB (het ene accent), CHROME_DIM #B8BCC2, GREEN #3AD389,
+  RED #FF9592, RED_LINE #5A2A2A, RED_BG #1A0B0B, AMBER #FFCA16, SKY #70B8FF. Geselecteerd is
+  LIFT plus een inset van 1px HAIRLINE plus witte tekst. Een avatar is een monogram in de
+  kleur van de peer op VOID met een hairline-ring (groen bij spreken).
+- **Lettertypen:** Inter (400/500/600), Instrument Serif voor paneeltitels, JetBrains Mono
+  voor tijden, tellers, ms, sectielabels en bestandsnamen. De statische Inter-sneden zijn met
+  fontTools geïnstantieerd uit cosmic-texts `InterVariable`, omdat de statische gewichten niet
+  op schijf stonden. Instrument Serif komt uit google/fonts. De OFL-teksten staan naast de
+  bestanden in `crates/app/src/ui/assets/fonts/`. Alles zit nog steeds in de exe.
+- **Radii** 6 (knoppen, velden, rijen), 10 (composer, eigen paneel), 16 (kaarten, popovers,
+  dialogen), full (avatars, stippen, badges). Iconen: streepdikte 1,5, ronde uiteinden. Eén
+  zachte zwarte schaduw voor popovers en dialogen, backdrop plat VOID op ~85%.
+
+**Gespreksknoppen, één plek per ding.**
+
+- **Eigen paneel** (onder de kanaalkolom): avatar, naam, status, mic, deafen en DND. Mic en
+  deafen blijven daar altijd; dat was Ricks keuze ("mic and deafen should stay in selfpanel").
+- **Gespreksbalk** alleen terwijl je in het gesprek zit, bovenaan de tijdlijnkolom boven de
+  streamstrook: links "in call · N people · worst RTT", rechts camera, scherm delen, Spotify
+  en Leave. Tijdens delen opent de deelknop een menu (Stop sharing, Allow drawing, Clear
+  drawing); de "now sharing"-regels zijn uit de kanaalkolom. Eronder, alleen bij gedeelde
+  Spotify, één regel: "You share …" bij de DJ, "X plays …" met pauze/volgende bij een
+  luisteraar. Die twee knoppen staan nergens anders.
+- **Kanaalkolom, spraaksectie:** alleen wie er in het gesprek zit, plus Join the call.
+- **Streamtegels** voor elk scherm en elke camera van iemand in het gesprek, ook als je niet
+  kijkt. Een tegel van een ander heeft Watch / Stop watching (oog) en een luidsprekerknop die
+  de popover opent, en zo nodig de ledenlijst.
+- **Leden:** één regel per persoon. Een klik op een ander opent diens audio-popover met
+  Voice, Screen audio (als die deelt) en Spotify (als je die hoort), elk met een mute-knop en
+  een percentage; je eigen regel opent niets. `MembersPane` blijft eigenaar van de
+  `SliderStates`. Elk volume heeft precies één plek.
+
+**Wat het kost.** `design/shots/` en oude screenshots zijn geen vergelijkingsmateriaal meer;
+de fixtures blijven bruikbaar (zelfde `UiState`). Windows is voor B nog niet gezien, net als
+bij beslissing 39.
 
 ## Bugs die de tests eruit haalden
 

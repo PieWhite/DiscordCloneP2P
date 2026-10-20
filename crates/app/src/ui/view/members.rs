@@ -1,23 +1,26 @@
-//! The member list (`renderMembers`, `memberRow`): the five groups, speaking state through
-//! `widgets::meter_view`, status, last seen, the per-peer voice volume (mute is volume 0
-//! with the old level remembered in `v.volume_before_mute`), the desktop-audio volume, and
-//! the Watch / Stop watching chips.
+//! The member list (`renderMembers`, `memberRow`): the groups, one line per person (avatar,
+//! name, one mono sub-line whose speaking part follows `widgets::meter_view`), and the
+//! per-person "Audio for" popover a click on a peer opens. That popover is the one home of
+//! every volume of somebody else: voice, screen audio and Spotify, each with its mute (mute
+//! is volume 0 with the old level remembered in `v.volume_before_mute`).
 
-use super::super::commands::{self, MusicAction};
+use super::super::commands;
 use super::super::icons::Icon;
-use super::super::state::{PeerState, Presence};
+use super::super::state::{PeerState, Presence, UiState};
 use super::super::theme::{self, c};
+use super::super::Ui;
 use super::channels::{group_head, self_dot};
 use super::widgets::{
-    avatar, focus_ring, meter_view, pane_head, pane_title, tooltip, tracked, Dot,
+    avatar, focus_ring, meter_view, pane_head, pane_title, popover_surface, selectable, tooltip,
+    tracked, Dot,
 };
 use super::{format, AppHandle, AppSnapshot, PaneInit};
 use gpui_kit::base::slider::{SliderEvent, SliderState};
-use gpui_kit::base::{Slider as BaseSlider, SliderIndicator, SliderThumb, SliderTrack};
+use gpui_kit::base::{Popover, Slider as BaseSlider, SliderIndicator, SliderThumb, SliderTrack};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, relative, AnyElement, App, AppContext, ClickEvent, Context,
     Div, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
+    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -25,16 +28,43 @@ use std::rc::Rc;
 
 pub struct MembersPane {
     app: AppHandle,
-    /// One slider state per voice or desktop-audio volume on screen, made on first sight
-    /// and dropped when its row goes.
-    sliders: HashMap<SliderKey, VolumeSlider>,
+    /// One slider state per volume in the open audio popover, made on first sight and
+    /// dropped when the popover closes.
+    sliders: HashMap<VolumeKey, VolumeSlider>,
 }
 
+/// One volume of somebody else's: their voice, their screen audio, their Spotify.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum SliderKey {
+pub enum VolumeKey {
     Voice(String),
     Desktop(String, u32),
     Music(String, u32),
+}
+
+impl VolumeKey {
+    /// The engine's value now; `None` once that source is gone.
+    fn current(&self, s: &UiState) -> Option<f32> {
+        let peer = |id: &str| s.peers.iter().find(|p| p.id == id);
+        match self {
+            VolumeKey::Voice(id) => peer(id).map(|p| p.volume),
+            VolumeKey::Desktop(id, stream) => peer(id)
+                .filter(|p| p.desktop_stream == Some(*stream))
+                .map(|p| p.desktop_volume.unwrap_or(1.0)),
+            VolumeKey::Music(id, stream) => peer(id)
+                .and_then(|p| p.music.as_ref())
+                .filter(|m| m.stream == *stream)
+                .map(|m| m.volume),
+        }
+    }
+
+    fn send(&self, ui: &Ui, volume: f32) {
+        match self {
+            VolumeKey::Voice(peer) => commands::set_peer_volume(ui, peer, volume),
+            VolumeKey::Desktop(peer, stream) | VolumeKey::Music(peer, stream) => {
+                commands::set_stream_volume(ui, peer, *stream, volume)
+            }
+        }
+    }
 }
 
 struct VolumeSlider {
@@ -62,7 +92,7 @@ impl MembersPane {
     /// Every change goes to the engine at once, as the old `input` handler sent it.
     fn slider(
         &mut self,
-        key: SliderKey,
+        key: VolumeKey,
         value: u32,
         snap: &AppSnapshot,
         window: &mut Window,
@@ -82,13 +112,7 @@ impl MembersPane {
             let changes = cx.subscribe(&state, move |_, _, event: &SliderEvent, cx| match event {
                 SliderEvent::Change(v) => {
                     held.set(true);
-                    let volume = v.end() / 100.;
-                    match &key {
-                        SliderKey::Voice(peer) => commands::set_peer_volume(&ui, peer, volume),
-                        SliderKey::Desktop(peer, stream) | SliderKey::Music(peer, stream) => {
-                            commands::set_stream_volume(&ui, peer, *stream, volume)
-                        }
-                    }
+                    key.send(&ui, v.end() / 100.);
                     // The readout follows the thumb.
                     cx.notify();
                 }
@@ -198,8 +222,8 @@ enum Who<'a> {
 enum Sub {
     None,
     Text(String),
-    /// "Speaking" / "Listening" / "Microphone muted" / "Muted for you": decided on every
-    /// meters tick (`call_sub`), the way `applyMeters` patched it.
+    /// "speaking" / "in call" / "muted" / "muted for you": decided on every meters tick
+    /// (`call_word`), the way `applyMeters` patched it.
     Call,
 }
 
@@ -207,8 +231,6 @@ enum Sub {
 struct Row<'a> {
     who: Who<'a>,
     sub: Sub,
-    /// The mute button and the voice volume slider.
-    tools: bool,
 }
 
 struct Group<'a> {
@@ -228,42 +250,38 @@ fn member_groups<'a>(me: &Me, peers: &'a [PeerState]) -> Vec<Group<'a>> {
         call.push(Row {
             who: Who::Me,
             sub: Sub::Call,
-            tools: false,
         });
     }
     call.extend(in_call.iter().map(|p| Row {
         who: Who::Peer(p),
         sub: Sub::Call,
-        tools: true,
     }));
 
     let mut online: Vec<Row> = Vec::new();
     if !me.joined {
         let sub = if me.dnd {
-            "Do not disturb"
+            "do not disturb"
         } else if me.sharing {
-            "Sharing your screen"
+            "sharing your screen"
         } else if me.camera {
-            "Camera on"
+            "camera on"
         } else if call_running {
-            "Not in the call"
+            "not in the call"
         } else {
             ""
         };
         online.push(Row {
             who: Who::Me,
             sub: text(sub),
-            tools: false,
         });
     }
-    let not_in_call = if call_running { "Not in the call" } else { "" };
+    let not_in_call = if call_running { "not in the call" } else { "" };
     online.extend(
         known()
             .filter(|p| p.presence == Presence::Online && !p.in_call)
             .map(|p| Row {
                 who: Who::Peer(p),
                 sub: text(not_in_call),
-                tools: false,
             }),
     );
 
@@ -277,7 +295,6 @@ fn member_groups<'a>(me: &Me, peers: &'a [PeerState]) -> Vec<Group<'a>> {
             Row {
                 who: Who::Peer(p),
                 sub: text(&sub),
-                tools: false,
             }
         })
         .collect();
@@ -287,7 +304,6 @@ fn member_groups<'a>(me: &Me, peers: &'a [PeerState]) -> Vec<Group<'a>> {
         .map(|p| Row {
             who: Who::Peer(p),
             sub: text(&p.address),
-            tools: false,
         })
         .collect();
 
@@ -311,22 +327,23 @@ fn text(t: &str) -> Sub {
     }
 }
 
-/// The in-call second line, as the old render and its meter patch decided it together.
-fn call_sub(me: bool, muted: bool, speaking: bool, volume: f32) -> &'static str {
+/// The first word of an in-call sub-line. Our own mute wins over speaking, because nothing
+/// is sent; a peer we muted still shows when they speak.
+fn call_word(me: bool, muted: bool, speaking: bool, volume: f32) -> &'static str {
     if me {
         if muted {
-            "Microphone muted"
+            "muted"
         } else if speaking {
-            "Speaking"
+            "speaking"
         } else {
-            "Listening"
+            "in call"
         }
     } else if speaking {
-        "Speaking"
+        "speaking"
     } else if volume == 0.0 {
-        "Muted for you"
+        "muted for you"
     } else {
-        "Listening"
+        "in call"
     }
 }
 
@@ -356,22 +373,29 @@ fn mem_sub(content: impl IntoElement, quiet: bool) -> Div {
         } else {
             theme::TEXT_MUTED
         })
-        // A text flex item may shrink to its longest word in CSS; here it has to be told,
-        // or a peer's problem sentence runs out of the column instead of wrapping.
-        .child(div().flex_1().min_w_0().child(content))
+        // One line: a long problem sentence ends in an ellipsis rather than growing the row.
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(content),
+        )
 }
 
 /// The percentage next to a slider.
 fn vol_num(value: u32) -> Div {
     div()
         .flex_none()
-        .min_w(px(26.))
+        .min_w(px(34.))
         .flex()
         .justify_end()
         .font_family(theme::MONO_FONT)
         .text_size(theme::LABEL_TEXT)
         .text_color(theme::TEXT_MUTED)
-        .child(value.to_string())
+        .child(format!("{value}%"))
 }
 
 /// A volume slider: a 6px pill (1px hairline frame included) on a lift, chrome up to the
@@ -446,7 +470,7 @@ impl MembersPane {
         &mut self,
         snap: &AppSnapshot,
         row: &Row,
-        used: &mut HashSet<SliderKey>,
+        used: &mut HashSet<VolumeKey>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -471,7 +495,6 @@ impl MembersPane {
         };
         let me = peer.is_none();
         let quiet = peer.is_some_and(|p| p.presence != Presence::Online);
-        let group = SharedString::from(format!("mem-{key}"));
         let peer_id = peer.map(|p| p.id.clone()).unwrap_or_default();
 
         // No screen over a quiet sprite: the stylesheet meant one, but `.speak-ring::after`
@@ -494,22 +517,53 @@ impl MembersPane {
             )
         };
 
-        let status = peer
+        // Everything after the first word of the sub-line, joined with " · ".
+        let mut rest: Vec<String> = Vec::new();
+        if let Some(label) = peer
             .and_then(|p| p.user_status.as_deref())
             .map(format::status_label)
-            .filter(|l| !l.is_empty());
+            .filter(|l| !l.is_empty())
+        {
+            rest.push(label.to_lowercase());
+        }
         // Plain text only: GPUI draws a string as glyphs, there is nothing in it to run.
-        let playing = peer
-            .and_then(|p| p.activity.as_deref())
-            .filter(|_| !quiet)
-            .map(|g| format!("Playing {g}"));
+        if let Some(game) = peer.and_then(|p| p.activity.as_deref()).filter(|_| !quiet) {
+            rest.push(format!("playing {game}"));
+        }
+        let (screen, camera, spotify) = match peer {
+            None => (
+                snap.sharing_self(),
+                snap.own_camera().is_some(),
+                snap.own_music().is_some(),
+            ),
+            Some(p) => {
+                let theirs = || {
+                    s.streams
+                        .iter()
+                        .filter(|st| st.owner == p.id && !st.is_audio)
+                };
+                (
+                    theirs().any(|st| !st.is_camera),
+                    theirs().any(|st| st.is_camera),
+                    p.music.is_some(),
+                )
+            }
+        };
+        // What they share only reads in the call; outside it our own row already says it.
+        if row.sub == Sub::Call {
+            for (on, what) in [(screen, "screen"), (camera, "camera"), (spotify, "Spotify")] {
+                if on {
+                    rest.push(what.into());
+                }
+            }
+        }
+
         let sub: Option<AnyElement> = match &row.sub {
-            Sub::None => None,
-            Sub::Text(t) => Some(mem_sub(t.clone(), quiet).into_any_element()),
             Sub::Call => {
                 let muted = s.voice.muted;
                 let volume = peer.map_or(1.0, |p| p.volume);
                 let id = peer_id.clone();
+                let rest = rest.clone();
                 Some(
                     meter_view(
                         ElementId::Name(format!("mem-sub-{key}").into()),
@@ -522,7 +576,11 @@ impl MembersPane {
                             } else {
                                 m.speaking(&id)
                             };
-                            mem_sub(call_sub(me, muted, speaking, volume), quiet)
+                            let line = std::iter::once(call_word(me, muted, speaking, volume))
+                                .chain(rest.iter().map(String::as_str))
+                                .collect::<Vec<_>>()
+                                .join(" \u{00b7} ");
+                            mem_sub(line, quiet)
                                 .when(speaking, |d| d.text_color(theme::ONLINE))
                                 .into_any_element()
                         },
@@ -530,341 +588,253 @@ impl MembersPane {
                     .into_any_element(),
                 )
             }
+            Sub::Text(t) => {
+                let line = std::iter::once(t.clone())
+                    .chain(rest)
+                    .collect::<Vec<_>>()
+                    .join(" \u{00b7} ");
+                Some(mem_sub(line, quiet).into_any_element())
+            }
+            Sub::None if rest.is_empty() => None,
+            Sub::None => Some(mem_sub(rest.join(" \u{00b7} "), quiet).into_any_element()),
         };
 
-        let tools = match peer.filter(|_| row.tools) {
-            Some(p) => {
-                let k = SliderKey::Voice(p.id.clone());
-                used.insert(k.clone());
-                let state = self.slider(k, format::vol_pct(p.volume), snap, window, cx);
-                let muted = p.volume == 0.0;
-                let id = p.id.clone();
-                let label = if muted {
-                    format!("Unmute {}", p.name)
-                } else {
-                    format!("Mute {}", p.name)
-                };
-                Some(
+        // Only a known peer has volumes of their own to set.
+        let popover = peer.filter(|p| !p.id.is_empty());
+        let open = popover.is_some_and(|p| snap.v.audio_for.as_deref() == Some(p.id.as_str()));
+        let line = selectable(
+            div()
+                .id(ElementId::Name(format!("mem-{key}").into()))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .pt(px(7.))
+                .px(px(10.))
+                .pb(px(7.))
+                .when(popover.is_some(), |d| d.cursor_pointer())
+                .hover(|st| st.bg(theme::BG_HOVER)),
+            open,
+        )
+        .child(div().flex_none().w(px(32.)).child(ring))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(6.))
-                        .mt(px(7.))
                         .child(
                             div()
-                                .id(ElementId::Name(format!("pmute-{}", p.id).into()))
-                                .tab_index(0)
-                                .focus_visible(|s| s.shadow(focus_ring()))
-                                .size(px(24.))
-                                .flex()
-                                .flex_none()
-                                .items_center()
-                                .justify_center()
-                                .rounded(theme::RADIUS_CONTROL)
-                                .cursor_pointer()
-                                .text_color(if muted {
-                                    theme::DANGER_TEXT
-                                } else {
-                                    theme::TEXT_MUTED
-                                })
-                                .when(muted, |d| d.bg(theme::DANGER_BG))
-                                .when(!muted, |d| {
-                                    d.hover(|st| {
-                                        st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)
-                                    })
-                                })
-                                .tooltip(tooltip(label))
-                                .child(if muted { Icon::MicOff } else { Icon::Mic }.size(14.))
-                                .on_click(snap.app.listener(move |app, _: &ClickEvent, _, _| {
-                                    let Some(p) = app.state().peers.iter().find(|p| p.id == id)
-                                    else {
-                                        return;
-                                    };
-                                    let remembered =
-                                        app.view_state().volume_before_mute.get(&id).copied();
-                                    let (volume, remember) = mute_toggle(p.volume, remembered);
-                                    if let Some(level) = remember {
-                                        app.v_mut().volume_before_mute.insert(id.clone(), level);
-                                    }
-                                    commands::set_peer_volume(app.ui(), &id, volume);
-                                })),
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::TEXT_STRONG)
+                                .child(name),
                         )
-                        .child(range(&state, cx))
-                        .child(vol_num(state.read(cx).value().end().round() as u32)),
+                        .when(me, |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(theme::TEXT_DIM)
+                                    .child(tracked("YOU", 10., 0.05)),
+                            )
+                        }),
                 )
-            }
-            None => None,
-        };
+                .children(sub),
+        )
+        .test_support();
 
-        let desk = match peer.and_then(|p| p.desktop_stream.map(|st| (p, st))) {
-            Some((p, stream)) => {
-                let k = SliderKey::Desktop(p.id.clone(), stream);
+        let Some(p) = popover else {
+            return line.into_any_element();
+        };
+        let card = open.then(|| self.audio_card(snap, p, used, window, cx));
+        let (app, id) = (snap.app.clone(), p.id.clone());
+        Popover::new(ElementId::Name(format!("audio-{}", p.id).into()))
+            .w_full()
+            .anchor(gpui_kit::Anchor::RightCenter)
+            .offset(px(12.))
+            .open(open)
+            .on_open_change(move |open, _, cx| {
+                let id = id.clone();
+                let open = *open;
+                app.update(cx, |app, cx| {
+                    let v = app.v_mut();
+                    if open {
+                        v.audio_for = Some(id);
+                    } else if v.audio_for.as_deref() == Some(id.as_str()) {
+                        v.audio_for = None;
+                    }
+                    cx.notify();
+                });
+            })
+            .trigger_with(move |_, _, _| line.into_any_element())
+            .content(move |_, _, _| card.unwrap_or_else(|| div().into_any_element()))
+            .into_any_element()
+    }
+
+    /// "Audio for <name>": one row per source we hear from them, each with its slider, its
+    /// mute and its percentage. The only place these volumes are set.
+    fn audio_card(
+        &mut self,
+        snap: &AppSnapshot,
+        p: &PeerState,
+        used: &mut HashSet<VolumeKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut sources = vec![(VolumeKey::Voice(p.id.clone()), "Voice")];
+        if let Some(stream) = p.desktop_stream {
+            sources.push((VolumeKey::Desktop(p.id.clone(), stream), "Screen audio"));
+        }
+        if let Some(m) = p.music.as_ref().filter(|m| m.listening) {
+            sources.push((VolumeKey::Music(p.id.clone(), m.stream), "Spotify"));
+        }
+        let only_voice = sources.len() == 1;
+        let rows: Vec<AnyElement> = sources
+            .into_iter()
+            .filter_map(|(k, label)| {
+                let value = k.current(&snap.s)?;
                 used.insert(k.clone());
-                let state = self.slider(
-                    k,
-                    format::vol_pct(p.desktop_volume.unwrap_or(1.0)),
+                let state = self.slider(k.clone(), format::vol_pct(value), snap, window, cx);
+                Some(volume_row(
                     snap,
-                    window,
+                    &p.name,
+                    k,
+                    label,
+                    value == 0.0,
+                    &state,
                     cx,
-                );
-                Some(
-                    div()
-                        .mt(px(6.))
-                        .child(
-                            div()
-                                .text_size(px(9.5))
-                                .line_height(relative(1.1))
-                                .text_color(theme::TEXT_MUTED)
-                                .child(tracked("SCREEN AUDIO", 9.5, 0.04)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .mt(px(2.))
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(theme::TEXT_DIM)
-                                        .child(Icon::Monitor.size(14.)),
-                                )
-                                .child(range(&state, cx))
-                                .child(vol_num(state.read(cx).value().end().round() as u32)),
-                        ),
-                )
-            }
-            None => None,
-        };
-
-        // Their Spotify while we hear it: what plays, and its own slider next to the voice.
-        let music =
-            match peer.and_then(|p| p.music.as_ref().filter(|m| m.listening).map(|m| (p, m))) {
-                Some((p, m)) => {
-                    let k = SliderKey::Music(p.id.clone(), m.stream);
-                    used.insert(k.clone());
-                    let state = self.slider(k, format::vol_pct(m.volume), snap, window, cx);
-                    Some(
-                        div()
-                            .mt(px(6.))
-                            .child(
-                                div()
-                                    .text_size(px(9.5))
-                                    .line_height(relative(1.1))
-                                    .text_color(theme::TEXT_MUTED)
-                                    .child(tracked("SPOTIFY", 9.5, 0.04)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(2.))
-                                    .mt(px(2.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .text_size(px(11.5))
-                                            .text_color(theme::TEXT)
-                                            .child(m.title.clone()),
-                                    )
-                                    // Anyone in the call may pause or skip, at once; the DJ
-                                    // checks that and does it in their own Spotify.
-                                    .child(music_btn(
-                                        snap,
-                                        p,
-                                        m.stream,
-                                        MusicAction::PLAY_PAUSE,
-                                        Icon::PlayPause,
-                                        "Play / pause",
-                                    ))
-                                    .child(music_btn(
-                                        snap,
-                                        p,
-                                        m.stream,
-                                        MusicAction::NEXT,
-                                        Icon::Next,
-                                        "Next track",
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .mt(px(2.))
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(theme::TEXT_DIM)
-                                            .child(Icon::Music.size(14.)),
-                                    )
-                                    .child(range(&state, cx))
-                                    .child(vol_num(state.read(cx).value().end().round() as u32)),
-                            ),
-                    )
-                }
-                None => None,
-            };
-
-        let chips: Vec<AnyElement> = match peer {
-            Some(p) if !p.id.is_empty() => {
-                let shared: Vec<_> = s.streams.iter().filter(|st| st.owner == p.id).collect();
-                shared
-                    .iter()
-                    .filter(|st| !st.watching)
-                    .chain(shared.iter().filter(|st| st.watching))
-                    .map(|st| {
-                        let watching = st.watching;
-                        let (icon, verb) = match (watching, st.is_camera) {
-                            (true, _) => (Icon::X, "Stop watching"),
-                            (false, true) => (Icon::Cam, "Watch"),
-                            (false, false) => (Icon::Monitor, "Watch"),
-                        };
-                        let (ui, owner, stream) = (snap.ui.clone(), p.id.clone(), st.stream_id);
-                        share_chip(
-                            ElementId::Name(format!("chip-{}-{}", p.id, st.stream_id).into()),
-                            icon,
-                            verb,
-                            &st.title,
-                        )
-                        .on_click(move |_: &ClickEvent, _, _| {
-                            commands::set_watching(&ui, &owner, stream, !watching)
-                        })
-                        .into_any_element()
-                    })
-                    .collect()
-            }
-            _ => Vec::new(),
-        };
-
-        div()
-            .id(ElementId::Name(group))
+                ))
+            })
+            .collect();
+        popover_surface()
+            .id("audio-popover")
+            .w(px(284.))
+            .p(px(16.))
             .flex()
-            .gap(px(10.))
-            .pt(px(7.))
-            .px(px(10.))
-            .pb(px(7.))
-            .rounded(theme::RADIUS_CONTROL)
-            .hover(|st| st.bg(theme::BG_HOVER))
-            .child(div().flex_none().w(px(32.)).child(ring))
+            .flex_col()
+            .gap(px(16.))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(avatar(&p.name, p.avatar, 28., None, false))
+                    .child(pane_title(p.name.clone(), px(21.)).flex_1())
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme::TEXT_STRONG)
-                                    .child(name),
-                            )
-                            .when(me, |d| {
-                                d.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(px(10.))
-                                        .text_color(theme::TEXT_DIM)
-                                        .child(tracked("YOU", 10., 0.05)),
-                                )
-                            }),
-                    )
-                    .when_some(status, |d, label| d.child(mem_sub(label, quiet)))
-                    .when_some(playing, |d, line| d.child(mem_sub(line, quiet)))
-                    .children(sub)
-                    .children(tools)
-                    .children(desk)
-                    .children(music)
-                    .children(chips),
+                            .flex_none()
+                            .font_family(theme::MONO_FONT)
+                            .text_size(px(11.))
+                            .text_color(theme::TEXT_DIM)
+                            .child("only for you"),
+                    ),
             )
+            .children(rows)
+            .when(only_voice, |d| {
+                d.child(
+                    div()
+                        .pt(px(12.))
+                        .border_t_1()
+                        .border_color(theme::BORDER)
+                        .text_size(px(12.))
+                        .text_color(theme::TEXT_MUTED)
+                        .child(format!(
+                            "Screen audio and Spotify appear here while {} shares them.",
+                            p.name
+                        )),
+                )
+            })
+            .test_support()
             .into_any_element()
     }
 }
 
-/// A listener's 22px glyph button on someone's Spotify, in the mute button's grammar.
-fn music_btn(
+/// One source in the audio popover: label and percentage, then mute and slider.
+fn volume_row(
     snap: &AppSnapshot,
-    p: &PeerState,
-    stream: u32,
-    action: MusicAction,
-    icon: Icon,
+    name: &str,
+    key: VolumeKey,
     label: &'static str,
-) -> gpui_kit::Stateful<Div> {
-    let (ui, dj) = (snap.ui.clone(), p.id.clone());
+    muted: bool,
+    state: &Entity<SliderState>,
+    cx: &App,
+) -> AnyElement {
+    let what = match key {
+        VolumeKey::Voice(_) => name.to_string(),
+        _ => format!("{name}'s {}", label.to_lowercase()),
+    };
+    let title = if muted {
+        format!("Unmute {what} for you")
+    } else {
+        format!("Mute {what} for you")
+    };
+    let id = match &key {
+        VolumeKey::Voice(p) => format!("vmute-{p}"),
+        VolumeKey::Desktop(p, st) => format!("dmute-{p}-{st}"),
+        VolumeKey::Music(p, st) => format!("smute-{p}-{st}"),
+    };
     div()
-        .id(ElementId::Name(
-            format!("music-{}-{}-{:?}", p.id, stream, action).into(),
-        ))
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring()))
-        .size(px(22.))
         .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .rounded(theme::RADIUS_CONTROL)
-        .cursor_pointer()
-        .text_color(theme::TEXT_MUTED)
-        .hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
-        .tooltip(tooltip(label))
-        .child(icon.size(13.))
-        .on_click(move |_: &ClickEvent, _, _| commands::music_control(&ui, &dj, stream, action))
-}
-
-/// A hairline chip in the button grammar whose verb and source break apart, never inside
-/// the source; a very long source ellipsises on its own line.
-fn share_chip(
-    id: ElementId,
-    icon: Icon,
-    verb: &'static str,
-    source: &str,
-) -> gpui_kit::Stateful<Div> {
-    div()
-        .id(id)
-        .tab_index(0)
-        .focus_visible(|s| s.shadow(focus_ring()))
-        .mt(px(7.))
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap_x(px(5.))
-        .gap_y(px(1.))
-        .max_w_full()
-        .pt(px(3.))
-        .pr(px(8.))
-        .pb(px(3.))
-        .pl(px(6.))
-        .bg(c::VOID)
-        .text_color(theme::TEXT_STRONG)
-        .rounded(theme::RADIUS_CONTROL)
-        .border_1()
-        .border_color(theme::BORDER)
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .hover(|s| s.border_color(theme::TEXT_STRONG))
-        .child(icon.size(12.))
-        .child(div().whitespace_nowrap().child(verb))
+        .flex_col()
+        .gap(px(6.))
         .child(
             div()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(source.to_string()),
+                .flex()
+                .items_center()
+                .text_size(px(13.))
+                .child(div().flex_1().child(label))
+                .child(vol_num(state.read(cx).value().end().round() as u32)),
         )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id(ElementId::Name(id.into()))
+                        .tab_index(0)
+                        .focus_visible(|s| s.shadow(focus_ring()))
+                        .size(px(28.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(theme::RADIUS_CONTROL)
+                        .cursor_pointer()
+                        .text_color(if muted {
+                            theme::DANGER_TEXT
+                        } else {
+                            theme::TEXT_MUTED
+                        })
+                        .when(muted, |d| d.bg(theme::DANGER_BG))
+                        .when(!muted, |d| {
+                            d.hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG))
+                        })
+                        .tooltip(tooltip(title))
+                        .child(if muted { Icon::VolumeOff } else { Icon::Volume }.size(15.))
+                        .on_click(snap.app.listener(move |app, _: &ClickEvent, _, _| {
+                            let Some(volume) = key.current(app.state()) else {
+                                return;
+                            };
+                            let remembered = app.view_state().volume_before_mute.get(&key).copied();
+                            let (volume, remember) = mute_toggle(volume, remembered);
+                            if let Some(level) = remember {
+                                app.v_mut().volume_before_mute.insert(key.clone(), level);
+                            }
+                            key.send(app.ui(), volume);
+                        })),
+                )
+                .child(range(state, cx)),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -938,8 +908,8 @@ mod tests {
                 (
                     "Offline",
                     vec![
-                        ("Sander".into(), Sub::Text("Offline".into())),
-                        ("Joost".into(), Sub::Text("Offline".into())),
+                        ("Sander".into(), Sub::Text("offline".into())),
+                        ("Joost".into(), Sub::Text("offline".into())),
                         ("Bram".into(), Sub::Text("Runs protocol 4.".into())),
                     ]
                 ),
@@ -978,20 +948,22 @@ mod tests {
                 ),
                 (
                     "Online",
-                    vec![("Joost".into(), Sub::Text("Not in the call".into()))]
+                    vec![("Joost".into(), Sub::Text("not in the call".into()))]
                 ),
             ]
         );
-        assert!(groups[0].rows[1].tools && !groups[0].rows[0].tools);
     }
 
+    /// Our mute wins over speaking, a peer's speaking over our mute of them. Swapping the
+    /// first two checks of the `me` arm fails the first assertion.
     #[test]
-    fn the_call_line_follows_the_meters() {
-        assert_eq!(call_sub(true, true, true, 1.0), "Microphone muted");
-        assert_eq!(call_sub(true, false, true, 1.0), "Speaking");
-        assert_eq!(call_sub(false, false, false, 0.0), "Muted for you");
-        assert_eq!(call_sub(false, false, true, 0.0), "Speaking");
-        assert_eq!(call_sub(false, false, false, 0.5), "Listening");
+    fn the_call_word_follows_the_meters() {
+        assert_eq!(call_word(true, true, true, 1.0), "muted");
+        assert_eq!(call_word(true, false, true, 1.0), "speaking");
+        assert_eq!(call_word(true, false, false, 1.0), "in call");
+        assert_eq!(call_word(false, false, false, 0.0), "muted for you");
+        assert_eq!(call_word(false, false, true, 0.0), "speaking");
+        assert_eq!(call_word(false, false, false, 0.5), "in call");
     }
 
     /// Mute remembers the level and unmute brings it back; returning a constant 1.0 on
@@ -1001,5 +973,47 @@ mod tests {
         assert_eq!(mute_toggle(0.4, None), (0.0, Some(0.4)));
         assert_eq!(mute_toggle(0.0, Some(0.4)), (0.4, None));
         assert_eq!(mute_toggle(0.0, None), (1.0, None));
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::super::composer::window_tests::{Harness, SANDER};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::TestAppContext;
+
+    /// A click on a peer opens their audio popover; a click on your own row opens nothing.
+    /// Revert to see it fail: drop the `on_open_change` on the row's `Popover` (the view state
+    /// never learns it opened), or wrap the own row in a `Popover` too.
+    #[gpui_kit::test]
+    fn a_click_on_a_peer_opens_their_audio_popover(cx: &mut TestAppContext) {
+        let h = Harness::new(cx);
+        h.app.update(cx, |app, cx| {
+            app.v_mut().members = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let state = |cx: &mut TestAppContext| {
+            let open = h.app.read_with(cx, |app, _| app.v.audio_for.clone());
+            let card = h.with_window(cx, |window, cx| {
+                // The popup places itself from its trigger's bounds of the frame before.
+                window.render_frame(cx);
+                window.render_frame(cx);
+                window.try_find("audio-popover").is_some()
+            });
+            (open, card)
+        };
+
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("mem-@self", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(state(cx), (None, false), "your own row opens nothing");
+
+        let row = gpui_kit::ElementId::Name(format!("mem-{SANDER}").into());
+        h.with_window(cx, move |window, cx| window.click(row, cx));
+        cx.run_until_parked();
+        assert_eq!(state(cx), (Some(SANDER.to_string()), true));
     }
 }

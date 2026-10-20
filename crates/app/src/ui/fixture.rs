@@ -258,6 +258,10 @@ pub struct DebugView {
     pub composer_text: Option<String>,
     pub scroll: Option<String>,
     pub hover: Option<String>,
+    /// `audio=<peer id>` or `audio=first`: that peer's audio popover open.
+    pub audio_for: Option<String>,
+    /// `menu=share`: the call bar's share menu open (the fixture must share a screen).
+    pub share_menu: bool,
 }
 
 /// A dialog named in the script. Resolved against the state when it is applied, because
@@ -343,6 +347,8 @@ impl DebugView {
                 "text" => d.composer_text = Some(value.replace("\\n", "\n")),
                 "scroll" => d.scroll = Some(value.to_string()),
                 "hover" => d.hover = Some(value.to_string()),
+                "audio" => d.audio_for = Some(value.to_string()),
+                "menu" => d.share_menu = value == "share",
                 other => tracing::warn!(item = other, "FITCOM_DEBUG_VIEW: unknown item"),
             }
         }

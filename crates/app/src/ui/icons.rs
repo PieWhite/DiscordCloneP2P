@@ -81,6 +81,12 @@ icons! {
     /// One toggle for a listener: they do not know whether the DJ's Spotify is playing.
     PlayPause => "play-pause",
     Next => "next",
+    /// A volume of somebody else's, and its mute in the audio popover.
+    Volume => "volume",
+    VolumeOff => "volume-off",
+    /// Watch / Stop watching on a stream tile.
+    Eye => "eye",
+    EyeOff => "eye-off",
     /// The titlebar mark: three nodes on a 16×16 grid, filled, with faint links.
     Brand => "brand",
 }

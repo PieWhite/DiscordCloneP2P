@@ -436,7 +436,7 @@ impl ComposerPane {
             .map(|(i, p)| {
                 let selected = i == snap.v.ac_index;
                 let name = p.name.clone();
-                popover_item(("ac-item", i), selected)
+                widgets::popover_item(("ac-item", i), selected)
                     .child(avatar(&p.name, p.avatar, 20., None, false))
                     .child(p.name.clone())
                     .when(selected, |d| d.child(item_note("Tab")))
@@ -467,7 +467,7 @@ impl ComposerPane {
                 }
             })
             .child(
-                popover_item("plus-wordle", false)
+                widgets::popover_item("plus-wordle", false)
                     .child(Icon::Tiles.size(16.))
                     .child("Today's Wordle")
                     .child(item_note("everyone sees it"))
@@ -839,7 +839,7 @@ fn composer_btn(
 /// The popover over the composer that the member list and the `+` menu share: a card with
 /// the soft shadow and a mono label.
 fn popover(head: String) -> gpui_kit::Div {
-    div()
+    widgets::popover_surface()
         .absolute()
         .left(px(16.))
         .right(px(16.))
@@ -850,11 +850,6 @@ fn popover(head: String) -> gpui_kit::Div {
         .flex_col()
         .overflow_hidden()
         .p(px(6.))
-        .rounded(theme::RADIUS_CARD)
-        .border_1()
-        .border_color(theme::BORDER)
-        .bg(theme::BG_RAISED)
-        .shadow(theme::soft_shadow())
         .occlude()
         .child(
             widgets::section_label(&head)
@@ -862,28 +857,6 @@ fn popover(head: String) -> gpui_kit::Div {
                 .pt(px(4.))
                 .pb(px(6.)),
         )
-}
-
-/// A popover row; `selected` is the `aria-selected` row in the selected look.
-fn popover_item(
-    id: impl Into<gpui_kit::ElementId>,
-    selected: bool,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    widgets::selectable(
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap(px(9.))
-            .w_full()
-            .px(px(10.))
-            .py(px(6.))
-            .cursor_pointer()
-            .text_size(px(14.))
-            .text_color(theme::TEXT_MUTED)
-            .hover(|s| s.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)),
-        selected,
-    )
 }
 
 fn item_note(text: &'static str) -> impl IntoElement {
@@ -1129,7 +1102,7 @@ mod tests {
 /// The composer inside a real `AppView`, in a headless window, with the engine's command
 /// channel kept so each test can assert what reached it.
 #[cfg(test)]
-mod window_tests {
+pub(super) mod window_tests {
     use super::super::super::bridge::{Feeds, MeterReadings, ThumbMap};
     use super::super::super::state::{Constants, Presence};
     use super::super::super::{theme, Ui};
@@ -1147,18 +1120,18 @@ mod window_tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
-    const SANDER: &str = "b2d4f6a8-1c3e-4a5b-8d7f-9e0a1b2c3d4e";
+    pub(in crate::ui::view) const SANDER: &str = "b2d4f6a8-1c3e-4a5b-8d7f-9e0a1b2c3d4e";
 
-    struct Harness {
-        app: Entity<AppView>,
+    pub(in crate::ui::view) struct Harness {
+        pub(in crate::ui::view) app: Entity<AppView>,
         ui: Arc<Ui>,
-        window: AnyWindowHandle,
+        pub(in crate::ui::view) window: AnyWindowHandle,
         commands: mpsc::Receiver<UiCommand>,
         _runtime: tokio::runtime::Runtime,
     }
 
     impl Harness {
-        fn new(cx: &mut TestAppContext) -> Self {
+        pub(in crate::ui::view) fn new(cx: &mut TestAppContext) -> Self {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap();
@@ -1228,7 +1201,7 @@ mod window_tests {
             harness
         }
 
-        fn with_window<R>(
+        pub(in crate::ui::view) fn with_window<R>(
             &self,
             cx: &mut TestAppContext,
             f: impl FnOnce(&mut Window, &mut App) -> R,

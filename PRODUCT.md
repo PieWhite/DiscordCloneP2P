@@ -31,8 +31,8 @@ desktop
 **Rust-kern + GPUI-weergave (gpui-kit 0.7).** Uitgevoerd 2026-10-04, ter vervanging van
 Tauri v2, op Ricks verzoek: de app moet minder kosten om open te hebben. Zie
 `docs/OVERDRACHT.md`, beslissing 39. De afweging van fase 12 staat hieronder als historie;
-de reden van toen (het ontwerpplafond van egui) blijft gelden, en het zestienkleurenveld is
-in GPUI na te tekenen.
+de reden van toen (het ontwerpplafond van egui) blijft gelden, en het zestienkleurenveld was
+in GPUI na te tekenen (sinds 2026-10-20 vervangen door B, beslissing 48).
 
 Wat gebleven is: **de vijf niet-UI-crates en de motor onaangeroerd**, en de
 `Snapshot`/`UiCommand`-grens. `ui/state.rs` is hetzelfde contract, `ui/commands.rs` heeft
@@ -255,6 +255,10 @@ Vastliggende technische randvoorwaarden die ontwerpwerk niet mag omzeilen:
 - Toon: nuchter en zonder marketingstem. De bestaande UI-teksten en foutmeldingen zeggen
   wat er aan de hand is en wat je eraan doet ("offline · peer reageert niet"). Dat blijft.
 ### De visuele wereld: het zestienkleurenveld
+
+> **Vervangen op 2026-10-20 door B, "Black chrome"** (`docs/OVERDRACHT.md` beslissing 48,
+> `DESIGN.md`). Wat hieronder staat over dither, horizonband, DotGothic16 en inversie is
+> historie; de informatiestructuur en het faalcriterium gelden nog.
 
 **Vastgelegd 2026-08-12, ter vervanging van de keuze van 2026-08-04.** Rick vroeg om een
 frissere, eigenzinnigere uitstraling en er is opnieuw een richtingsronde gedraaid (seed
