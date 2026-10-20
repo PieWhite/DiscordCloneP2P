@@ -135,6 +135,7 @@ fn apparaten_zijn_op_te_vragen() {
 ///
 /// Bewust geen eis aan het volume — een stille kamer of een gedempte microfoon is geen
 /// kapotte tap. Wat hier telt is dat er samples komen, op ongeveer 48 kHz stereo.
+#[cfg(windows)] // microfoon::MicrofoonTap bestaat alleen op Windows
 #[test]
 #[ignore = "vereist een echte microfoon"]
 fn microfoon_tap_levert_chunks() {
