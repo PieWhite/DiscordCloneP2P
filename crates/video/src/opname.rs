@@ -204,6 +204,9 @@ pub struct SegmentMeta {
     pub pad: PathBuf,
     pub eerste_hns: i64,
     pub laatste_hns: i64,
+    /// Begintijd van het eerste geluidsframe. Ligt meestal vóór `eerste_hns`: het geluid
+    /// loopt achter het beeld aan, en wat na de grens binnenkomt landt in dit segment.
+    pub audio_hns: Option<i64>,
 }
 
 /// Welke segmenten samen tenminste `venster_hns` beslaan, gerekend vanaf het nieuwste.
@@ -289,6 +292,8 @@ pub fn laad_segmenten(ring_dir: &Path) -> Vec<SegmentMeta> {
                 pad,
                 eerste_hns: eerste,
                 laatste_hns: eerste + rel_einde,
+                // Staat niet in het bestand; `plak_clip` valt dan terug op `eerste_hns`.
+                audio_hns: None,
             }),
             Err(e) => {
                 tracing::warn!(pad = %pad.display(), error = %format!("{e:#}"), "kapot segment weggegooid");
@@ -367,6 +372,7 @@ struct SegmentSchrijver {
     /// `None` zolang er nog geen audiospoor in zit; dan doet [`Self::schrijf_audio`]
     /// niets. Anders de MP4-timescale van de audiotrack (de samplerate).
     audio_timescale: u32,
+    audio_hns: Option<i64>,
     openstaande: Option<(u64, bool, Bytes)>,
 }
 
@@ -438,6 +444,7 @@ impl SegmentSchrijver {
             laatste_hns: eerste_hns,
             frame_duur: HNS_PER_SEC / i64::from(video.fps.max(1)),
             audio_timescale,
+            audio_hns: None,
             openstaande: None,
         })
     }
@@ -465,20 +472,15 @@ impl SegmentSchrijver {
     /// Eén AAC-frame op de audiotrack. `abs_hns` is de absolute begintijd op de
     /// procesklok; `dur_samples` is vrijwel altijd [`AAC_FRAME_SAMPLES`].
     ///
-    /// Frames die vóór dit segment beginnen horen thuis in de voorganger — hier
-    /// stilletjes weggooien is dus correct, mits de caller ze eerst aan die voorganger
-    /// heeft aangeboden. Dat doet de opnamelus: hij schrijft de wachtrij weg vóórdat
-    /// hij het segment dichttrekt.
+    /// Nooit een frame weggooien: een MP4-spoor kent alleen duren, de mp4-crate negeert
+    /// `start_time`, dus elk ontbrekend frame schuift al het latere geluid naar voren.
+    /// Frames van vóór `eerste_hns` (het geluid loopt achter) horen er dus gewoon in, en
+    /// waar het spoor echt begint staat in `audio_hns`.
     fn schrijf_audio(&mut self, abs_hns: i64, dur_samples: u32, data: Vec<u8>) {
         if self.audio_timescale == 0 {
             return;
         }
-        let Some(delta) = abs_hns.checked_sub(self.eerste_hns) else {
-            return;
-        };
-        if delta < 0 {
-            return;
-        }
+        let delta = (abs_hns - *self.audio_hns.get_or_insert(abs_hns)).max(0);
         let start_ticks =
             (i128::from(delta) * i128::from(self.audio_timescale) / i128::from(HNS_PER_SEC)) as u64;
         let _ = self.writer.write_sample(
@@ -519,6 +521,7 @@ impl SegmentSchrijver {
             pad: self.pad.clone(),
             eerste_hns: self.eerste_hns,
             laatste_hns: self.laatste_hns,
+            audio_hns: self.audio_hns,
         })
     }
 }
@@ -584,7 +587,7 @@ pub fn plak_clip(
                 let Some(s) = r.read_sample(2, id)? else {
                     continue;
                 };
-                let abs = meta.eerste_hns
+                let abs = meta.audio_hns.unwrap_or(meta.eerste_hns)
                     + (i128::from(s.start_time) * i128::from(HNS_PER_SEC)
                         / i128::from(a.timescale())) as i64;
                 if abs < basis {
@@ -1527,6 +1530,7 @@ mod tests {
             pad: PathBuf::from(pad),
             eerste_hns: eerste,
             laatste_hns: laatste,
+            audio_hns: None,
         }
     }
 
@@ -1595,6 +1599,71 @@ mod tests {
         assert!(over.iter().any(|n| n == "clip-1.mp4"));
         assert!(over.iter().any(|n| n == "aantekening.txt"));
         assert!(laad_segmenten(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Het geluid loopt in de opnamelus achter het beeld aan, dus de frames vlak vóór een
+    /// segmentgrens komen pas binnen als het volgende segment al open is. Weggooien liet
+    /// elke grens een gat, en zonder tijdstempels in het spoor liep het geluid steeds verder
+    /// vóór het beeld uit.
+    #[test]
+    fn geluid_van_voor_de_segmentgrens_blijft_op_zijn_plek() {
+        let dir = std::env::temp_dir().join(format!(
+            "fitcom-segmentgrens-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("testmap");
+        let vs = VideoSpoor {
+            sps: vec![0x67, 0x42, 0xc0, 0x1f, 0x00],
+            pps: vec![0x68, 0xce, 0x3c, 0x80],
+            breedte: 64,
+            hoogte: 64,
+            fps: 10,
+        };
+        let asp = AudioSpoor {
+            sample_rate: 48_000,
+            kanalen: 2,
+            bitrate: 128_000,
+        };
+        let frame = i64::from(AAC_FRAME_SAMPLES) * HNS_PER_SEC / 48_000;
+        let beeld = HNS_PER_SEC / 10;
+        let achter = 2 * beeld;
+
+        // Twee segmenten van 1 s; het geluid tot 0,8 s gaat het eerste in, de rest het tweede.
+        let mut metas = Vec::new();
+        let mut a = 0i64;
+        for (i, begin) in [0, HNS_PER_SEC].into_iter().enumerate() {
+            let pad = dir.join(format!("seg-{i}.mp4"));
+            let mut s = SegmentSchrijver::open(pad, &vs, Some(&asp), begin).expect("openen");
+            for k in 0..10 {
+                s.schrijf_video(begin + k * beeld, k == 0, vec![0, 0, 0, 1, 0x65]);
+            }
+            while a < begin + HNS_PER_SEC - achter {
+                s.schrijf_audio(a, AAC_FRAME_SAMPLES, vec![0x21; 8]);
+                a += frame;
+            }
+            metas.push(s.sluit().expect("sluiten"));
+        }
+        let audio_in = |venster: i64| {
+            let uit = dir.join(format!("clip-{venster}.mp4"));
+            plak_clip(&metas, venster, &uit, &vs, Some(&asp)).expect("plakken");
+            let f = File::open(&uit).expect("clip");
+            let len = f.metadata().expect("grootte").len();
+            Mp4Reader::read_header(f, len)
+                .expect("clip lezen")
+                .sample_count(2)
+                .expect("audiospoor")
+        };
+
+        // Alles: geen enkel frame kwijt.
+        let alle = (a / frame) as u32;
+        assert_eq!(audio_in(2 * HNS_PER_SEC), alle);
+        // Vanaf het keyframe op 1 s: alleen het geluid van ná 1 s, niet de 0,2 s ervoor
+        // die in het tweede segment terechtkwam.
+        let vanaf_grens = alle - (HNS_PER_SEC + frame - 1) as u32 / frame as u32;
+        assert_eq!(audio_in(metas[1].laatste_hns - HNS_PER_SEC), vanaf_grens);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

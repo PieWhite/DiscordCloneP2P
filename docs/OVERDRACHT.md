@@ -2890,6 +2890,26 @@ config; geen protocolwijziging.
 Watch (tegel en hover) en stoppen (deelknop en de regel per scherm). Een verwijderde peer blijft
 tot de volgende start een grafsteen in de mesh.
 
+### 50. Clipgeluid liep vóór het beeld uit: elke segmentgrens kostte geluid (2026-10-20)
+
+Rick: het geluid van een clip loopt niet gelijk met het beeld. Oorzaak: een MP4-spoor kent
+alleen duren, en de mp4-crate negeert `Mp4Sample::start_time` bij het schrijven. Geluid dat
+ontbreekt is dus geen gat maar een verschuiving van alles erna. En er ontbrak geluid bij elke
+segmentgrens (~2 s): het geluid loopt achter het beeld aan (de menger wacht op de traagste
+bron, tot 200 ms bij een stille bron, plus de AAC-encoder), dus de frames vlak vóór een
+keyframe komen pas binnen als het nieuwe segment al open is, en `schrijf_audio` gooide alles
+van vóór `eerste_hns` weg. Tot 200 ms per 2 s: over een clip van een minuut seconden vóór.
+
+**Gekozen:** nooit een geluidsframe weggooien; zo'n frame gaat het open segment in, en
+`SegmentMeta::audio_hns` onthoudt waar dat spoor echt begint. `plak_clip` rekent het geluid
+vanaf daar. De andere vorm was het vorige segment open houden tot het geluid de grens
+passeert: elk segment klopt dan op zichzelf, maar het kost een tweede open schrijver en een
+uitgestelde bewaarstap in de opnamelus. Losse ringsegmenten speelt niemand af.
+
+Test `geluid_van_voor_de_segmentgrens_blijft_op_zijn_plek`. Niet aangepakt: een bron die
+zonder stilte doorloopt wordt op zijn eigen samples aan elkaar geregen, dus klokdrift van de
+geluidskaart wordt pas gecorrigeerd als hij 200 ms achter raakt, en vóórlopen nooit.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
