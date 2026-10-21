@@ -161,6 +161,21 @@ fn render_tile(snap: &AppSnapshot, t: Tile, image: Option<Arc<RenderImage>>) -> 
             .child(div().max_w_full().truncate().child(t.what.clone()))
             .into_any_element(),
     };
+    // Clicking the preview of a stream we do not watch yet is Watch. On the picture only, so
+    // the audio and eye buttons below keep their own meaning; a watched tile has its viewer.
+    let picture = div()
+        .id(SharedString::from(format!("tile-preview-{}", t.key)))
+        .child(picture)
+        .when_some(
+            t.peer.clone().filter(|_| !t.watching),
+            |d, (owner, stream)| {
+                let ui = snap.ui.clone();
+                d.cursor_pointer().on_click(move |_: &ClickEvent, _, _| {
+                    commands::set_watching(&ui, &owner, stream, true)
+                })
+            },
+        )
+        .test_support();
     let actions = t.peer.clone().map(|(owner, stream)| {
         let watching = t.watching;
         let ui = snap.ui.clone();
@@ -260,6 +275,7 @@ fn render_tile(snap: &AppSnapshot, t: Tile, image: Option<Arc<RenderImage>>) -> 
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::state::{PeerState, Presence};
     use super::*;
 
     fn stream(owner: &str, id: u32, watching: bool, is_audio: bool) -> StreamState {
@@ -340,6 +356,45 @@ mod tests {
                 ("self-3", false, false, None),
             ]
         );
+    }
+
+    /// Clicking the preview of an unwatched stream is Watch; our own tile and a watched one do
+    /// nothing. Revert to see it fail: drop the `on_click` on the preview in `render_tile`.
+    #[gpui_kit::test]
+    fn clicking_a_preview_watches_the_stream(cx: &mut gpui_kit::TestAppContext) {
+        use super::super::composer::window_tests::Harness;
+        use gpui_kit::test::TestWindowExt;
+        let mut h = Harness::new(cx);
+        let id = "6f1c2c1e-3b1a-4c55-9a43-0d7c5e0f2a11";
+        h.app.update(cx, |app, cx| {
+            let mut s = (*app.s).clone();
+            s.voice.joined = true;
+            s.peers = vec![PeerState {
+                id: id.into(),
+                ..super::super::channels::tests::peer("Sander", Presence::Online, true)
+            }];
+            s.streams = vec![stream(id, 5, false, false), stream(id, 6, true, false)];
+            s.own_streams = vec![own(1, 0, false, false)];
+            app.s = std::sync::Arc::new(s);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        for key in [format!("tile-preview-{id}-6"), "tile-preview-self-1".into()] {
+            h.with_window(cx, |window, cx| {
+                window.render_frame(cx);
+                window.click(key, cx)
+            });
+        }
+        assert!(h.drain().is_empty(), "watched and own tiles send nothing");
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click(format!("tile-preview-{id}-5"), cx)
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [crate::engine::UiCommand::Kijken(_, 5)]
+        ));
     }
 
     /// More tiles than the column holds scroll sideways instead of being cut off for good.

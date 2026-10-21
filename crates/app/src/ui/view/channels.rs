@@ -631,11 +631,11 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::super::state::Presence;
     use super::*;
 
-    fn peer(name: &str, presence: Presence, in_call: bool) -> PeerState {
+    pub(in crate::ui::view) fn peer(name: &str, presence: Presence, in_call: bool) -> PeerState {
         PeerState {
             id: format!("id-{name}"),
             name: name.into(),
