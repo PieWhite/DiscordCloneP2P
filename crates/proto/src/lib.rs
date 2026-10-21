@@ -5,6 +5,7 @@
 //! Zie `docs/ARCHITECTURE.md` voor het ontwerp en de compatibiliteitsregels.
 
 pub mod appversion;
+pub mod bediening;
 pub mod control;
 pub mod ids;
 pub mod media;

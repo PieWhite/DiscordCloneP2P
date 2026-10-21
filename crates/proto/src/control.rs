@@ -193,6 +193,135 @@ control_messages! {
     // hooguit een mislukte belpoging, binnenkomen gaat alleen met de vastgepinde sleutel. Een
     // oudere peer slaat de tag stil over.
     51 => Addresses(Addresses),
+
+    // 52-55: een gedeeld scherm bedienen (2026-10-22, beslissing 54). Vluchtig zoals 44-51,
+    // nooit een op, en single-hop tussen de deler en één kijker. Een kijker vraagt (52), de
+    // deler zegt na een klik van de gebruiker ja of nee (53), en daarna stuurt alleen die ene
+    // bediener muis en toetsen (54). Het klembord (55) gaat beide kanten op, maar alleen tussen
+    // de deler en zijn huidige bediener. Of het mag staat op `StreamAnnounce::remote_control`;
+    // een oudere deler stuurt dat niet, dus bij hem kan niemand iets vragen, en een oudere peer
+    // slaat de tags stil over.
+    52 => RemoteRequest(RemoteRequest),
+    53 => RemoteState(RemoteState),
+    54 => RemoteInput(RemoteInput),
+    55 => ClipboardText(ClipboardText),
+}
+
+/// "Ik wil dit scherm bedienen" (`want`) of "ik stop / trek mijn vraag in" (`!want`). Alleen
+/// van kijker naar deler. De deler neemt de vrager uit de verbinding, nooit uit het bericht,
+/// en vraagt zijn gebruiker om toestemming; het antwoord is een [`RemoteState`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteRequest {
+    pub stream_id: u32,
+    /// Ontbreekt het, dan is het "stoppen": de veilige kant.
+    #[serde(default)]
+    pub want: bool,
+}
+
+/// Van deler naar één kijker: bedien je dit scherm nu of niet. `false` na een weigering, als
+/// iemand anders al bedient, en bij elk einde (ingetrokken, optie uit, gestopt met delen).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteState {
+    pub stream_id: u32,
+    #[serde(default)]
+    pub granted: bool,
+}
+
+/// Muis en toetsen van de bediener, in de volgorde waarin hij ze gaf. Hooguit
+/// `bediening::MAX_INVOER_PER_BERICHT`; van een groter bericht neemt de deler de eerste zoveel
+/// plus elk loslaten erna (`bediening::begrens`), zodat er nooit een toets blijft hangen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteInput {
+    pub stream_id: u32,
+    #[serde(default)]
+    pub events: Vec<InputEvent>,
+}
+
+/// Wat voor invoer, als `u8` op de draad zodat een soort van een nieuwere peer als "onbekend"
+/// doorkomt en alleen die ene gebeurtenis wegvalt.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InputKind(pub u8);
+
+impl InputKind {
+    /// De muis naar `x, y`.
+    pub const MOVE: Self = Self(1);
+    /// Knop `button` omlaag op `x, y`.
+    pub const BUTTON_DOWN: Self = Self(2);
+    /// Knop `button` omhoog op `x, y`.
+    pub const BUTTON_UP: Self = Self(3);
+    /// Het wiel `delta` (veelvouden van 120) op `x, y`.
+    pub const WHEEL: Self = Self(4);
+    /// Het horizontale wiel.
+    pub const HWHEEL: Self = Self(5);
+    /// Toets `scan` (of `vk` als er geen scancode is) omlaag.
+    pub const KEY_DOWN: Self = Self(6);
+    pub const KEY_UP: Self = Self(7);
+
+    pub fn is_known(self) -> bool {
+        (1..=7).contains(&self.0)
+    }
+}
+
+impl std::fmt::Debug for InputKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::MOVE => write!(f, "Move"),
+            Self::BUTTON_DOWN => write!(f, "ButtonDown"),
+            Self::BUTTON_UP => write!(f, "ButtonUp"),
+            Self::WHEEL => write!(f, "Wheel"),
+            Self::HWHEEL => write!(f, "HWheel"),
+            Self::KEY_DOWN => write!(f, "KeyDown"),
+            Self::KEY_UP => write!(f, "KeyUp"),
+            Self(n) => write!(f, "Unknown({n})"),
+        }
+    }
+}
+
+/// Eén stuk invoer. Welke velden tellen hangt van `kind` af; de rest blijft nul. De muis
+/// staat genormaliseerd op het gedeelde beeld, net als bij tekenen: `[0, 0]` linksboven,
+/// `[65535, 65535]` rechtsonder, dus elke waarde is geldig en de deler rekent hem om naar zijn
+/// eigen monitor. Zie `crate::bediening` voor wat geldig is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputEvent {
+    pub kind: InputKind,
+    #[serde(default)]
+    pub x: u16,
+    #[serde(default)]
+    pub y: u16,
+    /// 1 links, 2 rechts, 3 midden, 4 en 5 de zijknoppen.
+    #[serde(default)]
+    pub button: u8,
+    #[serde(default)]
+    pub delta: i16,
+    /// Scancode (set 1); `0xE0` in de hoge byte voor een uitgebreide toets. Een scancode en
+    /// niet een teken: de indeling van de deler bepaalt wat er getypt wordt, en een spel leest
+    /// scancodes.
+    #[serde(default)]
+    pub scan: u16,
+    /// Virtuele toets, voor de paar toetsen zonder scancode.
+    #[serde(default)]
+    pub vk: u8,
+}
+
+/// Tekst op het klembord, tussen de deler en zijn huidige bediener, beide kanten op. Alleen
+/// een wijziging terwijl bedienen loopt, nooit wat er al op stond. Hooguit
+/// `bediening::MAX_KLEMBORD` bytes; groter laat de ontvanger vallen.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipboardText {
+    pub stream_id: u32,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// Zonder de tekst: die kan een wachtwoord zijn, en dit komt in logregels terecht.
+impl std::fmt::Debug for ClipboardText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardText")
+            .field("stream_id", &self.stream_id)
+            .field("len", &self.text.len())
+            .finish()
+    }
 }
 
 /// Waar de afzender zelf bereikbaar denkt te zijn, en hoe hij de ontvanger en de andere
@@ -577,6 +706,11 @@ pub struct StreamAnnounce {
     /// niet en is dus `false`: bij hem verschijnt geen pen, want hij kent `Draw` niet.
     #[serde(default)]
     pub drawing: bool,
+    /// Mogen kijkers vragen om dit scherm te bedienen (beslissing 54). Alleen ooit waar voor
+    /// een gedeelde monitor van een Windows-deler. Een oudere deler stuurt het niet en is dus
+    /// `false`: bij hem kan niemand iets vragen, want hij kent `RemoteRequest` niet.
+    #[serde(default)]
+    pub remote_control: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -867,6 +1001,22 @@ mod tests {
                 lines: vec![],
             }),
             ControlMsg::Addresses(Addresses::default()),
+            ControlMsg::RemoteRequest(RemoteRequest {
+                stream_id: 0,
+                want: true,
+            }),
+            ControlMsg::RemoteState(RemoteState {
+                stream_id: 0,
+                granted: false,
+            }),
+            ControlMsg::RemoteInput(RemoteInput {
+                stream_id: 0,
+                events: vec![],
+            }),
+            ControlMsg::ClipboardText(ClipboardText {
+                stream_id: 0,
+                text: String::new(),
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -935,6 +1085,7 @@ mod tests {
             width: 1920,
             height: 1080,
             drawing: false,
+            remote_control: false,
         });
         let bytes = msg.encode().unwrap();
         let back = ControlMsg::decode(&bytes).unwrap().unwrap();
@@ -1049,9 +1200,138 @@ mod tests {
         )
         .unwrap();
         match ControlMsg::decode(&body).unwrap().unwrap() {
-            ControlMsg::StreamAnnounce(a) => assert!(!a.drawing),
+            // En een oudere deler laat zich ook niet bedienen (beslissing 54).
+            ControlMsg::StreamAnnounce(a) => assert!(!a.drawing && !a.remote_control),
             other => panic!("verkeerde variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn bedienberichten_roundtrip_met_hun_tags() {
+        let vraag = ControlMsg::RemoteRequest(RemoteRequest {
+            stream_id: 3,
+            want: true,
+        });
+        let stand = ControlMsg::RemoteState(RemoteState {
+            stream_id: 3,
+            granted: true,
+        });
+        let invoer = ControlMsg::RemoteInput(RemoteInput {
+            stream_id: 3,
+            events: vec![
+                InputEvent {
+                    kind: InputKind::BUTTON_DOWN,
+                    x: 65535,
+                    y: 0,
+                    button: 1,
+                    delta: 0,
+                    scan: 0,
+                    vk: 0,
+                },
+                InputEvent {
+                    kind: InputKind::WHEEL,
+                    x: 100,
+                    y: 200,
+                    button: 0,
+                    delta: -240,
+                    scan: 0,
+                    vk: 0,
+                },
+                InputEvent {
+                    kind: InputKind::KEY_UP,
+                    x: 0,
+                    y: 0,
+                    button: 0,
+                    delta: 0,
+                    scan: 0xE01D,
+                    vk: 0xA3,
+                },
+            ],
+        });
+        let klembord = ControlMsg::ClipboardText(ClipboardText {
+            stream_id: 3,
+            text: "héllo\nwereld".into(),
+        });
+        for (msg, tag) in [(vraag, 52u16), (stand, 53), (invoer, 54), (klembord, 55)] {
+            let bytes = msg.encode().unwrap();
+            assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), tag);
+            assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+        }
+    }
+
+    #[test]
+    fn een_vraag_zonder_want_is_stoppen_en_een_onbekende_invoersoort_decodeert() {
+        // Een veld dat ontbreekt mag nooit "ja, bedienen" betekenen.
+        #[derive(Serialize)]
+        struct Kaal {
+            stream_id: u32,
+        }
+        let mut body = 52u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(&Kaal { stream_id: 1 }, &mut ser).unwrap();
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::RemoteRequest(r) => assert!(!r.want),
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+
+        // Een invoersoort van een nieuwere peer laat het bericht niet vallen.
+        #[derive(Serialize)]
+        struct Nieuw {
+            kind: u8,
+        }
+        #[derive(Serialize)]
+        struct Invoer {
+            stream_id: u32,
+            events: Vec<Nieuw>,
+        }
+        let mut body = 54u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &Invoer {
+                stream_id: 1,
+                events: vec![Nieuw { kind: 200 }],
+            },
+            &mut ser,
+        )
+        .unwrap();
+        match ControlMsg::decode(&body).unwrap().unwrap() {
+            ControlMsg::RemoteInput(i) => {
+                assert_eq!(i.events.len(), 1);
+                assert!(!i.events[0].kind.is_known());
+            }
+            other => panic!("verkeerde variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn klembordtekst_staat_niet_in_de_debugregel() {
+        let msg = ClipboardText {
+            stream_id: 1,
+            text: "geheim-wachtwoord".into(),
+        };
+        let regel = format!("{:?}", ControlMsg::ClipboardText(msg));
+        assert!(!regel.contains("geheim"), "{regel}");
+        assert!(regel.contains("len"), "{regel}");
+    }
+
+    #[test]
+    fn een_vol_invoerbericht_blijft_klein() {
+        // 64 gebeurtenissen met elk veld gevuld: ruim onder één QUIC-pakket of twee.
+        let e = InputEvent {
+            kind: InputKind::BUTTON_DOWN,
+            x: 65535,
+            y: 65535,
+            button: 5,
+            delta: i16::MIN,
+            scan: 0xE07F,
+            vk: 0xFE,
+        };
+        let msg = ControlMsg::RemoteInput(RemoteInput {
+            stream_id: u32::MAX,
+            events: vec![e; crate::bediening::MAX_INVOER_PER_BERICHT],
+        });
+        let len = msg.encode().unwrap().len();
+        assert!(len < 4096, "{len} bytes");
     }
 
     #[test]

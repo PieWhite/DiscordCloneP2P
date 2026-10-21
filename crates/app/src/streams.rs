@@ -121,6 +121,7 @@ impl EigenStream {
             width: self.breedte,
             height: self.hoogte,
             drawing: self.tekening.aan,
+            remote_control: false,
         })
     }
 
@@ -891,6 +892,7 @@ mod tests {
             width: 1920,
             height: 1080,
             drawing: false,
+            remote_control: false,
         })
     }
 
@@ -1110,6 +1112,7 @@ mod tests {
                 width: 1920,
                 height: 1080,
                 drawing: false,
+                remote_control: false,
             }),
         );
         assert!(s.vreemd().is_empty());
@@ -1169,6 +1172,7 @@ mod tests {
                 width: 0,
                 height: 0,
                 drawing: false,
+                remote_control: false,
             }),
         );
 
@@ -1194,6 +1198,7 @@ mod tests {
                 width: 0,
                 height: 0,
                 drawing: false,
+                remote_control: false,
             }),
         );
 
@@ -1222,6 +1227,7 @@ mod tests {
                 width: 0,
                 height: 0,
                 drawing: false,
+                remote_control: false,
             }),
         );
 
@@ -1272,6 +1278,7 @@ mod tests {
                 width: 1280,
                 height: 720,
                 drawing: false,
+                remote_control: false,
             }),
         );
         s.bij_bericht(
@@ -1284,6 +1291,7 @@ mod tests {
                 width: 0,
                 height: 0,
                 drawing: false,
+                remote_control: false,
             }),
         );
 
@@ -1334,6 +1342,7 @@ mod tests {
             width: 0,
             height: 0,
             drawing: false,
+            remote_control: false,
         })
     }
 
