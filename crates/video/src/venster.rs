@@ -29,13 +29,31 @@
 //! alleen opnieuw tekent als de tekening verandert. De swapchain en het videopad weten er
 //! niets van. Het menu is modaal: zolang het open staat wacht deze thread, net als bij
 //! het slepen van het venster, en dan komt het beeld daarna via een keyframe terug.
+//!
+//! # Het scherm van de deler bedienen (beslissing 54)
+//!
+//! Staat de deler het toe, dan heeft het menu "Take control of this screen". Dat vraagt het de
+//! deler, en pas als zijn gebruiker toestaat zet de motor dit venster op [`Bedienstand::Actief`].
+//! Dan gaan muis, knoppen, wiel en toetsen naar de deler zolang dit venster de focus heeft, en
+//! doet het venster zelf niets meer met F11, D, Escape, dubbelklikken of de rechterknop: die
+//! horen dan bij de andere PC. Stoppen kan door Escape anderhalve seconde vast te houden (zoals
+//! Chrome uit een toetsenbordvergrendeling haalt), door het venster te sluiten, of doordat de
+//! deler het intrekt. Pen en bedienen sluiten elkaar uit. Verliest het venster de focus, dan
+//! gaat alles los wat via ons ingedrukt stond. Het klembord gaat alleen mee zolang er bediend
+//! wordt (`crate::klembord`).
 
 use crate::d3d::D3dContext;
+use crate::klembord;
 use crate::tekenlaag::Laag;
 use anyhow::{Context, Result};
-use fitcom_proto::control::{Draw, DrawClear, DrawClearScope};
+use fitcom_proto::bediening::{Bedienstand, MAX_INVOER_PER_BERICHT};
+use fitcom_proto::control::{
+    ClipboardText, Draw, DrawClear, DrawClearScope, InputEvent, InputKind, RemoteInput,
+    RemoteRequest,
+};
 use fitcom_proto::teken::{Tekening, DIKTES, KLEUREN, MAX_PUNTEN_PER_BERICHT, MAX_PUNTEN_PER_LIJN};
 use fitcom_proto::ControlMsg;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,15 +70,23 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    ClientToScreen, GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
+};
+use windows::Win32::System::DataExchange::{
+    AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_D, VK_DELETE, VK_ESCAPE, VK_F11, VK_Z,
+    GetCapture, GetFocus, GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_D, VK_DELETE,
+    VK_ESCAPE, VK_F11, VK_NUMLOCK, VK_PACKET, VK_PAUSE, VK_PROCESSKEY, VK_Z,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const KLASSE: PCWSTR = w!("FitcomVideoVenster");
+
+/// Zo lang Escape vasthouden stopt het bedienen. Escape zelf gaat wel naar de deler.
+const ESC_HOUD: Duration = Duration::from_millis(1500);
 
 /// Wat de vensterprocedure bijhoudt. Leeft in een `Box` achter `GWLP_USERDATA` en
 /// wordt bij `WM_NCDESTROY` weer opgeruimd.
@@ -72,6 +98,225 @@ struct Staat {
     /// Beeldverhouding van de stream, om vervorming bij het slepen te voorkomen.
     verhouding: f32,
     teken: Teken,
+    bedien: Bedien,
+    /// De titel zonder hint.
+    titel: String,
+    /// Wat er laatst aan titel, luisteraar en pen gedaan is: (tekenen mag, bedienstand). De
+    /// vensterprocedure zet alleen de stand om; de gevolgen (die zelf weer berichten naar het
+    /// venster sturen) doen [`Venster::werk`] en [`Venster::zet_bediening`], buiten de procedure.
+    toegepast: Option<(bool, Bedienstand)>,
+}
+
+/// Wat er in de titel staat, na de naam van de stream. De enige aanwijzing dat tekenen en
+/// bedienen bestaan, en tijdens het bedienen hoe je stopt.
+fn titel_van(basis: &str, tekenen: bool, stand: Bedienstand) -> String {
+    let hint = match stand {
+        Bedienstand::Actief => "you control this screen \u{00b7} hold Esc to stop",
+        Bedienstand::Gevraagd => "asked for control, waiting for them to allow it",
+        Bedienstand::Mag if tekenen => "right-click to draw or take control",
+        Bedienstand::Mag => "right-click to take control",
+        Bedienstand::Uit if tekenen => "right-click to draw",
+        Bedienstand::Uit => return basis.to_string(),
+    };
+    format!("{basis} \u{2014} {hint}")
+}
+
+/// Bedienen vanuit dit venster.
+#[derive(Default)]
+struct Bedien {
+    stand: Bedienstand,
+    /// Alleen met de focus gaat er invoer naar de deler.
+    focus: bool,
+    /// Wat we bij de deler ingedrukt hebben: dat gaat los bij focusverlies of stoppen.
+    toetsen: BTreeSet<(u16, u8)>,
+    /// Bit `n` voor muisknop `n`.
+    knoppen: u8,
+    /// Laatste plek van de muis op het beeld.
+    plek: [u16; 2],
+    /// Invoer sinds het vorige bericht; opeenvolgende bewegingen samengevat tot één.
+    invoer: Vec<InputEvent>,
+    /// Klaar om naar de deler te gaan, in volgorde.
+    uit: Vec<BedienUit>,
+    /// Sinds wanneer Escape omlaag staat.
+    esc_sinds: Option<Instant>,
+    /// Het venster luistert naar het klembord (alleen tijdens het bedienen).
+    luistert: bool,
+}
+
+enum BedienUit {
+    Invoer(Vec<InputEvent>),
+    Vraag(bool),
+    Klembord(String),
+}
+
+impl Bedien {
+    fn actief(&self) -> bool {
+        self.stand == Bedienstand::Actief
+    }
+
+    /// Eén gebeurtenis erbij, en bijhouden wat er ingedrukt staat.
+    fn duw(&mut self, e: InputEvent) {
+        match e.kind {
+            InputKind::KEY_DOWN => {
+                self.toetsen.insert((e.scan, e.vk));
+            }
+            InputKind::KEY_UP => {
+                self.toetsen.remove(&(e.scan, e.vk));
+            }
+            InputKind::BUTTON_DOWN => self.knoppen |= 1 << e.button,
+            InputKind::BUTTON_UP => self.knoppen &= !(1 << e.button),
+            InputKind::MOVE => {
+                if let Some(vorige) = self.invoer.last_mut().filter(|v| v.kind == InputKind::MOVE) {
+                    *vorige = e;
+                    return;
+                }
+            }
+            _ => {}
+        }
+        self.invoer.push(e);
+    }
+
+    /// Alles wat we ingedrukt hebben los, bij de deler.
+    fn alles_los(&mut self) {
+        for (scan, vk) in std::mem::take(&mut self.toetsen) {
+            self.invoer.push(InputEvent {
+                scan,
+                vk,
+                ..leeg(InputKind::KEY_UP)
+            });
+        }
+        let [x, y] = self.plek;
+        for knop in 1..=5u8 {
+            if self.knoppen & (1 << knop) != 0 {
+                self.invoer.push(InputEvent {
+                    x,
+                    y,
+                    button: knop,
+                    ..leeg(InputKind::BUTTON_UP)
+                });
+            }
+        }
+        self.knoppen = 0;
+        self.esc_sinds = None;
+    }
+
+    /// Wat er aan invoer klaarstaat in de rij voor de deler.
+    fn spoel(&mut self) {
+        if !self.invoer.is_empty() {
+            self.uit
+                .push(BedienUit::Invoer(std::mem::take(&mut self.invoer)));
+        }
+    }
+
+    /// Zelf stoppen: eerst alles los (dat komt nog aan zolang we bediener zijn), dan zeggen
+    /// dat we stoppen.
+    fn stop(&mut self) {
+        self.alles_los();
+        self.spoel();
+        self.uit.push(BedienUit::Vraag(false));
+        self.stand = Bedienstand::Mag;
+    }
+
+    /// De deler (of de motor) maakte er een eind aan: de deler laat zelf alles los, dus hier
+    /// alleen vergeten.
+    fn vergeet(&mut self) {
+        self.toetsen.clear();
+        self.knoppen = 0;
+        self.invoer.clear();
+        self.esc_sinds = None;
+        self.uit.retain(|u| !matches!(u, BedienUit::Invoer(_)));
+    }
+
+    fn werk(&mut self, stream_id: u32) -> Vec<ControlMsg> {
+        if self.actief() && self.esc_sinds.is_some_and(|t| t.elapsed() >= ESC_HOUD) {
+            tracing::info!(stream = stream_id, "Escape vastgehouden; bedienen gestopt");
+            self.stop();
+        }
+        self.spoel();
+        let mut berichten = Vec::new();
+        for uit in self.uit.drain(..) {
+            match uit {
+                BedienUit::Invoer(events) => {
+                    for stuk in events.chunks(MAX_INVOER_PER_BERICHT) {
+                        berichten.push(ControlMsg::RemoteInput(RemoteInput {
+                            stream_id,
+                            events: stuk.to_vec(),
+                        }));
+                    }
+                }
+                BedienUit::Vraag(want) => {
+                    berichten.push(ControlMsg::RemoteRequest(RemoteRequest { stream_id, want }))
+                }
+                BedienUit::Klembord(text) => {
+                    berichten.push(ControlMsg::ClipboardText(ClipboardText { stream_id, text }))
+                }
+            }
+        }
+        berichten
+    }
+}
+
+fn leeg(kind: InputKind) -> InputEvent {
+    InputEvent {
+        kind,
+        x: 0,
+        y: 0,
+        button: 0,
+        delta: 0,
+        scan: 0,
+        vk: 0,
+    }
+}
+
+/// Een toetsbericht van Windows als invoer voor de deler: de scancode uit `lparam` (bit 24 is
+/// "uitgebreid"), de virtuele toets erbij. `None` voor wat geen toets van het toetsenbord is
+/// (IME, `VK_PACKET`) of niet geldig.
+fn toets_van(wparam: WPARAM, lparam: LPARAM, los: bool) -> Option<InputEvent> {
+    let vk = (wparam.0 & 0xFF) as u8;
+    if matches!(u16::from(vk), v if v == VK_PROCESSKEY.0 || v == VK_PACKET.0) {
+        return None;
+    }
+    let scan = ((lparam.0 >> 16) & 0xFF) as u16;
+    let uitgebreid = (lparam.0 >> 24) & 1 == 1;
+    // Pause en NumLock delen scancode 0x45 en zijn als scancode niet uit elkaar te houden: die
+    // gaan als virtuele toets.
+    let scan = if scan == 0 || matches!(u16::from(vk), v if v == VK_PAUSE.0 || v == VK_NUMLOCK.0) {
+        0
+    } else if uitgebreid {
+        0xE000 | scan
+    } else {
+        scan
+    };
+    let e = InputEvent {
+        scan,
+        vk,
+        ..leeg(if los {
+            InputKind::KEY_UP
+        } else {
+            InputKind::KEY_DOWN
+        })
+    };
+    e.is_geldig().then_some(e)
+}
+
+/// Welke muisknop een knopbericht noemt, en of hij omlaag gaat.
+fn knop_van(bericht: u32, wparam: WPARAM) -> Option<(u8, bool)> {
+    let x = if ((wparam.0 >> 16) & 0xFFFF) as u16 == XBUTTON2 {
+        5
+    } else {
+        4
+    };
+    Some(match bericht {
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => (1, true),
+        WM_LBUTTONUP => (1, false),
+        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => (2, true),
+        WM_RBUTTONUP => (2, false),
+        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => (3, true),
+        WM_MBUTTONUP => (3, false),
+        WM_XBUTTONDOWN | WM_XBUTTONDBLCLK => (x, true),
+        WM_XBUTTONUP => (x, false),
+        _ => return None,
+    })
 }
 
 /// Zo vaak gaat een lijn in aanbouw naar de deler: vaak genoeg dat hij bij de anderen
@@ -114,8 +359,6 @@ struct Teken {
     uit: Vec<Werk>,
     laatst_verstuurd: Instant,
     laag: Option<Laag>,
-    /// De titel zonder de tekenhint.
-    titel: String,
 }
 
 struct LopendeLijn {
@@ -170,7 +413,7 @@ enum Werk {
 }
 
 impl Teken {
-    fn nieuw(titel: &str) -> Self {
+    fn nieuw() -> Self {
         Self {
             tekening: Arc::new(Tekening::nieuw(false)),
             pen: false,
@@ -178,7 +421,6 @@ impl Teken {
             uit: Vec::new(),
             laatst_verstuurd: Instant::now(),
             laag: None,
-            titel: titel.to_string(),
         }
     }
 
@@ -186,24 +428,13 @@ impl Teken {
         self.tekening.aan && self.pen
     }
 
+    /// De titel volgt via `pas_toe`.
     fn zet(&mut self, hwnd: HWND, t: Arc<Tekening>) {
         let wissel = self.tekening.aan != t.aan;
         self.tekening = t;
-        if wissel {
-            if !self.tekening.aan {
-                self.pen = false;
-                self.lopend = None;
-            }
-            let titel = if self.tekening.aan {
-                format!("{} \u{2014} right-click to draw", self.titel)
-            } else {
-                self.titel.clone()
-            };
-            let breed: Vec<u16> = titel.encode_utf16().chain(std::iter::once(0)).collect();
-            // SAFETY: eigen venster, eigen thread, nul-afgesloten buffer.
-            unsafe {
-                let _ = SetWindowTextW(hwnd, PCWSTR(breed.as_ptr()));
-            }
+        if wissel && !self.tekening.aan {
+            self.pen = false;
+            self.lopend = None;
         }
         self.herteken(hwnd);
     }
@@ -369,13 +600,16 @@ fn client_kader(hwnd: HWND) -> Option<RECT> {
 
 /// Menu-id's onder de rechterknop.
 const MENU_PEN: usize = 1;
+const MENU_BEDIEN: usize = 2;
 const MENU_KLEUR: usize = 10;
 const MENU_DIKTE: usize = 30;
 const MENU_ONGEDAAN: usize = 40;
 const MENU_WIS: usize = 41;
 
-/// Het menu onder de rechterknop: pen op of neer, kleur, dikte, ongedaan en wissen.
-fn toon_menu(hwnd: HWND, lparam: LPARAM, teken: &mut Teken) {
+/// Het menu onder de rechterknop: bedienen vragen of intrekken, en pen op of neer, kleur,
+/// dikte, ongedaan en wissen. Tijdens het bedienen is de rechterknop van de deler en komt dit
+/// menu niet.
+fn toon_menu(hwnd: HWND, lparam: LPARAM, staat: &mut Staat) {
     let breed = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     // SAFETY: een menu van deze thread, opgeruimd voor we terugkeren.
     unsafe {
@@ -387,6 +621,14 @@ fn toon_menu(hwnd: HWND, lparam: LPARAM, teken: &mut Teken) {
             let _ = AppendMenuW(menu, vlaggen, id, PCWSTR(t.as_ptr()));
         };
         let vink = |aan: bool| if aan { MF_CHECKED } else { MF_STRING };
+        match staat.bedien.stand {
+            Bedienstand::Mag => voeg(MF_STRING, MENU_BEDIEN, "Take control of this screen"),
+            Bedienstand::Gevraagd => voeg(MF_STRING, MENU_BEDIEN, "Cancel the control request"),
+            Bedienstand::Actief => voeg(MF_STRING, MENU_BEDIEN, "Stop controlling"),
+            Bedienstand::Uit => voeg(MF_GRAYED, 0, "Remote control is off for this stream"),
+        }
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let teken = &mut staat.teken;
         if teken.tekening.aan {
             voeg(vink(teken.pen), MENU_PEN, "Draw on the stream\tD");
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -424,6 +666,20 @@ fn toon_menu(hwnd: HWND, lparam: LPARAM, teken: &mut Teken) {
         let _ = DestroyMenu(menu);
 
         match keuze {
+            MENU_BEDIEN => match staat.bedien.stand {
+                Bedienstand::Mag => {
+                    // Pen en bedienen sluiten elkaar uit.
+                    staat.teken.zet_pen(false);
+                    staat.bedien.uit.push(BedienUit::Vraag(true));
+                    staat.bedien.stand = Bedienstand::Gevraagd;
+                }
+                Bedienstand::Gevraagd => {
+                    staat.bedien.uit.push(BedienUit::Vraag(false));
+                    staat.bedien.stand = Bedienstand::Mag;
+                }
+                Bedienstand::Actief => staat.bedien.stop(),
+                Bedienstand::Uit => {}
+            },
             MENU_PEN => teken.zet_pen(!teken.pen),
             k if (MENU_KLEUR..MENU_KLEUR + KLEUREN.len()).contains(&k) => {
                 PEN_KLEUR.store((k - MENU_KLEUR) as u8, Ordering::Relaxed);
@@ -463,7 +719,10 @@ impl Venster {
                 ..Default::default()
             },
             verhouding: breedte as f32 / hoogte.max(1) as f32,
-            teken: Teken::nieuw(titel),
+            teken: Teken::nieuw(),
+            bedien: Bedien::default(),
+            titel: titel.to_string(),
+            toegepast: None,
         });
 
         let naam: Vec<u16> = titel.encode_utf16().chain(std::iter::once(0)).collect();
@@ -544,27 +803,103 @@ impl Venster {
         }
     }
 
-    fn teken(&mut self) -> Option<&mut Teken> {
+    fn staat(&mut self) -> Option<&mut Staat> {
         // SAFETY: zoals bij `is_gesloten`; we draaien op de thread van het venster en de
         // vensterprocedure loopt nu niet.
         unsafe {
             let ptr = GetWindowLongPtrW(self.hwnd, GWLP_USERDATA) as *mut Staat;
-            (!ptr.is_null()).then(|| &mut (*ptr).teken)
+            (!ptr.is_null()).then(|| &mut *ptr)
         }
+    }
+
+    #[cfg(test)]
+    fn teken(&mut self) -> Option<&mut Teken> {
+        self.staat().map(|s| &mut s.teken)
     }
 
     /// De tekening van de deler, zoals de motor hem nu kent. Alleen bij een wijziging; de
     /// laag tekent dan bij wat er veranderde.
     pub fn zet_tekening(&mut self, t: Arc<Tekening>) {
         let hwnd = self.hwnd;
-        if let Some(teken) = self.teken() {
-            teken.zet(hwnd, t);
+        if let Some(s) = self.staat() {
+            s.teken.zet(hwnd, t);
+        }
+        self.pas_toe();
+    }
+
+    /// Waar we staan met het bedienen van dit scherm, zoals de motor het kent. Zet de motor ons
+    /// uit `Actief`, dan heeft de deler het al losgelaten; hier valt dan alleen te vergeten.
+    pub fn zet_bediening(&mut self, stand: Bedienstand) {
+        if let Some(s) = self.staat() {
+            if s.bedien.stand == stand {
+                return;
+            }
+            if s.bedien.actief() {
+                s.bedien.vergeet();
+            }
+            s.bedien.stand = stand;
+        }
+        self.pas_toe();
+    }
+
+    /// Klembordtekst van de deler; alleen terwijl we hem bedienen.
+    pub fn zet_klembord(&mut self, tekst: String) {
+        let hwnd = self.hwnd;
+        if self.staat().is_some_and(|s| s.bedien.actief()) && !klembord::schrijf(hwnd, &tekst) {
+            tracing::debug!(len = tekst.len(), "klembord zetten mislukt");
         }
     }
 
-    /// Wat de gebruiker tekende of wiste sinds de vorige keer, als berichten voor de deler.
-    pub fn tekenwerk(&mut self, stream_id: u32) -> Vec<ControlMsg> {
-        self.teken().map(|t| t.werk(stream_id)).unwrap_or_default()
+    /// Wat de gebruiker tekende, wiste, vroeg of als bediener deed sinds de vorige keer, als
+    /// berichten voor de deler. Elke 8 ms gevraagd.
+    pub fn werk(&mut self, stream_id: u32) -> Vec<ControlMsg> {
+        let mut uit = Vec::new();
+        if let Some(s) = self.staat() {
+            uit = s.teken.werk(stream_id);
+            uit.extend(s.bedien.werk(stream_id));
+        }
+        self.pas_toe();
+        uit
+    }
+
+    /// De gevolgen van een andere stand of een andere tekenschakelaar: titel, klembordluisteraar,
+    /// pen en muisvangst. Hier en niet in de vensterprocedure, want elk van die aanroepen stuurt
+    /// zelf weer berichten naar het venster.
+    fn pas_toe(&mut self) {
+        let hwnd = self.hwnd;
+        let Some(s) = self.staat() else {
+            return;
+        };
+        let nu = (s.teken.tekening.aan, s.bedien.stand);
+        if s.toegepast == Some(nu) {
+            return;
+        }
+        let was = s.toegepast.map(|(_, stand)| stand);
+        s.toegepast = Some(nu);
+        let titel = titel_van(&s.titel, nu.0, nu.1);
+        let mut vangst_los = false;
+        // SAFETY: eigen venster, eigen thread.
+        unsafe {
+            if nu.1 == Bedienstand::Actief && was != Some(Bedienstand::Actief) {
+                // Een lijn in aanbouw stopt, en zijn muisvangst ook: anders komt het loslaten
+                // van die knop nooit meer aan.
+                s.teken.zet_pen(false);
+                s.bedien.focus = GetFocus() == hwnd;
+                s.bedien.luistert = AddClipboardFormatListener(hwnd).is_ok();
+                vangst_los = true;
+            } else if nu.1 != Bedienstand::Actief && was == Some(Bedienstand::Actief) {
+                if s.bedien.luistert {
+                    let _ = RemoveClipboardFormatListener(hwnd);
+                    s.bedien.luistert = false;
+                }
+                vangst_los = s.teken.lopend.is_none();
+            }
+            let breed: Vec<u16> = titel.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = SetWindowTextW(hwnd, PCWSTR(breed.as_ptr()));
+            if vangst_los && GetCapture() == hwnd {
+                let _ = ReleaseCapture();
+            }
+        }
     }
 
     /// Zet één beeld op het scherm.
@@ -828,6 +1163,153 @@ const WMSZ_BOTTOM: u32 = 6;
 const WMSZ_BOTTOMLEFT: u32 = 7;
 const WMSZ_BOTTOMRIGHT: u32 = 8;
 
+/// Eén vensterbericht tijdens het bedienen. `Some` = afgehandeld (niet verder door de procedure
+/// en niet naar Windows), `None` = gewoon verder.
+///
+/// # Safety
+/// Alleen vanuit de vensterprocedure, op de thread van het venster.
+unsafe fn bedien_bericht(
+    hwnd: HWND,
+    b: &mut Bedien,
+    bericht: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    let esc = VK_ESCAPE.0 as u8;
+    match bericht {
+        WM_SETFOCUS => {
+            b.focus = true;
+            None
+        }
+        WM_KILLFOCUS => {
+            b.focus = false;
+            b.alles_los();
+            None
+        }
+        // De klik die het venster vooraan haalt gaat niet naar de deler: wie terugkomt in het
+        // venster klikt dan niet per ongeluk iets aan op de andere PC. De titelbalk werkt gewoon.
+        WM_MOUSEACTIVATE if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
+            Some(LRESULT(MA_ACTIVATEANDEAT as isize))
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            if b.focus {
+                if let Some(e) = toets_van(wparam, lparam, false) {
+                    let herhaling = (lparam.0 >> 30) & 1 == 1;
+                    if e.vk == esc && !herhaling {
+                        b.esc_sinds = Some(Instant::now());
+                    }
+                    b.duw(e);
+                }
+            }
+            Some(LRESULT(0))
+        }
+        WM_KEYUP | WM_SYSKEYUP => {
+            if let Some(e) = toets_van(wparam, lparam, true) {
+                if e.vk == esc {
+                    b.esc_sinds = None;
+                }
+                if b.focus || b.toetsen.contains(&(e.scan, e.vk)) {
+                    b.duw(e);
+                }
+            }
+            Some(LRESULT(0))
+        }
+        // Tekens maakt de deler zelf uit de scancodes; hier niets, ook geen piep bij Alt+letter.
+        WM_CHAR | WM_SYSCHAR | WM_DEADCHAR | WM_SYSDEADCHAR => Some(LRESULT(0)),
+        WM_MOUSEMOVE => {
+            if b.focus {
+                b.plek = normaliseer(hwnd, muis_px(lparam));
+                let [x, y] = b.plek;
+                b.duw(InputEvent {
+                    x,
+                    y,
+                    ..leeg(InputKind::MOVE)
+                });
+            }
+            Some(LRESULT(0))
+        }
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            if b.focus {
+                // Bij het wiel staat de plek in schermcoördinaten.
+                let (sx, sy) = muis_px(lparam);
+                let mut p = POINT { x: sx, y: sy };
+                let _ = ScreenToClient(hwnd, &mut p);
+                b.plek = normaliseer(hwnd, (p.x, p.y));
+                let [x, y] = b.plek;
+                let e = InputEvent {
+                    x,
+                    y,
+                    delta: ((wparam.0 >> 16) & 0xFFFF) as u16 as i16,
+                    ..leeg(if bericht == WM_MOUSEWHEEL {
+                        InputKind::WHEEL
+                    } else {
+                        InputKind::HWHEEL
+                    })
+                };
+                if e.is_geldig() {
+                    b.duw(e);
+                }
+            }
+            Some(LRESULT(0))
+        }
+        // De muis kwijt midden in een sleep (Alt+Tab, een ander venster pakt hem): knoppen los.
+        WM_CAPTURECHANGED => {
+            if b.knoppen != 0 {
+                let [x, y] = b.plek;
+                for knop in 1..=5u8 {
+                    if b.knoppen & (1 << knop) != 0 {
+                        b.duw(InputEvent {
+                            x,
+                            y,
+                            button: knop,
+                            ..leeg(InputKind::BUTTON_UP)
+                        });
+                    }
+                }
+            }
+            Some(LRESULT(0))
+        }
+        WM_CLIPBOARDUPDATE => {
+            if b.luistert {
+                if let Some(tekst) = klembord::verandering(hwnd) {
+                    b.uit.push(BedienUit::Klembord(tekst));
+                }
+            }
+            Some(LRESULT(0))
+        }
+        _ => {
+            let (knop, omlaag) = knop_van(bericht, wparam)?;
+            b.plek = normaliseer(hwnd, muis_px(lparam));
+            let [x, y] = b.plek;
+            if omlaag {
+                if b.focus {
+                    b.duw(InputEvent {
+                        x,
+                        y,
+                        button: knop,
+                        ..leeg(InputKind::BUTTON_DOWN)
+                    });
+                    SetCapture(hwnd);
+                }
+            } else if b.knoppen & (1 << knop) != 0 {
+                b.duw(InputEvent {
+                    x,
+                    y,
+                    button: knop,
+                    ..leeg(InputKind::BUTTON_UP)
+                });
+                // Als laatste: `ReleaseCapture` stuurt WM_CAPTURECHANGED hierheen terug.
+                if b.knoppen == 0 {
+                    let _ = ReleaseCapture();
+                }
+            }
+            // De zijknoppen willen TRUE terug als ze afgehandeld zijn.
+            let x_knop = matches!(bericht, WM_XBUTTONDOWN | WM_XBUTTONUP | WM_XBUTTONDBLCLK);
+            Some(LRESULT(isize::from(x_knop)))
+        }
+    }
+}
+
 unsafe extern "system" fn venster_proc(
     hwnd: HWND,
     bericht: u32,
@@ -848,6 +1330,14 @@ unsafe extern "system" fn venster_proc(
             return DefWindowProcW(hwnd, bericht, wparam, lparam);
         }
         let staat = &mut *ptr;
+
+        // Tijdens het bedienen gaan muis en toetsen naar de deler, en doet het venster zelf
+        // niets met F11, D, Escape, dubbelklikken of de rechterknop.
+        if staat.bedien.actief() {
+            if let Some(r) = bedien_bericht(hwnd, &mut staat.bedien, bericht, wparam, lparam) {
+                return r;
+            }
+        }
 
         match bericht {
             // Sluiten melden we alleen; het opruimen doet de eigenaar via `drop`.
@@ -899,7 +1389,7 @@ unsafe extern "system" fn venster_proc(
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
-                toon_menu(hwnd, lparam, &mut staat.teken);
+                toon_menu(hwnd, lparam, staat);
                 LRESULT(0)
             }
             // Een kruisje zolang de pen op is, zodat je ziet dat slepen tekent.
@@ -961,6 +1451,142 @@ mod tests {
         bewaak_verhouding(WMSZ_TOPRIGHT, &mut kader, 16.0 / 9.0);
         assert_eq!(kader.bottom - kader.top, 900);
         assert_eq!(kader.bottom, 1000, "de onderrand hoort te blijven staan");
+    }
+
+    #[test]
+    fn de_titel_zegt_wat_kan_en_hoe_je_stopt() {
+        assert_eq!(titel_van("Rick", false, Bedienstand::Uit), "Rick");
+        assert!(titel_van("Rick", true, Bedienstand::Uit).ends_with("right-click to draw"));
+        assert!(titel_van("Rick", true, Bedienstand::Mag).ends_with("draw or take control"));
+        assert!(titel_van("Rick", false, Bedienstand::Actief).contains("hold Esc to stop"));
+    }
+
+    /// `lparam` van een toetsbericht: scancode in bit 16-23, "uitgebreid" in bit 24.
+    fn toets_lparam(scan: u8, uitgebreid: bool) -> LPARAM {
+        LPARAM(((scan as isize) << 16) | (isize::from(uitgebreid) << 24))
+    }
+
+    #[test]
+    fn een_toets_gaat_als_scancode_met_uitgebreid() {
+        let a = toets_van(WPARAM(0x41), toets_lparam(0x1E, false), false).unwrap();
+        assert_eq!((a.kind, a.scan, a.vk), (InputKind::KEY_DOWN, 0x1E, 0x41));
+        let rctrl = toets_van(WPARAM(0xA3), toets_lparam(0x1D, true), true).unwrap();
+        assert_eq!((rctrl.kind, rctrl.scan), (InputKind::KEY_UP, 0xE01D));
+        // Pause en NumLock als virtuele toets; IME en VK_PACKET helemaal niet.
+        let pauze = toets_van(
+            WPARAM(VK_PAUSE.0 as usize),
+            toets_lparam(0x45, false),
+            false,
+        );
+        assert_eq!(pauze.map(|e| (e.scan, e.vk)), Some((0, VK_PAUSE.0 as u8)));
+        assert!(toets_van(
+            WPARAM(VK_PROCESSKEY.0 as usize),
+            toets_lparam(0x1E, false),
+            false
+        )
+        .is_none());
+        assert!(toets_van(WPARAM(VK_PACKET.0 as usize), toets_lparam(0, false), false).is_none());
+    }
+
+    #[test]
+    fn knoppen_en_dubbelklik_zijn_gewoon_omlaag() {
+        assert_eq!(knop_van(WM_LBUTTONDBLCLK, WPARAM(0)), Some((1, true)));
+        assert_eq!(knop_van(WM_RBUTTONUP, WPARAM(0)), Some((2, false)));
+        let x2 = WPARAM((XBUTTON2 as usize) << 16);
+        assert_eq!(knop_van(WM_XBUTTONDOWN, x2), Some((5, true)));
+        assert_eq!(knop_van(WM_XBUTTONUP, WPARAM(1 << 16)), Some((4, false)));
+        assert_eq!(knop_van(WM_MOUSEMOVE, WPARAM(0)), None);
+    }
+
+    fn beweeg(x: u16) -> InputEvent {
+        InputEvent {
+            x,
+            ..leeg(InputKind::MOVE)
+        }
+    }
+
+    #[test]
+    fn bewegingen_worden_samengevat_maar_niet_over_een_klik_heen() {
+        let mut b = Bedien {
+            stand: Bedienstand::Actief,
+            ..Default::default()
+        };
+        b.duw(beweeg(1));
+        b.duw(beweeg(2));
+        b.duw(InputEvent {
+            button: 1,
+            ..leeg(InputKind::BUTTON_DOWN)
+        });
+        b.duw(beweeg(3));
+        b.duw(beweeg(4));
+        let x: Vec<(InputKind, u16)> = b.invoer.iter().map(|e| (e.kind, e.x)).collect();
+        assert_eq!(
+            x,
+            vec![
+                (InputKind::MOVE, 2),
+                (InputKind::BUTTON_DOWN, 0),
+                (InputKind::MOVE, 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn zelf_stoppen_laat_eerst_alles_los_en_zegt_het_dan() {
+        let mut b = Bedien {
+            stand: Bedienstand::Actief,
+            ..Default::default()
+        };
+        b.duw(toets_van(WPARAM(0x10), toets_lparam(0x2A, false), false).unwrap());
+        b.duw(InputEvent {
+            button: 2,
+            ..leeg(InputKind::BUTTON_DOWN)
+        });
+        // Escape is al lang genoeg ingedrukt.
+        b.esc_sinds = Instant::now().checked_sub(ESC_HOUD);
+        let uit = b.werk(9);
+        assert_eq!(b.stand, Bedienstand::Mag);
+        match uit.as_slice() {
+            [ControlMsg::RemoteInput(i), ControlMsg::RemoteRequest(r)] => {
+                assert_eq!(i.stream_id, 9);
+                let soorten: Vec<InputKind> = i.events.iter().map(|e| e.kind).collect();
+                assert_eq!(
+                    soorten,
+                    vec![
+                        InputKind::KEY_DOWN,
+                        InputKind::BUTTON_DOWN,
+                        InputKind::KEY_UP,
+                        InputKind::BUTTON_UP
+                    ]
+                );
+                assert!(!r.want);
+            }
+            andere => panic!("verwachtte invoer en dan stoppen: {andere:?}"),
+        }
+        assert!(b.toetsen.is_empty() && b.knoppen == 0);
+    }
+
+    #[test]
+    fn veel_invoer_gaat_in_stukken_en_vergeten_stuurt_niets_meer() {
+        let mut b = Bedien {
+            stand: Bedienstand::Actief,
+            ..Default::default()
+        };
+        for i in 0..(MAX_INVOER_PER_BERICHT as u8 + 5) {
+            b.duw(InputEvent {
+                delta: 120,
+                x: u16::from(i),
+                ..leeg(InputKind::WHEEL)
+            });
+        }
+        let uit = b.werk(1);
+        assert_eq!(uit.len(), 2);
+        b.duw(beweeg(1));
+        b.spoel();
+        b.vergeet();
+        assert!(
+            b.werk(1).is_empty(),
+            "na intrekken door de deler gaat er niets meer heen"
+        );
     }
 
     #[test]
@@ -1033,7 +1659,7 @@ mod tests {
         post(WM_MOUSEMOVE, 1, 300, 180);
         post(WM_LBUTTONUP, 0, 300, 180);
         pomp_even(&mut venster);
-        assert!(venster.tekenwerk(7).is_empty(), "tekenen staat uit");
+        assert!(venster.werk(7).is_empty(), "tekenen staat uit");
 
         venster.zet_tekening(Arc::new(Tekening::nieuw(true)));
         post(WM_KEYDOWN, VK_D.0 as usize, 0, 0);
@@ -1045,7 +1671,7 @@ mod tests {
         post(WM_KEYDOWN, VK_DELETE.0 as usize, 0, 0);
         pomp_even(&mut venster);
 
-        let werk = venster.tekenwerk(7);
+        let werk = venster.werk(7);
         match werk.as_slice() {
             [ControlMsg::Draw(d), ControlMsg::DrawClear(c)] => {
                 assert_eq!((d.stream_id, d.author, d.start), (7, None, 0));

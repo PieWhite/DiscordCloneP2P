@@ -174,7 +174,10 @@ mod tests {
         assert!(toets(0xE01D, 0).is_geldig(), "rechter Ctrl, uitgebreid");
         assert!(toets(0, 0x13).is_geldig(), "Pause: alleen een vk");
         assert!(!toets(0, 0).is_geldig(), "niets");
-        assert!(!toets(0x80, 0).is_geldig(), "een loslaatcode is geen scancode");
+        assert!(
+            !toets(0x80, 0).is_geldig(),
+            "een loslaatcode is geen scancode"
+        );
         assert!(!toets(0xE11D, 0).is_geldig(), "alleen 0xE0 als voorvoegsel");
         assert!(!toets(0, 0x01).is_geldig(), "VK_LBUTTON is geen toets");
         assert!(!toets(0, 0xFF).is_geldig());
@@ -207,8 +210,15 @@ mod tests {
         assert_eq!(schoon_klembord("\0\0"), None, "alleen NUL is leeg");
         assert_eq!(schoon_klembord(""), None);
         let precies = "x".repeat(MAX_KLEMBORD);
-        assert_eq!(schoon_klembord(&precies).map(|s| s.len()), Some(MAX_KLEMBORD));
-        assert_eq!(schoon_klembord(&"x".repeat(MAX_KLEMBORD + 1)), None, "niet afkappen");
+        assert_eq!(
+            schoon_klembord(&precies).map(|s| s.len()),
+            Some(MAX_KLEMBORD)
+        );
+        assert_eq!(
+            schoon_klembord(&"x".repeat(MAX_KLEMBORD + 1)),
+            None,
+            "niet afkappen"
+        );
         // Bytes, niet tekens: vier bytes per emoji.
         assert_eq!(schoon_klembord(&"😀".repeat(MAX_KLEMBORD / 4 + 1)), None);
     }
@@ -219,7 +229,10 @@ mod tests {
         let mut emmer = Emmer::nieuw(3, 10, t0);
         assert!((0..3).all(|_| emmer.neem(t0)), "de voorraad");
         assert!(!emmer.neem(t0), "leeg");
-        assert!(emmer.neem(t0 + Duration::from_millis(100)), "na 100 ms één erbij");
+        assert!(
+            emmer.neem(t0 + Duration::from_millis(100)),
+            "na 100 ms één erbij"
+        );
         assert!(!emmer.neem(t0 + Duration::from_millis(100)));
         // Lang wachten vult niet boven de voorraad.
         let later = t0 + Duration::from_secs(60);

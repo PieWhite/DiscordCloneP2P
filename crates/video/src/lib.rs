@@ -43,6 +43,17 @@ pub mod venster;
 #[path = "mac/venster.rs"]
 pub mod venster;
 
+/// Muis en toetsen van een bediener bij de deler (beslissing 54). Op macOS een stub die
+/// nooit start: een mac-deler laat zich niet bedienen.
+#[cfg(windows)]
+pub mod bediening;
+#[cfg(target_os = "macos")]
+#[path = "mac/bediening.rs"]
+pub mod bediening;
+/// Tekst van en naar het klembord, alleen tussen een deler en zijn bediener. Alleen Windows.
+#[cfg(windows)]
+pub mod klembord;
+
 /// Webcam-opname. Alleen Windows; op macOS listet `capture` geen camera's en weigert
 /// `Capture::start` er een te openen.
 #[cfg(windows)]

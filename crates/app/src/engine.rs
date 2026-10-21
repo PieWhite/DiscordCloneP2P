@@ -2181,7 +2181,7 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
-            KijkerEvent::Teken(msg) => {
+            KijkerEvent::Bericht(msg) => {
                 let cmds = self.streams.kijker_tekent(eigenaar, stream_id, msg);
                 self.stuur_alles(cmds);
             }

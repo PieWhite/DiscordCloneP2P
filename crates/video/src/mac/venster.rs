@@ -175,10 +175,18 @@ impl Venster {
     /// anderen staan op de tegel in de app, zelf tekenen kan hier niet.
     pub fn zet_tekening(&mut self, _t: Arc<fitcom_proto::teken::Tekening>) {}
 
-    /// Zie [`Venster::zet_tekening`]: er wordt hier nooit getekend.
-    pub fn tekenwerk(&mut self, _stream_id: u32) -> Vec<fitcom_proto::ControlMsg> {
+    /// Zie [`Venster::zet_tekening`]: er wordt hier nooit getekend, en bedienen kan hier ook
+    /// niet (beslissing 54).
+    pub fn werk(&mut self, _stream_id: u32) -> Vec<fitcom_proto::ControlMsg> {
         Vec::new()
     }
+
+    /// Een scherm bedienen is op macOS niet gebouwd (beslissing 54); het menu om het te vragen
+    /// bestaat hier niet, dus de motor zet dit nooit op `Actief`.
+    pub fn zet_bediening(&mut self, _stand: fitcom_proto::bediening::Bedienstand) {}
+
+    /// Zie [`Venster::zet_bediening`].
+    pub fn zet_klembord(&mut self, _tekst: String) {}
 
     /// Zet één beeld in de weergavewachtrij. Thread-veilig vanaf de kijk-thread.
     pub fn toon(&mut self, beeld: &Beeld) -> Result<()> {

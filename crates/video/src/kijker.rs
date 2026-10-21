@@ -22,6 +22,7 @@ use crate::venster::Venster;
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use fitcom_net::{Abonnement, Verdeler};
+use fitcom_proto::bediening::Bedienstand;
 use fitcom_proto::teken::Tekening;
 use fitcom_proto::{ControlMsg, PeerId};
 use std::collections::VecDeque;
@@ -63,9 +64,10 @@ pub enum KijkerEvent {
     /// Een verkleind beeld voor het overzicht in het hoofdvenster. BGRA, net als de
     /// textuur waar het uit komt — de UI zet dat zelf om naar wat egui verwacht.
     Miniatuur(Miniatuur),
-    /// De gebruiker tekende of wiste iets in het venster: een `Draw` of `DrawClear` voor de
-    /// deler (beslissing 45).
-    Teken(ControlMsg),
+    /// Een bericht voor de deler uit het venster: een lijn of wisverzoek (`Draw`, `DrawClear`,
+    /// beslissing 45), of bedienen (`RemoteRequest`, `RemoteInput`, `ClipboardText`, beslissing
+    /// 54). De motor beslist of het weg mag.
+    Bericht(ControlMsg),
 }
 
 #[derive(Debug, Clone)]
@@ -112,12 +114,31 @@ pub struct KijkerHandle {
     /// Naar het venster: de tekening van de deler, na elke wijziging. Het venster pakt
     /// alleen de laatste, op zijn eigen tempo, dus nooit een slot op het videopad.
     tekening: Sender<Arc<Tekening>>,
+    /// Naar het venster: waar we staan met bedienen (beslissing 54), en klembordtekst van de
+    /// deler. Zelfde tempo als de tekening, nooit per pakket.
+    naar_venster: Sender<NaarVenster>,
+}
+
+/// Wat de motor het venster laat weten over bedienen.
+pub(crate) enum NaarVenster {
+    Bediening(Bedienstand),
+    Klembord(String),
 }
 
 impl KijkerHandle {
     /// De tekening op deze stream is veranderd (of het mag-tekenen van de deler).
     pub fn zet_tekening(&self, t: Arc<Tekening>) {
         let _ = self.tekening.send(t);
+    }
+
+    /// Waar we staan met het bedienen van deze stream.
+    pub fn zet_bediening(&self, stand: Bedienstand) {
+        let _ = self.naar_venster.send(NaarVenster::Bediening(stand));
+    }
+
+    /// Klembordtekst van de deler, terwijl we hem bedienen.
+    pub fn zet_klembord(&self, tekst: String) {
+        let _ = self.naar_venster.send(NaarVenster::Klembord(tekst));
     }
 
     /// Aantal getoonde beelden en het aantal dat onderweg sneuvelde. Voor `StreamStats`
@@ -167,6 +188,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
     let (klaar_tx, klaar_rx) = bounded::<Result<()>>(1);
     let (event_tx, events) = bounded(16);
     let (tekening, tekening_rx) = unbounded();
+    let (naar_venster, naar_venster_rx) = unbounded();
 
     let d3d = d3d.clone();
     let staat = gedeeld.clone();
@@ -185,6 +207,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
                     &staat,
                     &event_tx,
                     &tekening_rx,
+                    &naar_venster_rx,
                 );
                 let _ = event_tx.send(KijkerEvent::Gesloten);
             }
@@ -205,6 +228,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
         poort,
         events,
         tekening,
+        naar_venster,
     })
 }
 
@@ -224,9 +248,11 @@ fn kijk_lus(
     gedeeld: &Arc<Gedeeld>,
     events: &Sender<KijkerEvent>,
     tekening: &Receiver<Arc<Tekening>>,
+    naar_venster: &Receiver<NaarVenster>,
 ) {
-    // Tekenwerk voor de deler dat nog niet in `events` paste. Een stuk lijn overslaan
-    // zou de rest van die lijn bij iedereen laten verdwijnen (een gat), dus het wacht.
+    // Teken- en bedienwerk voor de deler dat nog niet in `events` paste. Een stuk lijn
+    // overslaan zou de rest van die lijn bij iedereen laten verdwijnen (een gat), en een
+    // overgeslagen loslaten laat een toets hangen, dus het wacht.
     let mut tekenwerk: VecDeque<ControlMsg> = VecDeque::new();
     let mut laatste_tekening = Instant::now();
     let mut samensteller = Reassembler::new();
@@ -319,13 +345,19 @@ fn kijk_lus(
                     laatste_tekening = Instant::now();
                 }
             }
+            for bericht in naar_venster.try_iter() {
+                match bericht {
+                    NaarVenster::Bediening(stand) => venster.zet_bediening(stand),
+                    NaarVenster::Klembord(tekst) => venster.zet_klembord(tekst),
+                }
+            }
             if !venster.pomp() {
                 break;
             }
-            tekenwerk.extend(venster.tekenwerk(cfg.stream_id));
+            tekenwerk.extend(venster.werk(cfg.stream_id));
             while let Some(msg) = tekenwerk.pop_front() {
-                if let Err(TrySendError::Full(KijkerEvent::Teken(msg))) =
-                    events.try_send(KijkerEvent::Teken(msg))
+                if let Err(TrySendError::Full(KijkerEvent::Bericht(msg))) =
+                    events.try_send(KijkerEvent::Bericht(msg))
                 {
                     tekenwerk.push_front(msg);
                     break;
