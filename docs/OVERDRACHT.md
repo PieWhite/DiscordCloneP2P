@@ -3207,7 +3207,11 @@ klembordweg op een echt bureaublad, de vertraging, en macOS.
 **Bekende grenzen.** Een spel dat de muis vangt en relatief leest ziet geen beweging (klikken en
 toetsen wel). Een programma dat als administrator draait neemt niets aan (UIPI), stil. Geen
 bediening van een gedeeld venster. Bedienen loopt door zolang de deler het niet intrekt, ook als
-hij van zijn pc wegloopt; er is geen tijdslimiet en geen stopknop in de tray.
+hij van zijn pc wegloopt; er is geen tijdslimiet en geen stopknop in de tray. Sluit de deler de
+app af midden in het bedienen, dan kan het proces weg zijn voordat de bedienthread loslaat wat
+ingedrukt stond (`Bediener` wordt bewust niet afgewacht in `Drop`): een Shift of Ctrl blijft dan
+"ingedrukt" tot de deler hem zelf indrukt. Escape vasthouden om te stoppen stuurt anderhalve
+seconde Escape naar de deler; een spel daar kan zijn menu openen.
 
 **Wat je niet mag omdraaien:** zie de sectie "Een gedeeld scherm bedienen" in `CLAUDE.md`.
 

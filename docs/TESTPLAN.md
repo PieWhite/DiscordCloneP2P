@@ -1383,8 +1383,10 @@ versie, en een peer op 1.9.0 als je er een hebt.
    zijn lijnen; C's lijnen blijven staan. Hetzelfde via het menu.
 6. **De deler wist.** A: "Clear drawing" in Settings → Video wist alles bij iedereen. "Allow
    drawing" uit: alles weg, B's titel verliest de hint, het menu zegt "Drawing is off for this
-   stream", slepen doet niets. Weer aan zet het terug. Stop en deel opnieuw, en herstart A: de
-   laatste stand geldt nog (`allow_drawing` in `config.toml`, beslissing 49).
+   stream", slepen doet niets. Weer aan in Settings geldt sinds beslissing 54 alleen voor een
+   nieuw scherm; het lopende scherm zet A terug aan met de pen op zijn regel in het
+   gesprekspaneel. Stop en deel opnieuw, en herstart A: de kiezer begint op de laatste stand
+   (`allow_drawing` in `config.toml`).
 7. **Vertrek.** B sluit zijn venster: B's lijnen verdwijnen bij A en C. C verliest de
    verbinding (Tailscale uit): C's lijnen verdwijnen. A stopt met delen: alles weg.
 8. **Spel vooraan (invariant 4, het belangrijkste punt).** Er staan lijnen op A's monitor.

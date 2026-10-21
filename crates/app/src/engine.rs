@@ -2042,8 +2042,9 @@ impl Engine {
                 } => self.werk_deellaag_bij(stream_id),
                 Actie::BedienVraag { stream_id, van } => {
                     // De deler zit misschien te gamen met het venster weg: een melding, en de
-                    // vraag staat in de app tot hij klikt of hij verloopt.
-                    if !self.niet_storen {
+                    // vraag staat in de app tot hij klikt of hij verloopt. Staat het venster
+                    // vooraan, dan ziet hij de balk al.
+                    if !self.niet_storen && !self.voorgrond.load(Ordering::Relaxed) {
                         let titel = self
                             .streams
                             .eigen()

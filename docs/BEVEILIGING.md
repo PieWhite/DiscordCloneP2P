@@ -356,7 +356,9 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   eigen Stop control indrukken, wat alleen hemzelf stopt). Er is geen tijdslimiet en geen
 >   stopknop in de tray: wie de app naar de tray sluit terwijl iemand bedient, haalt hem terug om
 >   te stoppen, of trekt de stekker eruit. Fysieke invoer van de deler blijft werken; het
->   systeem neemt beide.
+>   systeem neemt beide. Sluit de deler de app af midden in het bedienen, dan kan een
+>   ingedrukte toets van de bediener blijven hangen tot de deler hem zelf indrukt (het proces is
+>   weg voordat de bedienthread loslaat).
 
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
