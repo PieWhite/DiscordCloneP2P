@@ -49,6 +49,9 @@ pub mod venster;
 pub mod camera;
 pub mod deler;
 pub mod fragment;
+/// Een HDR-scherm als SDR opnemen (beslissing 52). Alleen Windows.
+#[cfg(windows)]
+pub mod hdr;
 pub mod kijker;
 #[cfg(windows)]
 pub mod kleur;

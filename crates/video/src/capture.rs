@@ -15,6 +15,7 @@
 use crate::d3d::D3dContext;
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{bounded, Receiver};
+use std::time::{Duration, Instant};
 use windows::core::{Interface, BOOL};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -23,9 +24,11 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Direct3D11::{ID3D11Texture2D, D3D11_TEXTURE2D_DESC};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT;
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFOEXW,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
@@ -286,6 +289,57 @@ pub struct Schermcapture {
     doel: ID3D11Texture2D,
     afmeting: (u32, u32),
     signaal: Receiver<()>,
+    /// Waar het scherm staat dat we opnemen; voor een venster wordt dat elke controle
+    /// opnieuw opgezocht, want het kan verhuizen.
+    bron: Bron,
+    /// Of het scherm bij de laatste controle in HDR stond (zie [`crate::hdr`]).
+    in_hdr: bool,
+    /// Alleen in HDR. `None` is de gewone BGRA-weg van vóór beslissing 52, met een kale
+    /// `CopyResource`.
+    hdr: Option<crate::hdr::Hdrnaarsdr>,
+    volgende_controle: Instant,
+}
+
+/// Hoe vaak we kijken of HDR aan- of uitging. Een spel kan het scherm omzetten terwijl
+/// er al gedeeld wordt, en de clipopname loopt de hele sessie.
+const HDR_CONTROLE: Duration = Duration::from_secs(1);
+
+/// Het scherm waar deze bron op staat.
+fn monitor_van(bron: &Bron) -> HMONITOR {
+    match bron.soort {
+        BronSoort::Venster => {
+            // SAFETY: een `HWND` uit onze eigen enumeratie; bestaat hij niet meer, dan
+            // levert dit gewoon het dichtstbijzijnde scherm.
+            unsafe { MonitorFromWindow(HWND(bron.handle as *mut _), MONITOR_DEFAULTTONEAREST) }
+        }
+        _ => HMONITOR(bron.handle as *mut _),
+    }
+}
+
+/// De omzetter als het scherm in HDR staat, anders `None` voor de gewone weg. Lukt het
+/// opzetten niet, dan liever een afgeknipt beeld dan geen beeld.
+fn hdr_omzetter(d3d: &D3dContext, in_hdr: bool) -> Option<crate::hdr::Hdrnaarsdr> {
+    if !in_hdr {
+        return None;
+    }
+    match crate::hdr::Hdrnaarsdr::new(d3d) {
+        Ok(h) => {
+            tracing::info!("scherm staat in HDR, opname wordt omgezet naar SDR");
+            Some(h)
+        }
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "HDR-omzetting niet op te zetten");
+            None
+        }
+    }
+}
+
+fn pixelformaat(hdr: &Option<crate::hdr::Hdrnaarsdr>) -> DirectXPixelFormat {
+    if hdr.is_some() {
+        DirectXPixelFormat::R16G16B16A16Float
+    } else {
+        DirectXPixelFormat::B8G8R8A8UIntNormalized
+    }
 }
 
 // SAFETY: alle WinRT-objecten hierin zijn agile (free-threaded) en het D3D11-apparaat
@@ -295,6 +349,11 @@ unsafe impl Send for Schermcapture {}
 
 impl Schermcapture {
     fn start(d3d: &D3dContext, bron: &Bron) -> Result<Self> {
+        Self::open(d3d, bron, crate::hdr::staat_in_hdr(monitor_van(bron)))
+    }
+
+    /// `in_hdr` los, zodat de test de HDR-weg ook op een SDR-scherm kan nemen.
+    fn open(d3d: &D3dContext, bron: &Bron, in_hdr: bool) -> Result<Self> {
         if !ondersteund() {
             bail!("dit Windows staat schermopname niet toe");
         }
@@ -320,9 +379,10 @@ impl Schermcapture {
         let grootte = item.Size().context("afmetingen opvragen")?;
         let afmeting = (grootte.Width.max(1) as u32, grootte.Height.max(1) as u32);
 
+        let hdr = hdr_omzetter(d3d, in_hdr);
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &d3d.winrt_device,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            pixelformaat(&hdr),
             POOL_BUFFERS,
             grootte,
         )
@@ -361,6 +421,10 @@ impl Schermcapture {
             doel,
             afmeting,
             signaal,
+            bron: bron.clone(),
+            in_hdr,
+            hdr,
+            volgende_controle: Instant::now() + HDR_CONTROLE,
         })
     }
 
@@ -375,6 +439,25 @@ impl Schermcapture {
     /// dat niet verandert levert geen frames, en dan is er ook niets te versturen.
     fn volgende_frame(&mut self, timeout: std::time::Duration) -> Option<Opgenomen> {
         self.signaal.recv_timeout(timeout).ok()?;
+
+        if Instant::now() >= self.volgende_controle {
+            self.volgende_controle = Instant::now() + HDR_CONTROLE;
+            let in_hdr = crate::hdr::staat_in_hdr(monitor_van(&self.bron));
+            if in_hdr != self.in_hdr {
+                tracing::info!(in_hdr, "HDR van het scherm omgezet");
+                self.in_hdr = in_hdr;
+                self.hdr = hdr_omzetter(&self.d3d, in_hdr);
+                let (b, h) = self.afmeting;
+                let grootte = SizeInt32 {
+                    Width: b as i32,
+                    Height: h as i32,
+                };
+                if let Err(e) = self.herbouw(self.afmeting, grootte) {
+                    tracing::error!(error = %format!("{e:#}"), "opname niet kunnen aanpassen");
+                }
+                return None;
+            }
+        }
 
         let frame = self.pool.TryGetNextFrame().ok()?;
         let opgenomen_hns = frame.SystemRelativeTime().ok()?.Duration;
@@ -399,8 +482,25 @@ impl Schermcapture {
 
         // Overzetten naar onze eigen textuur: zodra we het frame sluiten mag de
         // capture-API zijn buffer hergebruiken voor het volgende beeld.
-        // SAFETY: beide texturen bestaan, hebben hetzelfde formaat en dezelfde maat.
-        unsafe { self.d3d.context.CopyResource(&self.doel, &bron) };
+        if let Some(hdr) = &mut self.hdr {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: `GetDesc` vult alleen de meegegeven struct.
+            unsafe { bron.GetDesc(&mut desc) };
+            // Een beeld van vóór het omzetten van de pool heeft nog het oude formaat en
+            // wordt overgeslagen.
+            let gelukt = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+                && hdr
+                    .zet_om(&bron, &self.doel)
+                    .inspect_err(|e| tracing::warn!(error = %format!("{e:#}"), "HDR-omzetting"))
+                    .is_ok();
+            if !gelukt {
+                let _ = frame.Close();
+                return None;
+            }
+        } else {
+            // SAFETY: beide texturen bestaan, hebben hetzelfde formaat en dezelfde maat.
+            unsafe { self.d3d.context.CopyResource(&self.doel, &bron) };
+        }
         let _ = frame.Close();
 
         Some(Opgenomen {
@@ -413,7 +513,7 @@ impl Schermcapture {
         self.pool
             .Recreate(
                 &self.d3d.winrt_device,
-                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                pixelformaat(&self.hdr),
                 POOL_BUFFERS,
                 grootte,
             )
@@ -478,5 +578,52 @@ mod tests {
         }
         assert!(gezien >= 1, "er kwam geen enkel beeld binnen");
         println!("{gezien} frames ontvangen");
+    }
+
+    /// De HDR-weg (FP16 + shader) tegen de gewone BGRA-weg op hetzelfde scherm: onder de
+    /// knie moet een grijswaarde op afronding na dezelfde grijswaarde blijven. Per niveau
+    /// de mediaan, zodat een bewegend beeld tussen de twee opnames niet meetelt. Op een
+    /// HDR-scherm is dit ook de meting achter "schaal 1,0" in `hdr.rs`.
+    #[test]
+    #[ignore = "vereist een echt scherm"]
+    fn hdr_weg_geeft_hetzelfde_beeld_als_bgra() {
+        let d3d = D3dContext::new().expect("D3D11");
+        let scherm = beschikbare_bronnen()
+            .expect("bronnen")
+            .into_iter()
+            .find(|b| b.soort == BronSoort::Monitor)
+            .expect("scherm");
+        println!("in HDR: {}", crate::hdr::staat_in_hdr(monitor_van(&scherm)));
+
+        let beeld = |cap: &mut Schermcapture| {
+            (0..30)
+                .find_map(|_| cap.volgende_frame(Duration::from_millis(200)))
+                .map(|o| d3d.lees_bgra(&o.textuur).expect("uitlezen").2)
+                .expect("een beeld")
+        };
+        let a = beeld(&mut Schermcapture::open(&d3d, &scherm, false).expect("opname"));
+        let mut cap = Schermcapture::open(&d3d, &scherm, true).expect("opname");
+        assert!(cap.hdr.is_some(), "omzetter niet opgezet");
+        let b = beeld(&mut cap);
+
+        // Onder de knie (0,8 lineair is sRGB 231).
+        let mut per_niveau: Vec<Vec<u8>> = vec![Vec::new(); 225];
+        for (pa, pb) in a.chunks(4).zip(b.chunks(4)) {
+            if pa[0] == pa[1] && pa[1] == pa[2] && pa[0] < 225 {
+                per_niveau[pa[0] as usize].push(pb[0]);
+            }
+        }
+        let mut getoetst = 0;
+        for (v, mut b) in per_niveau.into_iter().enumerate() {
+            if b.len() < 20 {
+                continue;
+            }
+            b.sort_unstable();
+            let mediaan = b[b.len() / 2];
+            println!("{v:3} -> {mediaan:3} ({} pixels)", b.len());
+            assert!(mediaan.abs_diff(v as u8) <= 1, "grijs {v} werd {mediaan}");
+            getoetst += 1;
+        }
+        assert!(getoetst > 0, "geen enkel grijsniveau om te vergelijken");
     }
 }
