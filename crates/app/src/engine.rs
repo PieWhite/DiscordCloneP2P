@@ -20,7 +20,7 @@ use crate::gebruik::{self, Gebruik};
 use crate::geluid;
 use crate::notify;
 use crate::release::{self, Release};
-use crate::streams::{Actie, Streams};
+use crate::streams::{Actie, DeelOpties, Streams};
 use crate::tags;
 use crate::updates::{UpdateStatus, Updates};
 use crate::wordle::{self, Wordle};
@@ -47,6 +47,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// Snel genoeg voor een spreekindicatie die niet hakkelt. Een momentopname is goedkoop:
 /// de timeline zit erin als `Arc`, dus publiceren kost geen kopie van de geschiedenis.
 const TIK: Duration = Duration::from_millis(100);
+/// Een scherm laten bedienen kan alleen op Windows (beslissing 54): op macOS is er geen
+/// `SendInput`-tegenhanger gebouwd, dus een mac-deler kondigt het nooit aan.
+const BEDIENEN_KAN: bool = cfg!(windows);
 
 /// Hoe vaak de terugblik opnieuw uitgerekend wordt. Hij loopt over de hele oplog, en
 /// niemand kijkt naar de seconde nauwkeurig naar een weekoverzicht. Meteen ook het moment
@@ -160,6 +163,11 @@ pub struct EigenStreamView {
     /// `UiState`: het verandert terwijl iemand tekent. De tegel krijgt de lijnen via de
     /// miniaturenpomp, alleen de schakelaar gaat de toestand in.
     pub tekening: Arc<fitcom_proto::teken::Tekening>,
+    /// Mag dit scherm bediend worden (beslissing 54), wie vraagt het en wie doet het. Wisselt
+    /// alleen bij een vraag, een klik of een einde, dus het past in `UiState`.
+    pub bedienen: bool,
+    pub vrager: Option<PeerId>,
+    pub bediener: Option<PeerId>,
 }
 
 /// Een bron die een ander deelt.
@@ -248,8 +256,12 @@ pub struct Snapshot {
     pub deel_activiteit: bool,
     /// Het spel dat bij ons vooraan staat (`speelt::Rust::huidig`), voor "Stream <spel>".
     pub eigen_spel: Option<String>,
-    /// Mogen kijkers op je scherm tekenen (`Config::allow_drawing`).
+    /// Mogen kijkers op je scherm tekenen (`Config::allow_drawing`): de standaard voor een
+    /// nieuw scherm.
     pub tekenen: bool,
+    /// Mogen kijkers vragen je monitor te bedienen (`Config::allow_remote_control`): de
+    /// standaard voor een nieuw scherm.
+    pub bedienen: bool,
     /// De spraakoverlay (beslissing 53): aan of uit, en zijn plek bij het starten. De
     /// overlay-thread houdt de plek daarna zelf bij en meldt een nieuwe met `ZetOverlayPlek`.
     pub overlay: OverlayConfig,
@@ -331,9 +343,10 @@ pub enum UiCommand {
     Mute(bool),
     Deafen(bool),
     Volume(PeerId, f32),
-    /// Een scherm of venster gaan delen. Er wordt nog niets opgenomen. Bureaubladgeluid
-    /// gaat vanzelf mee als je in het gesprek zit — geen apart commando meer (fase 10).
-    DeelBron(Bron),
+    /// Een scherm of venster gaan delen, met wat kijkers erop mogen (de kiezer). Er wordt nog
+    /// niets opgenomen. Bureaubladgeluid gaat vanzelf mee als je in het gesprek zit — geen
+    /// apart commando meer (fase 10).
+    DeelBron(Bron, DeelOpties),
     /// Het venster van het spel dat we spelen delen, met één klik (`speelt::Zoeker::venster`).
     DeelSpel,
     StopDelen(u32),
@@ -348,9 +361,23 @@ pub enum UiCommand {
     BedienMuziek(PeerId, u32, MusicAction),
     Kijken(PeerId, u32),
     StopKijken(PeerId, u32),
-    /// Mogen kijkers op je eigen schermen tekenen (beslissing 45), lopend en hierna gedeeld.
-    /// Uit wist ook alles. Wordt opgeslagen (`Config::allow_drawing`).
+    /// De standaard voor tekenen op een nieuw gedeeld scherm (beslissing 45, sinds 54 een
+    /// standaard). Uit zet het ook uit op elk scherm dat loopt en wist daar alles; aan laat
+    /// lopende schermen zoals ze zijn. Wordt opgeslagen (`Config::allow_drawing`).
     ZetTekenen(bool),
+    /// Hetzelfde voor bedienen (beslissing 54, `Config::allow_remote_control`). Uit maakt ook
+    /// een eind aan elke vraag en elk bedienen.
+    ZetBedienen(bool),
+    /// Tekenen op dit ene eigen scherm aan of uit.
+    ZetStreamTekenen(u32, bool),
+    /// Bedienen van dit ene eigen scherm toestaan of niet; uit maakt er een eind aan.
+    ZetStreamBedienen(u32, bool),
+    /// Allow: deze peer mag dit scherm nu bedienen (alleen als hij nog de vrager is).
+    StaBedieningToe(u32, PeerId),
+    /// Deny op de vraag voor dit scherm.
+    WeigerBediening(u32),
+    /// Het bedienen van dit scherm intrekken.
+    StopBediening(u32),
     /// Alle lijnen op dit eigen scherm wissen, van iedereen.
     WisTekening(u32),
     /// De spraakoverlay aan of uit (beslissing 53). Wordt opgeslagen (`Config::overlay`).
@@ -528,9 +555,8 @@ pub fn spawn(
         crate::clips::HotkeyDraad::dode()
     });
 
-    // Nog geen schermen, dus dit zet alleen de stand voor het eerste dat gedeeld wordt.
-    let mut streams = Streams::new();
-    streams.zet_tekenen(cfg.allow_drawing);
+    let streams = Streams::new();
+    let (bedien_tx, bedien_rx) = mpsc::unbounded_channel();
 
     let engine = Engine {
         mesh,
@@ -548,6 +574,9 @@ pub fn spawn(
         delers: HashMap::new(),
         kijkers: HashMap::new(),
         deellagen: HashMap::new(),
+        bedieners: HashMap::new(),
+        bedien_tx,
+        bedien_rx,
         miniaturen: HashMap::new(),
         stream_volumes: HashMap::new(),
         nu_speelt: None,
@@ -588,6 +617,7 @@ pub fn spawn(
         snap_tx,
         voorgrond: voorgrond.clone(),
         afsluiten_voor_update: afsluiten_voor_update.clone(),
+        stil: false,
     };
 
     tokio::spawn(engine.run(cmd_rx));
@@ -627,6 +657,12 @@ struct Engine {
     /// De laag met lijnen over een eigen gedeelde monitor, zolang er lijnen staan. Zie
     /// `werk_deellaag_bij`.
     deellagen: HashMap<u32, fitcom_video::tekenlaag::Deellaag>,
+    /// Per eigen monitor die nu bediend wordt: de thread die de invoer in het systeem zet
+    /// (beslissing 54). Weg = alles los en klaar.
+    bedieners: HashMap<u32, fitcom_video::bediening::Bediener>,
+    /// Klembordtekst van de deler (deze pc) uit een bedienthread, met het stream-id.
+    bedien_tx: mpsc::UnboundedSender<(u32, String)>,
+    bedien_rx: mpsc::UnboundedReceiver<(u32, String)>,
     /// Laatste miniatuur per bekeken stream, voor het overzicht in het hoofdvenster.
     /// Blijft hier staan in plaats van in `Streams`, want dat is pure beslislogica en
     /// dit is een bijproduct van het decoderen.
@@ -725,6 +761,9 @@ struct Engine {
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
     afsluiten_voor_update: Arc<AtomicBool>,
+    /// Het laatste bericht veranderde niets wat het venster toont (invoer van een bediener):
+    /// geen nieuwe momentopname. Anders bouwt de deler er tot ~125 per seconde.
+    stil: bool,
 }
 
 /// Hoe lang een `Typing`-indicatie geldig blijft bij de ontvanger.
@@ -855,6 +894,11 @@ impl Engine {
                 ev = self.kijker_rx.recv() => if let Some((eigenaar, stream_id, ev)) = ev {
                     self.lees_kijker(eigenaar, stream_id, ev);
                 },
+                // `None` kan niet: de motor houdt `bedien_tx` zelf vast.
+                ev = self.bedien_rx.recv() => if let Some((stream_id, tekst)) = ev {
+                    let cmds = self.streams.klembord_van_deler(stream_id, &tekst);
+                    self.stuur_alles(cmds);
+                },
                 _ = ticker.tick() => {
                     let verbonden: Vec<PeerId> = self.verbonden.keys().copied().collect();
                     let r = self.chat.tick(&verbonden);
@@ -864,6 +908,8 @@ impl Engine {
                     self.wordle_tick();
                     self.meet_gebruik();
                     self.meet_activiteit();
+                    let cmds = self.streams.verlopen_vragen(Instant::now());
+                    self.stuur_alles(cmds);
                     // Verlopen typindicaties opruimen; de volgende publiceer() merkt
                     // het alleen als er ook echt iets verdween.
                     if !self.typing_tot.is_empty() {
@@ -910,6 +956,9 @@ impl Engine {
                 _ = update_ticker.tick() => self.zoek_update(false),
             }
 
+            if std::mem::take(&mut self.stil) {
+                continue;
+            }
             self.chat.refresh();
             self.volg_geluid_bij_beeld();
             self.publiceer();
@@ -1104,14 +1153,22 @@ impl Engine {
                 // bouwt per bericht de lijst bekende afbeeldingen op en telt de streams voor
                 // het geluidje, en dit komt ~25 keer per seconde per tekenaar binnen, op de
                 // PC van de deler (invariant 4). Tekenwerk verandert geen stream en geen chat.
+                //
+                // Bedienen (beslissing 54) om dezelfde reden: invoer komt tot ~125 keer per
+                // seconde binnen, op de pc van de deler die misschien zit te gamen.
                 teken @ (ControlMsg::Draw(_)
                 | ControlMsg::DrawClear(_)
-                | ControlMsg::DrawState(_)) => {
+                | ControlMsg::DrawState(_)
+                | ControlMsg::RemoteRequest(_)
+                | ControlMsg::RemoteState(_)
+                | ControlMsg::RemoteInput(_)
+                | ControlMsg::ClipboardText(_)) => {
                     if let Some(ip) = self.verbonden.get(&from).map(|a| a.ip()) {
                         let (cmds, acties) = self.streams.bij_bericht(from, ip, &teken);
                         self.stuur_alles(cmds);
                         self.voer_uit(acties);
                     }
+                    self.stil = matches!(teken, ControlMsg::RemoteInput(_));
                 }
                 andere => {
                     // Screenshare eerst: `bij_bericht` van de chat laat alles wat niet
@@ -1597,7 +1654,7 @@ impl Engine {
     /// Levert het toegekende stream-id op, zodat de aanroeper er nog iets mee kan (de
     /// camera begint meteen op te nemen voor zijn eigen terugblik). `None` als het niet
     /// lukte.
-    fn deel_bron(&mut self, bron: Bron) -> Option<u32> {
+    fn deel_bron(&mut self, bron: Bron, opties: DeelOpties) -> Option<u32> {
         let afmeting = match fitcom_video::capture::afmeting_van(&bron) {
             Ok(a) => a,
             Err(e) => {
@@ -1612,9 +1669,15 @@ impl Engine {
             BronSoort::Venster => StreamKind::WINDOW,
             BronSoort::Camera => StreamKind::CAMERA,
         };
+        // Bedienen alleen op een monitor en niet op macOS (beslissing 54); `Streams::deel`
+        // bewaakt de monitor nog eens.
+        let opties = DeelOpties {
+            bedienen: opties.bedienen && BEDIENEN_KAN,
+            ..opties
+        };
         let (id, cmds) = self
             .streams
-            .deel(kind, bron.naam.clone(), afmeting.0, afmeting.1);
+            .deel(kind, bron.naam.clone(), afmeting.0, afmeting.1, opties);
         self.bronnen.insert(id, bron);
         self.stuur_alles(cmds);
 
@@ -1688,7 +1751,7 @@ impl Engine {
                         // jezelf terugzien is de reden dat je de camera aanzet, en zonder
                         // opname is er niets te zien. Het lampje gaat dus aan zodra je
                         // hem aanzet — dat is precies wat "ik wil mezelf zien" betekent.
-                        if let Some(id) = self.deel_bron(camera) {
+                        if let Some(id) = self.deel_bron(camera, DeelOpties::default()) {
                             if let Err(e) = self.start_deler(id, Vec::new()) {
                                 tracing::error!(error = %format!("{e:#}"), "camera starten mislukt");
                                 self.fout = Some(format!("camera: {e:#}"));
@@ -1742,7 +1805,13 @@ impl Engine {
                     return;
                 }
                 self.stop_bureaubladgeluid();
-                let (_, cmds) = self.streams.deel(StreamKind::MUSIC, "Spotify".into(), 0, 0);
+                let (_, cmds) = self.streams.deel(
+                    StreamKind::MUSIC,
+                    "Spotify".into(),
+                    0,
+                    0,
+                    DeelOpties::default(),
+                );
                 self.stuur_alles(cmds);
                 self.nu_speelt = Some(crate::muziek::NuSpeelt::start());
                 self.werk_muziektitel_bij();
@@ -1838,9 +1907,13 @@ impl Engine {
         }
         // Geen afmeting: dit is geluid. De ontvanger leidt daar niets uit af — hij
         // kijkt naar `kind`.
-        let (_, cmds) =
-            self.streams
-                .deel(StreamKind::DESKTOP_AUDIO, "Bureaubladgeluid".into(), 0, 0);
+        let (_, cmds) = self.streams.deel(
+            StreamKind::DESKTOP_AUDIO,
+            "Bureaubladgeluid".into(),
+            0,
+            0,
+            DeelOpties::default(),
+        );
         self.stuur_alles(cmds);
     }
 
@@ -1965,8 +2038,111 @@ impl Engine {
                     eigenaar: None,
                     stream_id,
                 } => self.werk_deellaag_bij(stream_id),
+                Actie::BedienVraag { stream_id, van } => {
+                    // De deler zit misschien te gamen met het venster weg: een melding, en de
+                    // vraag staat in de app tot hij klikt of hij verloopt.
+                    if !self.niet_storen {
+                        let titel = self
+                            .streams
+                            .eigen()
+                            .iter()
+                            .find(|s| s.id == stream_id)
+                            .map(|s| s.titel.clone())
+                            .unwrap_or_default();
+                        let naam = self.naam_van(van);
+                        notify::nieuw_bericht(
+                            &naam,
+                            &format!(
+                                "wants to control your screen ({titel}). Open FitCommunication to allow or deny."
+                            ),
+                        );
+                    }
+                }
+                Actie::StartBediening { stream_id } => self.start_bediener(stream_id),
+                Actie::StopBediening { stream_id } => {
+                    self.bedieners.remove(&stream_id);
+                }
+                Actie::Invoer { stream_id, events } => {
+                    if let Some(b) = self.bedieners.get(&stream_id) {
+                        b.invoer(events);
+                    }
+                }
+                Actie::Klembord {
+                    eigenaar: None,
+                    stream_id,
+                    tekst,
+                } => {
+                    if let Some(b) = self.bedieners.get(&stream_id) {
+                        b.klembord(tekst);
+                    }
+                }
+                Actie::Klembord {
+                    eigenaar: Some(eigenaar),
+                    stream_id,
+                    tekst,
+                } => {
+                    if let Some(k) = self.kijkers.get(&(eigenaar, stream_id)) {
+                        k.zet_klembord(tekst);
+                    }
+                }
+                Actie::Bediening {
+                    eigenaar,
+                    stream_id,
+                } => {
+                    if let Some(k) = self.kijkers.get(&(eigenaar, stream_id)) {
+                        k.zet_bediening(self.streams.bedienstand(eigenaar, stream_id));
+                    }
+                }
             }
         }
+    }
+
+    /// Onze gedeelde schermen (monitor of venster), voor een schakelaar die op allemaal geldt.
+    fn eigen_schermen(&self) -> Vec<u32> {
+        self.streams
+            .eigen()
+            .iter()
+            .filter(|s| s.kind.is_scherm())
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Het bedienen van een eigen monitor begint (beslissing 54): een thread die de invoer in
+    /// het systeem zet en het klembord deelt. Lukt dat niet, dan trekken we het meteen weer in,
+    /// zodat de bediener niet denkt dat hij iets doet.
+    fn start_bediener(&mut self, stream_id: u32) {
+        let monitor = self
+            .bronnen
+            .get(&stream_id)
+            .filter(|b| b.soort == BronSoort::Monitor)
+            .map(|b| b.handle);
+        let tx = self.bedien_tx.clone();
+        let gestart = monitor.context("geen gedeelde monitor").and_then(|m| {
+            fitcom_video::bediening::Bediener::start(m, move |tekst| {
+                let _ = tx.send((stream_id, tekst));
+            })
+        });
+        match gestart {
+            Ok(b) => {
+                self.bedieners.insert(stream_id, b);
+            }
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), stream = stream_id, "bedienen starten mislukt");
+                self.fout = Some(format!("remote control: {e:#}"));
+                let (cmds, _) = self.streams.stop_bediening(stream_id);
+                self.stuur_alles(cmds);
+            }
+        }
+    }
+
+    /// De naam van een peer zoals de chat hem kent, voor een melding.
+    fn naam_van(&self, peer: PeerId) -> String {
+        self.chat
+            .timeline()
+            .nicknames
+            .get(&peer)
+            .cloned()
+            .unwrap_or_else(|| peer.to_string()[..8].to_string())
     }
 
     /// De laag met lijnen over een gedeelde monitor (beslissing 45): er alleen zolang er
@@ -2154,6 +2330,8 @@ impl Engine {
         if let Some(t) = self.streams.tekening(Some(eigenaar), stream_id) {
             handle.zet_tekening(t);
         }
+        // En of de deler zich laat bedienen (beslissing 54): dan heeft het menu de keuze.
+        handle.zet_bediening(self.streams.bedienstand(eigenaar, stream_id));
         self.kijkers.insert((eigenaar, stream_id), handle);
         Ok(())
     }
@@ -2181,9 +2359,17 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
-            KijkerEvent::Bericht(msg) => {
+            KijkerEvent::Bericht(msg @ (ControlMsg::Draw(_) | ControlMsg::DrawClear(_))) => {
                 let cmds = self.streams.kijker_tekent(eigenaar, stream_id, msg);
                 self.stuur_alles(cmds);
+            }
+            KijkerEvent::Bericht(msg) => {
+                let stil = matches!(msg, ControlMsg::RemoteInput(_));
+                let (cmds, acties) = self.streams.kijker_bedient(eigenaar, stream_id, msg);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+                // Onze eigen invoer als bediener verandert niets in het hoofdvenster.
+                self.stil = stil;
             }
         }
     }
@@ -2412,17 +2598,26 @@ impl Engine {
                     p.volume = vol;
                 }
             }
-            UiCommand::DeelBron(bron) => {
-                self.deel_bron(bron);
+            UiCommand::DeelBron(bron, opties) => {
+                self.deel_bron(bron, opties);
             }
             UiCommand::DeelSpel => {
                 let spel = self.speelt_rust.huidig().map(str::to_owned);
                 if let (Some(naam), Some(handle)) = (spel, self.speelt_zoeker.venster) {
-                    self.deel_bron(Bron {
-                        naam,
-                        soort: BronSoort::Venster,
-                        handle,
-                    });
+                    // Zonder kiezer: de standaard uit de config. Een venster laat zich nooit
+                    // bedienen, dus dat telt hier niet.
+                    let opties = DeelOpties {
+                        tekenen: self.cfg.allow_drawing,
+                        bedienen: self.cfg.allow_remote_control,
+                    };
+                    self.deel_bron(
+                        Bron {
+                            naam,
+                            soort: BronSoort::Venster,
+                            handle,
+                        },
+                        opties,
+                    );
                 }
             }
             UiCommand::StreamVolume(peer, id, vol) => {
@@ -2593,7 +2788,51 @@ impl Engine {
                         self.fout = Some(format!("config opslaan: {e:#}"));
                     }
                 }
-                let (cmds, acties) = self.streams.zet_tekenen(aan);
+                // Uit is ook uit op wat loopt; aan is alleen de standaard (beslissing 54).
+                if !aan {
+                    for id in self.eigen_schermen() {
+                        let (cmds, acties) = self.streams.zet_tekenen(id, false);
+                        self.stuur_alles(cmds);
+                        self.voer_uit(acties);
+                    }
+                }
+            }
+            UiCommand::ZetBedienen(aan) => {
+                if self.cfg.allow_remote_control != aan {
+                    self.cfg.allow_remote_control = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+                if !aan {
+                    for id in self.eigen_schermen() {
+                        let (cmds, acties) = self.streams.zet_bedienen(id, false);
+                        self.stuur_alles(cmds);
+                        self.voer_uit(acties);
+                    }
+                }
+            }
+            UiCommand::ZetStreamTekenen(id, aan) => {
+                let (cmds, acties) = self.streams.zet_tekenen(id, aan);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+            UiCommand::ZetStreamBedienen(id, aan) => {
+                let (cmds, acties) = self.streams.zet_bedienen(id, aan && BEDIENEN_KAN);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+            UiCommand::StaBedieningToe(id, peer) => {
+                let (cmds, acties) = self.streams.sta_bediening_toe(id, peer);
+                self.stuur_alles(cmds);
+                self.voer_uit(acties);
+            }
+            UiCommand::WeigerBediening(id) => {
+                let cmds = self.streams.weiger_bediening(id);
+                self.stuur_alles(cmds);
+            }
+            UiCommand::StopBediening(id) => {
+                let (cmds, acties) = self.streams.stop_bediening(id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
@@ -3440,6 +3679,9 @@ impl Engine {
                 is_camera: s.kind == StreamKind::CAMERA,
                 miniatuur: self.delers.get(&s.id).and_then(|d| d.miniatuur()),
                 tekening: s.tekening.clone(),
+                bedienen: s.bediening.mag,
+                vrager: s.bediening.vrager.map(|(v, _)| v),
+                bediener: s.bediening.bediener,
             })
             .collect();
 
@@ -3499,6 +3741,7 @@ impl Engine {
             deel_activiteit: self.cfg.share_activity,
             eigen_spel: self.speelt_rust.huidig().map(str::to_owned),
             tekenen: self.cfg.allow_drawing,
+            bedienen: self.cfg.allow_remote_control && BEDIENEN_KAN,
             overlay: self.cfg.overlay.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),

@@ -20,12 +20,12 @@ pub const MAX_INVOER_PER_BERICHT: usize = 64;
 pub const MAX_KLEMBORD: usize = 64 * 1024;
 
 /// De rem op invoer per bediener: gemiddeld zoveel per seconde...
-pub const INVOER_PER_SECONDE: u32 = 600;
+pub const INVOER_PER_SECONDE: f64 = 600.0;
 /// ...met zoveel als uitschieter. Een mens met een muis op 1000 Hz komt na het samenvatten op
 /// hooguit ~125 bewegingen per seconde, plus wat hij typt.
 pub const INVOER_VOORRAAD: u32 = 200;
 /// Klembordteksten per seconde, en hoeveel als uitschieter. Kopiëren is mensenwerk.
-pub const KLEMBORD_PER_SECONDE: u32 = 2;
+pub const KLEMBORD_PER_SECONDE: f64 = 2.0;
 pub const KLEMBORD_VOORRAAD: u32 = 4;
 
 /// Waar een kijker staat ten opzichte van één scherm van een ander.
@@ -107,11 +107,11 @@ pub struct Emmer {
 
 impl Emmer {
     /// Begint vol.
-    pub fn nieuw(max: u32, per_seconde: u32, nu: Instant) -> Self {
+    pub fn nieuw(max: u32, per_seconde: f64, nu: Instant) -> Self {
         Self {
             voorraad: f64::from(max),
             max: f64::from(max),
-            per_seconde: f64::from(per_seconde),
+            per_seconde,
             laatst: nu,
         }
     }
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn de_emmer_laat_een_uitschieter_toe_en_daarna_het_tempo() {
         let t0 = Instant::now();
-        let mut emmer = Emmer::nieuw(3, 10, t0);
+        let mut emmer = Emmer::nieuw(3, 10.0, t0);
         assert!((0..3).all(|_| emmer.neem(t0)), "de voorraad");
         assert!(!emmer.neem(t0), "leeg");
         assert!(

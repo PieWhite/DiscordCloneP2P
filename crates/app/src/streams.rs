@@ -28,11 +28,30 @@
 //! waar hij naar kijkt. Na elk wissen en bij elke nieuwe kijker stuurt de deler de hele
 //! tekening. Stream-id's zijn alleen per eigenaar uniek, dus een `Draw` zonder tekenaar is
 //! altijd "op jouw scherm" en een `Draw` mét tekenaar altijd "op het scherm van de afzender".
+//!
+//! # Een scherm laten bedienen (beslissing 54)
+//!
+//! Zelfde vorm als tekenen, maar met één bediener tegelijk en een klik van de deler ertussen.
+//! Een kijker van een eigen *monitor* waarvoor de optie aan staat vraagt (`RemoteRequest`); de
+//! deler onthoudt één vrager, de gebruiker klikt Allow of Deny, en pas dan is die kijker de
+//! bediener (`RemoteState`). Alleen van hem, terwijl hij nog kijkt en de optie nog aan staat,
+//! neemt de deler invoer en klembord aan; de afzender komt uit de verbinding. Het bedienen
+//! stopt bij intrekken, de optie uit, stoppen met delen, en als de bediener stopt met kijken,
+//! wegvalt of zelf stopt. Aan de kijkerskant neemt de motor een "ja" alleen aan als hij vroeg,
+//! en alleen van de eigenaar van de stream; invoer en klembord gaan pas weg als hij bediener is.
+//! Het klembord: stream-id's zijn per eigenaar uniek, dus een `ClipboardText` is eerst "voor
+//! mijn scherm" als de afzender het bedient, en anders "van zijn scherm" als ik het zijne bedien.
+//! Beide zetten hetzelfde klembord van deze PC.
 
 use fitcom_net::{MeshCommand, PeerAdres};
+use fitcom_proto::bediening::{
+    begrens, schoon_klembord, Bedienstand, Emmer, INVOER_PER_SECONDE, INVOER_VOORRAAD,
+    KLEMBORD_PER_SECONDE, KLEMBORD_VOORRAAD,
+};
 use fitcom_proto::control::{
-    Draw, DrawClear, DrawClearScope, DrawState, RequestKeyframe, StreamAnnounce, StreamKind,
-    StreamRevoke, StreamSubscribe, StreamUnsubscribe,
+    ClipboardText, Draw, DrawClear, DrawClearScope, DrawState, InputEvent, RemoteInput,
+    RemoteRequest, RemoteState, RequestKeyframe, StreamAnnounce, StreamKind, StreamRevoke,
+    StreamSubscribe, StreamUnsubscribe,
 };
 use fitcom_proto::teken::Tekening;
 use fitcom_proto::{ControlMsg, PeerId, VOICE_STREAM_ID};
@@ -45,6 +64,24 @@ use std::time::{Duration, Instant};
 /// Een gat komt alleen van verlies onderweg; elke keer opnieuw vragen zou bij een peer met
 /// een nieuwere versie (andere grenzen) een lus worden.
 const HERSYNC_PAUZE: Duration = Duration::from_secs(2);
+
+/// Zo lang blijft een vraag om te bedienen staan zonder antwoord; daarna is het nee. Anders
+/// staat de vraag nog in beeld als de deler na een potje terugkomt, en klikt hij op iets wat de
+/// vrager allang vergeten is.
+pub const VRAAG_GELDIG: Duration = Duration::from_secs(60);
+/// Vragen per scherm: drie als uitschieter, dan één per vijf seconden. Een vraag geeft de deler
+/// een melding, en die mag geen kijker blijven afvuren.
+const VRAGEN_VOORRAAD: u32 = 3;
+const VRAGEN_PER_SECONDE: f64 = 0.2;
+
+/// Wat de deler per scherm toestaat. Uit de kiezer bij het delen, of de standaard uit de config
+/// (`allow_drawing`, `allow_remote_control`) bij delen zonder kiezer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeelOpties {
+    pub tekenen: bool,
+    /// Alleen ooit waar voor een monitor; de motor zet hem op macOS altijd uit.
+    pub bedienen: bool,
+}
 
 /// Wat de motor moet doen. Alles wat hardware aanraakt staat hier als opdracht en
 /// wordt buiten deze module uitgevoerd.
@@ -83,6 +120,61 @@ pub enum Actie {
         eigenaar: Option<PeerId>,
         stream_id: u32,
     },
+    /// Iemand vraagt ons scherm te bedienen: een melding, want de deler zit misschien te gamen.
+    BedienVraag { stream_id: u32, van: PeerId },
+    /// De bediener is toegelaten: invoer en klembord bij de deler beginnen.
+    StartBediening { stream_id: u32 },
+    /// Het bedienen van ons scherm is voorbij: alles los, klembord dicht.
+    StopBediening { stream_id: u32 },
+    /// Invoer van onze bediener, gecontroleerd en afgeremd.
+    Invoer {
+        stream_id: u32,
+        events: Vec<InputEvent>,
+    },
+    /// Klembordtekst op het klembord van deze PC zetten: van onze bediener (`eigenaar ==
+    /// None`) of van de deler waarvan we het scherm bedienen.
+    Klembord {
+        eigenaar: Option<PeerId>,
+        stream_id: u32,
+        tekst: String,
+    },
+    /// Onze bedienstand voor deze stream van een ander is (misschien) anders: naar het venster.
+    Bediening { eigenaar: PeerId, stream_id: u32 },
+}
+
+/// Een eigen scherm laten bedienen.
+#[derive(Debug, Clone)]
+pub struct EigenBediening {
+    /// De optie van de deler voor dit scherm. Alleen ooit waar voor een monitor.
+    pub mag: bool,
+    /// Wie vroeg en wanneer; wacht op een klik van de deler. Eén tegelijk.
+    pub vrager: Option<(PeerId, Instant)>,
+    /// Wie nu bedient. Eén tegelijk.
+    pub bediener: Option<PeerId>,
+    invoer: Emmer,
+    klembord: Emmer,
+    vragen: Emmer,
+}
+
+impl EigenBediening {
+    fn nieuw(mag: bool) -> Self {
+        let nu = Instant::now();
+        Self {
+            mag,
+            vrager: None,
+            bediener: None,
+            invoer: Emmer::nieuw(INVOER_VOORRAAD, INVOER_PER_SECONDE, nu),
+            klembord: Emmer::nieuw(KLEMBORD_VOORRAAD, KLEMBORD_PER_SECONDE, nu),
+            vragen: Emmer::nieuw(VRAGEN_VOORRAAD, VRAGEN_PER_SECONDE, nu),
+        }
+    }
+}
+
+fn bedienstand_naar(peer: PeerId, stream_id: u32, granted: bool) -> MeshCommand {
+    MeshCommand::Send {
+        to: peer,
+        msg: ControlMsg::RemoteState(RemoteState { stream_id, granted }),
+    }
 }
 
 /// Een bron die wij delen.
@@ -98,6 +190,8 @@ pub struct EigenStream {
     /// Wat de kijkers op dit scherm tekenden. `aan` is de schakelaar van de deler; voor
     /// alles wat geen scherm is staat hij altijd uit.
     pub tekening: Arc<Tekening>,
+    /// Wie dit scherm mag bedienen, wie het vraagt en wie het doet.
+    pub bediening: EigenBediening,
 }
 
 impl EigenStream {
@@ -121,8 +215,43 @@ impl EigenStream {
             width: self.breedte,
             height: self.hoogte,
             drawing: self.tekening.aan,
-            remote_control: false,
+            remote_control: self.bediening.mag,
         })
+    }
+
+    /// Het bedienen van dit scherm is voorbij, om welke reden ook: wie vroeg hoort nee, wie
+    /// bediende hoort dat het over is. `vertrokken` is een peer die niet meer kijkt of weg is;
+    /// die krijgt geen bericht.
+    fn eindig_bediening(&mut self, vertrokken: Option<PeerId>) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let (mut cmds, mut acties) = (Vec::new(), Vec::new());
+        if let Some((vrager, _)) = self.bediening.vrager.take() {
+            if Some(vrager) != vertrokken {
+                cmds.push(bedienstand_naar(vrager, self.id, false));
+            }
+        }
+        if let Some(bediener) = self.bediening.bediener.take() {
+            tracing::info!(peer = ?bediener, stream = self.id, "bedienen gestopt");
+            if Some(bediener) != vertrokken {
+                cmds.push(bedienstand_naar(bediener, self.id, false));
+            }
+            acties.push(Actie::StopBediening { stream_id: self.id });
+        }
+        (cmds, acties)
+    }
+
+    /// Een kijker vertrekt (uitgetekend of weg): was hij de vrager of de bediener, dan is dat
+    /// voorbij. Een vraag of het bedienen van een ander blijft staan.
+    fn vergeet_bediener(&mut self, kijker: PeerId) -> Vec<Actie> {
+        let b = &mut self.bediening;
+        if b.vrager.is_some_and(|(v, _)| v == kijker) {
+            b.vrager = None;
+        }
+        if b.bediener == Some(kijker) {
+            tracing::info!(peer = ?kijker, stream = self.id, "bediener weg; bedienen gestopt");
+            b.bediener = None;
+            return vec![Actie::StopBediening { stream_id: self.id }];
+        }
+        Vec::new()
     }
 
     /// De hele tekening naar elke kijker: na wissen, ongedaan maken of een vertrokken
@@ -173,6 +302,10 @@ pub struct VreemdeStream {
     pub poort: Option<u16>,
     /// Wanneer we dat voor het laatst deden; zie [`HERSYNC_PAUZE`].
     pub hersync: Option<Instant>,
+    /// Of de deler bedienen toestaat en waar wij staan (beslissing 54).
+    pub bediening: Bedienstand,
+    /// De rem op klembordtekst van de deler zolang wij hem bedienen.
+    klembord: Emmer,
 }
 
 impl VreemdeStream {
@@ -204,16 +337,12 @@ pub struct Streams {
     volgende_id: u32,
     eigen: Vec<EigenStream>,
     vreemd: Vec<VreemdeStream>,
-    /// Of een nieuw gedeeld scherm tekenen toestaat: de laatste stand van de schakelaar.
-    /// Begint aan; de motor zet hem bij het starten uit de config.
-    tekenen_standaard: bool,
 }
 
 impl Streams {
     pub fn new() -> Self {
         Self {
             volgende_id: 1,
-            tekenen_standaard: true,
             ..Default::default()
         }
     }
@@ -230,12 +359,16 @@ impl Streams {
 
     /// Kondigt een bron aan. Levert het toegekende id op plus de melding aan de
     /// anderen. Er wordt nog niets opgenomen: dat begint pas als iemand intekent.
+    ///
+    /// Tekenen kan alleen op een scherm, bedienen alleen op een monitor (beslissing 54: een
+    /// klik op een gedeeld venster valt op wat er toevallig bovenop ligt).
     pub fn deel(
         &mut self,
         kind: StreamKind,
         titel: String,
         breedte: u32,
         hoogte: u32,
+        opties: DeelOpties,
     ) -> (u32, Vec<MeshCommand>) {
         let id = self.volgende_id.max(1);
         self.volgende_id = id + 1;
@@ -247,7 +380,8 @@ impl Streams {
             breedte,
             hoogte,
             kijkers: BTreeMap::new(),
-            tekening: Arc::new(Tekening::nieuw(kind.is_scherm() && self.tekenen_standaard)),
+            tekening: Arc::new(Tekening::nieuw(kind.is_scherm() && opties.tekenen)),
+            bediening: EigenBediening::nieuw(kind == StreamKind::MONITOR && opties.bedienen),
         };
         let melding = stream.aankondiging();
         self.eigen.push(stream);
@@ -281,6 +415,10 @@ impl Streams {
                 is_geluid: stream.kind.is_geluid(),
             });
         }
+        // De bediener kijkt naar een stream die verdwijnt; zijn venster gaat vanzelf dicht.
+        if stream.bediening.bediener.is_some() {
+            acties.push(Actie::StopBediening { stream_id });
+        }
         // De laag over ons scherm moet weg; de motor vindt de stream niet meer.
         if !stream.tekening.is_leeg() {
             acties.push(Actie::Tekening {
@@ -296,22 +434,134 @@ impl Streams {
         )
     }
 
-    /// De schakelaar van de deler (`Config::allow_drawing`): mogen kijkers op zijn schermen
-    /// tekenen. Geldt voor elk scherm dat loopt en elk dat hierna komt. Uit wist alles en
-    /// zegt het iedereen via een nieuwe aankondiging, net als een nieuwe titel.
-    pub fn zet_tekenen(&mut self, aan: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
-        self.tekenen_standaard = aan;
-        let (mut cmds, mut acties) = (Vec::new(), Vec::new());
-        for s in self.eigen.iter_mut().filter(|s| s.kind.is_scherm()) {
-            if Arc::make_mut(&mut s.tekening).zet_aan(aan) {
-                cmds.push(MeshCommand::Broadcast(s.aankondiging()));
-                acties.push(Actie::Tekening {
-                    eigenaar: None,
-                    stream_id: s.id,
-                });
+    /// Mogen kijkers op dit eigen scherm tekenen (de optie per gedeeld scherm). Uit wist alles
+    /// en zegt het iedereen via een nieuwe aankondiging, net als een nieuwe titel.
+    pub fn zet_tekenen(&mut self, stream_id: u32, aan: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let Some(s) = self
+            .eigen
+            .iter_mut()
+            .find(|s| s.id == stream_id && s.kind.is_scherm())
+        else {
+            return (Vec::new(), Vec::new());
+        };
+        if !Arc::make_mut(&mut s.tekening).zet_aan(aan) {
+            return (Vec::new(), Vec::new());
+        }
+        (
+            vec![MeshCommand::Broadcast(s.aankondiging())],
+            vec![Actie::Tekening {
+                eigenaar: None,
+                stream_id,
+            }],
+        )
+    }
+
+    /// Mogen kijkers vragen dit eigen scherm te bedienen. Alleen een monitor. Uit maakt een
+    /// eind aan een vraag en aan het bedienen, en zegt het iedereen via een nieuwe aankondiging.
+    pub fn zet_bedienen(&mut self, stream_id: u32, aan: bool) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let Some(s) = self
+            .eigen
+            .iter_mut()
+            .find(|s| s.id == stream_id && s.kind == StreamKind::MONITOR)
+        else {
+            return (Vec::new(), Vec::new());
+        };
+        if s.bediening.mag == aan {
+            return (Vec::new(), Vec::new());
+        }
+        s.bediening.mag = aan;
+        let (mut cmds, acties) = s.eindig_bediening(None);
+        cmds.push(MeshCommand::Broadcast(s.aankondiging()));
+        (cmds, acties)
+    }
+
+    /// De deler klikt Allow: `peer` mag dit scherm bedienen. Alleen als hij nog de vrager is,
+    /// nog kijkt en de optie nog aan staat; anders is de klik verouderd en gebeurt er niets.
+    pub fn sta_bediening_toe(
+        &mut self,
+        stream_id: u32,
+        peer: PeerId,
+    ) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let Some(s) = self.eigen.iter_mut().find(|s| s.id == stream_id) else {
+            return (Vec::new(), Vec::new());
+        };
+        let geldig = s.bediening.mag
+            && s.bediening.vrager.is_some_and(|(v, _)| v == peer)
+            && s.kijkers.contains_key(&peer);
+        if !geldig {
+            tracing::debug!(peer = ?peer, stream = stream_id, "toestemming voor een vraag die er niet meer is");
+            return (Vec::new(), Vec::new());
+        }
+        tracing::info!(peer = ?peer, stream = stream_id, "bedienen toegestaan");
+        let nu = Instant::now();
+        let b = &mut s.bediening;
+        b.vrager = None;
+        b.bediener = Some(peer);
+        b.invoer = Emmer::nieuw(INVOER_VOORRAAD, INVOER_PER_SECONDE, nu);
+        b.klembord = Emmer::nieuw(KLEMBORD_VOORRAAD, KLEMBORD_PER_SECONDE, nu);
+        (
+            vec![bedienstand_naar(peer, stream_id, true)],
+            vec![Actie::StartBediening { stream_id }],
+        )
+    }
+
+    /// De deler klikt Deny.
+    pub fn weiger_bediening(&mut self, stream_id: u32) -> Vec<MeshCommand> {
+        let Some(s) = self.eigen.iter_mut().find(|s| s.id == stream_id) else {
+            return Vec::new();
+        };
+        match s.bediening.vrager.take() {
+            Some((vrager, _)) => vec![bedienstand_naar(vrager, stream_id, false)],
+            None => Vec::new(),
+        }
+    }
+
+    /// De deler trekt het bedienen in, en een vraag die er nog lag.
+    pub fn stop_bediening(&mut self, stream_id: u32) -> (Vec<MeshCommand>, Vec<Actie>) {
+        match self.eigen.iter_mut().find(|s| s.id == stream_id) {
+            Some(s) => s.eindig_bediening(None),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Vragen waar na [`VRAAG_GELDIG`] nog niemand op klikte worden nee. Op de tik van de motor.
+    pub fn verlopen_vragen(&mut self, nu: Instant) -> Vec<MeshCommand> {
+        let mut cmds = Vec::new();
+        for s in &mut self.eigen {
+            if let Some((vrager, sinds)) = s.bediening.vrager {
+                if nu.saturating_duration_since(sinds) >= VRAAG_GELDIG {
+                    tracing::info!(peer = ?vrager, stream = s.id, "vraag om te bedienen verlopen");
+                    s.bediening.vrager = None;
+                    cmds.push(bedienstand_naar(vrager, s.id, false));
+                }
             }
         }
-        (cmds, acties)
+        cmds
+    }
+
+    /// Het klembord van de deler veranderde terwijl dit scherm bediend wordt: naar de bediener,
+    /// en naar niemand anders.
+    pub fn klembord_van_deler(&self, stream_id: u32, tekst: &str) -> Vec<MeshCommand> {
+        let bediener = self
+            .eigen
+            .iter()
+            .find(|s| s.id == stream_id && s.bediening.mag)
+            .and_then(|s| s.bediening.bediener);
+        match (bediener, schoon_klembord(tekst)) {
+            (Some(to), Some(text)) => vec![MeshCommand::Send {
+                to,
+                msg: ControlMsg::ClipboardText(ClipboardText { stream_id, text }),
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Onze stand voor een stream van een ander, voor zijn kijkvenster.
+    pub fn bedienstand(&self, eigenaar: PeerId, stream_id: u32) -> Bedienstand {
+        self.vreemd
+            .iter()
+            .find(|s| s.eigenaar == eigenaar && s.id == stream_id)
+            .map_or(Bedienstand::Uit, |s| s.bediening)
     }
 
     /// De deler wist alles op zijn scherm, van iedereen.
@@ -452,6 +702,10 @@ impl Streams {
         // Zonder venster komt er niets meer binnen; bij opnieuw kijken stuurt de deler alles.
         s.tekening = Arc::new(Tekening::nieuw(s.tekening.aan));
         s.poort = None;
+        // Wie niet kijkt bedient niet; de deler stopt het zelf zodra hij ons uittekenen ziet.
+        if s.bediening != Bedienstand::Uit {
+            s.bediening = Bedienstand::Mag;
+        }
         (
             vec![MeshCommand::Send {
                 to: eigenaar,
@@ -494,6 +748,58 @@ impl Streams {
             vec![MeshCommand::Send { to: eigenaar, msg }]
         } else {
             Vec::new()
+        }
+    }
+
+    /// Wij bedienen (of vragen het) vanuit het kijkvenster van een stream van `eigenaar`: een
+    /// vraag, stoppen, invoer of klembord, naar de deler en verder niets. Een vraag zet onze
+    /// stand meteen om, en het venster hoort altijd hoe hij nu staat, ook als er niets weg mocht.
+    pub fn kijker_bedient(
+        &mut self,
+        eigenaar: PeerId,
+        stream_id: u32,
+        msg: ControlMsg,
+    ) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let Some(s) = self.vind_kijkend(eigenaar, stream_id) else {
+            return (Vec::new(), Vec::new());
+        };
+        let stuur = |msg| vec![MeshCommand::Send { to: eigenaar, msg }];
+        let melden = vec![Actie::Bediening {
+            eigenaar,
+            stream_id,
+        }];
+        match &msg {
+            ControlMsg::RemoteRequest(r) if r.stream_id == stream_id => {
+                let cmds = match (r.want, s.bediening) {
+                    (true, Bedienstand::Mag) => {
+                        s.bediening = Bedienstand::Gevraagd;
+                        stuur(msg)
+                    }
+                    (false, Bedienstand::Gevraagd | Bedienstand::Actief) => {
+                        s.bediening = Bedienstand::Mag;
+                        stuur(msg)
+                    }
+                    _ => Vec::new(),
+                };
+                (cmds, melden)
+            }
+            ControlMsg::RemoteInput(i)
+                if i.stream_id == stream_id && s.bediening == Bedienstand::Actief =>
+            {
+                (stuur(msg), Vec::new())
+            }
+            ControlMsg::ClipboardText(c)
+                if c.stream_id == stream_id && s.bediening == Bedienstand::Actief =>
+            {
+                match schoon_klembord(&c.text) {
+                    Some(text) => (
+                        stuur(ControlMsg::ClipboardText(ClipboardText { stream_id, text })),
+                        Vec::new(),
+                    ),
+                    None => (Vec::new(), Vec::new()),
+                }
+            }
+            _ => (Vec::new(), Vec::new()),
         }
     }
 
@@ -545,6 +851,7 @@ impl Streams {
                 let (c, a) = s.vergeet_tekenaar(peer);
                 cmds.extend(c);
                 acties.extend(a);
+                acties.extend(s.vergeet_bediener(peer));
             }
         }
 
@@ -576,8 +883,137 @@ impl Streams {
             },
             ControlMsg::DrawClear(c) => self.kijker_wist(van, c),
             ControlMsg::DrawState(t) => (Vec::new(), self.deler_gaf_alles(van, t)),
+            ControlMsg::RemoteRequest(r) => self.bedienvraag(van, r, Instant::now()),
+            ControlMsg::RemoteState(r) => (Vec::new(), self.bedienantwoord(van, r)),
+            ControlMsg::RemoteInput(i) => (Vec::new(), self.invoer_van(van, i, Instant::now())),
+            ControlMsg::ClipboardText(c) => (Vec::new(), self.klembord_van(van, c, Instant::now())),
             _ => (Vec::new(), Vec::new()),
         }
+    }
+
+    /// Als deler: een kijker vraagt dit scherm te bedienen, of stopt ermee. Eén vrager en één
+    /// bediener tegelijk; wie er niet aan de beurt is hoort meteen nee.
+    fn bedienvraag(
+        &mut self,
+        van: PeerId,
+        r: &RemoteRequest,
+        nu: Instant,
+    ) -> (Vec<MeshCommand>, Vec<Actie>) {
+        let Some(s) = self
+            .eigen
+            .iter_mut()
+            .find(|s| s.id == r.stream_id && s.kijkers.contains_key(&van))
+        else {
+            tracing::debug!(peer = ?van, stream = r.stream_id, "vraag om te bedienen van wie niet kijkt");
+            return (Vec::new(), Vec::new());
+        };
+        let nee = || vec![bedienstand_naar(van, r.stream_id, false)];
+        let b = &mut s.bediening;
+        if !r.want {
+            return (Vec::new(), s.vergeet_bediener(van));
+        }
+        if b.bediener == Some(van) {
+            // Al bediener: zeg het nog eens (zijn venster ging misschien opnieuw open).
+            return (vec![bedienstand_naar(van, r.stream_id, true)], Vec::new());
+        }
+        if b.vrager.is_some_and(|(v, _)| v == van) {
+            return (Vec::new(), Vec::new());
+        }
+        if !b.mag || b.bediener.is_some() || b.vrager.is_some() || !b.vragen.neem(nu) {
+            tracing::debug!(peer = ?van, stream = r.stream_id, "vraag om te bedienen afgewezen");
+            return (nee(), Vec::new());
+        }
+        tracing::info!(peer = ?van, stream = r.stream_id, "vraag om te bedienen");
+        b.vrager = Some((van, nu));
+        (
+            Vec::new(),
+            vec![Actie::BedienVraag {
+                stream_id: r.stream_id,
+                van,
+            }],
+        )
+    }
+
+    /// Als kijker: de deler zegt of we bedienen. Alleen van de eigenaar van een stream waar we
+    /// naar kijken, en "ja" alleen als we vroegen.
+    fn bedienantwoord(&mut self, van: PeerId, r: &RemoteState) -> Vec<Actie> {
+        let Some(s) = self.vind_kijkend(van, r.stream_id) else {
+            return Vec::new();
+        };
+        let nieuw = match (r.granted, s.bediening) {
+            (true, Bedienstand::Gevraagd) => Bedienstand::Actief,
+            (false, Bedienstand::Gevraagd | Bedienstand::Actief) => Bedienstand::Mag,
+            _ => return Vec::new(),
+        };
+        tracing::info!(peer = ?van, stream = r.stream_id, bedienen = r.granted, "antwoord van de deler");
+        s.bediening = nieuw;
+        vec![Actie::Bediening {
+            eigenaar: van,
+            stream_id: r.stream_id,
+        }]
+    }
+
+    /// Als deler: invoer. Alleen van de bediener, terwijl hij kijkt en het mag; geldig, binnen
+    /// de grens per bericht en afgeremd, behalve het loslaten.
+    fn invoer_van(&mut self, van: PeerId, i: &RemoteInput, nu: Instant) -> Vec<Actie> {
+        let Some(s) = self.eigen.iter_mut().find(|s| {
+            s.id == i.stream_id
+                && s.bediening.mag
+                && s.bediening.bediener == Some(van)
+                && s.kijkers.contains_key(&van)
+        }) else {
+            tracing::debug!(peer = ?van, stream = i.stream_id, "invoer van wie niet bedient genegeerd");
+            return Vec::new();
+        };
+        let rem = &mut s.bediening.invoer;
+        let events: Vec<InputEvent> = begrens(&i.events)
+            .into_iter()
+            .filter(|e| e.is_loslaten() || rem.neem(nu))
+            .collect();
+        if events.is_empty() {
+            return Vec::new();
+        }
+        vec![Actie::Invoer {
+            stream_id: i.stream_id,
+            events,
+        }]
+    }
+
+    /// Klembordtekst. Eerst als deler (de afzender bedient ons scherm), anders als bediener (de
+    /// afzender is de deler van een scherm dat wij bedienen). Beide zetten het klembord van deze
+    /// PC; een rem per kant.
+    fn klembord_van(&mut self, van: PeerId, c: &ClipboardText, nu: Instant) -> Vec<Actie> {
+        let Some(tekst) = schoon_klembord(&c.text) else {
+            tracing::debug!(peer = ?van, len = c.text.len(), "klembordtekst leeg of te groot");
+            return Vec::new();
+        };
+        if let Some(s) = self.eigen.iter_mut().find(|s| {
+            s.id == c.stream_id
+                && s.bediening.mag
+                && s.bediening.bediener == Some(van)
+                && s.kijkers.contains_key(&van)
+        }) {
+            return if s.bediening.klembord.neem(nu) {
+                vec![Actie::Klembord {
+                    eigenaar: None,
+                    stream_id: c.stream_id,
+                    tekst,
+                }]
+            } else {
+                Vec::new()
+            };
+        }
+        let Some(s) = self.vind_kijkend(van, c.stream_id) else {
+            return Vec::new();
+        };
+        if s.bediening != Bedienstand::Actief || !s.klembord.neem(nu) {
+            return Vec::new();
+        }
+        vec![Actie::Klembord {
+            eigenaar: Some(van),
+            stream_id: c.stream_id,
+            tekst,
+        }]
     }
 
     /// Als deler: een kijker tekent op ons scherm. Alleen wie nu kijkt, alleen als het
@@ -703,10 +1139,28 @@ impl Streams {
             return Vec::new();
         }
         let tekenen = a.drawing && a.kind.is_scherm();
+        // Bedienen alleen op een monitor, wat de deler ook zegt (beslissing 54).
+        let bedienen = a.remote_control && a.kind == StreamKind::MONITOR;
 
         // Opnieuw aankondigen is normaal: het gebeurt bij elke herverbinding. Alleen
         // de gegevens bijwerken, de kijkstatus laten staan.
         if let Some(s) = self.vind_vreemd(van, a.stream_id) {
+            // De deler zette bedienen aan of uit; uit maakt een eind aan vragen en bedienen.
+            let mut acties = Vec::new();
+            let stand = match (bedienen, s.bediening) {
+                (true, Bedienstand::Uit) => Bedienstand::Mag,
+                (false, _) => Bedienstand::Uit,
+                (true, stand) => stand,
+            };
+            if stand != s.bediening {
+                s.bediening = stand;
+                if s.kijken {
+                    acties.push(Actie::Bediening {
+                        eigenaar: van,
+                        stream_id: a.stream_id,
+                    });
+                }
+            }
             s.kind = a.kind;
             // B-31: ook op dit pad afkappen — een herverbinding komt hier langs, niet
             // hierboven, en anders is de grens met één reconnect te omzeilen.
@@ -721,12 +1175,12 @@ impl Streams {
             // De deler zette tekenen aan of uit; uit wist ook onze kopie.
             if s.tekening.aan != tekenen {
                 Arc::make_mut(&mut s.tekening).zet_aan(tekenen);
-                return vec![Actie::Tekening {
+                acties.push(Actie::Tekening {
                     eigenaar: Some(van),
                     stream_id: a.stream_id,
-                }];
+                });
             }
-            return Vec::new();
+            return acties;
         }
 
         // B-31: een plafond per peer. Zonder dit kan één peer onbeperkt streams
@@ -766,6 +1220,12 @@ impl Streams {
             tekening: Arc::new(Tekening::nieuw(tekenen)),
             poort: None,
             hersync: None,
+            bediening: if bedienen {
+                Bedienstand::Mag
+            } else {
+                Bedienstand::Uit
+            },
+            klembord: Emmer::nieuw(KLEMBORD_VOORRAAD, KLEMBORD_PER_SECONDE, Instant::now()),
         });
         Vec::new()
     }
@@ -846,6 +1306,7 @@ impl Streams {
         };
         let (cmds, mut acties) = s.vergeet_tekenaar(van);
         acties.insert(0, actie);
+        acties.extend(s.vergeet_bediener(van));
         (cmds, acties)
     }
 
@@ -880,6 +1341,12 @@ impl Streams {
 mod tests {
     use super::*;
 
+    /// Wat de schermen in deze tests toestaan: tekenen, zoals vóór beslissing 54 standaard.
+    const TEKENEN: DeelOpties = DeelOpties {
+        tekenen: true,
+        bedienen: false,
+    };
+
     fn ip() -> IpAddr {
         IpAddr::from([100, 64, 0, 7])
     }
@@ -908,7 +1375,7 @@ mod tests {
         // Dit is de belangrijkste eigenschap van de hele fase: een gedeeld scherm mag
         // geen enkele opdracht opleveren zolang niemand meekijkt.
         let mut s = Streams::new();
-        let (id, cmds) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, cmds) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         assert_eq!(id, 1);
         assert_eq!(cmds.len(), 1, "alleen de aankondiging");
         assert!(!s.eigen()[0].wordt_bekeken());
@@ -917,7 +1384,7 @@ mod tests {
     #[test]
     fn eerste_kijker_start_het_opnemen_en_de_tweede_niet() {
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let a = PeerId::new_random();
         let b = PeerId::new_random();
 
@@ -944,7 +1411,7 @@ mod tests {
     #[test]
     fn opnemen_stopt_pas_als_de_laatste_kijker_weg_is() {
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let a = PeerId::new_random();
         let b = PeerId::new_random();
         s.bij_bericht(a, ip(), &intekening(id, 41000));
@@ -979,7 +1446,7 @@ mod tests {
         // Zonder dit blijven we coderen en versturen naar een dood adres, en dat is
         // precies het geval waarin de app in de weg gaat zitten tijdens het gamen.
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let a = PeerId::new_random();
         s.bij_bericht(a, ip(), &intekening(id, 41000));
 
@@ -1027,8 +1494,8 @@ mod tests {
     #[test]
     fn een_verbonden_peer_krijgt_onze_lopende_aankondigingen() {
         let mut s = Streams::new();
-        s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
-        s.deel(StreamKind::WINDOW, "Kladblok".into(), 800, 600);
+        s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
+        s.deel(StreamKind::WINDOW, "Kladblok".into(), 800, 600, TEKENEN);
 
         let a = PeerId::new_random();
         let cmds = s.bij_verbinding(a);
@@ -1064,7 +1531,7 @@ mod tests {
     fn keyframe_alleen_voor_wie_daadwerkelijk_kijkt() {
         // Anders kan iedereen die het adres kent de bitrate laten ontploffen.
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let kijker = PeerId::new_random();
         let vreemde = PeerId::new_random();
         s.bij_bericht(kijker, ip(), &intekening(id, 41000));
@@ -1082,9 +1549,9 @@ mod tests {
         // Een hergebruikt id zou beeld in het verkeerde venster kunnen zetten zolang
         // er nog pakketten van de vorige stream onderweg zijn.
         let mut s = Streams::new();
-        let (eerste, _) = s.deel(StreamKind::MONITOR, "A".into(), 1920, 1080);
+        let (eerste, _) = s.deel(StreamKind::MONITOR, "A".into(), 1920, 1080, TEKENEN);
         s.stop_delen(eerste);
-        let (tweede, _) = s.deel(StreamKind::MONITOR, "B".into(), 1920, 1080);
+        let (tweede, _) = s.deel(StreamKind::MONITOR, "B".into(), 1920, 1080, TEKENEN);
         assert_ne!(eerste, tweede);
     }
 
@@ -1141,7 +1608,13 @@ mod tests {
         // met `is_geluid` zou kunnen navragen wat voor stream het was. Daarom draagt
         // de actie het zelf, in plaats van dat de motor het achteraf opzoekt.
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::DESKTOP_AUDIO, "Bureaubladgeluid".into(), 0, 0);
+        let (id, _) = s.deel(
+            StreamKind::DESKTOP_AUDIO,
+            "Bureaubladgeluid".into(),
+            0,
+            0,
+            TEKENEN,
+        );
         let a = PeerId::new_random();
         s.bij_bericht(a, ip(), &intekening(id, 41000));
 
@@ -1316,7 +1789,7 @@ mod tests {
     fn opnieuw_intekenen_met_een_andere_poort_verhuist_de_kijker() {
         // Gebeurt als iemand zijn venster sluit en meteen opnieuw opent.
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let a = PeerId::new_random();
         s.bij_bericht(a, ip(), &intekening(id, 41000));
         let (_, acties) = s.bij_bericht(a, ip(), &intekening(id, 41005));
@@ -1380,7 +1853,7 @@ mod tests {
     #[test]
     fn titel_wijzigen_kondigt_alleen_een_echte_wijziging_aan() {
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MUSIC, "Spotify".into(), 0, 0);
+        let (id, _) = s.deel(StreamKind::MUSIC, "Spotify".into(), 0, 0, TEKENEN);
         assert!(s.zet_titel(id, "Spotify").is_empty());
         assert_eq!(s.zet_titel(id, "A – B").len(), 1);
         assert!(s.zet_titel(id, "A – B").is_empty());
@@ -1414,7 +1887,7 @@ mod tests {
     /// Een gedeeld scherm met twee kijkers.
     fn deler_met_kijkers() -> (Streams, u32, PeerId, PeerId) {
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let a = PeerId::new_random();
         let b = PeerId::new_random();
         s.bij_bericht(a, ip(), &intekening(id, 41000));
@@ -1425,8 +1898,8 @@ mod tests {
     #[test]
     fn een_scherm_kondigt_tekenen_aan_en_een_camera_niet() {
         let mut s = Streams::new();
-        let (_, cmds) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
-        let (_, cam) = s.deel(StreamKind::CAMERA, "Cam".into(), 1280, 720);
+        let (_, cmds) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
+        let (_, cam) = s.deel(StreamKind::CAMERA, "Cam".into(), 1280, 720, TEKENEN);
         let tekenen = |c: &[MeshCommand]| match c {
             [MeshCommand::Broadcast(ControlMsg::StreamAnnounce(a))] => a.drawing,
             andere => panic!("verwachtte een aankondiging: {andere:?}"),
@@ -1476,7 +1949,7 @@ mod tests {
         );
         assert!(cmds.is_empty());
 
-        s.zet_tekenen(false);
+        s.zet_tekenen(id, false);
         let (cmds, _) = s.bij_bericht(
             a,
             ip(),
@@ -1487,29 +1960,32 @@ mod tests {
     }
 
     #[test]
-    fn uitzetten_wist_en_kondigt_opnieuw_aan_en_geldt_voor_het_volgende_scherm() {
+    fn uitzetten_wist_en_kondigt_opnieuw_aan_en_geldt_per_scherm() {
         let (mut s, id, a, _) = deler_met_kijkers();
         s.bij_bericht(
             a,
             ip(),
             &ControlMsg::Draw(lijn(id, 1, 0, &[[0, 0], [9, 9]])),
         );
+        let (tweede, _) = s.deel(StreamKind::MONITOR, "Tweede".into(), 1920, 1080, TEKENEN);
 
-        let (cmds, acties) = s.zet_tekenen(false);
+        let (cmds, acties) = s.zet_tekenen(id, false);
         assert!(matches!(
             cmds.as_slice(),
             [MeshCommand::Broadcast(ControlMsg::StreamAnnounce(an))] if !an.drawing
         ));
         assert_eq!(acties.len(), 1);
         assert!(s.eigen()[0].tekening.is_leeg());
-        let (cmds, acties) = s.zet_tekenen(false);
+        let (cmds, acties) = s.zet_tekenen(id, false);
         assert!(cmds.is_empty() && acties.is_empty(), "al uit");
-
-        let (tweede, _) = s.deel(StreamKind::MONITOR, "Tweede".into(), 1920, 1080);
         assert!(
-            !s.tekening(None, tweede).unwrap().aan,
-            "de laatste stand geldt"
+            s.tekening(None, tweede).unwrap().aan,
+            "het andere scherm houdt zijn eigen keuze"
         );
+        // Een camera tekent nooit, wat er ook gevraagd wordt.
+        let (cam, _) = s.deel(StreamKind::CAMERA, "Cam".into(), 1280, 720, TEKENEN);
+        assert!(s.zet_tekenen(cam, true).0.is_empty());
+        assert!(!s.tekening(None, cam).unwrap().aan);
     }
 
     #[test]
@@ -1735,7 +2211,7 @@ mod tests {
 
         // De deler antwoordt op een intekening altijd met de tekening, ook als hij leeg is.
         let mut d = Streams::new();
-        let (id, _) = d.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = d.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let (cmds, _) = d.bij_bericht(deler, ip(), &intekening(id, 41000));
         assert!(matches!(
             verzonden(&cmds).as_slice(),
@@ -1749,7 +2225,7 @@ mod tests {
         // scherm 1 waar wij naar kijken. Zonder tekenaar is het ons scherm, met tekenaar het
         // zijne.
         let mut s = Streams::new();
-        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080);
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, TEKENEN);
         let a = PeerId::new_random();
         s.bij_bericht(a, ip(), &intekening(id, 41000));
         let mut an = match aankondiging(id) {
@@ -1773,5 +2249,456 @@ mod tests {
         s.bij_bericht(a, ip(), &ControlMsg::Draw(zijne));
         assert_eq!(s.tekening(Some(a), id).unwrap().lijnen().len(), 1);
         assert_eq!(s.tekening(None, id).unwrap().lijnen().len(), 1);
+    }
+
+    // -- bedienen (beslissing 54) -----------------------------------------
+
+    use fitcom_proto::control::InputKind;
+
+    const BEDIENEN: DeelOpties = DeelOpties {
+        tekenen: false,
+        bedienen: true,
+    };
+
+    fn vraag(stream_id: u32, want: bool) -> ControlMsg {
+        ControlMsg::RemoteRequest(RemoteRequest { stream_id, want })
+    }
+
+    fn invoer(stream_id: u32, events: Vec<InputEvent>) -> ControlMsg {
+        ControlMsg::RemoteInput(RemoteInput { stream_id, events })
+    }
+
+    fn toets(scan: u16, kind: InputKind) -> InputEvent {
+        InputEvent {
+            kind,
+            x: 0,
+            y: 0,
+            button: 0,
+            delta: 0,
+            scan,
+            vk: 0,
+        }
+    }
+
+    fn a_omlaag() -> InputEvent {
+        toets(0x1E, InputKind::KEY_DOWN)
+    }
+
+    fn klembord(stream_id: u32, text: &str) -> ControlMsg {
+        ControlMsg::ClipboardText(ClipboardText {
+            stream_id,
+            text: text.into(),
+        })
+    }
+
+    fn stand(stream_id: u32, granted: bool) -> ControlMsg {
+        ControlMsg::RemoteState(RemoteState { stream_id, granted })
+    }
+
+    /// Wat er aan `RemoteState` naar wie ging.
+    fn standen(cmds: &[MeshCommand]) -> Vec<(PeerId, bool)> {
+        verzonden(cmds)
+            .into_iter()
+            .filter_map(|(p, m)| match m {
+                ControlMsg::RemoteState(r) => Some((p, r.granted)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Een gedeelde monitor die bediend mag worden, met twee kijkers.
+    fn monitor_met_kijkers() -> (Streams, u32, PeerId, PeerId) {
+        let mut s = Streams::new();
+        let (id, _) = s.deel(StreamKind::MONITOR, "Scherm".into(), 1920, 1080, BEDIENEN);
+        let a = PeerId::new_random();
+        let b = PeerId::new_random();
+        s.bij_bericht(a, ip(), &intekening(id, 41000));
+        s.bij_bericht(b, ip(), &intekening(id, 41001));
+        (s, id, a, b)
+    }
+
+    /// `a` vroeg en de deler klikte Allow.
+    fn a_bedient() -> (Streams, u32, PeerId, PeerId) {
+        let (mut s, id, a, b) = monitor_met_kijkers();
+        s.bij_bericht(a, ip(), &vraag(id, true));
+        let (cmds, acties) = s.sta_bediening_toe(id, a);
+        assert_eq!(standen(&cmds), vec![(a, true)]);
+        assert_eq!(acties, vec![Actie::StartBediening { stream_id: id }]);
+        (s, id, a, b)
+    }
+
+    fn aankondiging_met_bedienen(stream_id: u32, aan: bool) -> ControlMsg {
+        match aankondiging(stream_id) {
+            ControlMsg::StreamAnnounce(mut a) => {
+                a.remote_control = aan;
+                ControlMsg::StreamAnnounce(a)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn alleen_een_monitor_met_de_optie_kondigt_bedienen_aan() {
+        let mut s = Streams::new();
+        let bedienen = |c: &[MeshCommand]| match c {
+            [MeshCommand::Broadcast(ControlMsg::StreamAnnounce(a))] => a.remote_control,
+            andere => panic!("verwachtte een aankondiging: {andere:?}"),
+        };
+        assert!(bedienen(
+            &s.deel(StreamKind::MONITOR, "M".into(), 1, 1, BEDIENEN).1
+        ));
+        assert!(!bedienen(
+            &s.deel(StreamKind::MONITOR, "M".into(), 1, 1, TEKENEN).1
+        ));
+        // Een venster of camera nooit: een klik zou vallen op wat er toevallig bovenop ligt.
+        assert!(!bedienen(
+            &s.deel(StreamKind::WINDOW, "V".into(), 1, 1, BEDIENEN).1
+        ));
+        assert!(!bedienen(
+            &s.deel(StreamKind::CAMERA, "C".into(), 1, 1, BEDIENEN).1
+        ));
+        let venster = s.eigen()[2].id;
+        assert!(s.zet_bedienen(venster, true).0.is_empty());
+    }
+
+    #[test]
+    fn vragen_kan_alleen_een_kijker_en_alleen_als_het_mag() {
+        let (mut s, id, a, _) = monitor_met_kijkers();
+        let vreemde = PeerId::new_random();
+        let (cmds, acties) = s.bij_bericht(vreemde, ip(), &vraag(id, true));
+        assert!(cmds.is_empty() && acties.is_empty(), "kijkt niet");
+
+        s.zet_bedienen(id, false);
+        let (cmds, acties) = s.bij_bericht(a, ip(), &vraag(id, true));
+        assert_eq!(standen(&cmds), vec![(a, false)], "optie uit: meteen nee");
+        assert!(acties.is_empty());
+
+        s.zet_bedienen(id, true);
+        let (cmds, acties) = s.bij_bericht(a, ip(), &vraag(id, true));
+        assert!(cmds.is_empty(), "wacht op een klik, geen antwoord");
+        assert_eq!(
+            acties,
+            vec![Actie::BedienVraag {
+                stream_id: id,
+                van: a
+            }]
+        );
+        assert_eq!(s.eigen()[0].bediening.vrager.map(|(v, _)| v), Some(a));
+        let (cmds, acties) = s.bij_bericht(a, ip(), &vraag(id, true));
+        assert!(
+            cmds.is_empty() && acties.is_empty(),
+            "dezelfde vraag nog eens: niets"
+        );
+    }
+
+    #[test]
+    fn zonder_klik_geen_invoer_en_daarna_alleen_van_de_bediener() {
+        let (mut s, id, a, _) = monitor_met_kijkers();
+        s.bij_bericht(a, ip(), &vraag(id, true));
+        let (_, acties) = s.bij_bericht(a, ip(), &invoer(id, vec![a_omlaag()]));
+        assert!(acties.is_empty(), "nog geen toestemming");
+
+        let (mut s, id, a, b) = a_bedient();
+        let (_, acties) = s.bij_bericht(a, ip(), &invoer(id, vec![a_omlaag()]));
+        assert_eq!(
+            acties,
+            vec![Actie::Invoer {
+                stream_id: id,
+                events: vec![a_omlaag()]
+            }]
+        );
+        // De afzender is de verbinding: een andere kijker die hetzelfde stuurt doet niets.
+        let (_, acties) = s.bij_bericht(b, ip(), &invoer(id, vec![a_omlaag()]));
+        assert!(acties.is_empty());
+        // Ongeldige invoer valt weg, de rest niet.
+        let rommel = toets(0, InputKind(77));
+        let (_, acties) = s.bij_bericht(a, ip(), &invoer(id, vec![rommel, a_omlaag()]));
+        assert!(matches!(acties.as_slice(), [Actie::Invoer { events, .. }] if events.len() == 1));
+        // Een ander stream-id dan het bediende: niets.
+        let (_, acties) = s.bij_bericht(a, ip(), &invoer(id + 1, vec![a_omlaag()]));
+        assert!(acties.is_empty());
+    }
+
+    #[test]
+    fn een_tegelijk_en_een_tweede_vrager_hoort_meteen_nee() {
+        let (mut s, id, a, b) = monitor_met_kijkers();
+        s.bij_bericht(a, ip(), &vraag(id, true));
+        let (cmds, acties) = s.bij_bericht(b, ip(), &vraag(id, true));
+        assert_eq!(standen(&cmds), vec![(b, false)], "a vraagt al");
+        assert!(acties.is_empty());
+
+        s.sta_bediening_toe(id, a);
+        let (cmds, _) = s.bij_bericht(b, ip(), &vraag(id, true));
+        assert_eq!(standen(&cmds), vec![(b, false)], "a bedient al");
+        // Toestemming voor iemand die niet vroeg doet niets.
+        let (cmds, acties) = s.sta_bediening_toe(id, b);
+        assert!(cmds.is_empty() && acties.is_empty());
+        assert_eq!(s.eigen()[0].bediening.bediener, Some(a));
+    }
+
+    #[test]
+    fn weigeren_zegt_nee_en_een_verouderde_klik_doet_niets() {
+        let (mut s, id, a, _) = monitor_met_kijkers();
+        s.bij_bericht(a, ip(), &vraag(id, true));
+        assert_eq!(standen(&s.weiger_bediening(id)), vec![(a, false)]);
+        assert!(s.sta_bediening_toe(id, a).1.is_empty(), "de vraag is weg");
+
+        // Vragen en dan wegkijken: de klik komt te laat.
+        s.bij_bericht(a, ip(), &vraag(id, true));
+        s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamUnsubscribe(StreamUnsubscribe { stream_id: id }),
+        );
+        assert!(s.eigen()[0].bediening.vrager.is_none());
+        assert!(s.sta_bediening_toe(id, a).1.is_empty());
+    }
+
+    #[test]
+    fn het_bedienen_stopt_op_elke_manier() {
+        let stop = |id| Actie::StopBediening { stream_id: id };
+
+        // Ingetrokken door de deler: de bediener hoort het.
+        let (mut s, id, a, _) = a_bedient();
+        let (cmds, acties) = s.stop_bediening(id);
+        assert_eq!((standen(&cmds), acties), (vec![(a, false)], vec![stop(id)]));
+
+        // De optie uit: ook een nieuwe aankondiging, en daarna geen invoer meer.
+        let (mut s, id, a, _) = a_bedient();
+        let (cmds, acties) = s.zet_bedienen(id, false);
+        assert_eq!(standen(&cmds), vec![(a, false)]);
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            MeshCommand::Broadcast(ControlMsg::StreamAnnounce(an)) if !an.remote_control
+        )));
+        assert_eq!(acties, vec![stop(id)]);
+        let (_, acties) = s.bij_bericht(a, ip(), &invoer(id, vec![a_omlaag()]));
+        assert!(acties.is_empty());
+
+        // Stoppen met delen.
+        let (mut s, id, _, _) = a_bedient();
+        assert!(s.stop_delen(id).1.contains(&stop(id)));
+
+        // De bediener stopt met kijken.
+        let (mut s, id, a, _) = a_bedient();
+        let (_, acties) = s.bij_bericht(
+            a,
+            ip(),
+            &ControlMsg::StreamUnsubscribe(StreamUnsubscribe { stream_id: id }),
+        );
+        assert!(acties.contains(&stop(id)));
+
+        // De bediener valt weg.
+        let (mut s, id, a, _) = a_bedient();
+        assert!(s.bij_verbreking(a).1.contains(&stop(id)));
+
+        // De bediener stopt zelf.
+        let (mut s, id, a, _) = a_bedient();
+        let (_, acties) = s.bij_bericht(a, ip(), &vraag(id, false));
+        assert_eq!(acties, vec![stop(id)]);
+
+        // Een andere kijker die wegvalt raakt het bedienen van a niet.
+        let (mut s, id, a, b) = a_bedient();
+        assert!(!s.bij_verbreking(b).1.contains(&stop(id)));
+        assert_eq!(s.eigen()[0].bediening.bediener, Some(a));
+    }
+
+    #[test]
+    fn invoer_wordt_afgeremd_maar_loslaten_nooit() {
+        use fitcom_proto::bediening::MAX_INVOER_PER_BERICHT;
+        let (mut s, id, a, _) = a_bedient();
+        let mut aangenomen = 0;
+        for _ in 0..20 {
+            let (_, acties) = s.bij_bericht(
+                a,
+                ip(),
+                &invoer(id, vec![a_omlaag(); MAX_INVOER_PER_BERICHT]),
+            );
+            if let [Actie::Invoer { events, .. }] = acties.as_slice() {
+                aangenomen += events.len();
+            }
+        }
+        assert!(
+            aangenomen < 20 * MAX_INVOER_PER_BERICHT,
+            "geremd: {aangenomen}"
+        );
+        // Leeg: loslaten gaat er nog steeds door, ook voorbij de grens per bericht.
+        let mut veel = vec![a_omlaag(); MAX_INVOER_PER_BERICHT + 10];
+        veel.push(toets(0x2A, InputKind::KEY_UP));
+        let (_, acties) = s.bij_bericht(a, ip(), &invoer(id, veel));
+        match acties.as_slice() {
+            [Actie::Invoer { events, .. }] => {
+                assert_eq!(events.last().map(|e| e.kind), Some(InputKind::KEY_UP))
+            }
+            andere => panic!("het loslaten moet erdoor: {andere:?}"),
+        }
+    }
+
+    #[test]
+    fn een_vraag_verloopt_en_vragen_zelf_worden_afgeremd() {
+        let (mut s, id, a, _) = monitor_met_kijkers();
+        s.bij_bericht(a, ip(), &vraag(id, true));
+        assert!(s.verlopen_vragen(Instant::now()).is_empty(), "nog vers");
+        let later = Instant::now() + VRAAG_GELDIG + Duration::from_secs(1);
+        assert_eq!(standen(&s.verlopen_vragen(later)), vec![(a, false)]);
+        assert!(s.eigen()[0].bediening.vrager.is_none());
+
+        // Steeds vragen en intrekken: na de voorraad is het meteen nee, zonder melding.
+        let mut meldingen = 0;
+        for _ in 0..10 {
+            let (_, acties) = s.bij_bericht(a, ip(), &vraag(id, true));
+            meldingen += acties.len();
+            s.bij_bericht(a, ip(), &vraag(id, false));
+        }
+        assert!(meldingen < 10, "{meldingen} meldingen");
+    }
+
+    #[test]
+    fn het_klembord_gaat_alleen_tussen_deler_en_bediener() {
+        let (mut s, id, a, b) = a_bedient();
+        let (_, acties) = s.bij_bericht(a, ip(), &klembord(id, "hallo"));
+        assert_eq!(
+            acties,
+            vec![Actie::Klembord {
+                eigenaar: None,
+                stream_id: id,
+                tekst: "hallo".into()
+            }]
+        );
+        let (_, acties) = s.bij_bericht(b, ip(), &klembord(id, "hallo"));
+        assert!(acties.is_empty(), "een gewone kijker niet");
+        let groot = "x".repeat(fitcom_proto::bediening::MAX_KLEMBORD + 1);
+        assert!(s.bij_bericht(a, ip(), &klembord(id, &groot)).1.is_empty());
+
+        // Van de deler naar de bediener, en alleen naar hem, zonder NUL.
+        let cmds = s.klembord_van_deler(id, "terug\0");
+        match verzonden(&cmds).as_slice() {
+            [(wie, ControlMsg::ClipboardText(c))] => {
+                assert_eq!((*wie, c.text.as_str()), (a, "terug"));
+            }
+            andere => panic!("verwachtte klembord naar a: {andere:?}"),
+        }
+        s.stop_bediening(id);
+        assert!(s.klembord_van_deler(id, "na afloop").is_empty());
+        assert!(s
+            .bij_bericht(a, ip(), &klembord(id, "na afloop"))
+            .1
+            .is_empty());
+    }
+
+    /// Een monitor van `deler` die bediend mag worden, en wij kijken.
+    fn kijker_bij(deler: PeerId, id: u32) -> Streams {
+        let mut s = Streams::new();
+        s.bij_bericht(deler, ip(), &aankondiging_met_bedienen(id, true));
+        s.wil_kijken(deler, id);
+        s
+    }
+
+    #[test]
+    fn als_kijker_alleen_een_ja_als_we_vroegen_en_alleen_van_de_eigenaar() {
+        let deler = PeerId::new_random();
+        let ander = PeerId::new_random();
+        let mut s = kijker_bij(deler, 3);
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Mag);
+
+        // Ongevraagd ja: niets, en invoer gaat nog niet weg.
+        assert!(s.bij_bericht(deler, ip(), &stand(3, true)).1.is_empty());
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Mag);
+        let (cmds, _) = s.kijker_bedient(deler, 3, invoer(3, vec![a_omlaag()]));
+        assert!(cmds.is_empty());
+
+        let (cmds, acties) = s.kijker_bedient(deler, 3, vraag(3, true));
+        assert!(matches!(
+            verzonden(&cmds).as_slice(),
+            [(p, ControlMsg::RemoteRequest(r))] if *p == deler && r.want
+        ));
+        assert_eq!(acties.len(), 1, "het venster hoort het");
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Gevraagd);
+
+        // Een ja van een ander dan de eigenaar telt niet.
+        assert!(s.bij_bericht(ander, ip(), &stand(3, true)).1.is_empty());
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Gevraagd);
+        let (_, acties) = s.bij_bericht(deler, ip(), &stand(3, true));
+        assert_eq!(
+            acties,
+            vec![Actie::Bediening {
+                eigenaar: deler,
+                stream_id: 3
+            }]
+        );
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Actief);
+
+        // Nu gaan invoer en klembord weg, naar de deler, en zijn klembord komt binnen.
+        let (cmds, _) = s.kijker_bedient(deler, 3, invoer(3, vec![a_omlaag()]));
+        assert!(matches!(
+            verzonden(&cmds).as_slice(),
+            [(p, ControlMsg::RemoteInput(_))] if *p == deler
+        ));
+        let (_, acties) = s.bij_bericht(deler, ip(), &klembord(3, "van de deler"));
+        assert!(matches!(
+            acties.as_slice(),
+            [Actie::Klembord { eigenaar: Some(p), .. }] if *p == deler
+        ));
+        assert!(s.bij_bericht(ander, ip(), &klembord(3, "x")).1.is_empty());
+
+        // De deler zet de optie uit: wij staan uit, en er gaat niets meer heen.
+        let (_, acties) = s.bij_bericht(deler, ip(), &aankondiging_met_bedienen(3, false));
+        assert!(acties.contains(&Actie::Bediening {
+            eigenaar: deler,
+            stream_id: 3
+        }));
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Uit);
+        let (cmds, _) = s.kijker_bedient(deler, 3, invoer(3, vec![a_omlaag()]));
+        assert!(cmds.is_empty());
+        assert!(s.kijker_bedient(deler, 3, vraag(3, true)).0.is_empty());
+    }
+
+    #[test]
+    fn als_kijker_brengen_nee_en_zelf_stoppen_ons_terug() {
+        let deler = PeerId::new_random();
+        let mut s = kijker_bij(deler, 3);
+        s.kijker_bedient(deler, 3, vraag(3, true));
+        s.bij_bericht(deler, ip(), &stand(3, false));
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Mag, "geweigerd");
+
+        s.kijker_bedient(deler, 3, vraag(3, true));
+        s.bij_bericht(deler, ip(), &stand(3, true));
+        let (cmds, _) = s.kijker_bedient(deler, 3, vraag(3, false));
+        assert!(matches!(
+            verzonden(&cmds).as_slice(),
+            [(_, ControlMsg::RemoteRequest(r))] if !r.want
+        ));
+        assert_eq!(s.bedienstand(deler, 3), Bedienstand::Mag);
+
+        // Een gedeeld venster kan het nooit, ook als de deler het beweert.
+        let mut v = Streams::new();
+        v.bij_bericht(
+            deler,
+            ip(),
+            &ControlMsg::StreamAnnounce(StreamAnnounce {
+                stream_id: 4,
+                kind: StreamKind::WINDOW,
+                title: "Kladblok".into(),
+                width: 800,
+                height: 600,
+                drawing: false,
+                remote_control: true,
+            }),
+        );
+        assert_eq!(v.bedienstand(deler, 4), Bedienstand::Uit);
+    }
+
+    #[test]
+    fn klembord_bij_hetzelfde_stream_id_in_twee_richtingen() {
+        // a bedient ons scherm en wij kijken naar zijn scherm met hetzelfde id. Zijn klembord
+        // geldt eerst als "voor ons scherm"; beide wegen zetten hetzelfde klembord van deze pc.
+        let (mut s, id, a, _) = a_bedient();
+        s.bij_bericht(a, ip(), &aankondiging_met_bedienen(id, true));
+        s.wil_kijken(a, id);
+        let (_, acties) = s.bij_bericht(a, ip(), &klembord(id, "tekst"));
+        assert!(matches!(
+            acties.as_slice(),
+            [Actie::Klembord { eigenaar: None, .. }]
+        ));
     }
 }

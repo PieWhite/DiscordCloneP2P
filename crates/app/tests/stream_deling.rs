@@ -51,6 +51,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         push_to_talk: Default::default(),
         share_activity: false,
         allow_drawing: true,
+        allow_remote_control: false,
         overlay: Default::default(),
         download_dir: None,
     }
@@ -126,7 +127,10 @@ async fn delen_en_kijken_via_de_motor() {
         .find(|br| br.soort == fitcom_video::BronSoort::Monitor)
         .expect("er moet een scherm zijn");
     println!("bron: {}", scherm.naam);
-    a.commands.send(UiCommand::DeelBron(scherm)).await.unwrap();
+    a.commands
+        .send(UiCommand::DeelBron(scherm, Default::default()))
+        .await
+        .unwrap();
 
     let snap = wacht(&a, "eigen stream", |s| !s.eigen_streams.is_empty()).await;
     assert_eq!(

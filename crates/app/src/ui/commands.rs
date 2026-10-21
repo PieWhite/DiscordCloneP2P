@@ -226,15 +226,20 @@ pub fn list_sources(ui: &Ui) -> Vec<SourceOption> {
     listed
 }
 
-pub fn share_source(ui: &Ui, index: usize) {
+/// Share the listed source, with what viewers may do on it (the picker's switches).
+pub fn share_source(ui: &Ui, index: usize, drawing: bool, remote_control: bool) {
     let source = ui
         .sources
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(index)
         .cloned();
+    let options = crate::streams::DeelOpties {
+        tekenen: drawing,
+        bedienen: remote_control,
+    };
     match source {
-        Some(b) => send(ui, UiCommand::DeelBron(b)),
+        Some(b) => send(ui, UiCommand::DeelBron(b, options)),
         None => tracing::warn!(
             index,
             "share requested for a source that is no longer listed"
@@ -256,10 +261,44 @@ pub fn stop_sharing(ui: &Ui, stream: u32) {
     send(ui, UiCommand::StopDelen(stream));
 }
 
-/// May viewers draw on the screens we share, now and later (decision 45). Saved to
-/// `config.toml`; off also wipes what is there.
+/// The default for drawing on a new share (decision 45, a default since 54). Saved to
+/// `config.toml`; off also turns it off on every running share and wipes what is there.
 pub fn set_drawing(ui: &Ui, on: bool) {
     send(ui, UiCommand::ZetTekenen(on));
+}
+
+/// The default for remote control of a new monitor share (decision 54). Off also ends every
+/// request and every control session.
+pub fn set_remote_control(ui: &Ui, on: bool) {
+    send(ui, UiCommand::ZetBedienen(on));
+}
+
+/// Drawing on this one shared screen.
+pub fn set_stream_drawing(ui: &Ui, stream: u32, on: bool) {
+    send(ui, UiCommand::ZetStreamTekenen(stream, on));
+}
+
+/// Remote control of this one shared monitor; off ends it.
+pub fn set_stream_remote_control(ui: &Ui, stream: u32, on: bool) {
+    send(ui, UiCommand::ZetStreamBedienen(stream, on));
+}
+
+/// Allow: this peer may control this screen now. The engine checks they are still the one
+/// asking.
+pub fn allow_control(ui: &Ui, stream: u32, peer: &str) {
+    if let Some(p) = super::parse_peer(peer) {
+        send(ui, UiCommand::StaBedieningToe(stream, p));
+    }
+}
+
+/// Deny the request on this screen.
+pub fn deny_control(ui: &Ui, stream: u32) {
+    send(ui, UiCommand::WeigerBediening(stream));
+}
+
+/// Take control back from whoever has it on this screen.
+pub fn stop_control(ui: &Ui, stream: u32) {
+    send(ui, UiCommand::StopBediening(stream));
 }
 
 /// Wipe every line on this screen of ours, whoever drew it.

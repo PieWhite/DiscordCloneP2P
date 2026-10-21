@@ -106,6 +106,12 @@ pub struct Config {
     #[serde(default = "waar")]
     pub allow_drawing: bool,
 
+    /// Mogen kijkers vragen je gedeelde monitor te bedienen (beslissing 54). Standaard uit. Net
+    /// als `allow_drawing` de standaard voor een nieuw scherm (de kiezer kan per scherm anders);
+    /// uitzetten zet het ook uit op elk scherm dat loopt. Op macOS doet hij niets.
+    #[serde(default)]
+    pub allow_remote_control: bool,
+
     /// Wie er in het gesprek zit, als klein venster bovenop je spel (beslissing 53).
     /// Standaard uit.
     #[serde(default)]
@@ -543,6 +549,7 @@ impl Config {
             push_to_talk: PushToTalkConfig::default(),
             share_activity: default_share_activity(),
             allow_drawing: true,
+            allow_remote_control: false,
             overlay: OverlayConfig::default(),
             download_dir: None,
         }
@@ -912,6 +919,19 @@ mod tests {
         let uit: Config = toml::from_str("display_name = \"Rick\"\nallow_drawing = false").unwrap();
         let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
         assert!(!terug.allow_drawing);
+    }
+
+    /// Bedienen staat uit, ook in een config van vóór deze instelling; aan overleeft
+    /// opslaan-en-teruglezen.
+    #[test]
+    fn allow_remote_control_staat_standaard_uit() {
+        let oud: Config = toml::from_str(r#"display_name = "Rick""#).unwrap();
+        assert!(!oud.allow_remote_control);
+        assert!(!Config::template().allow_remote_control);
+        let aan: Config =
+            toml::from_str("display_name = \"Rick\"\nallow_remote_control = true").unwrap();
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&aan).unwrap()).unwrap();
+        assert!(terug.allow_remote_control);
     }
 
     /// Een config van vóór de overlay start met de overlay uit; aan en een plek overleven

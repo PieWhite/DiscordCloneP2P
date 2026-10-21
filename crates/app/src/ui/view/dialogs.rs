@@ -298,7 +298,8 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
                     .on_click(snap.app.listener(move |app, _: &ClickEvent, window, cx| {
                         app.close_dialog(window, cx);
                         let ui = app.ui().clone();
-                        super::super::commands::share_source(&ui, index);
+                        let drawing = app.s.allow_drawing;
+                        super::super::commands::share_source(&ui, index, drawing, false);
                     }))
             }))
             .into_any_element()
