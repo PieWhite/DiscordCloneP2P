@@ -2,13 +2,17 @@
 //! only while joined (decision 48, moved there as in Discord on 2026-10-20): the call's size
 //! and worst link with Leave beside it, then camera, screen share and Spotify in one row, and
 //! under that one quiet line per screen you share (with its own stop) and per shared Spotify. These are the only homes of those controls;
-//! the drawing switch for your shared screens is in Settings → Video.
+//! the defaults for drawing and remote control are in Settings → Video, and each screen line
+//! has its own two switches for them (decision 54).
+//!
+//! [`control_banner`] is the one exception to "only while joined": a request to control your
+//! screen, or the fact that someone does, shows under the title bar in every view.
 
 use super::super::commands::{self, MusicAction};
 use super::super::icons::Icon;
-use super::super::state::PeerState;
+use super::super::state::{OwnStreamState, PeerState};
 use super::super::theme;
-use super::widgets::{dk_btn, meter_view, tooltip, Btn};
+use super::widgets::{dk_btn, meter_view, selectable, tooltip, Btn, BtnKind};
 use super::{format, AppSnapshot};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, AnyElement, App, ClickEvent, Div, ElementId, FontWeight,
@@ -101,6 +105,38 @@ pub fn render_panel(snap: &AppSnapshot, window: &mut Window, cx: &mut App) -> An
                 &st.title,
                 &format!(" \u{00b7} {} watching", st.viewers),
             )
+            .child(option_btn(
+                format!("draw-{stream}"),
+                Icon::Edit,
+                st.drawing,
+                if st.drawing {
+                    "Viewers may draw on this screen"
+                } else {
+                    "Let viewers draw on this screen"
+                },
+                {
+                    let (ui, on) = (snap.ui.clone(), st.drawing);
+                    move |_: &ClickEvent, _: &mut Window, _: &mut App| {
+                        commands::set_stream_drawing(&ui, stream, !on)
+                    }
+                },
+            ))
+            .when(st.controllable, |d| {
+                let (ui, on) = (snap.ui.clone(), st.remote_control);
+                d.child(option_btn(
+                    format!("control-{stream}"),
+                    Icon::Pointer,
+                    on,
+                    if on {
+                        "Viewers may ask to control this screen"
+                    } else {
+                        "Let viewers ask to control this screen"
+                    },
+                    move |_: &ClickEvent, _: &mut Window, _: &mut App| {
+                        commands::set_stream_remote_control(&ui, stream, !on)
+                    },
+                ))
+            })
             .child(
                 div()
                     .id(ElementId::Name(format!("stop-share-{stream}").into()))
@@ -309,6 +345,156 @@ fn line(icon: Icon, before: &str, title: &str, after: &str) -> Div {
         )
 }
 
+/// A 22px switch for one option of one shared screen: the selected look while on.
+fn option_btn(
+    id: String,
+    icon: Icon,
+    on: bool,
+    tip: &'static str,
+    click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    selectable(
+        div()
+            .id(ElementId::Name(id.into()))
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(super::widgets::focus_ring()))
+            .size(px(22.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(theme::RADIUS_CONTROL)
+            .cursor_pointer()
+            .text_color(theme::TEXT_DIM)
+            .hover(|st| st.bg(theme::BG_HOVER).text_color(theme::TEXT_STRONG)),
+        on,
+    )
+    .tooltip(tooltip(tip))
+    .child(icon.size(13.))
+    .on_click(click)
+    .test_support()
+}
+
+/// Who asks to control a screen of yours, or controls it now (decision 54). Drawn under the
+/// title bar in every view and also outside a call: this is someone's hands on your PC, and
+/// the person sharing may be in a game with only a glance for the app. `None` when nobody does.
+pub fn control_banner(snap: &AppSnapshot) -> Option<AnyElement> {
+    let rows: Vec<AnyElement> = snap
+        .s
+        .own_streams
+        .iter()
+        .filter_map(|st| control_row(snap, st))
+        .collect();
+    (!rows.is_empty()).then(|| {
+        div()
+            .id("control-banner")
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .px(px(16.))
+            .py(px(8.))
+            .bg(theme::BG_SELECTED)
+            .border_b_1()
+            .border_color(theme::BORDER)
+            .children(rows)
+            .test_support()
+            .into_any_element()
+    })
+}
+
+/// One line of the banner: the controller with Stop, or the request with Deny and Allow.
+fn control_row(snap: &AppSnapshot, st: &OwnStreamState) -> Option<AnyElement> {
+    let stream = st.stream_id;
+    let ui = snap.ui.clone();
+    let text = |name: &str, what: &str| {
+        let full = format!("{name}{what}{}", st.title);
+        let bold = 0..name.len();
+        StyledText::new(full).with_highlights(vec![(
+            bold,
+            HighlightStyle {
+                color: Some(theme::TEXT_STRONG.into()),
+                font_weight: Some(FontWeight::MEDIUM),
+                ..Default::default()
+            },
+        )])
+    };
+    let (message, buttons): (StyledText, Vec<AnyElement>) = if let Some(c) = &st.controller {
+        (
+            text(
+                &c.name,
+                " controls your mouse, keyboard and clipboard text on ",
+            ),
+            vec![banner_btn(
+                format!("control-stop-{stream}"),
+                "Stop control",
+                BtnKind::Danger,
+                move |_, _, _| commands::stop_control(&ui, stream),
+            )],
+        )
+    } else if let Some(r) = &st.control_request {
+        let (ui_deny, peer) = (ui.clone(), r.id.clone());
+        (
+            text(
+                &r.name,
+                " asks to control your mouse, keyboard and clipboard text on ",
+            ),
+            vec![
+                banner_btn(
+                    format!("control-deny-{stream}"),
+                    "Deny",
+                    BtnKind::Ghost,
+                    move |_, _, _| commands::deny_control(&ui_deny, stream),
+                ),
+                banner_btn(
+                    format!("control-allow-{stream}"),
+                    "Allow",
+                    BtnKind::Primary,
+                    move |_, _, _| commands::allow_control(&ui, stream, &peer),
+                ),
+            ],
+        )
+    } else {
+        return None;
+    };
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .text_size(px(13.))
+            .text_color(theme::TEXT)
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme::TEXT_STRONG)
+                    .child(Icon::Pointer.size(16.)),
+            )
+            .child(div().flex_1().min_w_0().truncate().child(message))
+            .children(buttons)
+            .into_any_element(),
+    )
+}
+
+/// A button on the control banner, under an id the headless tests can click.
+fn banner_btn(
+    id: String,
+    label: &'static str,
+    kind: BtnKind,
+    click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(ElementId::Name(id.clone().into()))
+        .flex_none()
+        .child(
+            Btn::new(ElementId::Name(format!("{id}-btn").into()), label)
+                .kind(kind)
+                .on_click(click),
+        )
+        .test_support()
+        .into_any_element()
+}
+
 /// A listener's 22px glyph button on someone's Spotify.
 fn music_btn(
     snap: &AppSnapshot,
@@ -386,6 +572,10 @@ mod tests {
                 is_music: false,
                 drawing: false,
                 has_drawing: false,
+                remote_control: false,
+                controllable: false,
+                control_request: None,
+                controller: None,
             }];
             app.s = Arc::new(s);
             cx.notify();
@@ -419,6 +609,10 @@ mod tests {
                 is_music: false,
                 drawing: false,
                 has_drawing: false,
+                remote_control: false,
+                controllable: false,
+                control_request: None,
+                controller: None,
             }];
             app.s = Arc::new(s);
             cx.notify();
@@ -455,6 +649,10 @@ mod tests {
                         is_music: false,
                         drawing: false,
                         has_drawing: false,
+                        remote_control: false,
+                        controllable: false,
+                        control_request: None,
+                        controller: None,
                     })
                     .into_iter()
                     .collect();
@@ -479,5 +677,181 @@ mod tests {
             window.try_find("stream-game").is_some()
         });
         assert!(!shown, "not while a screen is shared");
+    }
+
+    // -- remote control (decision 54) ----------------------------------------
+
+    use super::super::super::state::ControlPeer;
+    use super::super::composer::window_tests::SANDER;
+    use crate::engine::UiCommand;
+
+    fn own_monitor() -> OwnStreamState {
+        OwnStreamState {
+            stream_id: 6,
+            title: "Display 1".into(),
+            viewers: 1,
+            is_audio: false,
+            is_camera: false,
+            is_music: false,
+            drawing: false,
+            has_drawing: false,
+            remote_control: true,
+            controllable: true,
+            control_request: None,
+            controller: None,
+        }
+    }
+
+    fn sander() -> Option<ControlPeer> {
+        Some(ControlPeer {
+            id: SANDER.into(),
+            name: "Sander".into(),
+        })
+    }
+
+    fn set_own(h: &Harness, cx: &mut TestAppContext, joined: bool, st: OwnStreamState) {
+        h.app.update(cx, |app, cx| {
+            let mut s = (*app.s).clone();
+            s.voice.joined = joined;
+            s.own_streams = vec![st];
+            app.s = Arc::new(s);
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
+    /// A request to control your screen shows above everything, also outside a call, and
+    /// Allow names the one who asked. Revert to see it fail: drop the `control_banner` child
+    /// from the root in `view/mod.rs`.
+    #[gpui_kit::test]
+    fn a_control_request_shows_outside_a_call_and_allow_names_who_asked(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        let banner = |h: &Harness, cx: &mut TestAppContext| {
+            h.with_window(cx, |window, cx| {
+                window.render_frame(cx);
+                window.try_find("control-banner").is_some()
+            })
+        };
+        set_own(&h, cx, false, own_monitor());
+        assert!(!banner(&h, cx), "nobody asks: no banner");
+        set_own(
+            &h,
+            cx,
+            false,
+            OwnStreamState {
+                control_request: sander(),
+                ..own_monitor()
+            },
+        );
+        assert!(banner(&h, cx), "not in a call, still shown");
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("control-allow-6", cx)
+        });
+        cx.run_until_parked();
+        match h.drain().as_slice() {
+            [UiCommand::StaBedieningToe(6, peer)] => assert_eq!(peer.to_string(), SANDER),
+            other => panic!("expected Allow for Sander: {other:?}"),
+        }
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("control-deny-6", cx)
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [UiCommand::WeigerBediening(6)]
+        ));
+    }
+
+    /// While someone controls your screen the banner says who, with one click to stop it.
+    #[gpui_kit::test]
+    fn the_controller_is_named_and_can_be_stopped(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        set_own(
+            &h,
+            cx,
+            false,
+            OwnStreamState {
+                controller: sander(),
+                ..own_monitor()
+            },
+        );
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("control-stop-6", cx)
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [UiCommand::StopBediening(6)]
+        ));
+    }
+
+    /// Each shared monitor has its own switches for drawing and remote control; a window has
+    /// no control switch. Revert to see it fail: drop the `.when(st.controllable, ..)` child.
+    #[gpui_kit::test]
+    fn a_shared_screen_has_its_own_option_switches(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        set_own(&h, cx, true, own_monitor());
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("control-6", cx)
+        });
+        cx.run_until_parked();
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("draw-6", cx)
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            h.drain().as_slice(),
+            [
+                UiCommand::ZetStreamBedienen(6, false),
+                UiCommand::ZetStreamTekenen(6, true)
+            ]
+        ));
+        set_own(
+            &h,
+            cx,
+            true,
+            OwnStreamState {
+                controllable: false,
+                remote_control: false,
+                ..own_monitor()
+            },
+        );
+        let shown = h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.try_find("control-6").is_some()
+        });
+        assert!(!shown, "no control switch on a window share");
+    }
+
+    /// The picker's switches change the options of this one share, starting from the defaults.
+    #[gpui_kit::test]
+    fn the_picker_switches_flip_the_options_of_this_share(cx: &mut TestAppContext) {
+        let h = Harness::new(cx);
+        h.app.update(cx, |app, cx| {
+            app.v_mut().dialog = Some(super::super::Dialog::Picker {
+                sources: Vec::new(),
+                drawing: true,
+                control: false,
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        h.with_window(cx, |window, cx| {
+            window.render_frame(cx);
+            window.click("picker-control", cx)
+        });
+        cx.run_until_parked();
+        let options = h.app.read_with(cx, |app, _| match &app.v.dialog {
+            Some(super::super::Dialog::Picker {
+                drawing, control, ..
+            }) => (*drawing, *control),
+            other => panic!("picker closed: {other:?}"),
+        });
+        assert_eq!(options, (true, true));
     }
 }

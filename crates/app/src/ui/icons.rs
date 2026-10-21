@@ -91,6 +91,8 @@ icons! {
     /// Watch / Stop watching on a stream tile.
     Eye => "eye",
     EyeOff => "eye-off",
+    /// Remote control of a shared monitor (decision 54).
+    Pointer => "pointer",
 }
 
 impl Icon {

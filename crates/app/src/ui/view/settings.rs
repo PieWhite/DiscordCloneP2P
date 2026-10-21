@@ -11,7 +11,7 @@
 mod account;
 mod audio;
 mod clips;
-mod controls;
+pub(super) mod controls;
 mod files;
 mod network;
 mod recap;

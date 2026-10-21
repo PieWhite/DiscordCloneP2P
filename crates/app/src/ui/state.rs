@@ -211,6 +211,25 @@ pub struct OwnStreamState {
     /// one goes, never per point; the lines themselves reach the tile via the thumbnails.
     #[serde(default)]
     pub has_drawing: bool,
+    /// Viewers may ask to control this screen (decision 54). Only ever true for a monitor.
+    #[serde(default)]
+    pub remote_control: bool,
+    /// A monitor on a platform that can be controlled: only then is there a switch for it.
+    #[serde(default)]
+    pub controllable: bool,
+    /// Someone asks to control it and waits for Allow or Deny.
+    #[serde(default)]
+    pub control_request: Option<ControlPeer>,
+    /// Someone controls it right now.
+    #[serde(default)]
+    pub controller: Option<ControlPeer>,
+}
+
+/// A peer in a remote control request or session: the id for the command, the name to show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlPeer {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -473,6 +492,10 @@ fn overlay_available() -> bool {
     cfg!(windows)
 }
 
+fn remote_control_available() -> bool {
+    cfg!(windows)
+}
+
 /// How the microphone gate is operated: voice activity alone, or with a key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PushToTalkState {
@@ -620,9 +643,16 @@ pub struct UiState {
     /// Whether the game in front is shared as "Playing X". Comes from `config.toml`.
     #[serde(default)]
     pub share_activity: bool,
-    /// Whether viewers may draw on your shared screens. Comes from `config.toml`.
+    /// Whether viewers may draw on a screen you start sharing: the default in the picker.
+    /// Comes from `config.toml`.
     #[serde(default)]
     pub allow_drawing: bool,
+    /// The same for remote control of a monitor (decision 54). Off by default.
+    #[serde(default)]
+    pub allow_remote_control: bool,
+    /// False on macOS, where a screen cannot be controlled: the switches are not drawn.
+    #[serde(default = "remote_control_available")]
+    pub remote_control_available: bool,
     /// The in-game overlay of who is in the call (decision 53). Comes from `config.toml`.
     #[serde(default)]
     pub overlay: OverlayState,
@@ -964,6 +994,16 @@ impl UiState {
                     is_music: s.is_muziek,
                     drawing: s.tekening.aan,
                     has_drawing: !s.tekening.is_leeg(),
+                    remote_control: s.bedienen,
+                    controllable: s.kan_bedienen,
+                    control_request: s.vrager.map(|p| ControlPeer {
+                        id: p.to_string(),
+                        name: name_of(p),
+                    }),
+                    controller: s.bediener.map(|p| ControlPeer {
+                        id: p.to_string(),
+                        name: name_of(p),
+                    }),
                 })
                 .collect(),
             streams: snap
@@ -1002,6 +1042,8 @@ impl UiState {
             },
             share_activity: snap.deel_activiteit,
             allow_drawing: snap.tekenen,
+            allow_remote_control: snap.bedienen,
+            remote_control_available: remote_control_available(),
             overlay: OverlayState {
                 enabled: snap.overlay.enabled,
                 available: overlay_available(),

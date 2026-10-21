@@ -1,4 +1,7 @@
-//! The Video tab: codec, frame rate, bitrate, and whether viewers may draw on your screen.
+//! The Video tab: codec, frame rate, bitrate, and the defaults for what viewers may do on a
+//! screen you share: draw (decision 45) and ask for remote control (decision 54). The share
+//! picker starts from these and can choose per screen; off here also turns it off on every
+//! running share.
 //! Every codec/rate change goes out as the whole triple, so the two values it did not touch
 //! are the engine's current ones.
 
@@ -41,6 +44,10 @@ impl SettingsPane {
         let (ui_draw, drawing) = (snap.ui.clone(), snap.s.allow_drawing);
         let draw_toggle =
             Rc::new(move |_: &_, _: &mut _, _: &mut _| commands::set_drawing(&ui_draw, !drawing));
+        let (ui_control, control) = (snap.ui.clone(), snap.s.allow_remote_control);
+        let control_toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| {
+            commands::set_remote_control(&ui_control, !control)
+        });
         // Only screens carry lines; the camera never does.
         let with_lines: Vec<u32> = snap
             .s
@@ -116,7 +123,8 @@ impl SettingsPane {
                             .child(label("Allow drawing").mb(px(2.)))
                             .child(help(concat!(
                                 "Viewers of a screen you share can draw on it, and everyone ",
-                                "watching sees the lines. Turning this off clears them."
+                                "watching sees the lines. This is the default for a new share; ",
+                                "turning it off also clears and stops it on running shares."
                             )))
                             .when(!with_lines.is_empty(), |d| {
                                 let ui = snap.ui.clone();
@@ -135,6 +143,33 @@ impl SettingsPane {
                     )
                     .child(switch("allow-drawing", drawing, Some(draw_toggle))),
             )
+            .field(if snap.s.remote_control_available {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(label("Allow remote control").mb(px(2.)))
+                            .child(help(concat!(
+                                "Viewers of a screen (not a window) you share can ask to use ",
+                                "your mouse and keyboard, and you allow each request. While ",
+                                "they control it, copied text is shared both ways. This is the ",
+                                "default for a new share; turning it off also ends control on ",
+                                "running shares."
+                            ))),
+                    )
+                    .child(switch(
+                        "allow-remote-control",
+                        control,
+                        Some(control_toggle),
+                    ))
+            } else {
+                div()
+                    .child(label("Remote control").mb(px(2.)))
+                    .child(help("Not available on macOS."))
+            })
             .field(note(&[Piece::Text(concat!(
                 "Desktop audio starts and stops with the share, always. Your own voice is ",
                 "excluded, so nobody hears themselves back."

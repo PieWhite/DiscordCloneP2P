@@ -6,7 +6,7 @@
 //! |---|---|---|
 //! | Confirm | `askConfirm` | Cancel, or close and `ConfirmAction::run` |
 //! | Prompt | `askText` / `submitPrompt` | field focused with its text selected; Enter or the button closes and runs `PromptAction::run`, Escape cancels |
-//! | Picker | `openPicker` | one row per screen/window, a click closes and `commands::share_source` |
+//! | Picker | `openPicker` | the share's options (drawing, remote control), then one row per screen/window; a click closes and `commands::share_source` |
 //! | Lightbox | `openLightbox` | fitted or actual size (click the picture to toggle), Open via `commands::open_file`, a click beside it closes |
 //! | Wordle | `openWordle` | `wordle::render_panel`, keys through `wordle::press` |
 //!
@@ -16,6 +16,7 @@ use super::super::commands::SourceOption;
 use super::super::icons::Icon;
 use super::super::state::OpRef;
 use super::super::theme::{self, c};
+use super::settings::controls::switch;
 use super::widgets::{modal_layer, BackdropHandler, Btn, BtnKind, WindowFrame};
 use super::wordle::{self, WordleKey};
 use super::{AppHandle, AppSnapshot, ConfirmAction, Dialog, PromptAction};
@@ -24,9 +25,10 @@ use gpui_kit::{
     div, img, prelude::FluentBuilder, px, relative, size, AnyElement, App, AppContext, ClickEvent,
     Context, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ObjectFit,
     ParentElement, Pixels, SharedString, Size, StatefulInteractiveElement, Styled, StyledImage,
-    Subscription, Window,
+    Subscription, TestSupportExt, Window,
 };
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub fn render_dialog(
     snap: &AppSnapshot,
@@ -49,7 +51,11 @@ pub fn render_dialog(
             ok_label,
             action,
         } => prompt(snap, title, text, value, ok_label, action, window, cx),
-        Dialog::Picker { sources } => picker(snap, sources),
+        Dialog::Picker {
+            sources,
+            drawing,
+            control,
+        } => picker(snap, sources, *drawing, *control),
         Dialog::Lightbox {
             src,
             name,
@@ -248,7 +254,55 @@ fn prompt(
 
 // ------------------------------------------------------------------ picker
 
-fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
+/// One option of the share in the picker: a label, a line of help, and a switch that flips the
+/// value in the open dialog.
+fn picker_option(
+    snap: &AppSnapshot,
+    id: &'static str,
+    label: &'static str,
+    help: &'static str,
+    on: bool,
+    flip: fn(&mut Dialog),
+) -> impl IntoElement {
+    let toggle = Rc::new(snap.app.listener(move |app, _: &ClickEvent, _, cx| {
+        if let Some(dialog) = &mut app.v_mut().dialog {
+            flip(dialog);
+        }
+        cx.notify();
+    }));
+    div()
+        .flex()
+        .items_start()
+        .gap(px(12.))
+        .px(px(22.))
+        .pt(px(10.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(theme::TEXT_STRONG)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme::TEXT_MUTED)
+                        .line_height(relative(1.45))
+                        .child(help),
+                ),
+        )
+        .child(switch(id, on, Some(toggle)).test_support())
+}
+
+fn picker(
+    snap: &AppSnapshot,
+    sources: &[SourceOption],
+    drawing: bool,
+    control: bool,
+) -> AnyElement {
     let list = if sources.is_empty() {
         div()
             .px(px(22.))
@@ -298,8 +352,7 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
                     .on_click(snap.app.listener(move |app, _: &ClickEvent, window, cx| {
                         app.close_dialog(window, cx);
                         let ui = app.ui().clone();
-                        let drawing = app.s.allow_drawing;
-                        super::super::commands::share_source(&ui, index, drawing, false);
+                        super::super::commands::share_source(&ui, index, drawing, control);
                     }))
             }))
             .into_any_element()
@@ -308,6 +361,33 @@ fn picker(snap: &AppSnapshot, sources: &[SourceOption]) -> AnyElement {
         .child(paragraph(
             "Nothing is captured until somebody actually watches. A shared source that nobody opened costs no encoder and no traffic.",
         ))
+        .child(picker_option(
+            snap,
+            "picker-drawing",
+            "Allow drawing",
+            "Viewers can draw on this share, and everyone watching sees the lines.",
+            drawing,
+            |d| {
+                if let Dialog::Picker { drawing, .. } = d {
+                    *drawing = !*drawing;
+                }
+            },
+        ))
+        .when(snap.s.remote_control_available, |f| {
+            f.child(picker_option(
+                snap,
+                "picker-control",
+                "Allow remote control",
+                "Viewers can ask to use your mouse and keyboard; you allow each one. Only for a whole screen, never a window.",
+                control,
+                |d| {
+                    if let Dialog::Picker { control, .. } = d {
+                        *control = !*control;
+                    }
+                },
+            ))
+        })
+        .child(div().h(px(8.)))
         .child(list)
         .foot(vec![close_button(snap, "picker-cancel", "Cancel", BtnKind::Ghost)]);
     modal_layer(frame, &snap.dialog_focus, None).into_any_element()

@@ -303,6 +303,10 @@ mod tests {
             is_music: false,
             drawing: false,
             has_drawing: false,
+            remote_control: false,
+            controllable: false,
+            control_request: None,
+            controller: None,
         }
     }
 

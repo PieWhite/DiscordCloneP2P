@@ -219,9 +219,12 @@ pub enum Dialog {
         action: PromptAction,
     },
     /// Share a screen or window. Cameras are already filtered out (they have their own
-    /// button).
+    /// button). `drawing` and `control` are the options for this share, starting from the
+    /// defaults in Settings → Video (decision 54).
     Picker {
         sources: Vec<SourceOption>,
+        drawing: bool,
+        control: bool,
     },
     /// A picture at full size. `src` must pass `Ui::image_path_allowed` before it is drawn.
     Lightbox {
@@ -961,7 +964,16 @@ impl AppView {
             .into_iter()
             .filter(|s| !s.is_camera)
             .collect();
-        self.open_dialog(Dialog::Picker { sources }, window, cx);
+        let (drawing, control) = (self.s.allow_drawing, self.s.allow_remote_control);
+        self.open_dialog(
+            Dialog::Picker {
+                sources,
+                drawing,
+                control,
+            },
+            window,
+            cx,
+        );
     }
 
     pub fn open_dialog(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) {
@@ -1333,6 +1345,7 @@ impl Render for AppView {
             .text_size(theme::BASE_TEXT)
             .line_height(relative(theme::BASE_LINE_HEIGHT))
             .child(titlebar::render(&snap, window, cx))
+            .when_some(call::control_banner(&snap), |d, banner| d.child(banner))
             .child(body)
             .child(status::render(&snap, window, cx))
             .when_some(dialog, |d, dialog| {

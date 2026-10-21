@@ -168,6 +168,8 @@ pub struct EigenStreamView {
     pub bedienen: bool,
     pub vrager: Option<PeerId>,
     pub bediener: Option<PeerId>,
+    /// Een monitor op een platform dat zich laat bedienen: alleen dan een schakelaar.
+    pub kan_bedienen: bool,
 }
 
 /// Een bron die een ander deelt.
@@ -3682,6 +3684,7 @@ impl Engine {
                 bedienen: s.bediening.mag,
                 vrager: s.bediening.vrager.map(|(v, _)| v),
                 bediener: s.bediening.bediener,
+                kan_bedienen: BEDIENEN_KAN && s.kind == StreamKind::MONITOR,
             })
             .collect();
 
