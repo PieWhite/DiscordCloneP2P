@@ -14,6 +14,11 @@
 //!
 //! RTT and speaking level are not in `UiState` on purpose: they move every tick and would
 //! defeat the comparison that keeps the state feed quiet.
+//!
+//! On Windows a fourth task feeds the in-game overlay (decision 53) from the state and meters
+//! feeds above: who is in the call and who is speaking, by the same rule as the speaking
+//! ring. It only wakes when one of those two sends, and only hands the overlay a new list
+//! when the rows differ.
 
 use super::state::UiState;
 use super::Ui;
@@ -321,11 +326,100 @@ pub fn spawn_live(ui: &Arc<Ui>) -> Feeds {
         }
     });
 
+    #[cfg(windows)]
+    spawn_overlay(ui, state.clone(), meters.clone());
+
     Feeds {
         state,
         meters,
         thumbs,
     }
+}
+
+/// The overlay's rows: ourselves first while joined, then every known peer in the call, in
+/// the member list's order. Speaking is the ring's verdict, hold and mute included. Empty
+/// when the overlay is off or we are not in a call.
+#[cfg(windows)]
+fn overlay_rows(s: &UiState, m: &MeterReadings) -> Vec<fitcom_video::spraaklaag::Spreker> {
+    use fitcom_video::spraaklaag::Spreker;
+    if !s.overlay.enabled || !s.voice.joined {
+        return Vec::new();
+    }
+    // A name comes from another PC: no control, bidi or zero-width characters on screen.
+    let name = |n: &str| crate::speelt::schoon(n).unwrap_or_else(|| "?".into());
+    std::iter::once(Spreker {
+        naam: name(&s.me.name),
+        spreekt: m.self_speaking,
+    })
+    .chain(
+        s.peers
+            .iter()
+            .filter(|p| !p.id.is_empty() && p.in_call)
+            .map(|p| Spreker {
+                naam: name(&p.name),
+                spreekt: m.peers.get(&p.id).is_some_and(|x| x.speaking),
+            }),
+    )
+    .collect()
+}
+
+/// The overlay exists only while it has rows: made on joining (with the overlay on), dropped
+/// on leaving or switching it off, so outside a call it costs no thread and no window.
+#[cfg(windows)]
+fn spawn_overlay(
+    ui: &Arc<Ui>,
+    mut state: watch::Receiver<Arc<UiState>>,
+    mut meters: watch::Receiver<MeterReadings>,
+) {
+    use super::theme::{self, c};
+    use fitcom_video::spraaklaag::{Spraaklaag, Stijl};
+    let rgb =
+        |c: gpui_kit::Rgba| [c.r, c.g, c.b].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+    let stijl = Stijl {
+        grond: rgb(theme::BACKDROP),
+        grond_alfa: theme::BACKDROP.a,
+        stip: rgb(c::LIFT),
+        ring: rgb(theme::ONLINE),
+        stil: rgb(theme::TEXT_MUTED),
+        spreekt: rgb(theme::TEXT_STRONG),
+        font: theme::INTER_MEDIUM,
+        font_naam: "Inter Medium",
+    };
+    let u = ui.clone();
+    ui.runtime.spawn(async move {
+        let mut overlay: Option<Spraaklaag> = None;
+        let mut shown = Vec::new();
+        loop {
+            let rows = overlay_rows(&state.borrow_and_update(), &meters.borrow_and_update());
+            if rows.is_empty() {
+                overlay = None;
+                shown.clear();
+            } else {
+                if overlay.is_none() {
+                    // The position as the engine has it now; after this the overlay thread
+                    // keeps track itself and reports a drag back.
+                    let cfg = u.engine.snapshot.borrow().overlay.clone();
+                    let commands = u.engine.commands.clone();
+                    let moved = move |x, y| {
+                        let _ = commands.try_send(crate::engine::UiCommand::ZetOverlayPlek(x, y));
+                    };
+                    match Spraaklaag::start(cfg.x.zip(cfg.y), stijl, moved) {
+                        Ok(o) => overlay = Some(o),
+                        Err(e) => tracing::warn!(error = %format!("{e:#}"), "no overlay"),
+                    }
+                    shown.clear();
+                }
+                if let Some(o) = overlay.as_ref().filter(|_| rows != shown) {
+                    o.toon(rows.clone());
+                    shown = rows;
+                }
+            }
+            tokio::select! {
+                r = state.changed() => if r.is_err() { return },
+                r = meters.changed() => if r.is_err() { return },
+            }
+        }
+    });
 }
 
 /// The decoder hands us BGRA and a GPUI image is BGRA, so the bytes go across as they are:
@@ -362,6 +456,65 @@ fn render_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nobody on screen outside a call or with the overlay off; in a call ourselves first,
+    /// then the known peers in the call (not the ones outside it), each lit by the ring's
+    /// verdict, with a name that cannot reorder itself on screen.
+    #[cfg(windows)]
+    #[test]
+    fn overlay_rows_follow_the_call_and_the_ring() {
+        use super::super::state::{Constants, PeerState};
+        let peer = |id: &str, name: &str, in_call: bool| -> PeerState {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": name, "address": "", "avatar": 1, "presence": "online",
+                "problem": null, "app_version": null, "in_call": in_call, "volume": 1.0,
+                "unread": 0, "last_seen": null, "desktop_volume": null, "desktop_stream": null
+            }))
+            .unwrap()
+        };
+        let constants = Constants {
+            me: fitcom_proto::PeerId::new_random(),
+            fallback_name: "Rick".into(),
+            sound_sets: Vec::new(),
+            sound_events: Vec::new(),
+            control_port: 0,
+            media_port: 0,
+            autostart: false,
+            minimize_to_tray: false,
+        };
+        let mut s = UiState::build(
+            &crate::engine::Snapshot::default(),
+            &constants,
+            0,
+            &HashMap::new(),
+        );
+        s.peers = vec![
+            peer("a", "Anna\u{202E}", true),
+            peer("b", "Bob", false),
+            peer("", "Unknown", true),
+        ];
+        let mut m = MeterReadings::default();
+        m.peers.insert(
+            "a".into(),
+            PeerMeter {
+                speaking: true,
+                ..Default::default()
+            },
+        );
+
+        s.voice.joined = true;
+        assert!(overlay_rows(&s, &m).is_empty(), "off");
+        s.overlay.enabled = true;
+        let rows = overlay_rows(&s, &m);
+        let names: Vec<&str> = rows.iter().map(|r| r.naam.as_str()).collect();
+        assert_eq!(names, ["Rick", "Anna"]);
+        let lit: Vec<bool> = rows.iter().map(|r| r.spreekt).collect();
+        assert_eq!(lit, [false, true]);
+        m.self_speaking = true;
+        assert!(overlay_rows(&s, &m)[0].spreekt);
+        s.voice.joined = false;
+        assert!(overlay_rows(&s, &m).is_empty(), "not in a call");
+    }
 
     /// The one conversion on this path: bytes unchanged, alpha forced opaque. Reverting the
     /// alpha line makes a camera tile transparent again, and this fails.

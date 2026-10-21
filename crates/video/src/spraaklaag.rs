@@ -23,7 +23,7 @@
 //! doorklikbaar, en een nieuwe plek gaat één keer naar de aanroeper om te bewaren. Alleen de
 //! pillen zijn raakbaar: een pixel met alfa 0 laat een klik altijd door.
 
-use crate::penseel::{Kader, MIN_HERTEKEN};
+use crate::penseel::{Doek, Kader, MIN_HERTEKEN};
 use crate::tekenlaag::{monitor_kader, registreer_klasse, Laag};
 use anyhow::{Context, Result};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
@@ -35,7 +35,7 @@ use windows::Win32::Graphics::Gdi::{
     AddFontMemResourceEx, CreateFontW, DeleteObject, DrawTextW, GdiFlush, GetTextExtentPoint32W,
     MonitorFromPoint, SelectObject, SetBkMode, SetTextColor, ANTIALIASED_QUALITY,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HFONT, HMONITOR, MONITOR_DEFAULTTONULL,
+    DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HDC, HFONT, HMONITOR, MONITOR_DEFAULTTONULL,
     MONITOR_DEFAULTTOPRIMARY, OUT_TT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -257,7 +257,8 @@ impl Fonts {
 
 impl Drop for Fonts {
     fn drop(&mut self) {
-        // SAFETY: eigen objecten, nergens meer geselecteerd (`teken` zet de oude terug).
+        // SAFETY: eigen objecten, nergens meer geselecteerd (`Opmaak::nieuw` en `schilder`
+        // zetten de oude terug).
         unsafe {
             let _ = DeleteObject(self.naam.into());
             let _ = DeleteObject(self.monogram.into());
@@ -294,133 +295,15 @@ fn teken(
         *fonts = Some(Fonts::nieuw(stijl, dpi));
     }
     let f = fonts.as_ref()?;
-    let s = |v: i32| schaal(v, dpi);
-
-    let namen: Vec<Vec<u16>> = sprekers
-        .iter()
-        .map(|p| p.naam.encode_utf16().collect())
-        .collect();
-    let letters: Vec<Vec<u16>> = sprekers
-        .iter()
-        .map(|p| {
-            p.naam
-                .chars()
-                .next()
-                .map(|c| c.to_uppercase().collect::<String>())
-                .unwrap_or_default()
-                .encode_utf16()
-                .collect()
-        })
-        .collect();
-    // SAFETY: het lettertype tijdelijk in de DC van de laag, en daarna de oude terug.
-    let breedtes: Vec<i32> = unsafe {
-        let oud = SelectObject(laag.dc(), f.naam.into());
-        let b = namen
-            .iter()
-            .map(|n| {
-                let mut maat = SIZE::default();
-                let _ = GetTextExtentPoint32W(laag.dc(), n, &mut maat);
-                maat.cx.min(s(NAAM_MAX))
-            })
-            .collect();
-        SelectObject(laag.dc(), oud);
-        b
-    };
-    let rij_breedte = |b: i32| s(NAAM_X) + b + s(RECHTS);
-    let maat = (
-        breedtes.iter().map(|&b| rij_breedte(b)).max().unwrap_or(1),
-        sprekers.len() as i32 * s(RIJ + TUSSEN) - s(TUSSEN),
-    );
-    let (x, y) = plaats(plek, maat, scherm, hoofd_kader, s(MARGE));
+    let o = Opmaak::nieuw(laag.dc(), f, sprekers);
+    let (x, y) = plaats(plek, o.maat, scherm, hoofd_kader, schaal(MARGE, dpi));
     let kader = RECT {
         left: x,
         top: y,
-        right: x + maat.0,
-        bottom: y + maat.1,
+        right: x + o.maat.0,
+        bottom: y + o.maat.1,
     };
-
-    laag.toon_beeld(kader, |doek, dc| {
-        let rij = |i: usize| i as i32 * s(RIJ + TUSSEN);
-        let stip = |i: usize| RECT {
-            left: s(STIP_LINKS),
-            top: rij(i) + (s(RIJ) - s(STIP)) / 2,
-            right: s(STIP_LINKS) + s(STIP),
-            bottom: rij(i) + (s(RIJ) + s(STIP)) / 2,
-        };
-        let naam = |i: usize| RECT {
-            left: s(NAAM_X),
-            top: rij(i),
-            right: s(NAAM_X) + breedtes[i],
-            bottom: rij(i) + s(RIJ),
-        };
-
-        // Eerst alle tekst wit op zwart: dat is het masker.
-        doek.wis();
-        // SAFETY: eigen DC met het beeld erin; lettertypes eigen, daarna de oude terug.
-        unsafe {
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, COLORREF(0x00FF_FFFF));
-            let oud = SelectObject(dc, f.naam.into());
-            for (i, n) in namen.iter().enumerate() {
-                let mut r = naam(i);
-                let mut n = n.clone();
-                DrawTextW(
-                    dc,
-                    &mut n,
-                    &mut r,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
-                );
-            }
-            SelectObject(dc, f.monogram.into());
-            for (i, l) in letters.iter().enumerate() {
-                let mut r = stip(i);
-                let mut l = l.clone();
-                DrawTextW(
-                    dc,
-                    &mut l,
-                    &mut r,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-                );
-            }
-            SelectObject(dc, oud);
-            let _ = GdiFlush();
-        }
-        let masker: Vec<u8> = doek
-            .px
-            .chunks_exact(4)
-            .map(|p| p[0].max(p[1]).max(p[2]))
-            .collect();
-
-        doek.wis();
-        let half = s(RIJ) as f32 / 2.0;
-        for (i, p) in sprekers.iter().enumerate() {
-            let midden = rij(i) as f32 + half;
-            let rechts = rij_breedte(breedtes[i]) as f32 - half;
-            doek.capsule(
-                (half, midden),
-                (rechts, midden),
-                half,
-                stijl.grond,
-                stijl.grond_alfa,
-            );
-            let st = stip(i);
-            let c = (
-                (st.left + st.right) as f32 / 2.0,
-                (st.top + st.bottom) as f32 / 2.0,
-            );
-            let r = s(STIP) as f32 / 2.0;
-            if p.spreekt {
-                doek.capsule(c, c, r, stijl.ring, 1.0);
-                doek.capsule(c, c, r - s(RING) as f32, stijl.stip, 1.0);
-            } else {
-                doek.capsule(c, c, r, stijl.stip, 1.0);
-            }
-            let kleur = if p.spreekt { stijl.spreekt } else { stijl.stil };
-            for r in [naam(i), st] {
-                doek.bedek(&masker, kader_van(r), kleur);
-            }
-        }
-    });
+    laag.toon_beeld(kader, |doek, dc| schilder(doek, dc, f, sprekers, &o, stijl));
     // Een spel dat na ons bovenop ging staan zou hem anders begraven. Alleen bij een
     // wijziging, dus gratis.
     // SAFETY: eigen venster; niet verplaatsen, niet vergroten, geen focus.
@@ -436,6 +319,163 @@ fn teken(
         );
     }
     Some(kader)
+}
+
+/// Wat er per rij staat en hoe groot het geheel wordt, in pixels bij `Fonts::dpi`.
+struct Opmaak {
+    dpi: u32,
+    namen: Vec<Vec<u16>>,
+    letters: Vec<Vec<u16>>,
+    /// De breedte van elke naam, afgekapt op `NAAM_MAX` (daar komt een beletselteken).
+    breedtes: Vec<i32>,
+    maat: (i32, i32),
+}
+
+impl Opmaak {
+    /// `dc`: een DC om de namen in te meten; het lettertype gaat er even in en weer uit.
+    fn nieuw(dc: HDC, f: &Fonts, sprekers: &[Spreker]) -> Self {
+        let s = |v: i32| schaal(v, f.dpi);
+        let namen: Vec<Vec<u16>> = sprekers
+            .iter()
+            .map(|p| p.naam.encode_utf16().collect())
+            .collect();
+        let letters = sprekers
+            .iter()
+            .map(|p| {
+                p.naam
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().collect::<String>())
+                    .unwrap_or_default()
+                    .encode_utf16()
+                    .collect()
+            })
+            .collect();
+        // SAFETY: het lettertype tijdelijk in `dc`, en daarna de oude terug.
+        let breedtes: Vec<i32> = unsafe {
+            let oud = SelectObject(dc, f.naam.into());
+            let b = namen
+                .iter()
+                .map(|n| {
+                    let mut maat = SIZE::default();
+                    let _ = GetTextExtentPoint32W(dc, n, &mut maat);
+                    maat.cx.min(s(NAAM_MAX))
+                })
+                .collect();
+            SelectObject(dc, oud);
+            b
+        };
+        let maat = (
+            breedtes
+                .iter()
+                .map(|&b| s(NAAM_X) + b + s(RECHTS))
+                .max()
+                .unwrap_or(1),
+            sprekers.len() as i32 * s(RIJ + TUSSEN) - s(TUSSEN),
+        );
+        Self {
+            dpi: f.dpi,
+            namen,
+            letters,
+            breedtes,
+            maat,
+        }
+    }
+
+    fn s(&self, v: i32) -> i32 {
+        schaal(v, self.dpi)
+    }
+
+    fn rij(&self, i: usize) -> i32 {
+        i as i32 * self.s(RIJ + TUSSEN)
+    }
+
+    fn stip(&self, i: usize) -> RECT {
+        let (rij, s) = (self.rij(i), |v| self.s(v));
+        RECT {
+            left: s(STIP_LINKS),
+            top: rij + (s(RIJ) - s(STIP)) / 2,
+            right: s(STIP_LINKS) + s(STIP),
+            bottom: rij + (s(RIJ) + s(STIP)) / 2,
+        }
+    }
+
+    fn naam(&self, i: usize) -> RECT {
+        RECT {
+            left: self.s(NAAM_X),
+            top: self.rij(i),
+            right: self.s(NAAM_X) + self.breedtes[i],
+            bottom: self.rij(i) + self.s(RIJ),
+        }
+    }
+}
+
+/// Het hele beeld op `doek` (dat in `dc` geselecteerd is): eerst alle tekst wit op zwart
+/// als masker, dan de pillen en stippen, dan de tekst in zijn eigen kleur erover.
+fn schilder(doek: &mut Doek, dc: HDC, f: &Fonts, sprekers: &[Spreker], o: &Opmaak, stijl: &Stijl) {
+    doek.wis();
+    // SAFETY: eigen DC met het beeld erin; lettertypes eigen, daarna de oude terug.
+    unsafe {
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, COLORREF(0x00FF_FFFF));
+        let oud = SelectObject(dc, f.naam.into());
+        for (i, n) in o.namen.iter().enumerate() {
+            let mut r = o.naam(i);
+            DrawTextW(
+                dc,
+                &mut n.clone(),
+                &mut r,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+        }
+        SelectObject(dc, f.monogram.into());
+        for (i, l) in o.letters.iter().enumerate() {
+            let mut r = o.stip(i);
+            DrawTextW(
+                dc,
+                &mut l.clone(),
+                &mut r,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
+        SelectObject(dc, oud);
+        let _ = GdiFlush();
+    }
+    let masker: Vec<u8> = doek
+        .px
+        .chunks_exact(4)
+        .map(|p| p[0].max(p[1]).max(p[2]))
+        .collect();
+
+    doek.wis();
+    let half = o.s(RIJ) as f32 / 2.0;
+    for (i, p) in sprekers.iter().enumerate() {
+        let midden = o.rij(i) as f32 + half;
+        let rechts = (o.s(NAAM_X) + o.breedtes[i] + o.s(RECHTS)) as f32 - half;
+        doek.capsule(
+            (half, midden),
+            (rechts, midden),
+            half,
+            stijl.grond,
+            stijl.grond_alfa,
+        );
+        let st = o.stip(i);
+        let c = (
+            (st.left + st.right) as f32 / 2.0,
+            (st.top + st.bottom) as f32 / 2.0,
+        );
+        let r = o.s(STIP) as f32 / 2.0;
+        if p.spreekt {
+            doek.capsule(c, c, r, stijl.ring, 1.0);
+            doek.capsule(c, c, r - o.s(RING) as f32, stijl.stip, 1.0);
+        } else {
+            doek.capsule(c, c, r, stijl.stip, 1.0);
+        }
+        let kleur = if p.spreekt { stijl.spreekt } else { stijl.stil };
+        for r in [o.naam(i), st] {
+            doek.bedek(&masker, kader_van(r), kleur);
+        }
+    }
 }
 
 fn kader_van(r: RECT) -> Kader {
@@ -532,6 +572,111 @@ mod tests {
             top,
             right,
             bottom,
+        }
+    }
+
+    /// Zonder venster, in een eigen geheugen-DC: het lettertype uit de app laadt onder zijn
+    /// GDI-naam, de tekst landt als masker en krijgt zijn kleur, de pil is halfdoorzichtig,
+    /// en tussen de rijen blijft alles doorzichtig (daar klikt een muis altijd doorheen).
+    #[test]
+    fn de_rijen_worden_getekend_zonder_venster() {
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, CreateDIBSection, DeleteDC, GetTextFaceW, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        };
+        let stijl = Stijl {
+            grond: [0, 0, 0],
+            grond_alfa: 0.85,
+            stip: [11, 14, 20],
+            ring: [58, 211, 137],
+            stil: [161, 164, 165],
+            spreekt: [255, 255, 255],
+            font: include_bytes!("../../app/src/ui/assets/fonts/Inter-Medium.ttf"),
+            font_naam: "Inter Medium",
+        };
+        laad_font(&stijl);
+        let f = Fonts::nieuw(&stijl, 96);
+        let sprekers = [
+            Spreker {
+                naam: "Rick".into(),
+                spreekt: false,
+            },
+            Spreker {
+                naam: "Anna met een heel lange naam die nooit past in de overlay".into(),
+                spreekt: true,
+            },
+        ];
+        // SAFETY: eigen DC en bitmap, opgeruimd voor we terugkeren.
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            let o = Opmaak::nieuw(dc, &f, &sprekers);
+            assert_eq!(o.maat.1, 2 * RIJ + TUSSEN);
+            assert!(
+                o.maat.0 <= NAAM_X + NAAM_MAX + RECHTS,
+                "lange naam afgekapt"
+            );
+
+            let oud = SelectObject(dc, f.naam.into());
+            let mut face = [0u16; 32];
+            GetTextFaceW(dc, Some(&mut face));
+            let n = face.iter().position(|&c| c == 0).unwrap_or(face.len());
+            SelectObject(dc, oud);
+            let face = String::from_utf16_lossy(&face[..n]);
+            assert_eq!(face, "Inter Medium");
+
+            let (b, h) = (o.maat.0 as u32, o.maat.1 as u32);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: b as i32,
+                    biHeight: -(h as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap =
+                CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let oud = SelectObject(dc, bitmap.into());
+            let px = std::slice::from_raw_parts_mut(bits.cast::<u8>(), (b * h * 4) as usize);
+            let mut doek = Doek {
+                px,
+                breedte: b,
+                hoogte: h,
+            };
+            schilder(&mut doek, dc, &f, &sprekers, &o, &stijl);
+            let px = doek.px.to_vec();
+            SelectObject(dc, oud);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+
+            let at = |x: i32, y: i32| px[((y as u32 * b + x as u32) * 4) as usize..][..4].to_vec();
+            let in_rect = |r: RECT| {
+                (r.top..r.bottom)
+                    .flat_map(move |y| (r.left..r.right).map(move |x| (x, y)))
+                    .collect::<Vec<_>>()
+            };
+            // Opgelicht: witte tekst in de naam van rij 2. Gedimd: niets wits in rij 1.
+            let wit = |(x, y): (i32, i32)| at(x, y)[..3] == [255, 255, 255];
+            assert!(in_rect(o.naam(1)).into_iter().any(wit), "opgelichte naam");
+            assert!(!in_rect(o.naam(0)).into_iter().any(wit), "gedimde naam");
+            assert!(
+                in_rect(o.naam(0))
+                    .into_iter()
+                    .any(|(x, y)| at(x, y)[0] > 100),
+                "gedimde naam staat er wel"
+            );
+            // De pil: zwart op 85 %, rechts van de lange naam waar geen tekst staat.
+            assert_eq!(at(o.maat.0 - RECHTS / 2, RIJ + TUSSEN + RIJ / 2)[3], 217);
+            // Tussen de rijen: doorzichtig.
+            assert_eq!(at(o.maat.0 / 2, RIJ + TUSSEN / 2)[3], 0);
+            // Voorvermenigvuldigd, overal.
+            assert!(px
+                .chunks_exact(4)
+                .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
         }
     }
 

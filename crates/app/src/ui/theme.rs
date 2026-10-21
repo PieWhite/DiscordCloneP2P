@@ -179,9 +179,12 @@ pub const DISPLAY_TEXT_LARGE: Pixels = px(32.);
 /// The uppercase mono section labels and every small mono reading.
 pub const LABEL_TEXT: Pixels = px(11.5);
 
+/// Also the in-game overlay's font (decision 53), loaded into GDI as "Inter Medium".
+pub const INTER_MEDIUM: &[u8] = include_bytes!("assets/fonts/Inter-Medium.ttf");
+
 const FONTS: [&[u8]; 5] = [
     include_bytes!("assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("assets/fonts/Inter-Medium.ttf"),
+    INTER_MEDIUM,
     include_bytes!("assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("assets/fonts/InstrumentSerif-Regular.ttf"),
     include_bytes!("assets/fonts/JetBrainsMono-Regular.ttf"),
