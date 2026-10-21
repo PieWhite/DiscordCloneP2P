@@ -312,6 +312,52 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 >   "Privé" staan (`README.md`). Op een openbaar profiel (hotel, congres) laat de firewall hem
 >   dan bewust niet toe.
 
+> **Addendum 2026-10-22 (een gedeeld scherm bedienen, beslissing 54).** Nieuw aanvalsoppervlak,
+> en het grootste sinds het updatepad: **een peer die muis en toetsenbord van je pc bedient** en
+> tekst op je klembord zet en ervan leest. Vier berichten erbij (`RemoteRequest`, `RemoteState`,
+> `RemoteInput`, `ClipboardText`, tags 52-55) en een veld (`StreamAnnounce::remote_control`). Zie
+> B-62 voor wat een toegelaten bediener kan; hier hoe het begrensd is.
+>
+> - **Toegang: uit, tenzij.** Standaard uit (`allow_remote_control`), per gedeeld scherm te
+>   kiezen, alleen voor een gedeelde *monitor* (nooit een venster of camera, afgedwongen bij de
+>   deler en bij de kijker), alleen op Windows. Een oudere deler stuurt het veld niet en laat zich
+>   dus nooit bedienen.
+> - **Toestemming per keer.** Een vraag doet niets tot de gebruiker van de deler Allow klikt;
+>   de klik draagt de peer mee, dus een verouderde klik geeft niemand anders toegang. Een vraag
+>   verloopt na 60 s. Eén vrager en één bediener tegelijk. Vragen worden afgeremd (drie, daarna
+>   één per vijf seconden), zodat een kijker de deler niet met meldingen kan bestoken.
+> - **Wie mag invoer geven.** Alleen de toegelaten bediener, terwijl hij kijkt en de optie aan
+>   staat; de afzender komt uit de verbinding, nooit uit het bericht. Binnen B-05 (opgelost) is
+>   dat de vastgepinde sleutel: wie een peer kan nadoen kan ook namens hem vragen, maar komt
+>   alsnog niet langs de klik.
+> - **Zichtbaar en in te trekken.** Een vraag en de huidige bediener staan onder de titelbalk, in
+>   elke weergave en ook buiten een gesprek, met Stop control; een nieuwe vraag geeft een
+>   Windows-melding. Uitzetten in Settings beëindigt het op elk scherm. Stoppen met delen,
+>   wegvallen of wegkijken van de bediener beëindigt het ook. Alles wat de bediener ingedrukt hield
+>   gaat bij het einde los, en een toets ook na 1,5 s zonder invoer.
+> - **Wat het kost.** Geldige invoer alleen (bekende soort, knop 1-5, scancode `0x01-0x7F` met
+>   hooguit `0xE0` ervoor, geen muisknop als toets), hooguit 64 per bericht (plus elk loslaten),
+>   600 per seconde met 200 als uitschieter. De muis landt altijd binnen de gedeelde monitor
+>   (geklemd), nooit op een andere. `SendInput` loopt op een eigen thread die slaapt als er niets
+>   binnenkomt. Geen hook (beslissing 42).
+> - **Het klembord**, de echte gevoeligheid naast de invoer zelf. Alleen tekst, alleen tussen de
+>   deler en zijn huidige bediener, alleen zolang er bediend wordt, hooguit 64 KiB, NUL eruit, en
+>   **alleen een verandering ná Allow, nooit wat er al op stond**: op het klembord van de deler
+>   kan net een wachtwoord uit zijn wachtwoordbeheerder staan. Maar let op: kopieert de deler
+>   *tijdens* het bedienen een wachtwoord (bijvoorbeeld om zelf iets in te vullen), dan krijgt de
+>   bediener het. Dat is wat "klembord delen" betekent, en de balk zegt erbij dat klembordtekst
+>   meegaat. De tekst komt nooit in een logregel (`ClipboardText` heeft een eigen `Debug`, alleen
+>   de lengte). Geen pingpong: een eigen schrijfactie wordt aan volgnummer en hash herkend.
+> - **Wat de bediener niet kan.** Ctrl+Alt+Del sturen, Alt+Tab of de Windows-toets (die blijven op
+>   zijn eigen pc), invoer in een programma dat als administrator draait (UIPI), een andere monitor
+>   dan de gedeelde aanraken, of iets doen zonder dat het hoofdvenster het toont.
+> - **Restrisico, bewust aanvaard.** Met toestemming kan de bediener alles wat de gebruiker kan op
+>   die monitor: programma's starten, bestanden openen, de app van de deler bedienen (ook zijn
+>   eigen Stop control indrukken, wat alleen hemzelf stopt). Er is geen tijdslimiet en geen
+>   stopknop in de tray: wie de app naar de tray sluit terwijl iemand bedient, haalt hem terug om
+>   te stoppen, of trekt de stekker eruit. Fysieke invoer van de deler blijft werken; het
+>   systeem neemt beide.
+
 > **Addendum 2026-08-05 (macOS-port):** dit onderzoek is van vóór de port en de
 > bevindingen gelden onverkort — de portlaag voegt geen nieuwe berichten of paden toe.
 > Platformscope die verschuift: B-27 (WSAEMSGSIZE) heet op macOS `EMSGSIZE`; B-35
@@ -335,6 +381,7 @@ netjes is opgeschreven. Wat dit onderzoek toevoegt is dit:
 | 4 | Media is vertrouwelijk en niet te vervalsen | `crates/net/src/mediasleutel.rs` | Ja, AES-256-GCM per richting met replayvenster. Roaming verplaatst het doel alleen na een echt pakket (restrisico: zie het addendum van 2026-10-19). |
 | 5 | Rommel op een open poort kost geen merkbare CPU | A3-rand, sessie-index | Ja, gemeten (beslissing 47). |
 | 6 | De drie peers zijn vrienden en vertrouwen elkaar | `docs/ARCHITECTURE.md` | Ja, en dat blijft de grens binnen de mesh: een peer kan een ander via `Addresses` laten bellen naar een adres naar keuze, en de bevindingen die "een peer" als aanvaller hebben (B-06, B-22...) gelden onverkort. |
+| 7 | Een peer bedient je pc alleen na jouw klik, en je ziet het | `crates/app/src/streams.rs`, beslissing 54 | Ja. Standaard uit, per monitor, Allow per keer, de bediener staat in beeld met Stop control. Wat hij daarna kan: B-62. |
 
 **Wat het oorspronkelijke model (2026-08-05) zei.** Het project rustte toen op vier aannames,
 waarvan de code er twee niet waarmaakte:
@@ -399,7 +446,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 
 ## Overzicht
 
-61 bevindingen. De ID's zijn stabiel; verwijs ernaar in commits.
+62 bevindingen. De ID's zijn stabiel; verwijs ernaar in commits.
 
 | ID | Ernst | Bevinding | Waar |
 |---|---|---|---|
@@ -463,6 +510,7 @@ precies de wormeigenschap: één besmette machine besmet de andere twee.
 | B-58 | ~~LAAG~~ | **Opgelost (2026-08-13)**: `highlight()` verminkt ge-escapete apostrofs. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `frontend/app.js:178-187` (weg) |
 | B-59 | ~~LAAG~~ | **Opgelost (2026-08-13)**: `unwrap()` op een mutex in de `thumb://`-handler. **Vervallen als aanvalsoppervlak met de GPUI-wissel (beslissing 39)** | `app/ui/mod.rs:168` (handler weg) |
 | B-60 | LAAG | Elk `fitcom-updater*.exe` naast de app telt als de updater | `app/engine.rs::zoek_updater` |
+| B-62 | INFO | **Bewust (2026-10-22)** — een toegelaten bediener kan alles wat de gebruiker kan op de gedeelde monitor, en leest klembordtekst die tijdens het bedienen gekopieerd wordt | `video/bediening.rs`, `app/streams.rs` |
 | B-51 | ~~INFO~~ | **Opgelost (2026-08-13)** — `LamportClock` is dode code; de echte klok is `max_lamport()` | `proto/op.rs:150-172` |
 
 ---
@@ -1561,6 +1609,15 @@ frames × breedte × hoogte × 4 boven 256 MiB) een gewone bestandskaart tonen, 
   neergezet bestand mag heten. *Fix:* dit staat of valt met de B-47-afspraak ("pak uit
   onder je gebruikersprofiel"); wie meer wil, pint de updater op een hash die bij de
   release in de app gebakken is.
+- **B-62** *(INFO, 2026-10-22, beslissing 54)* `crates/video/src/bediening.rs`,
+  `crates/app/src/streams.rs` — een scherm laten bedienen geeft de bediener, na de klik van de
+  deler, muis en toetsenbord op de gedeelde monitor: alles wat de gebruiker daar kan, met de
+  rechten van de gebruiker. Plus elke tekst die de deler kopieert zolang het loopt. Dat is de
+  functie, niet een fout; het staat hier zodat het een bewuste keuze *blijft*. De grenzen staan in
+  het addendum van 2026-10-22 bovenaan. Wat het groter zou maken en dus niet mag: de klik
+  overslaan ("iedereen die kijkt", zoals bij tekenen), het bestaande klembord bij Allow
+  meesturen, een gedeeld venster laten bedienen, `allow_remote_control` standaard aan, of de
+  balk met de bediener alleen in het gesprekspaneel tonen.
 - **B-51** *(INFO)* `crates/proto/src/op.rs:150-172` — `LamportClock` is dode code; de enige
   verwijzing is zijn eigen unittest. De klok die echt gebruikt wordt is `max_lamport()`, en
   dáár zit de truncatie van B-14. Aansluiten of weggooien, zodat de volgende lezer niet

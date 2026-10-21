@@ -23,8 +23,9 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
   alsnog gepost als je later een gesprek ingaat (de knop dekt dat). De knop staat alleen op
   het Clips-tabblad; een plek bij de gespreksknoppen ligt meer voor de hand. Geen
   voortgang tijdens het hashen van een grote clip.
-- **Tekenen (beslissing 45).** De aan/uit-schakelaar van de deler staat niet in
-  `config.toml`. Geen laag over een gedeeld *venster*, alleen over een monitor. Pen en
+- **Tekenen (beslissing 45).** ~~De aan/uit-schakelaar van de deler staat niet in
+  `config.toml`.~~ Sinds beslissing 49 wel, en sinds 54 per gedeeld scherm met
+  `allow_drawing` als standaard. Geen laag over een gedeeld *venster*, alleen over een monitor. Pen en
   laag op macOS. Geen limiet per kijker op tekenberichten. Meten wat de laag kost boven een
   venstergame met titelbalk.
 
@@ -37,6 +38,23 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
 - **Opnieuw klemmen bij `WM_DISPLAYCHANGE`:** nu pas bij de volgende wijziging van de rijen.
   Een sleep naar een monitor met een andere schaal hertekent ook pas na de sleep.
 - **Meten wat hij kost** boven een randloos spel (independent flip aan/uit, frametijden).
+
+## Een scherm bedienen (beslissing 54, 2026-10-22)
+- **macOS: niet gebouwd**, niet als deler en niet als bediener. Deler: `CGEventPost` met de
+  Accessibility-toestemming (en Screen Recording heeft hij al), `NSPasteboard` voor het
+  klembord, en `BEDIENEN_KAN` aanzetten. Bediener: muis en toetsen vangen in het NSWindow van
+  `mac/venster.rs`, plus het menu om te vragen.
+- **Een gedeeld venster bedienen.** Bewust niet: een klik valt op wat er bovenop ligt. Kan pas
+  als het venster vooraan gezet en gehouden kan worden zonder de deler te storen.
+- **Relatieve muis voor spellen** die de cursor vangen (shooters): nu alleen absolute
+  bewegingen, dus kijken met de muis werkt daar niet.
+- **Alt+Tab, de Windows-toets en Ctrl+Alt+Del** bij de deler: kan alleen met een
+  toetsenbordhook (beslissing 42), dus niet.
+- **Een stopknop in de tray** en een tijdslimiet bij geen enkele invoer. Nu stopt de deler in
+  het hoofdvenster, of het stopt als de bediener weggaat.
+- **De deler ziet niet wat de bediener doet** buiten zijn eigen scherm: geen lijst met wat er
+  geklikt of getypt is. Bewust (geen logboek met andermans toetsaanslagen), maar het kan een
+  vraag worden.
 
 ## Overig
 - **Camera-opname op macOS.** De camera is op Windows gebouwd (Media Foundation, zie
@@ -65,7 +83,6 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
 - **Settings → Network toont de mediapoort uit de config**, ook als de mesh is uitgeweken naar
   een vrije poort omdat de configpoort bezet was (sinds fase B5; alleen de log zegt het). Werkt
   gewoon, want de handshake noemt de echte poort; alleen de weergave klopt dan niet.
-- Remote input control (muis/toetsenbord overnemen, Moonlight-stijl).
 - Directe NVENC in plaats van Media Foundation, als de latencymeting in fase 4 daarom vraagt.
 - Subkanalen binnen een DM (het oorspronkelijke plan voor fase 9, vóór Rick het omdraaide
   naar subkanalen onder "Algemeen"). Zou dezelfde `TopicId`-aanpak kunnen hergebruiken,

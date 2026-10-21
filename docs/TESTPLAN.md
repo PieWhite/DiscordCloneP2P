@@ -1591,3 +1591,67 @@ tweede peer in het gesprek is genoeg.
    zonder overlay (PresentMon, of het overlay van de GPU-driver) en of het spel uit
    "independent flip" valt. Exclusief schermvullend: geen overlay, zoals afgesproken.
 8. **Een spel als administrator.** Werkt Alt + slepen nog? Zo niet, noteer het spel.
+
+## Een gedeeld scherm bedienen (2026-10-22, beslissing 54)
+
+Op deze pc geverifieerd, zonder echte invoer: de berichten en hun grenzen (proto), wie mag
+vragen en bedienen en wanneer het stopt (`streams.rs`, ook de kijkerskant), het omrekenen naar
+de gedeelde monitor en het klemmen, de `INPUT`-structuren die `SendInput` zou krijgen, het
+loslaten bij het einde, wat het kijkvenster van toetsen en knoppen maakt, Escape vasthouden,
+en de knoppen in het hoofdvenster (headless). **Nooit is er echte invoer gezet, nooit het
+echte klembord aangeraakt, nooit met twee machines.** Doe dit met A (Windows, deelt een
+monitor) en B (Windows, kijkt), allebei op deze versie, plus C als derde kijker.
+
+1. **Standaard uit.** Een verse config: in de kiezer staat "Allow remote control" uit, en B's
+   venstertitel noemt geen bedienen; rechtsklik bij B zegt "Remote control is off for this
+   stream". In Settings → Video staat "Allow remote control" uit.
+2. **Per scherm.** A zet in de kiezer "Allow remote control" aan en deelt een *monitor*: B's
+   titel eindigt op "right-click to take control" (of "draw or take control"). A deelt
+   daarnaast een *venster* met dezelfde schakelaar aan: daar blijft het uit (geen pijl op de
+   regel in het gesprekspaneel, B's menu zegt "off").
+3. **Vragen en toestaan.** B: rechtsklik > "Take control of this screen". B's titel: "asked for
+   control, waiting…". Bij A verschijnt onder de titelbalk "B asks to control your mouse,
+   keyboard and clipboard text on …" met Deny en Allow, ook als A niet in het gesprek zit en in
+   een ander kanaal staat. Staat A's venster op de achtergrond: een Windows-melding (niet met
+   niet-storen aan). A klikt Allow: B's titel wordt "you control this screen · hold Esc to
+   stop", A's balk zegt "B controls …" met Stop control.
+4. **Muis.** B beweegt in zijn kijkvenster: A's muis volgt, op de juiste plek ten opzichte van
+   het beeld, tot in de vier hoeken en nooit op A's andere monitor. Links-, rechts-,
+   middenklik, dubbelklik (een map openen), slepen (een venster verplaatsen), het wiel en de
+   zijknoppen (terug in een browser). Meet hoe ver A's muis bij B achterloopt; noteer het.
+5. **Toetsen.** B typt in een tekstvak bij A, ook met Shift, AltGr-tekens (A's indeling
+   bepaalt het teken), pijltjes, Home/End, Ctrl+C/Ctrl+V binnen A's pc, F-toetsen en Alt+F4
+   (sluit A's venster, niet B's kijkvenster). F11, D, Delete en een dubbelklik doen in B's
+   kijkvenster niets meer zelf. Alt+Tab en de Windows-toets blijven bij B (zo bedoeld).
+6. **De eerste klik.** B klikt in een ander programma en daarna terug in zijn kijkvenster: die
+   klik haalt alleen het venster naar voren en klikt niets aan bij A. Zolang B's venster de
+   focus niet heeft beweegt A's muis niet mee.
+7. **Niets blijft hangen.** B houdt Shift (of W) ingedrukt en klikt naar een ander programma:
+   bij A is Shift los. B houdt de linkerknop vast in een sleep en drukt Alt+Tab: bij A is de
+   knop los. B houdt W vast en trekt de netwerkkabel eruit: na hooguit 1,5 s staat W bij A los.
+8. **Stoppen, alle manieren.** Elke keer moet bij A de balk verdwijnen en bij B de titel terug:
+   B houdt Escape 1,5 s vast (een korte Escape gaat gewoon naar A); B sluit zijn venster; A
+   klikt Stop control; A zet de pijl op de regel in het gesprekspaneel uit; A zet "Allow
+   remote control" in Settings uit; A stopt met delen; B valt weg (Tailscale uit of app hard
+   dicht).
+9. **Eén tegelijk.** B bedient; C vraagt: C krijgt meteen nee (titel terug), A krijgt geen
+   tweede vraag. A weigert een vraag van C: C's titel terug. A laat een vraag een minuut liggen:
+   hij verdwijnt bij A en B's titel komt terug.
+10. **Klembord, alleen tijdens het bedienen.** Vóór Allow kopieert A een tekst: B krijgt hem
+    nooit, ook niet bij het toestaan. Tijdens het bedienen: B kopieert bij zich iets en plakt
+    met Ctrl+V bij A (het staat er); B kopieert bij A iets (Ctrl+C in A's programma) en plakt bij
+    zichzelf. Een tekst van meer dan 64 KiB gaat niet over. Na het stoppen gaat er niets meer
+    over, in geen enkele richting. Geen eindeloos heen en weer (kijk of het klembord van A of B
+    blijft "knipperen" in een klembordgeschiedenis, Win+V).
+11. **Pen en bedienen.** B heeft de pen op en vraagt bedienen: na Allow is de pen neer. Tijdens
+    het bedienen tekent slepen niet.
+12. **Spel bij A.** A laat een spel lopen terwijl B niets doet: geen merkbare belasting (de
+    bedienthread slaapt in `GetMessageW`). Een shooter die de muis vangt: klikken en toetsen
+    werken, kijken met de muis niet (absolute muis, bekend). Een programma dat als
+    administrator draait (Taakbeheer) neemt B's invoer niet aan (UIPI, bekend).
+13. **DPI en monitoren.** A op 150 % met twee monitoren, de gedeelde links van het hoofdscherm:
+    B's muis landt op de juiste plek, ook in de hoeken. B's kijkvenster op een andere schaal en
+    beeldvullend: hetzelfde.
+14. **Oudere peer en Mac.** A op een versie zonder bedienen: B ziet "off". B op een oudere versie
+    kijkt naar A: niets verandert, A krijgt geen vraag. Een Mac die deelt laat zich nooit
+    bedienen; een Mac die kijkt heeft geen menu om het te vragen.

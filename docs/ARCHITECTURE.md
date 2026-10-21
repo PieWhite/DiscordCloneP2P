@@ -181,7 +181,8 @@ enum ControlMsg {
     VoiceJoin  { media_port: u16 },
     VoiceLeave,
     StreamAnnounce   { stream_id: u32, kind: StreamKind, title: String, width: u32,
-                       height: u32, drawing: bool },   // drawing: #[serde(default)]
+                       height: u32, drawing: bool,      // drawing: #[serde(default)]
+                       remote_control: bool },          // #[serde(default)], beslissing 54
     StreamRevoke     { stream_id: u32 },
     StreamSubscribe  { stream_id: u32, media_port: u16 },
     StreamUnsubscribe{ stream_id: u32 },
@@ -211,8 +212,31 @@ enum ControlMsg {
     Addresses { control: Vec<SocketAddr>, media: Vec<SocketAddr>,
                 you_are: Option<SocketAddr>, media_you_are: Option<SocketAddr>,
                 others: Vec<PeerAddresses> },                // 51
+
+    // een gedeeld scherm bedienen (beslissing 54) — vluchtig, single-hop, nooit in de log
+    RemoteRequest { stream_id: u32, want: bool },            // 52, kijker → deler
+    RemoteState   { stream_id: u32, granted: bool },         // 53, deler → kijker
+    RemoteInput   { stream_id: u32, events: Vec<InputEvent> }, // 54, bediener → deler
+    ClipboardText { stream_id: u32, text: String },          // 55, deler ↔ bediener
 }
 ```
+
+`RemoteRequest`/`RemoteState`/`RemoteInput`/`ClipboardText` (beslissing 54): een kijker van een
+gedeelde monitor vraagt die te bedienen (`want`; ontbreekt het, dan is het "stoppen"), de deler
+zegt pas ja na een klik van zijn gebruiker (`granted`; ontbreekt het, dan is het nee), en daarna
+neemt de deler muis en toetsen alleen van die ene bediener aan, met de afzender uit de
+verbinding. `InputEvent` is `{ kind: u8, x: u16, y: u16, button: u8, delta: i16, scan: u16,
+vk: u8 }`, alles behalve `kind` `#[serde(default)]`; `kind` is `MOVE = 1`, `BUTTON_DOWN = 2`,
+`BUTTON_UP = 3`, `WHEEL = 4`, `HWHEEL = 5`, `KEY_DOWN = 6`, `KEY_UP = 7`, en een onbekende soort
+laat alleen die ene gebeurtenis vallen. De muis staat genormaliseerd op het beeld zoals bij
+tekenen; de toets is een scancode uit set 1 (`0xE0` in de hoge byte voor uitgebreid) of, zonder
+scancode, een virtuele toets. Hooguit 64 gebeurtenissen per bericht; van een groter bericht neemt
+de deler de eerste 64 plus elk loslaten (`fitcom_proto::bediening::begrens`). `ClipboardText` gaat
+beide kanten op tussen de deler en zijn huidige bediener, alleen zolang er bediend wordt, hooguit
+64 KiB; de ontvanger kijkt eerst of de afzender zijn eigen scherm bedient en anders of hij
+diens scherm bedient (stream-id's zijn per eigenaar uniek). Of er gevraagd mag worden staat op
+`StreamAnnounce::remote_control`, alleen ooit waar voor een `MONITOR` van een Windows-deler; een
+oudere deler stuurt het niet, een oudere peer slaat de tags stil over.
 
 `Addresses` (beslissing 47): waar de afzender zichzelf bereikbaar denkt (wat zijn router opende,
 hoe anderen hem zagen, zijn LAN- en tailnet-adres), het bronadres van deze verbinding zoals hij

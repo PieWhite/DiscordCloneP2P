@@ -424,8 +424,9 @@ mag omdraaien:
   scherm met de hele `DrawState`, ook als die leeg is.
 - **Of het mag staat op `StreamAnnounce::drawing`** (`#[serde(default)]`), en uit wist alles.
   Een oudere deler stuurt het niet en krijgt dus geen pen. Geen apart bericht voor de
-  schakelaar. Die staat in Settings → Video en wordt bewaard als `allow_drawing`: één stand
-  voor elk eigen scherm (beslissing 49).
+  schakelaar. Sinds beslissing 54 per gedeeld scherm (de kiezer, en de pen op de regel in het
+  gesprekspaneel); `allow_drawing` in Settings → Video is de standaard, en uit daar zet het
+  ook uit op wat loopt.
 - **Lijnen leven zolang de tekenaar kijkt.** Uittekenen of wegvallen wist ze bij de deler
   (`vergeet_tekenaar`), en stoppen met delen of intrekken neemt alles mee.
 - **Tekenen kost niets per beeld.** De lagen zijn layered vensters die alleen bij een
@@ -555,6 +556,55 @@ Wat je niet mag omdraaien:
 - **De plek wordt bij elk tekenen geklemd**, en alleen een sleep wordt bewaard.
 - **Namen door `speelt::schoon`**: ze komen van een andere PC.
 - **macOS: geen overlay**, alles achter `#[cfg(windows)]`; Settings zegt het.
+
+## Een gedeeld scherm bedienen (2026-10-22)
+Beslissing 54 in `docs/OVERDRACHT.md`. `fitcom_proto::bediening` zijn de regels,
+`streams.rs` beslist, `crates/video/src/bediening.rs` zet de invoer in het systeem,
+`klembord.rs` het klembord, `venster.rs` vangt de invoer bij de kijker. Wat je niet mag
+omdraaien:
+
+- **Berichten, nooit een op**, en single-hop tussen de deler en één kijker (tags 52-55). Of het
+  mag staat op `StreamAnnounce::remote_control` (`#[serde(default)]`): een oudere deler laat zich
+  nooit bedienen. Een ontbrekend `want` of `granted` is "nee".
+- **Elke keer een klik van de deler.** Een vraag doet niets tot Allow; die draagt de peer mee en
+  doet niets als de vraag intussen weg is. Een vraag verloopt na 60 s. Maak er nooit "iedereen
+  die kijkt mag" van zoals bij tekenen: dit is iemands hele pc.
+- **De vraag en de bediener staan onder de titelbalk, in elke weergave en ook buiten een
+  gesprek** (`call::control_banner`), met een melding bij een nieuwe vraag. Verstop dat niet in
+  het gesprekspaneel: een gedeeld scherm loopt door na het verlaten van het gesprek.
+- **Eén vrager en één bediener per scherm.** Invoer en klembord alleen van de bediener, terwijl
+  hij kijkt en de optie aan staat, met de afzender uit de verbinding (`from`), nooit uit het
+  bericht. Een "ja" neemt de kijker alleen aan als hij vroeg, en alleen van de eigenaar.
+- **Het stopt bij alles**: Stop control, de optie uit (per scherm of in Settings), stoppen met
+  delen, uittekenen, wegvallen, zelf stoppen. Elke weg eindigt in `Actie::StopBediening`.
+- **Alleen een monitor**, afgedwongen in `Streams::deel` én bij het aankondigen. Een klik op een
+  gedeeld venster valt op wat er toevallig bovenop ligt. Geen camera.
+- **`SendInput` alleen op de eigen bedienthread**, die in `GetMessageW` slaapt en met
+  `PostMessageW` gewekt wordt. Nooit op de motortik of de GPUI-thread, en geen pollende lus. De
+  muis met `ABSOLUTE | VIRTUALDESK`, altijd geklemd binnen de gedeelde monitor
+  (`naar_bureaublad`, het midden van de pixel); toetsen als scancode.
+- **Niets blijft hangen.** De bedienthread laat bij het einde los wat ingedrukt staat, en een
+  toets na 1,5 s zonder invoer. Het kijkvenster laat los bij focusverlies of muisvangstverlies.
+  Het loslaten wordt nooit afgeremd en valt nooit uit een te groot bericht (`begrens`).
+- **De rem staat bij de deler**: invoer, klembord en vragen per scherm (`Emmer`). Invoer maakt
+  geen nieuwe momentopname (`Engine::stil`); anders bouwt de deler er 125 per seconde.
+- **Geen hook** (beslissing 42). Alt+Tab, de Windows-toets en Ctrl+Alt+Del blijven bij de
+  bediener. Stoppen is Escape 1,5 s vasthouden: geen Ctrl+Alt-combinatie (AltGr), geen toets die
+  op een laptop ontbreekt, niet de rechter Ctrl (push-to-talk).
+- **Tijdens het bedienen doet het kijkvenster zelf niets** met F11, D, Escape, dubbelklik of de
+  rechterknop, en de klik die het venster activeert gaat niet mee. Pen en bedienen sluiten
+  elkaar uit. Titel, klembordluisteraar en muisvangst veranderen in `Venster::werk` en
+  `zet_bediening`, niet in de vensterprocedure.
+- **Het klembord alleen tijdens het bedienen en alleen een verandering ná Allow.** Nooit wat er
+  al op stond (een wachtwoord uit een wachtwoordbeheerder). Alleen tekst, NUL eruit, hooguit
+  64 KiB, groter gaat niet over (niet afkappen). Geen pingpong: een eigen schrijfactie wordt aan
+  volgnummer en hash herkend, voor het hele proces. Nooit de tekst in een logregel; `ClipboardText`
+  heeft daarom een eigen `Debug`.
+- **Opties per gedeeld scherm** (`DeelOpties`); `allow_drawing` en `allow_remote_control`
+  (standaard uit) zijn de standaard. Uit in Settings geldt ook voor wat loopt, aan alleen voor
+  een nieuw scherm. Zet `allow_remote_control` nooit standaard aan.
+- **macOS:** niet gebouwd. `BEDIENEN_KAN` is daar onwaar, dus een mac-deler kondigt het nooit
+  aan; `mac/bediening.rs` en de mac-venstermethodes zijn leeg.
 
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het

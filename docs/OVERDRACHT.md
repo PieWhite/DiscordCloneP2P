@@ -3081,6 +3081,136 @@ administrator draait (UIPI kan `GetAsyncKeyState` en de muis naar de overlay blo
 een sleep naar een monitor met een andere schaal (hij hertekent na de sleep met de nieuwe dpi;
 tijdens de sleep niet).
 
+### 54. Een gedeeld scherm bedienen, met het klembord erbij, en opties per gedeeld scherm (2026-10-22)
+
+Rick wilde wat TeamViewer heeft: een kijker neemt via het kijkvenster muis en toetsenbord van
+de deler over. Uit te zetten in Settings, en per scherm te kiezen bij het delen: "Allow
+drawing" en "Allow remote control", met de instelling als standaard. Bedienen staat standaard
+uit. Het klembord koos hij "alleen tijdens het bedienen": tekst, beide kanten op, alleen tussen
+de deler en wie hem nu bedient, met een harde grens.
+
+**De vorm is die van beslissing 45.** De deler is het middelpunt van zijn eigen scherm, de
+afzender komt uit de verbinding, alles is vluchtig en single-hop, en `streams.rs` beslist
+zonder hardware zodat het te testen is.
+
+**Het protocol: vier tags en een veld, geen bump.** `StreamAnnounce::remote_control`
+(`#[serde(default)]`), `RemoteRequest` (52, kijker vraagt of stopt; een ontbrekend `want` is
+stoppen), `RemoteState` (53, deler zegt ja of nee), `RemoteInput` (54, een rij `InputEvent`
+met een `u8`-soort zoals `StreamKind`) en `ClipboardText` (55, zonder de tekst in `Debug`). Een
+oudere deler stuurt `remote_control` niet, dus bij hem kan niemand iets vragen; een oudere peer
+slaat de tags stil over. De `protocol-reviewer` vond het additief en compatibel in beide
+richtingen. Zijn echte bevinding: een te groot `RemoteInput` in zijn geheel laten vallen laat
+bij een nieuwere zender met een ruimere grens het loslaten van Shift wegvallen. Nu neemt de
+deler de eerste 64 plus elk loslaten erna (`bediening::begrens`). Zijn tweede punt, een rem op
+vragen, staat in `streams.rs` (drie, dan één per vijf seconden).
+
+**Toestemming per keer, met één klik.** Een kijker die vraagt krijgt niets tot de gebruiker
+van de deler Allow klikt. Dit is volledige controle over iemands pc; "iedereen die kijkt mag"
+(zoals bij tekenen) was hier te ruim, ook binnen het vriendenmodel. De vraag staat onder de
+titelbalk, in elke weergave en ook buiten een gesprek (een gedeeld scherm blijft lopen na het
+verlaten van het gesprek), met een Windows-melding erbij als het venster achter het spel zit.
+Allow draagt de peer mee, zodat een klik op een vraag die intussen weg of van een ander is
+niets doet. Een vraag die na 60 s nog ligt is nee (`VRAAG_GELDIG`): anders klikt de deler na
+een potje op iets wat de vrager allang vergeten is. Eén vrager en één bediener tegelijk; een
+tweede hoort meteen nee, zonder melding bij de deler. Zolang iemand bedient zegt dezelfde balk
+wie, met Stop control.
+
+**Wanneer het stopt.** Stop control, de optie uit (per scherm of in Settings), stoppen met
+delen, de bediener tekent uit, valt weg of stopt zelf. Een andere kijker die vertrekt raakt het
+niet. Opnieuw intekenen op dezelfde stream (de hersync van tekenen) laat het staan.
+
+**Alleen een monitor.** Een venster delen laat zich nooit bedienen, ook als de schakelaar aan
+staat (`Streams::deel` en `aangekondigd` dwingen het allebei af). Een klik op "het venster" valt
+op wat er op dat moment op die plek bovenop ligt, en dat ziet de bediener niet: hij zou blind in
+andere programma's klikken. Het venster vooraan halen bij elke klik kan Windows niet beloven
+(voorgrondregels) en zou bovendien het venster van de deler zelf wegduwen. Een camera nooit.
+
+**Bij de deler: een eigen thread die slaapt.** `fitcom_video::bediening::Bediener`, alleen
+zolang er bediend wordt. Hij wacht in `GetMessageW` op een berichtvenster (`HWND_MESSAGE`); de
+motor zet invoer in een kanaal en wekt hem met `PostMessageW`. Geen tik en geen poll: in rust
+kost hij niets (invariant 4), en `SendInput` loopt nooit op de motortik of de GPUI-thread. De
+muis gaat met `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK` naar het midden van een pixel
+binnen de gedeelde monitor (`naar_bureaublad`; het midden, zodat het niet uitmaakt of Windows
+door 65535 of 65536 deelt), elke muisgebeurtenis met zijn eigen plek erin, zodat een klik valt
+waar de bediener klikte. Fysieke pixels: het proces is PerMonitorV2 (het manifest van GPUI).
+Toetsen als scancode met `KEYEVENTF_SCANCODE` (de indeling van de deler bepaalt het teken, een
+spel leest scancodes); Pause en NumLock als virtuele toets omdat ze dezelfde scancode delen. De
+thread houdt bij wat ingedrukt staat en laat dat bij het stoppen los. Een toets die 1,5 s
+ingedrukt staat zonder dat er iets binnenkomt gaat ook los: een vastgehouden toets herhaalt
+zich bij de bediener, dus stilte is een bediener die weg is (`DODE_MAN`). Een muisknop niet:
+lang vasthouden zonder te bewegen is gewoon gebruik. De motor rekent de invoer af (`Emmer`,
+600 per seconde met 200 als uitschieter, per scherm) behalve het loslaten, en maakt na invoer
+geen nieuwe momentopname: anders bouwt de deler er 125 per seconde.
+
+**Bij de kijker: het kijkvenster.** Het menu onder de rechterknop krijgt "Take control of this
+screen" (of "Cancel the control request"). Bedient hij, dan gaan muis, knoppen, wiel en toetsen
+(ook `WM_SYSKEYDOWN`, dus Alt-combinaties en Alt+F4) naar de deler zolang het venster de focus
+heeft, en doet het venster zelf niets meer met F11, D, Escape, dubbelklik of de rechterknop.
+Bewegingen worden per 8 ms samengevat tot één, nooit over een klik heen. De klik die het venster
+vooraan haalt gaat niet mee (`MA_ACTIVATEANDEAT`). Focus kwijt of muisvangst kwijt: alles wat
+via ons ingedrukt stond gaat los bij de deler.
+- **Stoppen = Escape 1,5 s vasthouden.** Escape zelf gaat gewoon door. Afgewezen: een
+  toetscombinatie met Ctrl+Alt (AltGr is Ctrl+Alt op een Europese indeling, dus een ä typen
+  zou stoppen), Scroll Lock of Pause (bestaan niet op een laptop) en de rechter Ctrl (de
+  standaardtoets van push-to-talk). Vasthouden is het patroon van Chrome uit een
+  toetsenbordvergrendeling, en het staat in de titel. Het venster sluiten stopt ook.
+- **Pen en bedienen sluiten elkaar uit**: toestemming zet de pen neer.
+- **Geen hook** (beslissing 42): Alt+Tab en de Windows-toets blijven bij de bediener, en
+  Ctrl+Alt+Del bestaat niet. Dat kan alleen met een `WH_KEYBOARD_LL`, en die is verboden.
+- Titel, klembordluisteraar, pen en muisvangst worden bijgewerkt in `Venster::werk` en
+  `zet_bediening`, niet in de vensterprocedure: elk van die aanroepen stuurt zelf weer
+  berichten naar het venster.
+
+**Het klembord.** Alleen `CF_UNICODETEXT`, NUL eruit, hooguit 64 KiB (UTF-8), groter gaat niet
+over en wordt niet afgekapt. De deler luistert op zijn bedienthread, de kijker op zijn
+kijkvenster, allebei met `AddClipboardFormatListener` en alleen zolang er bediend wordt. **Alleen
+een verandering ná het toestaan**, nooit wat er al op stond: op het klembord van de deler kan
+net een wachtwoord uit zijn wachtwoordbeheerder staan. Geen pingpong: het proces onthoudt van
+zijn laatste eigen schrijfactie het volgnummer en een hash (nooit de tekst), voor elke
+luisteraar tegelijk, ook bij twee peers die elkaar tegelijk bedienen. Stream-id's zijn per
+eigenaar uniek; een `ClipboardText` is eerst "voor mijn scherm" als de afzender het bedient, en
+anders "van zijn scherm" als ik het zijne bedien. Beide zetten hetzelfde klembord van deze pc,
+dus het verschil doet er niet toe (de reviewer vond het geen protocolprobleem zolang beide kanten
+hetzelfde doen). Een rem per kant: twee per seconde.
+
+**Opties per scherm in plaats van één schakelaar (afwijking van beslissing 49).** Tekenen was
+één stand voor elk eigen scherm. Nu draagt elk gedeeld scherm zijn eigen opties
+(`DeelOpties`), gekozen in de kiezer bij het delen, en zijn `allow_drawing` en het nieuwe
+`allow_remote_control` (standaard uit, `#[serde(default)]`) de standaard. "Stream <spel>" en de
+camera nemen de standaard zonder kiezer. **Uitzetten in Settings geldt ook voor wat loopt** (de
+noodknop), **aanzetten alleen voor een nieuw scherm**: anders zou een algemene schakelaar een
+bewust uitgezet scherm stilletjes weer openzetten. Per lopend scherm staan op zijn regel in het
+gesprekspaneel een pen en een pijl. `UiCommand::ZetTekenen` heeft dus geen stream-id en de
+nieuwe `ZetStreamTekenen` wel.
+
+**macOS.** Niet gebouwd: `BEDIENEN_KAN` is daar onwaar, dus een mac-deler kondigt het nooit aan
+en de schakelaars staan er niet. `mac/bediening.rs` is een lege `Bediener` die weigert te
+starten, het mac-kijkvenster heeft lege `zet_bediening`/`zet_klembord`. Nooit gecompileerd op
+een Mac.
+
+**Geverifieerd, op deze pc, zonder echte invoer.** Rick kon aan het gamen zijn: geen
+`SendInput` naar het echte bureaublad, geen gesimuleerde invoer, het echte klembord niet
+aangeraakt, geen venster geopend. Unit-tests: de berichten en hun tags, `begrens`, de rem, het
+klembord schoonmaken; in `streams.rs` wie mag vragen, dat er zonder klik niets gebeurt, dat
+alleen de bediener invoer geeft (een andere kijker met hetzelfde bericht niet), één tegelijk,
+elke manier van stoppen, het verlopen van een vraag, de rem op vragen en invoer (loslaten nooit),
+het klembord alleen tussen deler en bediener, de kijkerskant (een ongevraagd ja, een ja van een
+ander, optie uit); het omrekenen naar de monitor (twee monitoren, negatieve coördinaten,
+hoeken) en de `INPUT`-structuren zonder ze te versturen; het loslaten; wat het kijkvenster van
+toetsen en knoppen maakt, samenvatten, Escape vasthouden. Headless in GPUI: de balk buiten een
+gesprek, Allow met de juiste peer, Deny, Stop, de schakelaars per scherm en in de kiezer.
+
+**Niet geverifieerd, en dat kon hier niet:** alles met twee machines (`docs/TESTPLAN.md`, "Een
+gedeeld scherm bedienen"), of `SendInput` echt op de juiste pixel landt bij gemengde DPI, de
+klembordweg op een echt bureaublad, de vertraging, en macOS.
+
+**Bekende grenzen.** Een spel dat de muis vangt en relatief leest ziet geen beweging (klikken en
+toetsen wel). Een programma dat als administrator draait neemt niets aan (UIPI), stil. Geen
+bediening van een gedeeld venster. Bedienen loopt door zolang de deler het niet intrekt, ook als
+hij van zijn pc wegloopt; er is geen tijdslimiet en geen stopknop in de tray.
+
+**Wat je niet mag omdraaien:** zie de sectie "Een gedeeld scherm bedienen" in `CLAUDE.md`.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
