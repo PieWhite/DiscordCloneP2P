@@ -519,22 +519,24 @@ pub fn open_file(ui: &Ui, op: &OpRef) {
 fn open_with_shell(path: &Path) {
     #[cfg(windows)]
     {
-        use windows::core::{w, HSTRING, PCWSTR};
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        let target = HSTRING::from(path);
-        // One argument, no shell parsing — same reason as `open_link`: a filename may
-        // contain `&`, and through `cmd /c start` that would be a second command.
-        unsafe {
-            ShellExecuteW(
-                None,
-                w!("open"),
-                PCWSTR(target.as_ptr()),
-                PCWSTR::null(),
-                PCWSTR::null(),
-                SW_SHOWNORMAL,
-            );
-        }
+        let target = windows::core::HSTRING::from(path);
+        off_the_window_thread(move || {
+            use windows::core::{w, PCWSTR};
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            // One argument, no shell parsing — same reason as `open_link`: a filename may
+            // contain `&`, and through `cmd /c start` that would be a second command.
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    w!("open"),
+                    PCWSTR(target.as_ptr()),
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                );
+            }
+        });
     }
 
     #[cfg(target_os = "macos")]
@@ -686,7 +688,10 @@ pub fn open_link(url: &str) {
         tracing::warn!(url, "link not opened: only http(s) is followed");
         return;
     }
-    shell_open(url);
+    let url = url.to_string();
+    off_the_window_thread(move || {
+        shell_open(&url);
+    });
 }
 
 /// A Spotify track from the chat, opened in this machine's Spotify app as
@@ -703,9 +708,45 @@ pub fn open_spotify_track(id: &str) {
         tracing::warn!(id, "not a Spotify track id; not opened");
         return;
     }
-    if !shell_open(&format!("spotify:track:{id}")) {
-        shell_open(&format!("https://open.spotify.com/track/{id}"));
+    let id = id.to_string();
+    off_the_window_thread(move || {
+        if !shell_open(&format!("spotify:track:{id}")) {
+            shell_open(&format!("https://open.spotify.com/track/{id}"));
+        }
+    });
+}
+
+/// Runs a shell call on a short-lived thread of its own, never on the window thread.
+///
+/// `ShellExecuteW` pumps the message queue while it waits for the handler (Spotify, a
+/// browser, Media Player). Called from a click handler, that pump re-enters GPUI while it
+/// already holds the App borrow: "RefCell already borrowed", then a panic in a function
+/// that cannot unwind, and the app is gone (logs 2026-10-19 and 2026-10-20). The thread
+/// gets its own STA, which the shell wants for the COM handlers it may delegate to.
+#[cfg(windows)]
+fn off_the_window_thread(work: impl FnOnce() + Send + 'static) {
+    let started = std::thread::Builder::new()
+        .name("fitcom-shell".into())
+        .spawn(move || {
+            use windows::Win32::System::Com::{
+                CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+            };
+            let com =
+                unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+            work();
+            if com.is_ok() {
+                unsafe { CoUninitialize() };
+            }
+        });
+    if let Err(e) = started {
+        tracing::warn!(error = %e, "shell thread not started; nothing opened");
     }
+}
+
+/// macOS hands over to `open` with `spawn`, which pumps nothing: inline is fine.
+#[cfg(not(windows))]
+fn off_the_window_thread(work: impl FnOnce() + Send + 'static) {
+    work();
 }
 
 /// Hands one URI to the system, as one argument and never through a command line.
