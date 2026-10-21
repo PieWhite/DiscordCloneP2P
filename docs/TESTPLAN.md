@@ -1561,3 +1561,33 @@ Op deze pc geverifieerd:
     multicast)? En klopt de Reachability-regel daarna?
 16. De kijker op de Mac: beeld blijft vloeiend (de kijker slaapt nu het laatste stuk voor een
     beeld met `thread::sleep`; op macOS is dat al fijn, dus geen verschil verwacht).
+
+## Spraakoverlay (2026-10-22, beslissing 53)
+
+Op deze pc geverifieerd: het hele beeld van de overlay in een geheugen-DC (Inter Medium laadt
+onder zijn GDI-naam, opgelichte tekst wit, gedimde grijs, pil op 85 %, doorzichtig tussen de
+rijen), de rijen uit de feeds, het klemmen van de plek en de config, met unit-tests. **Het
+venster zelf heeft nog nooit op een bureaublad gestaan** (Rick zat te gamen). Eén pc met een
+tweede peer in het gesprek is genoeg.
+
+1. **Aan en uit.** Settings → Audio → "In-game overlay" aanzetten. Niets te zien zolang je niet
+   in het gesprek zit. Deelnemen: linksboven op het hoofdscherm een pil met je naam, en één per
+   peer in het gesprek. Verlaten: weg. Uitzetten tijdens een gesprek: weg; aan: terug.
+2. **Oplichten.** Praat: je eigen naam wordt wit met een groene ring, en dooft kort na je
+   laatste woord. Op mute licht hij niet op, ook niet als je praat. Een peer die praat licht op,
+   in de pas met de ring in de ledenlijst.
+3. **Doorklikbaar en geen focus.** Klik op de overlay zonder Alt: de klik gaat naar wat
+   eronder staat. Het spel verliest nooit de focus, ook niet bij oplichten.
+4. **Alt + slepen.** Houd Alt vast en sleep een pil: de overlay schuift mee. Los: weer
+   doorklikbaar. Herstart de app: hij staat waar je hem liet (`[overlay] x`/`y` in
+   `config.toml`). Sleep hem half van het scherm af: bij het volgende oplichten springt hij
+   terug binnen het scherm. Sleep hem naar een tweede monitor met een andere schaal: na het
+   loslaten heeft hij de maat van die monitor.
+5. **Monitor weg.** Zet hem op een tweede monitor, sluit af, koppel die monitor los, start:
+   linksboven op het hoofdscherm.
+6. **Niet in de opname.** Deel je scherm en maak een clip terwijl de overlay staat: de kijker
+   en de clip zien hem niet.
+7. **Over een spel.** Een randloos spel: de overlay staat erboven. Noteer de frametijd met en
+   zonder overlay (PresentMon, of het overlay van de GPU-driver) en of het spel uit
+   "independent flip" valt. Exclusief schermvullend: geen overlay, zoals afgesproken.
+8. **Een spel als administrator.** Werkt Alt + slepen nog? Zo niet, noteer het spel.

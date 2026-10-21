@@ -28,6 +28,16 @@ De vijf features van 1.10.0 (beslissing 41 t/m 45) zijn gebouwd; dit bleef bewus
   laag op macOS. Geen limiet per kijker op tekenberichten. Meten wat de laag kost boven een
   venstergame met titelbalk.
 
+## Spraakoverlay (beslissing 53, 2026-10-22)
+- **Over exclusief schermvullend:** kan alleen met injectie in het spel. Afgewezen, niet
+  uitgesteld.
+- **macOS:** niet gebouwd (een `NSPanel` op een hoog niveau, buiten de ScreenCaptureKit-opname).
+- **Avatars of een kleur per persoon** in plaats van de beginletter; geen naam bij wie zichzelf
+  gedempt heeft of door jou gedempt is.
+- **Opnieuw klemmen bij `WM_DISPLAYCHANGE`:** nu pas bij de volgende wijziging van de rijen.
+  Een sleep naar een monitor met een andere schaal hertekent ook pas na de sleep.
+- **Meten wat hij kost** boven een randloos spel (independent flip aan/uit, frametijden).
+
 ## Overig
 - **Camera-opname op macOS.** De camera is op Windows gebouwd (Media Foundation, zie
   `crates/video/src/camera.rs`); op macOS bewust niet. Een mac kan wél naar de camera van

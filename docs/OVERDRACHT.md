@@ -3000,6 +3000,86 @@ naar een ander scherm verhuist (dat volgt de controle per seconde), en of een an
 Windows-build de FP16-opname anders schaalt. Komt bij een andere peer het hele bureaublad in
 HDR 2-3× te licht of te donker door, dan is dat de plek.
 
+### 53. Spraakoverlay: wie er in het gesprek zit, als doorklikbaar venster bovenop het spel (2026-10-22)
+
+Rick wilde wat Discord heeft: tijdens het spelen een klein lijstje met wie er in het gesprek
+zit, gedimd, en een naam die oplicht terwijl die persoon praat; verplaatsen met Alt + slepen.
+Hij accepteerde vooraf de grens: het is een gewoon venster bovenop alles, dus het werkt over
+randloze en venster-spellen en **niet over exclusief schermvullend**. Injecteren in een spel
+(wat Discord doet) is uitgesloten, nu en later.
+
+**Gekozen.** `crates/video/src/spraaklaag.rs`, naast de tekenlaag (beslissing 45), want het
+is hetzelfde venster: layered, `WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE |
+WS_EX_TOOLWINDOW`, `WDA_EXCLUDEFROMCAPTURE` (lukt dat niet, dan geen overlay; anders staat hij
+in je eigen share en in elke clip). `tekenlaag::Laag` kreeg daarvoor `maak` met een eigen
+vensterklasse en `toon_beeld` voor een heel beeld per wijziging; de diff-weg van de lijnen is
+niet aangeraakt. Pillen en stippen tekent `penseel` (een capsule is een lijnstuk met ronde
+uiteinden; `stuk` kreeg een dekking). Alleen de tekst is GDI: wit op zwart in hetzelfde beeld,
+dat als masker gelezen, daarna de pillen, dan de tekst in zijn eigen kleur erover
+(`Doek::bedek`). GDI schrijft geen alfa en ClearType geeft kleurranden, vandaar
+`ANTIALIASED_QUALITY` en het masker. Lettertype: Inter Medium uit de exe
+(`theme::INTER_MEDIUM`, `AddFontMemResourceEx`, GDI-familienaam "Inter Medium"; een test
+controleert dat GDI hem onder die naam vindt). Kleuren uit de B-tokens, door de app
+meegegeven: `BACKDROP` voor de pil, `LIFT` voor de stip, `ONLINE` voor de spreekring,
+`TEXT_MUTED` gedimd en `TEXT_STRONG` opgelicht. Maten bij 96 dpi, geschaald met de dpi van de
+monitor waar hij staat (`GetDpiForMonitor`).
+
+**De voeding.** Een vierde taak in `ui/bridge.rs` (alleen Windows) wacht op de state- en de
+meterfeed en leidt de rijen af (`overlay_rows`): jijzelf als je in het gesprek zit, dan de
+bekende peers met `in_call`, in de volgorde van de ledenlijst. Spreken is
+`MeterReadings::{self_speaking, peers[..].speaking}`, dus precies de ring: met de hold, en
+`self_speaking` is al `eigen_spreekt && actief && !muted` (mute wint). Namen door
+`speelt::schoon`, want ze komen van een andere PC. Er gaat alleen iets naar de overlay als de
+rijen anders zijn, niet bij elke metertik (het niveau beweegt elke tik). Niets ervan staat in
+`UiState` behalve `overlay.enabled`/`available`.
+
+**Bestaat alleen als er iets te tonen is.** De taak maakt `Spraaklaag` bij deelnemen (met de
+schakelaar aan) en laat hem vallen bij verlaten of uitzetten; de thread ruimt zijn venster
+zelf op. Buiten een gesprek is er geen thread, geen venster en geen Alt-pollen. Geen `join`
+in een `Drop`: de laatste referentie valt op een tokio-worker, en de thread kan midden in een
+sleep van Windows zitten.
+
+**De thread.** Eigen berichtenlus, gevoed door een kanaal. Hertekent alleen bij nieuwe rijen of
+na een sleep, hooguit eens per `MIN_HERTEKEN` (30 ms), en zet zich dan opnieuw op
+`HWND_TOPMOST` (een spel dat na ons bovenop ging staan zou hem anders begraven). Elke 50 ms,
+alleen zolang hij bestaat: berichten pompen en `GetAsyncKeyState(VK_MENU)`. Alt omlaag haalt
+`WS_EX_TRANSPARENT` eraf (plus `SetWindowPos(SWP_FRAMECHANGED)`), en de vensterprocedure zegt
+overal `HTCAPTION`, zodat Windows zelf het slepen doet; `WM_MOUSEACTIVATE` geeft
+`MA_NOACTIVATE`. Na de sleep leest de thread `GetWindowRect`, onthoudt de plek en stuurt
+`ZetOverlayPlek` naar de motor, die hem in `[overlay]` in `config.toml` zet: één schrijf per
+sleep. Geen hook en geen `RegisterHotKey` (beslissing 42). Alleen de pillen zijn raakbaar:
+een pixel met alfa 0 laat een klik altijd door, ook met Alt.
+
+**De plek** wordt bij elk tekenen geklemd (`plaats`): ligt de bewaarde hoek niet meer op een
+monitor, of is er nog geen, dan linksboven op het hoofdscherm met 16 px marge; altijd helemaal
+binnen het scherm, ook als hij groeit. De geklemde plek wordt niet bewaard, alleen een sleep.
+
+**Anders dan de tekenlaag wijkt hij niet** voor wat schermvullend vooraan staat
+(`schermvullend_vooraan`): daar is hij juist voor. **De prijs** staat in de moduledoc van
+`tekenlaag.rs`: een topmost venster bovenop een randloos spel kan dat spel uit independent
+flip halen, en dan stelt de compositor elk beeld samen. Dat kost mogelijk wat latentie of
+beelden; daarom staat hij standaard uit en is het Ricks keuze. Zelf doet hij niets per beeld:
+in rust tekent hij niets, en een spreekwissel is één `UpdateLayeredWindow` van een paar
+kilobyte.
+
+**macOS:** geen overlay. De module en de taak staan achter `#[cfg(windows)]`; Settings toont
+op mac een regel in plaats van de schakelaar (`OverlayState::available`).
+
+**Waar de schakelaar staat:** Settings → Audio, "In-game overlay", onder push-to-talk.
+Standaard uit; `[overlay] enabled`, `x`, `y`, alles `#[serde(default)]`.
+
+**Niet getest** (Rick zat te gamen; geen testvenster op zijn scherm, geen schermopname): het
+venster zelf op een echt bureaublad. Wel getest: het hele beeld in een geheugen-DC (tekst,
+kleuren, doorzichtigheid tussen de rijen, voorvermenigvuldigd), de rijen uit de feeds, het
+klemmen en de config. Rick moet nog zien: dat hij verschijnt bij deelnemen en verdwijnt bij
+verlaten, oplicht bij spreken (ook zijn eigen naam, en niet op mute), Alt + slepen (en dat de
+plek een herstart overleeft), dat hij niet in een eigen share of clip staat, en hoe het voelt
+over een randloos spel (frametijd met en zonder). Onbekend: slepen terwijl een spel de muis
+vasthoudt (een FPS met een gevangen cursor; dan eerst de cursor vrij), een spel dat als
+administrator draait (UIPI kan `GetAsyncKeyState` en de muis naar de overlay blokkeren), en
+een sleep naar een monitor met een andere schaal (hij hertekent na de sleep met de nieuwe dpi;
+tijdens de sleep niet).
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

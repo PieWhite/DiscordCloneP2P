@@ -524,6 +524,38 @@ Beslissing 52 in `docs/OVERDRACHT.md`. `crates/video/src/hdr.rs` plus de opname 
 - **Eén omzetting in `Schermcapture`**, zodat deler en clip niet uit elkaar kunnen lopen.
 - **`KNIE` is de ene knop.** Geen tweede curve of instelling ernaast.
 
+## Spraakoverlay (2026-10-22)
+Beslissing 53 in `docs/OVERDRACHT.md`. `crates/video/src/spraaklaag.rs` is het venster, de
+vierde taak in `ui/bridge.rs` (`spawn_overlay`, `overlay_rows`) de voeding. Settings → Audio.
+Wat je niet mag omdraaien:
+
+- **Een gewoon venster, nooit injectie.** Layered, topmost, doorklikbaar, zonder focus. Werkt
+  over randloos en venster, niet over exclusief schermvullend; dat is de afgesproken grens.
+- **Buiten de schermopname of helemaal niet** (`WDA_EXCLUDEFROMCAPTURE`, via `Laag::maak`).
+  Zonder uitsluiting staat hij in je eigen share en in elke clip.
+- **Hij wijkt niet voor een schermvullend spel**, anders dan de tekenlaag: daar is hij voor.
+  De prijs (independent flip) is waarom hij **standaard uit** staat. Zet hem niet aan als
+  default.
+- **Spreken is de ring.** De rijen komen uit `MeterReadings` (met de hold; `self_speaking`
+  is al "in gesprek en niet op mute"). Geen tweede berekening, geen eigen drempel.
+- **Niets ervan in `UiState`** behalve `overlay.enabled`/`available`. Rijen gaan alleen naar
+  de overlay als ze anders zijn, niet per metertik.
+- **Hij bestaat alleen zolang er rijen zijn.** Bij verlaten of uitzetten valt `Spraaklaag`
+  weg met thread en venster; buiten een gesprek is er niets dat pollt. Geen `join` in een
+  `Drop` (de laatste referentie valt op een tokio-worker).
+- **Alleen tekenen bij een wijziging**, hooguit eens per `MIN_HERTEKEN`; niets per beeld,
+  niets animeert.
+- **Alt lezen met `GetAsyncKeyState` op de eigen 50 ms-tik**, alleen terwijl hij bestaat.
+  Geen hook, geen `RegisterHotKey` (beslissing 42). Slepen doet Windows via `HTCAPTION`;
+  een plek gaat één keer per sleep naar de motor (`ZetOverlayPlek`), nooit per beweging.
+- **Pillen en stippen via `penseel`, tekst via GDI als masker.** Geen tweede tekenstack, en
+  geen ClearType op een layered venster (kleurranden, geen alfa).
+- **Kleuren en lettertype komen uit de app** (`Stijl`, uit de B-tokens en
+  `theme::INTER_MEDIUM`); de video-crate kent geen kleurwaarde.
+- **De plek wordt bij elk tekenen geklemd**, en alleen een sleep wordt bewaard.
+- **Namen door `speelt::schoon`**: ze komen van een andere PC.
+- **macOS: geen overlay**, alles achter `#[cfg(windows)]`; Settings zegt het.
+
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het
 manifest live gaat**. De volgorde staat in `docs/OVERDRACHT.md` § "Een release uitgeven";
