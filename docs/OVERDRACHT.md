@@ -2953,6 +2953,53 @@ DJ weg, dan stopt wel de muziek en zijn scherm bij de anderen. De logs van de an
 2026-10-20 09:16) zijn waarschijnlijk dezelfde pomp die toevallig overleefde, maar dat is
 niet nagegaan.
 
+### 52. Een HDR-scherm delen of clippen: zelf omzetten in plaats van Windows laten knippen (2026-10-21)
+
+Rick: met HDR aan ziet zijn gedeelde scherm er bij de kijkers slecht uit, en zijn clips
+ook, "alleen bij bijvoorbeeld DayZ". `capture.rs` vroeg de opname altijd in
+`B8G8R8A8UIntNormalized`. Op een HDR-scherm zet Windows dan zelf om, en **gemeten** (Ricks
+pc, 10.0.22631, hoofdscherm in HDR, schuif SDR-inhoud op 3,5) doet die omzetting niets
+anders dan `sRGB(clamp(fp16, 0, 1))`: elk kanaal los afgeknipt op SDR-wit. Het bureaublad
+komt nooit boven SDR-wit, dus daar zie je niets. Een spel in HDR, of Auto HDR op een
+DX11-spel als DayZ, wel: in dezelfde meting (League of Legends liep) zat 4% van de pixels
+boven 1,0, tot ruim 3. Afknippen per kanaal maakt van al dat licht een vlakke witte of gele
+vlek met verschoven tinten.
+
+**Gekozen:** op een scherm in HDR (`IDXGIOutput6::GetDesc1`, kleurruimte
+`RGB_FULL_G2084_NONE_P2020`) de pool in `R16G16B16A16Float`, en `hdr.rs::Hdrnaarsdr` zet
+dat met één pixelshader om naar dezelfde BGRA-textuur als altijd: een zachte knie op het
+sterkste kanaal (identiek tot 0,8, daarboven `x/(1+x)` met helling 1 bij de knie, de kleur
+schaalt mee) en sRGB-gamma. De shader vervangt de `CopyResource` die er al stond, leest
+rechtstreeks uit het WGC-oppervlak, dus geen beeld extra en niets in het werkgeheugen; de
+encoder, de terugblik en de clip zien het verschil niet. Op een SDR-scherm blijft het de kale
+kopie. HDR wordt eens per seconde opnieuw gevraagd op de opnamedraad (een spel kan het scherm
+omzetten, en de clipopname loopt de hele sessie); bij een wissel gaat de pool om via
+`herbouw`. Bind-en-teken staat tussen `ID3D11Multithread::Enter/Leave`, omdat clip en deler
+tegelijk op dezelfde context tekenen. De shader wordt bij het starten gecompileerd met
+`D3DCompile` (d3dcompiler_47, zit in Windows); lukt dat niet, dan valt hij terug op de oude
+weg.
+
+**Schaal 1,0, niet delen door het SDR-witniveau.** Dat was het eerste plan, op gezag van
+wat bij desktopduplicatie geldt (GStreamer, WebRTC): daar staat SDR-inhoud in FP16 op het
+witniveau en moet je delen. Bij Windows.Graphics.Capture niet: grijs 64/96/128/160/240 uit de
+8-bit-opname kwam in FP16 terug als precies de sRGB-lineaire waarde met wit op 1,0, en
+gedeeld door 3,5 werd alles 3,5× te donker. Test
+`capture::tests::hdr_weg_geeft_hetzelfde_beeld_als_bgra` (ignored, echt scherm) vergelijkt
+per grijsniveau de mediaan van beide wegen: 0 verschil onder de knie, op het HDR-scherm.
+
+**De prijs van de knie.** Elke curve die iets boven 1,0 wil bewaren moet ruimte onder 1,0
+afstaan. Bij `KNIE = 0,8` komt SDR-wit op 0,9 lineair (sRGB 243 in plaats van 255) en valt
+1,0-3,0 in 243-254: tinten blijven, maar hoge lichten zijn vlak. `KNIE` in `hdr.rs` is de ene
+knop: hoger maakt SDR-inhoud exacter en hoge lichten vlakker, lager andersom. Geen HEVC,
+geen 10 bit: op de draad blijft het 8-bit H.264.
+
+**Niet getest:** DayZ zelf, de kijkerkant en een clip met HDR aan — dat moet Rick doen. Ook
+niet: de ketentest over het nieuwe pad (Rick zat midden in een potje op dat scherm, en die
+test draait encoder en decoder seconden lang op zijn GPU), een venster dat tijdens het delen
+naar een ander scherm verhuist (dat volgt de controle per seconde), en of een andere
+Windows-build de FP16-opname anders schaalt. Komt bij een andere peer het hele bureaublad in
+HDR 2-3× te licht of te donker door, dan is dat de plek.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
@@ -3147,6 +3194,7 @@ crates/video/src/deler.rs   opnemen → coderen → fragmenteren → UDP  (één
 crates/video/src/kijker.rs  UDP → samenstellen → decoderen → venster (één per stream)
 crates/video/src/venster.rs Win32-venster met eigen swapchain
 crates/video/src/kleur.rs   NV12 → BGRA via ID3D11VideoProcessor
+crates/video/src/hdr.rs     Scherm in HDR: FP16-opname → BGRA met een knie (beslissing 52)
 ```
 
 De splitsing tussen `streams.rs` en `engine.rs` is dezelfde als bij de chat en om

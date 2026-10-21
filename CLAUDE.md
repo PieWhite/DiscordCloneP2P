@@ -512,6 +512,18 @@ bevestiging. Wat je niet mag omdraaien:
   terug na een herinstallatie, en het blijft een keuze van de gebruiker (`docs/BEVEILIGING.md`,
   addendum 2026-10-19).
 
+## Een HDR-scherm delen en clippen (2026-10-21)
+Beslissing 52 in `docs/OVERDRACHT.md`. `crates/video/src/hdr.rs` plus de opname in
+`capture.rs`. Wat je niet mag omdraaien:
+
+- **Op een HDR-scherm FP16 opnemen en zelf omzetten.** De 8-bit-opname van Windows knipt elk
+  kanaal af op SDR-wit; dat was de bug. Op de draad blijft het 8-bit H.264.
+- **Schaal 1,0, niet delen door het SDR-witniveau.** In de FP16-opname van WGC staat SDR-wit
+  al op 1,0 (gemeten). Delen geldt bij desktopduplicatie, niet hier.
+- **Een SDR-scherm blijft een kale `CopyResource`.** Geen shader als HDR uit staat.
+- **Eén omzetting in `Schermcapture`**, zodat deler en clip niet uit elkaar kunnen lopen.
+- **`KNIE` is de ene knop.** Geen tweede curve of instelling ernaast.
+
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het
 manifest live gaat**. De volgorde staat in `docs/OVERDRACHT.md` § "Een release uitgeven";
