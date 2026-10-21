@@ -450,11 +450,27 @@ pub struct SoundSettings {
 }
 
 /// The in-game overlay: on or off, and whether this platform has one.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayState {
+    #[serde(default)]
     pub enabled: bool,
     /// False on macOS, which has no overlay: the tab says so instead of a dead switch.
+    #[serde(default = "overlay_available")]
     pub available: bool,
+}
+
+/// A fixture `state.json` without the field draws the switch where the platform has one.
+impl Default for OverlayState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            available: overlay_available(),
+        }
+    }
+}
+
+fn overlay_available() -> bool {
+    cfg!(windows)
 }
 
 /// How the microphone gate is operated: voice activity alone, or with a key.
@@ -988,7 +1004,7 @@ impl UiState {
             allow_drawing: snap.tekenen,
             overlay: OverlayState {
                 enabled: snap.overlay.enabled,
-                available: cfg!(windows),
+                available: overlay_available(),
             },
             sound_sets: c.sound_sets.clone(),
             sound_events: c.sound_events.clone(),

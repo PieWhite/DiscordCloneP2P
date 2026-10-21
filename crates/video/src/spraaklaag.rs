@@ -33,10 +33,10 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     AddFontMemResourceEx, CreateFontW, DeleteObject, DrawTextW, GdiFlush, GetTextExtentPoint32W,
-    MonitorFromPoint, SelectObject, SetBkMode, SetTextColor, ANTIALIASED_QUALITY,
+    MonitorFromPoint, MonitorFromRect, SelectObject, SetBkMode, SetTextColor, ANTIALIASED_QUALITY,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HDC, HFONT, HMONITOR, MONITOR_DEFAULTTONULL,
-    MONITOR_DEFAULTTOPRIMARY, OUT_TT_PRECIS, TRANSPARENT,
+    DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HDC, HFONT, HMONITOR, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, OUT_TT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_MENU};
@@ -279,23 +279,32 @@ fn teken(
     stijl: &Stijl,
 ) -> Option<RECT> {
     // SAFETY: kale opzoekingen, geen eigendom.
-    let (bij_plek, hoofd) = unsafe {
-        let bij_plek = plek
-            .map(|(x, y)| MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL))
-            .filter(|m| !m.is_invalid());
+    // De schaal van de monitor het dichtst bij de plek: half over de rand gesleept telt nog.
+    let (dichtst, hoofd) = unsafe {
         (
-            bij_plek,
+            plek.map(|(x, y)| MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST)),
             MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY),
         )
     };
     let hoofd_kader = monitor_kader(hoofd)?;
-    let scherm = bij_plek.and_then(monitor_kader);
-    let dpi = dpi_van(bij_plek.unwrap_or(hoofd));
+    let dpi = dpi_van(dichtst.unwrap_or(hoofd));
     if fonts.as_ref().is_none_or(|f| f.dpi != dpi) {
         *fonts = Some(Fonts::nieuw(stijl, dpi));
     }
     let f = fonts.as_ref()?;
     let o = Opmaak::nieuw(laag.dc(), f, sprekers);
+    // Het scherm waar hij het meest op ligt; ligt hij op geen enkel (monitor weg), dan geen.
+    let scherm = plek
+        .map(|(x, y)| RECT {
+            left: x,
+            top: y,
+            right: x + o.maat.0,
+            bottom: y + o.maat.1,
+        })
+        // SAFETY: een rechthoek opzoeken; geen eigendom.
+        .map(|r| unsafe { MonitorFromRect(&r, MONITOR_DEFAULTTONULL) })
+        .filter(|m| !m.is_invalid())
+        .and_then(monitor_kader);
     let (x, y) = plaats(plek, o.maat, scherm, hoofd_kader, schaal(MARGE, dpi));
     let kader = RECT {
         left: x,

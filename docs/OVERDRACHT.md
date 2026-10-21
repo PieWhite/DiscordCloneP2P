@@ -3050,9 +3050,10 @@ overal `HTCAPTION`, zodat Windows zelf het slepen doet; `WM_MOUSEACTIVATE` geeft
 sleep. Geen hook en geen `RegisterHotKey` (beslissing 42). Alleen de pillen zijn raakbaar:
 een pixel met alfa 0 laat een klik altijd door, ook met Alt.
 
-**De plek** wordt bij elk tekenen geklemd (`plaats`): ligt de bewaarde hoek niet meer op een
-monitor, of is er nog geen, dan linksboven op het hoofdscherm met 16 px marge; altijd helemaal
-binnen het scherm, ook als hij groeit. De geklemde plek wordt niet bewaard, alleen een sleep.
+**De plek** wordt bij elk tekenen geklemd (`plaats`): binnen de monitor waar hij het meest op
+ligt (`MonitorFromRect`), dus half over een rand gesleept schuift hij terug; ligt hij op geen
+enkele monitor meer, of is er nog geen plek, dan linksboven op het hoofdscherm met 16 px
+marge. Altijd helemaal binnen het scherm, ook als hij groeit. De geklemde plek wordt niet bewaard, alleen een sleep.
 
 **Anders dan de tekenlaag wijkt hij niet** voor wat schermvullend vooraan staat
 (`schermvullend_vooraan`): daar is hij juist voor. **De prijs** staat in de moduledoc van
