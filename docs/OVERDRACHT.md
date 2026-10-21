@@ -2922,6 +2922,37 @@ boven elke echte drift, en een verschuiving van één sample hoor je niet. Test
 zelf: of die klopt voor een proces-loopbackclient is niet zeker, en het moment van lezen
 op de tapdraad zit er een paar ms naast, ruim binnen de grens.
 
+### 51. Een klik die de shell iets laat openen liet de app vallen (2026-10-21)
+
+Rick: "Open in Spotify" laat de client crashen, en "Share clip" ook. De log (2026-10-19 22:10
+en 2026-10-20 14:01) gaf het meteen: een vloed `RefCell already borrowed`, dan een paniek in
+`gpui-pre/src/app/async_context.rs:66` (`update_entity` → `borrow_mut`) en "panic in a
+function that cannot unwind", met in de backtrace `ShellExecuteW → ShellExecuteExW →
+DispatchMessageW`. `ShellExecuteW` pompt berichten terwijl hij op de handler wacht (Spotify,
+browser, mediaspeler). Vanuit een klikhandler gebeurt dat terwijl GPUI de App al geleend
+heeft; elk bericht dat dan binnenkomt leent hem opnieuw, en zodra er een voorgrondtaak zonder
+`try_` tussen zit is het proces weg. Eén oorzaak, elke knop die de shell iets laat openen:
+`open_spotify_track`, `open_link` (ook de YouTube-kaart), `open_file` (Open op een bijlage)
+en `open_clips_folder`. "Share clip" zelf stuurt alleen een commando naar de motor; de crash
+van 14:01 kwam 36 s na een bewaarde clip en had `ShellExecuteW` in de backtrace, dus dat was
+Open op de clip of de clipmap, niet Share.
+
+**Gekozen:** `ui/commands.rs::off_the_window_thread`: de shell-aanroep op een eigen kort
+draadje met een eigen STA (`CoInitializeEx` met `COINIT_DISABLE_OLE1DDE`, de shell wil COM
+voor de handlers waaraan hij delegeert). De terugval van Spotify naar de webspeler zit in
+dezelfde closure, zodat de >32-test blijft werken. Op macOS ongewijzigd: `open` wordt
+gespawnd en pompt niets. **Roep nooit iets aan dat berichten pompt (ShellExecute, MessageBox,
+TrackPopupMenu, een modale dialoog) vanuit een GPUI-handler.** Geen test: het pompen van
+`ShellExecuteW` is headless niet na te bootsen.
+
+Niet bevestigd: dat het bij *iedereen* in het gesprek crasht. De Spotify-knop stuurt niets
+over de draad (beslissing 41), en Ricks log toont geen crash als een ander wegvalt. Valt de
+DJ weg, dan stopt wel de muziek en zijn scherm bij de anderen. De logs van de andere peers
+(`paniek` in `%APPDATA%\FitCommunication\data\logs`) moeten dat uitsluiten. Ook de losse
+`RefCell already borrowed`-vloeden zonder paniek (2026-10-16 10:23, 10:34, 16:54 en
+2026-10-20 09:16) zijn waarschijnlijk dezelfde pomp die toevallig overleefde, maar dat is
+niet nagegaan.
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.
