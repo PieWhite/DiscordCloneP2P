@@ -205,6 +205,110 @@ control_messages! {
     53 => RemoteState(RemoteState),
     54 => RemoteInput(RemoteInput),
     55 => ClipboardText(ClipboardText),
+
+    // 56-59: een nummer in de wachtrij van de DJ zetten (2026-10-22, beslissing 55). Vluchtig
+    // en single-hop zoals 46: van luisteraar naar DJ (56, 58) en het antwoord terug (57, 59),
+    // nooit een op. Alleen de DJ praat met de Spotify Web API; de luisteraar stuurt een
+    // zoekvraag of een track-id en krijgt platte tekst of een uitkomst terug. Een oudere DJ
+    // slaat de tags over; de luisteraar ziet dan na een paar seconden "geen antwoord".
+    56 => MusicSearch(MusicSearch),
+    57 => MusicSearchResults(MusicSearchResults),
+    58 => MusicQueue(MusicQueue),
+    59 => MusicQueueResult(MusicQueueResult),
+}
+
+/// Zoekvragen langer dan dit laat de DJ vallen; de luisteraar knipt zelf al af. Tekens, geen
+/// bytes.
+pub const MAX_MUZIEK_ZOEKVRAAG: usize = 100;
+/// Hooguit zoveel zoekresultaten in één antwoord; meer laat de ontvanger weg. Spotify geeft er
+/// sinds februari 2026 hooguit 10 per vraag, de DJ vraagt er 5.
+pub const MAX_MUZIEK_RESULTATEN: usize = 10;
+
+/// Hoe een zoekvraag of een wachtrijverzoek bij de DJ afliep, als `u8` op de draad: een
+/// onbekende uitkomst van een nieuwere peer komt door als "onbekend" (= mislukt) in plaats van
+/// het bericht te laten vallen. De luisteraar maakt er zelf tekst van; er reist geen foutzin van
+/// Spotify of de DJ mee.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MusicOutcome(pub u8);
+
+impl MusicOutcome {
+    /// Gelukt: in de wachtrij, of hier zijn de resultaten.
+    pub const OK: Self = Self(1);
+    /// De DJ heeft Spotify niet gekoppeld (geen client-id of niet ingelogd).
+    pub const NOT_LINKED: Self = Self(2);
+    /// Spotify speelt bij de DJ op geen enkel apparaat.
+    pub const NO_DEVICE: Self = Self(3);
+    /// Spotify weigert (403): geen Premium, of het account staat niet bij de app.
+    pub const REFUSED: Self = Self(4);
+    /// Te veel verzoeken, bij de DJ of bij Spotify (429).
+    pub const BUSY: Self = Self(5);
+    /// Offline, time-out of iets anders.
+    pub const FAILED: Self = Self(6);
+}
+
+impl std::fmt::Debug for MusicOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::OK => write!(f, "Ok"),
+            Self::NOT_LINKED => write!(f, "NotLinked"),
+            Self::NO_DEVICE => write!(f, "NoDevice"),
+            Self::REFUSED => write!(f, "Refused"),
+            Self::BUSY => write!(f, "Busy"),
+            Self::FAILED => write!(f, "Failed"),
+            Self(n) => write!(f, "Unknown({n})"),
+        }
+    }
+}
+
+/// "Zoek dit bij Spotify." Alleen naar de DJ van `stream_id`; die neemt het aan onder dezelfde
+/// regel als [`MusicControl`]. `request_id` komt ongewijzigd terug in het antwoord, zodat een
+/// laat antwoord op een oude vraag niets overschrijft.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicSearch {
+    pub stream_id: u32,
+    pub request_id: u32,
+    #[serde(default)]
+    pub query: String,
+}
+
+/// Eén zoekresultaat. Alles hierin komt van Spotify via een andere pc: de ontvanger controleert
+/// het id en maakt de tekst schoon voordat hij iets toont.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicTrack {
+    pub track_id: String,
+    #[serde(default)]
+    pub title: String,
+    /// De artiesten, al samengevoegd ("A, B").
+    #[serde(default)]
+    pub artists: String,
+    #[serde(default)]
+    pub duration_ms: u32,
+}
+
+/// Het antwoord op een [`MusicSearch`]. Bij een andere uitkomst dan `OK` is `results` leeg.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicSearchResults {
+    pub request_id: u32,
+    pub outcome: MusicOutcome,
+    #[serde(default)]
+    pub results: Vec<MusicTrack>,
+}
+
+/// "Zet dit nummer in je wachtrij." Alleen een track-id (22 tekens base62); de DJ controleert
+/// het opnieuw en maakt er zelf `spotify:track:<id>` van.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicQueue {
+    pub stream_id: u32,
+    pub request_id: u32,
+    pub track_id: String,
+}
+
+/// Het antwoord op een [`MusicQueue`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicQueueResult {
+    pub request_id: u32,
+    pub outcome: MusicOutcome,
 }
 
 /// "Ik wil dit scherm bedienen" (`want`) of "ik stop / trek mijn vraag in" (`!want`). Alleen
@@ -1017,6 +1121,25 @@ mod tests {
                 stream_id: 0,
                 text: String::new(),
             }),
+            ControlMsg::MusicSearch(MusicSearch {
+                stream_id: 0,
+                request_id: 0,
+                query: String::new(),
+            }),
+            ControlMsg::MusicSearchResults(MusicSearchResults {
+                request_id: 0,
+                outcome: MusicOutcome::OK,
+                results: vec![],
+            }),
+            ControlMsg::MusicQueue(MusicQueue {
+                stream_id: 0,
+                request_id: 0,
+                track_id: String::new(),
+            }),
+            ControlMsg::MusicQueueResult(MusicQueueResult {
+                request_id: 0,
+                outcome: MusicOutcome::OK,
+            }),
         ];
         let mut tags: Vec<u16> = all.iter().map(|m| m.tag()).collect();
         tags.sort_unstable();
@@ -1448,6 +1571,71 @@ mod tests {
                 }
                 other => panic!("verkeerde variant: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn wachtrijberichten_roundtrip_met_vaste_tags() {
+        let zoek = ControlMsg::MusicSearch(MusicSearch {
+            stream_id: 9,
+            request_id: 3,
+            query: "daft punk".into(),
+        });
+        let resultaten = ControlMsg::MusicSearchResults(MusicSearchResults {
+            request_id: 3,
+            outcome: MusicOutcome::OK,
+            results: vec![MusicTrack {
+                track_id: "4uLU6hMCjMI75M1A2tKUQC".into(),
+                title: "Veridis Quo".into(),
+                artists: "Daft Punk".into(),
+                duration_ms: 345_000,
+            }],
+        });
+        let wachtrij = ControlMsg::MusicQueue(MusicQueue {
+            stream_id: 9,
+            request_id: 4,
+            track_id: "4uLU6hMCjMI75M1A2tKUQC".into(),
+        });
+        let uitslag = ControlMsg::MusicQueueResult(MusicQueueResult {
+            request_id: 4,
+            outcome: MusicOutcome(200), // van een nieuwere peer; komt als onbekend door
+        });
+        for (msg, tag) in [
+            (zoek, 56u16),
+            (resultaten, 57),
+            (wachtrij, 58),
+            (uitslag, 59),
+        ] {
+            let bytes = msg.encode().unwrap();
+            assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), tag);
+            assert_eq!(ControlMsg::decode(&bytes).unwrap(), Some(msg));
+        }
+    }
+
+    #[test]
+    fn zoekresultaten_zonder_lijst_decoderen_ook() {
+        // Een DJ die bij een mislukking de lege lijst weglaat.
+        #[derive(Serialize)]
+        struct Kaal {
+            request_id: u32,
+            outcome: MusicOutcome,
+        }
+        let mut body = 57u16.to_be_bytes().to_vec();
+        let mut ser = rmp_serde::Serializer::new(&mut body).with_struct_map();
+        serde::Serialize::serialize(
+            &Kaal {
+                request_id: 1,
+                outcome: MusicOutcome::NOT_LINKED,
+            },
+            &mut ser,
+        )
+        .unwrap();
+        match ControlMsg::decode(&body).unwrap() {
+            Some(ControlMsg::MusicSearchResults(r)) => {
+                assert_eq!(r.outcome, MusicOutcome::NOT_LINKED);
+                assert!(r.results.is_empty());
+            }
+            other => panic!("verkeerd: {other:?}"),
         }
     }
 }
