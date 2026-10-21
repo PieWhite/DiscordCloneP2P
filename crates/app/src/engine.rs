@@ -14,7 +14,7 @@
 
 use crate::chat::Chat;
 use crate::codes::{self, CodeWeigering, CodesUitslag, Koppeling};
-use crate::config::{self, Config, PushToTalkConfig, SoundConfig, VideoConfig};
+use crate::config::{self, Config, OverlayConfig, PushToTalkConfig, SoundConfig, VideoConfig};
 use crate::files::{self, DownloadStatus, Files, StartUpload};
 use crate::gebruik::{self, Gebruik};
 use crate::geluid;
@@ -250,6 +250,9 @@ pub struct Snapshot {
     pub eigen_spel: Option<String>,
     /// Mogen kijkers op je scherm tekenen (`Config::allow_drawing`).
     pub tekenen: bool,
+    /// De spraakoverlay (beslissing 53): aan of uit, en zijn plek bij het starten. De
+    /// overlay-thread houdt de plek daarna zelf bij en meldt een nieuwe met `ZetOverlayPlek`.
+    pub overlay: OverlayConfig,
     /// Gekozen microfoon, of `None` voor het Windows-standaardapparaat. Alleen voor het
     /// instellingenscherm: de sessie leest dit bij het starten uit de config.
     pub input_device: Option<String>,
@@ -350,6 +353,11 @@ pub enum UiCommand {
     ZetTekenen(bool),
     /// Alle lijnen op dit eigen scherm wissen, van iedereen.
     WisTekening(u32),
+    /// De spraakoverlay aan of uit (beslissing 53). Wordt opgeslagen (`Config::overlay`).
+    ZetOverlay(bool),
+    /// De overlay is met Alt + slepen verplaatst: zijn nieuwe linkerbovenhoek. Eén keer per
+    /// sleep, aan het eind; wordt opgeslagen.
+    ZetOverlayPlek(i32, i32),
     /// Volume van één stream van een peer, los van zijn stem.
     StreamVolume(PeerId, u32, f32),
     /// Codec, framerate en bitrate voor screenshare. Geldt voor delers die al lopen
@@ -2589,6 +2597,23 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
+            UiCommand::ZetOverlay(aan) => {
+                if self.cfg.overlay.enabled != aan {
+                    self.cfg.overlay.enabled = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+            }
+            UiCommand::ZetOverlayPlek(x, y) => {
+                if (self.cfg.overlay.x, self.cfg.overlay.y) != (Some(x), Some(y)) {
+                    self.cfg.overlay.x = Some(x);
+                    self.cfg.overlay.y = Some(y);
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+            }
             UiCommand::WisTekening(id) => {
                 let (cmds, acties) = self.streams.wis_tekening(id);
                 self.stuur_alles(cmds);
@@ -3474,6 +3499,7 @@ impl Engine {
             deel_activiteit: self.cfg.share_activity,
             eigen_spel: self.speelt_rust.huidig().map(str::to_owned),
             tekenen: self.cfg.allow_drawing,
+            overlay: self.cfg.overlay.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),

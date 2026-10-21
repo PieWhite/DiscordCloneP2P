@@ -106,6 +106,11 @@ pub struct Config {
     #[serde(default = "waar")]
     pub allow_drawing: bool,
 
+    /// Wie er in het gesprek zit, als klein venster bovenop je spel (beslissing 53).
+    /// Standaard uit.
+    #[serde(default)]
+    pub overlay: OverlayConfig,
+
     /// Waar gedownloade bestanden landen. Leeg = `<data-map>/downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_dir: Option<PathBuf>,
@@ -223,6 +228,23 @@ fn default_fps() -> u32 {
 
 fn default_bitrate() -> u32 {
     12_000_000
+}
+
+/// De spraakoverlay (beslissing 53): een doorklikbaar venster bovenop alles met wie er in
+/// het gesprek zit en wie er spreekt.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct OverlayConfig {
+    /// Standaard uit: een venster bovenop een randloos spel kan dat spel uit zijn eigen
+    /// presentatiepad halen, en dat is een keuze, geen default die je overkomt.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Linkerbovenhoek in schermpixels, gezet door hem met Alt + slepen te verplaatsen.
+    /// Leeg = linksboven op het hoofdscherm. Een plek op een monitor die er niet meer is
+    /// wordt bij het tonen naar een zichtbare geklemd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
 }
 
 /// Instellingen voor de cliprecorder (fase 15). De bitrate en fps van het beeld delen
@@ -521,6 +543,7 @@ impl Config {
             push_to_talk: PushToTalkConfig::default(),
             share_activity: default_share_activity(),
             allow_drawing: true,
+            overlay: OverlayConfig::default(),
             download_dir: None,
         }
     }
@@ -889,6 +912,27 @@ mod tests {
         let uit: Config = toml::from_str("display_name = \"Rick\"\nallow_drawing = false").unwrap();
         let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
         assert!(!terug.allow_drawing);
+    }
+
+    /// Een config van vóór de overlay start met de overlay uit; aan en een plek overleven
+    /// opslaan-en-teruglezen.
+    #[test]
+    fn overlay_staat_standaard_uit_en_onthoudt_zijn_plek() {
+        let oud: Config = toml::from_str(r#"display_name = "Rick""#).unwrap();
+        assert_eq!(oud.overlay, OverlayConfig::default());
+        assert!(!Config::template().overlay.enabled);
+        let gezet: Config =
+            toml::from_str("display_name = \"Rick\"\n[overlay]\nenabled = true\nx = -1900\ny = 40")
+                .unwrap();
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&gezet).unwrap()).unwrap();
+        assert_eq!(
+            terug.overlay,
+            OverlayConfig {
+                enabled: true,
+                x: Some(-1900),
+                y: Some(40)
+            }
+        );
     }
 
     /// Een config van vóór de push-to-talk-tabel moet starten, in de oude modus; kapotte

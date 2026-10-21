@@ -47,6 +47,7 @@ fn config(naam: &str, poort: u16, downloads: &Path) -> Config {
         push_to_talk: Default::default(),
         share_activity: false,
         allow_drawing: true,
+        overlay: Default::default(),
         download_dir: Some(downloads.to_path_buf()),
     }
 }

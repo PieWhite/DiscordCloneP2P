@@ -1,7 +1,8 @@
-//! The Audio tab: devices, the input level, and the notification sounds.
+//! The Audio tab: devices, the input level, push to talk, the in-game overlay, and the
+//! notification sounds.
 
 use super::controls::{
-    auto_width, control_row, help, label, note, readout, select, Body, Piece, Range, Seg,
+    auto_width, control_row, help, label, note, readout, select, switch, Body, Piece, Range, Seg,
 };
 use super::{SettingsPane, DEFAULT_DEVICE};
 use crate::ui::commands;
@@ -91,6 +92,12 @@ impl SettingsPane {
                         .bg(theme::ONLINE),
                 )
                 .into_any_element()
+        });
+
+        let overlay = &s.overlay;
+        let (ui_overlay, overlay_on) = (snap.ui.clone(), overlay.enabled);
+        let overlay_toggle = std::rc::Rc::new(move |_: &_, _: &mut _, _: &mut _| {
+            commands::set_overlay(&ui_overlay, !overlay_on)
         });
 
         // A mode button sends the new mode with the key the engine has now.
@@ -266,6 +273,33 @@ impl SettingsPane {
                             "mouse button is the better choice."
                         )))
                         .child(control_row().child(select("set-ptt-key", &self.ptt_key, 300., true))),
+                )
+            })
+            .h2("In-game overlay")
+            .when(!overlay.available, |b| {
+                b.field(note(&[Piece::Text(
+                    "The overlay is not available on macOS.",
+                )]))
+            })
+            .when(overlay.available, |b| {
+                b.field(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(label("Show who is in the call").mb(px(2.)))
+                                .child(help(concat!(
+                                    "A small list on top of your game while you are in a call. A ",
+                                    "name lights up while that person speaks. Hold Alt and drag ",
+                                    "it to move it. It works over borderless and windowed games, ",
+                                    "not over exclusive fullscreen, and never shows up in your ",
+                                    "own share or clips."
+                                ))),
+                        )
+                        .child(switch("overlay", overlay.enabled, Some(overlay_toggle))),
                 )
             })
             .h2("Notification sounds")

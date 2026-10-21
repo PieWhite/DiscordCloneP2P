@@ -449,6 +449,14 @@ pub struct SoundSettings {
     pub volume: f32,
 }
 
+/// The in-game overlay: on or off, and whether this platform has one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OverlayState {
+    pub enabled: bool,
+    /// False on macOS, which has no overlay: the tab says so instead of a dead switch.
+    pub available: bool,
+}
+
 /// How the microphone gate is operated: voice activity alone, or with a key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PushToTalkState {
@@ -599,6 +607,9 @@ pub struct UiState {
     /// Whether viewers may draw on your shared screens. Comes from `config.toml`.
     #[serde(default)]
     pub allow_drawing: bool,
+    /// The in-game overlay of who is in the call (decision 53). Comes from `config.toml`.
+    #[serde(default)]
+    pub overlay: OverlayState,
     /// Constant for the life of the process; rides along so the Settings panel does not
     /// need a second call to draw the picker.
     pub sound_sets: Vec<SoundSetInfo>,
@@ -975,6 +986,10 @@ impl UiState {
             },
             share_activity: snap.deel_activiteit,
             allow_drawing: snap.tekenen,
+            overlay: OverlayState {
+                enabled: snap.overlay.enabled,
+                available: cfg!(windows),
+            },
             sound_sets: c.sound_sets.clone(),
             sound_events: c.sound_events.clone(),
             input_device: snap.input_device.clone(),

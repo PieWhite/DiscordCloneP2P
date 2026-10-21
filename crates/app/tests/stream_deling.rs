@@ -51,6 +51,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         push_to_talk: Default::default(),
         share_activity: false,
         allow_drawing: true,
+        overlay: Default::default(),
         download_dir: None,
     }
 }

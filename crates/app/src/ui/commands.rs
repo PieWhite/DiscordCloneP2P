@@ -337,6 +337,12 @@ pub fn set_share_activity(ui: &Ui, on: bool) {
     send(ui, UiCommand::ZetActiviteitDelen(on));
 }
 
+/// The in-game overlay of who is in the call, on or off. Saved to `config.toml` by the
+/// engine; the overlay itself follows from the next state update.
+pub fn set_overlay(ui: &Ui, on: bool) {
+    send(ui, UiCommand::ZetOverlay(on));
+}
+
 /// Play one tone so it can be judged. Ignores do-not-disturb on purpose: pressing the
 /// button is asking for it.
 pub fn preview_sound(ui: &Ui, sound: &str) {
