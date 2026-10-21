@@ -65,6 +65,10 @@ pub mod opname;
 /// Lijnen op een BGRA-doek, voor de tekenlagen en de tegels (beslissing 45).
 pub mod penseel;
 pub mod spoor;
+/// De spraakoverlay: wie er in het gesprek zit, bovenop je spel (beslissing 53). Alleen
+/// Windows; op macOS is er geen overlay.
+#[cfg(windows)]
+pub mod spraaklaag;
 /// Het doorklikbare venster met de lijnen erop: over een kijkvenster en over een gedeelde
 /// monitor. Op macOS alleen een lege `Deellaag`.
 #[cfg(windows)]

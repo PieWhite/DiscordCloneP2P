@@ -20,12 +20,15 @@
 //! Hij moet ook buiten de schermopname blijven (`WDA_EXCLUDEFROMCAPTURE`): anders neemt de
 //! opname de lijnen mee in het beeld, en dan staan ze bij elke kijker dubbel en in elke clip.
 //! Lukt dat niet (Windows ouder dan 10 2004), dan is er geen laag.
+//!
+//! De spraakoverlay (`spraaklaag`, beslissing 53) is hetzelfde venster met een eigen
+//! vensterklasse; hij tekent een heel beeld per wijziging via [`Laag::toon_beeld`].
 
 use crate::penseel::{aanvulling, Doek, Kader, MIN_HERTEKEN};
 use anyhow::{Context, Result};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use fitcom_proto::teken::Tekening;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -76,7 +79,13 @@ impl Laag {
     /// verdwijnt mee bij minimaliseren, en staat niet boven andere programma's. Zonder
     /// eigenaar staat hij bovenop alles en buiten de schermopname: de laag bij de deler.
     pub(crate) fn nieuw(eigenaar: Option<HWND>) -> Result<Self> {
-        registreer_klasse()?;
+        static EEN_KEER: Once = Once::new();
+        registreer_klasse(KLASSE, laag_proc, &EEN_KEER)?;
+        Self::maak(KLASSE, eigenaar)
+    }
+
+    /// Als [`Laag::nieuw`], met een vensterklasse die de aanroeper registreerde.
+    pub(crate) fn maak(klasse: PCWSTR, eigenaar: Option<HWND>) -> Result<Self> {
         let mut stijl = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
         if eigenaar.is_none() {
             stijl |= WS_EX_TOPMOST;
@@ -85,7 +94,7 @@ impl Laag {
         let hwnd = unsafe {
             CreateWindowExW(
                 stijl,
-                KLASSE,
+                klasse,
                 w!(""),
                 WS_POPUP,
                 0,
@@ -189,6 +198,62 @@ impl Laag {
         if vuil.is_none() && !heel {
             return;
         }
+        if !self.werk_bij(kader, if heel { None } else { vuil }) {
+            self.getoond = None;
+        }
+    }
+
+    /// Een heel nieuw beeld van de maat van `kader`: `vul` krijgt het doek (met het vorige
+    /// beeld er nog in; wissen is aan `vul`) en de geheugen-DC waar het in zit, voor GDI.
+    pub(crate) fn toon_beeld(&mut self, kader: RECT, vul: impl FnOnce(&mut Doek<'_>, HDC)) {
+        let breedte = (kader.right - kader.left).max(1) as u32;
+        let hoogte = (kader.bottom - kader.top).max(1) as u32;
+        let zelfde_maat = self
+            .beeld
+            .as_ref()
+            .is_some_and(|d| d.breedte == breedte && d.hoogte == hoogte);
+        if !zelfde_maat {
+            self.laat_beeld_los();
+            if let Err(e) = self.maak_beeld(breedte, hoogte) {
+                tracing::warn!(error = %format!("{e:#}"), "laag: geen beeld");
+                return;
+            }
+        }
+        let Some(dib) = self.beeld.as_ref() else {
+            return;
+        };
+        // SAFETY: zoals in `toon`.
+        let px = unsafe {
+            std::slice::from_raw_parts_mut(dib.bits, breedte as usize * hoogte as usize * 4)
+        };
+        vul(
+            &mut Doek {
+                px,
+                breedte,
+                hoogte,
+            },
+            self.dc,
+        );
+        self.getoond = None;
+        self.werk_bij(kader, None);
+    }
+
+    pub(crate) fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    /// De geheugen-DC van het beeld, om tekst in te meten.
+    pub(crate) fn dc(&self) -> HDC {
+        self.dc
+    }
+
+    /// Het beeld in de DC naar het venster op `kader`, en tonen als hij verborgen was.
+    /// `vuil`: alleen dat stuk is veranderd; `None` is alles.
+    fn werk_bij(&mut self, kader: RECT, vuil: Option<RECT>) -> bool {
+        let Some(dib) = self.beeld.as_ref() else {
+            return false;
+        };
+        let (breedte, hoogte) = (dib.breedte, dib.hoogte);
         let plek = POINT {
             x: kader.left,
             y: kader.top,
@@ -214,9 +279,9 @@ impl Laag {
             crKey: COLORREF(0),
             pblend: &menging,
             dwFlags: ULW_ALPHA,
-            prcDirty: match (&vuil, heel) {
-                (Some(r), false) => r,
-                _ => std::ptr::null(),
+            prcDirty: match &vuil {
+                Some(r) => r,
+                None => std::ptr::null(),
             },
         };
         // SAFETY: alle verwijzingen in `info` leven tot na de aanroep; de DIB zit in `dc`.
@@ -226,8 +291,7 @@ impl Laag {
                 error = %windows::core::Error::from_thread(),
                 "tekenlaag bijwerken mislukt"
             );
-            self.getoond = None;
-            return;
+            return false;
         }
         self.kader = kader;
         if !self.zichtbaar {
@@ -237,6 +301,7 @@ impl Laag {
             }
             self.zichtbaar = true;
         }
+        true
     }
 
     pub(crate) fn verberg(&mut self) {
@@ -311,16 +376,18 @@ impl Drop for Laag {
     }
 }
 
-fn registreer_klasse() -> Result<()> {
-    use std::sync::Once;
-    static EEN_KEER: Once = Once::new();
+/// `klasse` met `proc` registreren, één keer per proces (`een_keer` hoort bij de klasse).
+pub(crate) fn registreer_klasse(
+    naam: PCWSTR,
+    proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+    een_keer: &'static Once,
+) -> Result<()> {
     let mut uitkomst = Ok(());
-    EEN_KEER.call_once(|| {
-        // SAFETY: één keer per proces; de standaardprocedure is genoeg voor een venster dat
-        // niets ontvangt.
+    een_keer.call_once(|| {
+        // SAFETY: één keer per proces per klasse.
         unsafe {
             let klasse = WNDCLASSW {
-                lpfnWndProc: Some(laag_proc),
+                lpfnWndProc: Some(proc),
                 hInstance: match GetModuleHandleW(None) {
                     Ok(h) => h.into(),
                     Err(e) => {
@@ -328,7 +395,7 @@ fn registreer_klasse() -> Result<()> {
                         return;
                     }
                 },
-                lpszClassName: KLASSE,
+                lpszClassName: naam,
                 ..Default::default()
             };
             if RegisterClassW(&klasse) == 0 {
@@ -339,6 +406,7 @@ fn registreer_klasse() -> Result<()> {
     uitkomst
 }
 
+/// De standaardprocedure is genoeg voor een venster dat niets ontvangt.
 unsafe extern "system" fn laag_proc(
     hwnd: HWND,
     msg: u32,

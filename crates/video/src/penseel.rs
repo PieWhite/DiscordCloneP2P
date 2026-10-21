@@ -1,5 +1,6 @@
 //! Lijnen op een BGRA-doek: voor de laag over een kijkvenster of een gedeeld scherm, en voor
-//! de tegels in het hoofdvenster (beslissing 45). Zuiver Rust, op beide platforms, zonder
+//! de tegels in het hoofdvenster (beslissing 45). De spraakoverlay (beslissing 53) tekent er
+//! zijn pillen en stippen mee: een capsule is hetzelfde stuk met ronde uiteinden. Zuiver Rust, op beide platforms, zonder
 //! GPU en zonder tekenbibliotheek: een lijn is een reeks stukken met ronde uiteinden, en elke
 //! pixel krijgt de dekking van zijn afstand tot het stuk.
 //!
@@ -84,23 +85,60 @@ impl Doek<'_> {
 
         match lijn.punten.as_slice() {
             [] => None,
-            [p] if vanaf == 0 => self.stuk(naar_px(*p), naar_px(*p), straal, kleur),
+            [p] if vanaf == 0 => self.stuk(naar_px(*p), naar_px(*p), straal, kleur, 1.0),
             punten => (vanaf.max(1)..punten.len()).fold(None, |k, i| {
                 unie(
                     k,
-                    self.stuk(naar_px(punten[i - 1]), naar_px(punten[i]), straal, kleur),
+                    self.stuk(
+                        naar_px(punten[i - 1]),
+                        naar_px(punten[i]),
+                        straal,
+                        kleur,
+                        1.0,
+                    ),
                 )
             }),
         }
     }
 
-    /// Eén stuk met ronde uiteinden. `kleur` is BGR.
+    /// Een gevulde capsule van `a` naar `z` in pixels: een stip als ze samenvallen, een pil
+    /// als ze op één hoogte liggen. `rgb` met `alfa` (0..1) als dekking.
+    pub fn capsule(
+        &mut self,
+        a: (f32, f32),
+        z: (f32, f32),
+        straal: f32,
+        rgb: [u8; 3],
+        alfa: f32,
+    ) -> Option<Kader> {
+        let kleur = [f32::from(rgb[2]), f32::from(rgb[1]), f32::from(rgb[0])];
+        self.stuk(a, z, straal, kleur, alfa.clamp(0.0, 1.0))
+    }
+
+    /// `rgb` over het doek binnen `kader`, met per pixel de dekking uit `masker` (een byte
+    /// per pixel, even groot als het doek): tekst die elders als grijswaarden getekend is.
+    pub fn bedek(&mut self, masker: &[u8], kader: Kader, rgb: [u8; 3]) {
+        let kleur = [f32::from(rgb[2]), f32::from(rgb[1]), f32::from(rgb[0])];
+        let b = self.breedte as i32;
+        for y in kader.y0.max(0)..kader.y1.min(self.hoogte as i32) {
+            for x in kader.x0.max(0)..kader.x1.min(b) {
+                let i = (y * b + x) as usize;
+                let Some(&m) = masker.get(i) else { continue };
+                if m > 0 {
+                    meng(&mut self.px[i * 4..i * 4 + 4], kleur, f32::from(m) / 255.0);
+                }
+            }
+        }
+    }
+
+    /// Eén stuk met ronde uiteinden. `kleur` is BGR, `alfa` de dekking van het geheel.
     fn stuk(
         &mut self,
         a: (f32, f32),
         z: (f32, f32),
         straal: f32,
         kleur: [f32; 3],
+        alfa: f32,
     ) -> Option<Kader> {
         let rand = straal + 1.0;
         let x0 = ((a.0.min(z.0) - rand).floor() as i32).max(0);
@@ -124,21 +162,25 @@ impl Doek<'_> {
                     0.0
                 };
                 let (ox, oy) = (px - (a.0 + t * dx), py - (a.1 + t * dy));
-                let dekking = (straal + 0.5 - (ox * ox + oy * oy).sqrt()).clamp(0.0, 1.0);
+                let dekking = (straal + 0.5 - (ox * ox + oy * oy).sqrt()).clamp(0.0, 1.0) * alfa;
                 if dekking <= 0.0 {
                     continue;
                 }
                 let i = y as usize * rij + x as usize * 4;
-                let pixel = &mut self.px[i..i + 4];
-                let rest = 1.0 - dekking;
-                for k in 0..3 {
-                    pixel[k] = (kleur[k] * dekking + f32::from(pixel[k]) * rest).round() as u8;
-                }
-                pixel[3] = (255.0 * dekking + f32::from(pixel[3]) * rest).round() as u8;
+                meng(&mut self.px[i..i + 4], kleur, dekking);
             }
         }
         Some(Kader { x0, y0, x1, y1 })
     }
+}
+
+/// `kleur` (BGR) met `dekking` over één voorvermenigvuldigde pixel.
+fn meng(pixel: &mut [u8], kleur: [f32; 3], dekking: f32) {
+    let rest = 1.0 - dekking;
+    for k in 0..3 {
+        pixel[k] = (kleur[k] * dekking + f32::from(pixel[k]) * rest).round() as u8;
+    }
+    pixel[3] = (255.0 * dekking + f32::from(pixel[3]) * rest).round() as u8;
 }
 
 /// Wat er sinds `oud` bijkwam, als er alleen iets bijkwam: per lijn van `nieuw` vanaf welk
@@ -245,6 +287,42 @@ mod tests {
         };
         let k = doek.teken_alles(&t).expect("de hoek zelf is geraakt");
         assert!(k.x1 <= 10 && k.y1 <= 10);
+    }
+
+    /// Een halfdoorzichtige pil blijft voorvermenigvuldigd, en tekst eroverheen dekt waar het
+    /// masker dat zegt en nergens anders.
+    #[test]
+    fn een_doorzichtige_pil_en_tekst_erover() {
+        let (b, h) = (40u32, 10u32);
+        let mut px = vec![0u8; (b * h * 4) as usize];
+        let mut doek = Doek {
+            px: &mut px,
+            breedte: b,
+            hoogte: h,
+        };
+        doek.capsule((5.0, 5.0), (35.0, 5.0), 5.0, [0, 0, 0], 0.5)
+            .expect("geraakt");
+        let mut masker = vec![0u8; (b * h) as usize];
+        masker[(5 * b + 20) as usize] = 255;
+        doek.bedek(
+            &masker,
+            Kader {
+                x0: 0,
+                y0: 0,
+                x1: b as i32,
+                y1: h as i32,
+            },
+            [255, 255, 255],
+        );
+        let p = |x: u32, y: u32| {
+            px[((y * b + x) * 4) as usize..((y * b + x) * 4 + 4) as usize].to_vec()
+        };
+        assert_eq!(p(10, 5), vec![0, 0, 0, 128], "zwart op de helft");
+        assert_eq!(p(20, 5), vec![255, 255, 255, 255], "tekst dekt helemaal");
+        assert_eq!(p(0, 0), vec![0, 0, 0, 0], "buiten de pil niets");
+        assert!(px
+            .chunks_exact(4)
+            .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
     }
 
     #[test]
