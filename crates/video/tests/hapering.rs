@@ -171,6 +171,7 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
             codec,
             afzender: deler_id,
             post: post_kijker.clone(),
+            menu: None,
         },
     )
     .expect("kijker starten");

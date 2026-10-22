@@ -140,7 +140,7 @@ fn lus(
             return;
         }
     };
-    laad_font(&stijl);
+    laad_font(stijl.font);
     let mut fonts: Option<Fonts> = None;
     let mut sprekers: Vec<Spreker> = Vec::new();
     let mut vuil = false;
@@ -197,16 +197,19 @@ fn lus(
 }
 
 /// Het eigen lettertype, één keer per proces en alleen voor dit proces. Mislukt het, dan
-/// kiest GDI zelf iets dat erop lijkt.
-fn laad_font(stijl: &Stijl) {
+/// kiest GDI zelf iets dat erop lijkt. Ook voor het menu van het kijkvenster.
+///
+/// shortcut: alleen het eerste lettertype telt; overlay en menu geven allebei Inter Medium.
+/// Een tweede lettertype vraagt een set van geladen fonts in plaats van één `OnceLock`.
+pub(crate) fn laad_font(font: &'static [u8]) {
     static GELADEN: OnceLock<()> = OnceLock::new();
     GELADEN.get_or_init(|| {
         let mut aantal = 0u32;
         // SAFETY: de bytes zijn `'static`; Windows kopieert ze.
         let h = unsafe {
             AddFontMemResourceEx(
-                stijl.font.as_ptr().cast(),
-                stijl.font.len() as u32,
+                font.as_ptr().cast(),
+                font.len() as u32,
                 None,
                 (&raw mut aantal).cast_const(),
             )
@@ -225,33 +228,37 @@ struct Fonts {
 
 impl Fonts {
     fn nieuw(stijl: &Stijl, dpi: u32) -> Self {
-        let naam: Vec<u16> = stijl.font_naam.encode_utf16().chain([0]).collect();
-        let maak = |px: i32| {
-            // SAFETY: `naam` eindigt op 0 en leeft tot na de aanroep.
-            unsafe {
-                CreateFontW(
-                    -schaal(px, dpi),
-                    0,
-                    0,
-                    0,
-                    FW_NORMAL.0 as i32,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET,
-                    OUT_TT_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    ANTIALIASED_QUALITY,
-                    0,
-                    PCWSTR(naam.as_ptr()),
-                )
-            }
-        };
         Self {
             dpi,
-            naam: maak(LETTER),
-            monogram: maak(MONOGRAM),
+            naam: maak_font(stijl.font_naam, LETTER, dpi),
+            monogram: maak_font(stijl.font_naam, MONOGRAM, dpi),
         }
+    }
+}
+
+/// Lettertype `naam` op `px` pixels bij 96 dpi, geschaald naar `dpi`, grijswaarden-
+/// antialiasing (geen ClearType: dat geeft kleurranden op een layered venster). De aanroeper
+/// ruimt hem op met `DeleteObject`.
+pub(crate) fn maak_font(naam: &str, px: i32, dpi: u32) -> HFONT {
+    let naam: Vec<u16> = naam.encode_utf16().chain([0]).collect();
+    // SAFETY: `naam` eindigt op 0 en leeft tot na de aanroep.
+    unsafe {
+        CreateFontW(
+            -schaal(px, dpi),
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_TT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY,
+            0,
+            PCWSTR(naam.as_ptr()),
+        )
     }
 }
 
@@ -266,7 +273,7 @@ impl Drop for Fonts {
     }
 }
 
-fn schaal(v: i32, dpi: u32) -> i32 {
+pub(crate) fn schaal(v: i32, dpi: u32) -> i32 {
     (v * dpi as i32 + 48) / 96
 }
 
@@ -496,7 +503,7 @@ fn kader_van(r: RECT) -> Kader {
     }
 }
 
-fn dpi_van(monitor: HMONITOR) -> u32 {
+pub(crate) fn dpi_van(monitor: HMONITOR) -> u32 {
     let (mut x, mut y) = (96u32, 96u32);
     // SAFETY: twee eigen uitvoervelden.
     match unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y) } {
@@ -603,7 +610,7 @@ mod tests {
             font: include_bytes!("../../app/src/ui/assets/fonts/Inter-Medium.ttf"),
             font_naam: "Inter Medium",
         };
-        laad_font(&stijl);
+        laad_font(stijl.font);
         let f = Fonts::nieuw(&stijl, 96);
         let sprekers = [
             Spreker {

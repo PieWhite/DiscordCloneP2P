@@ -383,17 +383,17 @@ enum VoicePeer<'a> {
 }
 
 /// One person in the call: avatar with the speaking ring, name, LIVE while they show a
-/// screen or camera, the mic-off glyph when muted. Hovering a peer's LIVE turns it into
+/// screen or camera, a glyph when muted or deafened (`mute_glyph`). Hovering a peer's LIVE turns it into
 /// Watch for a stream you are not watching yet (screens before cameras), as in Discord. The
 /// whole row is a meter view: the ring and the name's white both follow the speaking level.
 fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut App) -> AnyElement {
     let s = &snap.s;
-    let (key, name, hue, muted, live, watch) = match who {
+    let (key, name, hue, glyph, live, watch) = match who {
         VoicePeer::Me => (
             None,
             s.me.name.clone(),
             s.me.avatar,
-            s.voice.muted,
+            mute_glyph(s.voice.deafened, s.voice.muted, false),
             s.own_streams.iter().any(|st| !st.is_audio),
             None,
         ),
@@ -401,7 +401,7 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
             Some(p.id.clone()),
             p.name.clone(),
             p.avatar,
-            p.volume == 0.0,
+            mute_glyph(p.deafened, p.muted, p.volume == 0.0),
             s.streams.iter().any(|st| st.owner == p.id && !st.is_audio),
             s.streams
                 .iter()
@@ -453,17 +453,27 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
                 ),
                 _ => d.child(live_pill()),
             })
-            .when(muted, |d| {
-                d.child(
-                    div()
-                        .text_color(theme::TEXT_DIM)
-                        .child(Icon::MicOff.size(14.)),
-                )
+            .when_some(glyph, |d, icon| {
+                d.child(div().text_color(theme::TEXT_DIM).child(icon.size(14.)))
             })
             .test_support()
             .into_any_element()
     })
     .into_any_element()
+}
+
+/// The one glyph after a name in the call: deafened (which implies muted) shows only the
+/// headset, their own mute the mic, and a peer only we turned down to 0 the speaker.
+fn mute_glyph(deafened: bool, muted: bool, muted_for_you: bool) -> Option<Icon> {
+    if deafened {
+        Some(Icon::HeadOff)
+    } else if muted {
+        Some(Icon::MicOff)
+    } else if muted_for_you {
+        Some(Icon::VolumeOff)
+    } else {
+        None
+    }
 }
 
 /// Watch, laid over the LIVE pill and shown only while the row is hovered. Opens the
@@ -648,6 +658,8 @@ pub(super) mod tests {
             path: None,
             app_version: None,
             in_call,
+            muted: false,
+            deafened: false,
             volume: 1.0,
             unread: 0,
             last_seen: None,

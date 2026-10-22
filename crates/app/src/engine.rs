@@ -29,7 +29,7 @@ use fitcom_audio::{PeerAdres, VoiceConfig, VoiceHandle};
 use fitcom_net::{MeshCommand, MeshEvent, MeshHandle, PeerStatus, RecvStream, SendStream};
 use fitcom_proto::control::{
     Activity, MusicAction, MusicControl, StreamKind, Typing, UserStatus, UserStatusValue,
-    VoiceJoin, VoiceLeave,
+    VoiceJoin, VoiceLeave, VoiceState,
 };
 use fitcom_proto::{Channel, ControlMsg, OpId, OpKind, PeerId, TopicId};
 use fitcom_store::{FileEntry, Store, Timeline};
@@ -109,6 +109,9 @@ pub struct PeerView {
     /// Het spel dat bij deze peer vooraan staat, zoals hij het meldde en door `speelt::schoon`
     /// gehaald. `None` zonder spel, of offline. Wisselt alleen als hij van spel wisselt.
     pub activiteit: Option<String>,
+    /// Hij zette zichzelf op mute of deafen, zoals hij het meldde; alleen in het gesprek.
+    pub muted: bool,
+    pub deafened: bool,
     /// Zijn plek in `cfg.peers` (het targetnummer), gezet in de momentopname. Verwijderde
     /// peers staan daar niet in, dus de positie in die lijst is het niet.
     pub plek: usize,
@@ -129,6 +132,8 @@ impl PeerView {
             volume: 1.0,
             user_status: None,
             activiteit: None,
+            muted: false,
+            deafened: false,
             plek: 0,
         }
     }
@@ -616,6 +621,7 @@ pub fn spawn(
         speelt_rust: crate::speelt::Rust::default(),
         speelt_gemeten: None,
         peer_activiteit: HashMap::new(),
+        peer_voice: HashMap::new(),
         snap_tx,
         voorgrond: voorgrond.clone(),
         afsluiten_voor_update: afsluiten_voor_update.clone(),
@@ -760,6 +766,9 @@ struct Engine {
     speelt_rust: crate::speelt::Rust,
     speelt_gemeten: Option<Instant>,
     peer_activiteit: HashMap<PeerId, String>,
+    /// Mute en deafen zoals elke peer in het gesprek ze meldde (`VoiceState`, tag 22). Vluchtig
+    /// en single-hop, net als de status; weg bij verlaten, opnieuw deelnemen en wegvallen.
+    peer_voice: HashMap<PeerId, VoiceState>,
     snap_tx: watch::Sender<Arc<Snapshot>>,
     voorgrond: Arc<AtomicBool>,
     afsluiten_voor_update: Arc<AtomicBool>,
@@ -1084,10 +1093,17 @@ impl Engine {
                     if self.peers_in_voice.insert(from) {
                         self.geluid(geluid::Geluid::PeerJoin);
                     }
+                    // Een nieuwe sessie begint open; wie gemute is meldt dat direct na de Join,
+                    // over dezelfde geordende verbinding.
+                    self.peer_voice.remove(&from);
                     self.werk_voice_peers_bij();
+                }
+                ControlMsg::VoiceState(s) => {
+                    self.peer_voice.insert(from, s);
                 }
                 ControlMsg::VoiceLeave(_) => {
                     tracing::info!(peer = ?from, "peer verlaat het gesprek");
+                    self.peer_voice.remove(&from);
                     if self.peers_in_voice.remove(&from) {
                         self.geluid(geluid::Geluid::PeerLeave);
                     }
@@ -1533,6 +1549,31 @@ impl Engine {
         };
         if let Err(e) = self.mesh.commands.try_send(cmd) {
             tracing::warn!(error = %e, "voice-status niet verstuurd");
+        }
+        // Na de Join, die bij de ander de vorige mute wist. Open is de stand na een Join.
+        if self
+            .voice
+            .as_ref()
+            .is_some_and(|v| v.is_mute() || v.is_deafen())
+        {
+            self.meld_mute(naar);
+        }
+    }
+
+    /// Mute en deafen naar de anderen in het gesprek, zodat hun lijst het laat zien.
+    /// `naar = None` betekent: iedereen.
+    fn meld_mute(&mut self, naar: Option<PeerId>) {
+        let Some(v) = &self.voice else { return };
+        let msg = ControlMsg::VoiceState(VoiceState {
+            muted: v.is_mute(),
+            deafened: v.is_deafen(),
+        });
+        let cmd = match naar {
+            Some(to) => MeshCommand::Send { to, msg },
+            None => MeshCommand::Broadcast(msg),
+        };
+        if let Err(e) = self.mesh.commands.try_send(cmd) {
+            tracing::warn!(error = %e, "mute-status niet verstuurd");
         }
     }
 
@@ -2301,6 +2342,7 @@ impl Engine {
                 codec: gok,
                 afzender: eigenaar,
                 post: self.mesh.post.clone(),
+                menu: Some(crate::ui::theme::viewer_menu_style()),
             },
         )?;
 
@@ -2339,6 +2381,34 @@ impl Engine {
         Ok(())
     }
 
+    /// Het volume van één stream van een peer, los van zijn stem: vanuit de audio-popover en
+    /// vanuit het menu in het kijkvenster, op dezelfde sleutel.
+    fn zet_stream_volume(&mut self, peer: PeerId, id: u32, vol: f32) {
+        self.stream_volumes.insert((peer, id), vol);
+        if let Some(v) = &self.voice {
+            v.zet_bron_volume((peer, id), vol);
+        }
+    }
+
+    /// Het geluid bij een bekeken scherm: het bureaubladgeluid van dezelfde peer, als we dat
+    /// nu horen, met zijn volume. Een camera heeft geen geluid (`is_scherm`).
+    fn geluid_bij_beeld(&self, eigenaar: PeerId, stream_id: u32) -> Option<(u32, f32)> {
+        let vreemd = self.streams.vreemd();
+        vreemd
+            .iter()
+            .find(|s| s.eigenaar == eigenaar && s.id == stream_id)
+            .filter(|s| s.kind.is_scherm())?;
+        let geluid = vreemd.iter().find(|s| {
+            s.eigenaar == eigenaar && s.kind.is_geluid() && s.kind != StreamKind::MUSIC && s.kijken
+        })?;
+        let vol = self
+            .stream_volumes
+            .get(&(eigenaar, geluid.id))
+            .copied()
+            .unwrap_or(1.0);
+        Some((geluid.id, vol))
+    }
+
     /// Eén melding van een kijkvenster: gesloten, een keyframe nodig, of een nieuwe
     /// miniatuur.
     ///
@@ -2361,6 +2431,11 @@ impl Engine {
                 let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
+            }
+            KijkerEvent::Volume(vol) => {
+                if let Some((id, _)) = self.geluid_bij_beeld(eigenaar, stream_id) {
+                    self.zet_stream_volume(eigenaar, id, vol);
+                }
             }
             KijkerEvent::Bericht(msg @ (ControlMsg::Draw(_) | ControlMsg::DrawClear(_))) => {
                 let cmds = self.streams.kijker_tekent(eigenaar, stream_id, msg);
@@ -2587,11 +2662,13 @@ impl Engine {
                 if let Some(v) = &self.voice {
                     v.zet_mute(aan);
                 }
+                self.meld_mute(None);
             }
             UiCommand::Deafen(aan) => {
                 if let Some(v) = &self.voice {
                     v.zet_deafen(aan);
                 }
+                self.meld_mute(None);
             }
             UiCommand::Volume(peer, vol) => {
                 if let Some(v) = &self.voice {
@@ -2623,12 +2700,7 @@ impl Engine {
                     );
                 }
             }
-            UiCommand::StreamVolume(peer, id, vol) => {
-                self.stream_volumes.insert((peer, id), vol);
-                if let Some(v) = &self.voice {
-                    v.zet_bron_volume((peer, id), vol);
-                }
-            }
+            UiCommand::StreamVolume(peer, id, vol) => self.zet_stream_volume(peer, id, vol),
             UiCommand::ZetVideoInstellingen(video) => {
                 self.cfg.video = video;
                 if let Err(e) = self.cfg.save(&self.config_path) {
@@ -2725,6 +2797,8 @@ impl Engine {
                         v.zet_mute(mute);
                         v.zet_deafen(deafen);
                     }
+                    // `deelnemen` meldde de Join met een open microfoon.
+                    self.meld_mute(None);
                     if muziek {
                         self.zet_spotify(true);
                     }
@@ -3160,6 +3234,7 @@ impl Engine {
         self.typing_tot.retain(|(p, _), _| *p != id);
         self.peer_status.remove(&id);
         self.peer_activiteit.remove(&id);
+        self.peer_voice.remove(&id);
         let (cmds, acties) = self.streams.bij_verbreking(id);
         self.stuur_alles(cmds);
         self.voer_uit(acties);
@@ -3638,6 +3713,18 @@ impl Engine {
     fn publiceer(&mut self) {
         let niveaus = self.voice.as_ref().map(|v| v.niveaus()).unwrap_or_default();
 
+        // Het volume in het menu van elk kijkvenster; de handle stuurt alleen een wijziging.
+        let volumes: Vec<_> = self
+            .kijkers
+            .keys()
+            .map(|&(e, id)| ((e, id), self.geluid_bij_beeld(e, id).map(|g| g.1)))
+            .collect();
+        for (sleutel, vol) in volumes {
+            if let Some(k) = self.kijkers.get_mut(&sleutel) {
+                k.zet_volume(vol);
+            }
+        }
+
         // Een verwijderde peer verdwijnt overal: leden, DM's, gesprek, Network. Zijn ops blijven
         // in de store (invariant 6).
         let mut peers: Vec<PeerView> = self
@@ -3650,6 +3737,9 @@ impl Engine {
         for p in &mut peers {
             if let Some(id) = p.peer_id {
                 p.in_voice = self.peers_in_voice.contains(&id);
+                if let Some(s) = self.peer_voice.get(&id).filter(|_| p.in_voice) {
+                    (p.muted, p.deafened) = (s.muted, s.deafened);
+                }
                 p.niveau = niveaus.per_peer.get(&id).copied().unwrap_or(0.0);
                 p.spreekt = niveaus.spreekt.contains(&id);
                 // Alleen tonen zolang hij er ook is; een status van een offline peer

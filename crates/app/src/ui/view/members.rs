@@ -327,20 +327,16 @@ fn text(t: &str) -> Sub {
     }
 }
 
-/// The first word of an in-call sub-line. Our own mute wins over speaking, because nothing
-/// is sent; a peer we muted still shows when they speak.
-fn call_word(me: bool, muted: bool, speaking: bool, volume: f32) -> &'static str {
-    if me {
-        if muted {
-            "muted"
-        } else if speaking {
-            "speaking"
-        } else {
-            "in call"
-        }
+/// The first word of an in-call sub-line. A mute or deafen (ours, or one a peer reported)
+/// wins over speaking, because nothing is sent; a peer we muted still shows when they speak.
+fn call_word(me: bool, deafened: bool, muted: bool, speaking: bool, volume: f32) -> &'static str {
+    if deafened {
+        "deafened"
+    } else if muted {
+        "muted"
     } else if speaking {
         "speaking"
-    } else if volume == 0.0 {
+    } else if !me && volume == 0.0 {
         "muted for you"
     } else {
         "in call"
@@ -560,7 +556,10 @@ impl MembersPane {
 
         let sub: Option<AnyElement> = match &row.sub {
             Sub::Call => {
-                let muted = s.voice.muted;
+                let (deafened, muted) = match peer {
+                    None => (s.voice.deafened, s.voice.muted),
+                    Some(p) => (p.deafened, p.muted),
+                };
                 let volume = peer.map_or(1.0, |p| p.volume);
                 let id = peer_id.clone();
                 let rest = rest.clone();
@@ -576,10 +575,11 @@ impl MembersPane {
                             } else {
                                 m.speaking(&id)
                             };
-                            let line = std::iter::once(call_word(me, muted, speaking, volume))
-                                .chain(rest.iter().map(String::as_str))
-                                .collect::<Vec<_>>()
-                                .join(" \u{00b7} ");
+                            let line =
+                                std::iter::once(call_word(me, deafened, muted, speaking, volume))
+                                    .chain(rest.iter().map(String::as_str))
+                                    .collect::<Vec<_>>()
+                                    .join(" \u{00b7} ");
                             mem_sub(line, quiet)
                                 .when(speaking, |d| d.text_color(theme::ONLINE))
                                 .into_any_element()
@@ -854,6 +854,8 @@ mod tests {
             path: None,
             app_version: None,
             in_call,
+            muted: false,
+            deafened: false,
             volume: 1.0,
             unread: 0,
             last_seen: None,
@@ -955,16 +957,20 @@ mod tests {
         );
     }
 
-    /// Our mute wins over speaking, a peer's speaking over our mute of them. Swapping the
-    /// first two checks of the `me` arm fails the first assertion.
+    /// A mute or deafen (ours or a peer's own) wins over speaking, a peer's speaking over our
+    /// mute of them. Swapping the mute and speaking checks fails the first assertion; dropping
+    /// the deafened check fails the peer-deafened one.
     #[test]
     fn the_call_word_follows_the_meters() {
-        assert_eq!(call_word(true, true, true, 1.0), "muted");
-        assert_eq!(call_word(true, false, true, 1.0), "speaking");
-        assert_eq!(call_word(true, false, false, 1.0), "in call");
-        assert_eq!(call_word(false, false, false, 0.0), "muted for you");
-        assert_eq!(call_word(false, false, true, 0.0), "speaking");
-        assert_eq!(call_word(false, false, false, 0.5), "in call");
+        assert_eq!(call_word(true, false, true, true, 1.0), "muted");
+        assert_eq!(call_word(true, true, true, false, 1.0), "deafened");
+        assert_eq!(call_word(true, false, false, true, 1.0), "speaking");
+        assert_eq!(call_word(true, false, false, false, 1.0), "in call");
+        assert_eq!(call_word(false, false, false, false, 0.0), "muted for you");
+        assert_eq!(call_word(false, false, false, true, 0.0), "speaking");
+        assert_eq!(call_word(false, false, false, false, 0.5), "in call");
+        assert_eq!(call_word(false, false, true, false, 1.0), "muted");
+        assert_eq!(call_word(false, true, true, false, 0.0), "deafened");
     }
 
     /// Mute remembers the level and unmute brings it back; returning a constant 1.0 on

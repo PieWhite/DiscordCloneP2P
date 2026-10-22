@@ -112,6 +112,12 @@ pub struct PeerState {
     pub path: Option<String>,
     pub app_version: Option<String>,
     pub in_call: bool,
+    /// They muted or deafened themselves, as they reported it. Only while in the call; moves
+    /// only on a toggle. Deafened implies muted.
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub deafened: bool,
     pub volume: f32,
     pub unread: usize,
     /// When this peer was last seen online, in millis since epoch. Observed by this
@@ -923,6 +929,8 @@ impl UiState {
                     path: Some(path_word(&p.status).to_string()),
                     app_version,
                     in_call: p.in_voice,
+                    muted: p.muted,
+                    deafened: p.deafened,
                     volume: p.volume,
                     unread: id
                         .and_then(|peer| snap.ongelezen_dm.get(&peer).copied())
@@ -1860,6 +1868,8 @@ mod tests {
                 volume: 1.0,
                 user_status: None,
                 activiteit: None,
+                muted: false,
+                deafened: false,
                 plek: 0,
             })
             .collect();

@@ -115,6 +115,29 @@ impl Doek<'_> {
         self.stuk(a, z, straal, kleur, alfa.clamp(0.0, 1.0))
     }
 
+    /// Een gevulde rechthoek met ronde hoeken van `straal` px, voor het menu van het
+    /// kijkvenster: dekking uit de afstand tot de rand, net als bij een stuk.
+    pub fn afgerond(&mut self, k: Kader, straal: f32, rgb: [u8; 3], alfa: f32) {
+        let kleur = [f32::from(rgb[2]), f32::from(rgb[1]), f32::from(rgb[0])];
+        let (half_b, half_h) = ((k.x1 - k.x0) as f32 / 2.0, (k.y1 - k.y0) as f32 / 2.0);
+        let r = straal.min(half_b).min(half_h).max(0.0);
+        let (cx, cy) = (k.x0 as f32 + half_b, k.y0 as f32 + half_h);
+        let b = self.breedte as i32;
+        for y in k.y0.max(0)..k.y1.min(self.hoogte as i32) {
+            for x in k.x0.max(0)..k.x1.min(b) {
+                let qx = (x as f32 + 0.5 - cx).abs() - (half_b - r);
+                let qy = (y as f32 + 0.5 - cy).abs() - (half_h - r);
+                let buiten = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+                let afstand = buiten + qx.max(qy).min(0.0) - r;
+                let dekking = (0.5 - afstand).clamp(0.0, 1.0) * alfa;
+                if dekking > 0.0 {
+                    let i = (y * b + x) as usize * 4;
+                    meng(&mut self.px[i..i + 4], kleur, dekking);
+                }
+            }
+        }
+    }
+
     /// `rgb` over het doek binnen `kader`, met per pixel de dekking uit `masker` (een byte
     /// per pixel, even groot als het doek): tekst die elders als grijswaarden getekend is.
     pub fn bedek(&mut self, masker: &[u8], kader: Kader, rgb: [u8; 3]) {
@@ -323,6 +346,30 @@ mod tests {
         assert!(px
             .chunks_exact(4)
             .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
+    }
+
+    /// Midden en rand dekkend, de uiterste hoekpixel leeg, een zachte overgang in de bocht.
+    #[test]
+    fn een_afgeronde_rechthoek_heeft_ronde_hoeken() {
+        let (b, h) = (40u32, 20u32);
+        let mut px = vec![0u8; (b * h * 4) as usize];
+        let mut doek = Doek {
+            px: &mut px,
+            breedte: b,
+            hoogte: h,
+        };
+        let heel = Kader {
+            x0: 0,
+            y0: 0,
+            x1: b as i32,
+            y1: h as i32,
+        };
+        doek.afgerond(heel, 8.0, [255, 255, 255], 1.0);
+        let a = |x: u32, y: u32| px[((y * b + x) * 4 + 3) as usize];
+        assert_eq!(a(20, 10), 255, "midden");
+        assert_eq!(a(20, 0), 255, "rechte rand");
+        assert_eq!(a(0, 0), 0, "de hoek is weggesneden");
+        assert!((1..255).contains(&a(2, 2)), "zacht in de bocht");
     }
 
     #[test]

@@ -68,6 +68,10 @@ pub enum KijkerEvent {
     /// beslissing 45), of bedienen (`RemoteRequest`, `RemoteInput`, `ClipboardText`, beslissing
     /// 54). De motor beslist of het weg mag.
     Bericht(ControlMsg),
+    /// De gebruiker zette het geluid van deze stream op dit volume (0..1), met de schuif in
+    /// het menu. Lokaal, nooit over de draad: de motor zet het op het bureaubladgeluid van
+    /// dezelfde peer, dezelfde sleutel als de schuif in het hoofdvenster.
+    Volume(f32),
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +100,39 @@ pub struct KijkerConfig {
     /// De mediasocket van dit proces (`MeshHandle::post`, fase B5). De kijker bindt zelf
     /// niets meer: hij krijgt van de verdeler wat er voor deze stream van deze peer binnenkomt.
     pub post: Verdeler,
+    /// Hoe het menu onder de rechterknop eruitziet. `None`: geen menu (tests, voorbeelden).
+    pub menu: Option<MenuStijl>,
+}
+
+/// Kleuren, hoeken en lettertype van het menu onder de rechterknop in het kijkvenster, van de
+/// app: de tokens staan daar, de video-crate kent geen kleurwaarde. Alleen Windows tekent het.
+#[derive(Clone, Copy)]
+pub struct MenuStijl {
+    pub grond: [u8; 3],
+    /// Haarlijn om het menu en tussen de groepen, en de rand van de schuif.
+    pub rand: [u8; 3],
+    /// Achter de rij onder de muis, en achter de gekozen dikte.
+    pub hover: [u8; 3],
+    pub tekst: [u8; 3],
+    /// Tekst onder de muis, de knop van de schuif, de ring om de gekozen kleur.
+    pub sterk: [u8; 3],
+    /// Kop, sneltoetsen, wat uit staat.
+    pub gedimd: [u8; 3],
+    /// De schuif tot zijn waarde, en een schakelaar die aan staat.
+    pub accent: [u8; 3],
+    /// Hoekstraal van het menu en van een rij, in pixels bij 96 dpi.
+    pub hoek: f32,
+    pub hoek_rij: f32,
+    /// Een TrueType-bestand en zijn GDI-familienaam, zoals bij de spraakoverlay.
+    pub font: &'static [u8],
+    pub font_naam: &'static str,
+}
+
+// Met de hand: een afgeleide `Debug` zou het hele lettertype in een logregel zetten.
+impl std::fmt::Debug for MenuStijl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MenuStijl")
+    }
 }
 
 struct Gedeeld {
@@ -117,12 +154,15 @@ pub struct KijkerHandle {
     /// Naar het venster: waar we staan met bedienen (beslissing 54), en klembordtekst van de
     /// deler. Zelfde tempo als de tekening, nooit per pakket.
     naar_venster: Sender<NaarVenster>,
+    /// Wat er laatst aan volume naar het venster ging, om alleen een wijziging te sturen.
+    volume: Option<Option<f32>>,
 }
 
-/// Wat de motor het venster laat weten over bedienen.
+/// Wat de motor het venster laat weten over bedienen, en het geluid bij dit beeld.
 pub(crate) enum NaarVenster {
     Bediening(Bedienstand),
     Klembord(String),
+    Volume(Option<f32>),
 }
 
 impl KijkerHandle {
@@ -139,6 +179,16 @@ impl KijkerHandle {
     /// Klembordtekst van de deler, terwijl we hem bedienen.
     pub fn zet_klembord(&self, tekst: String) {
         let _ = self.naar_venster.send(NaarVenster::Klembord(tekst));
+    }
+
+    /// Het volume van het geluid bij dit beeld, of `None` als er nu geen is (de deler deelt
+    /// geen bureaubladgeluid, of we horen het niet). Mag elke publicatie; gaat alleen bij een
+    /// wijziging naar het venster.
+    pub fn zet_volume(&mut self, volume: Option<f32>) {
+        if self.volume != Some(volume) {
+            self.volume = Some(volume);
+            let _ = self.naar_venster.send(NaarVenster::Volume(volume));
+        }
     }
 
     /// Aantal getoonde beelden en het aantal dat onderweg sneuvelde. Voor `StreamStats`
@@ -229,12 +279,16 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
         events,
         tekening,
         naar_venster,
+        volume: None,
     })
 }
 
 fn opzetten(d3d: &D3dContext, cfg: &KijkerConfig) -> Result<(Venster, Decoder)> {
     let decoder = Decoder::new(d3d, cfg.codec, cfg.breedte, cfg.hoogte)?;
-    let venster = Venster::open(d3d, &cfg.titel, cfg.breedte, cfg.hoogte)?;
+    let mut venster = Venster::open(d3d, &cfg.titel, cfg.breedte, cfg.hoogte)?;
+    if let Some(stijl) = cfg.menu {
+        venster.zet_menu_stijl(stijl);
+    }
     Ok((venster, decoder))
 }
 
@@ -254,6 +308,8 @@ fn kijk_lus(
     // overslaan zou de rest van die lijn bij iedereen laten verdwijnen (een gat), en een
     // overgeslagen loslaten laat een toets hangen, dus het wacht.
     let mut tekenwerk: VecDeque<ControlMsg> = VecDeque::new();
+    // Een volume uit het menu dat nog niet in `events` paste.
+    let mut volume: Option<f32> = None;
     let mut laatste_tekening = Instant::now();
     let mut samensteller = Reassembler::new();
     // De codec waar de huidige decoder voor gebouwd is; begint als de gok uit de
@@ -349,12 +405,20 @@ fn kijk_lus(
                 match bericht {
                     NaarVenster::Bediening(stand) => venster.zet_bediening(stand),
                     NaarVenster::Klembord(tekst) => venster.zet_klembord(tekst),
+                    NaarVenster::Volume(v) => venster.zet_volume(v),
                 }
             }
             if !venster.pomp() {
                 break;
             }
             tekenwerk.extend(venster.werk(cfg.stream_id));
+            // Alleen de laatste stand van de schuif telt; past hij nu niet, dan de volgende pomp.
+            volume = venster.volume_keuze().or(volume);
+            if let Some(v) = volume {
+                if events.try_send(KijkerEvent::Volume(v)).is_ok() {
+                    volume = None;
+                }
+            }
             while let Some(msg) = tekenwerk.pop_front() {
                 if let Err(TrySendError::Full(KijkerEvent::Bericht(msg))) =
                     events.try_send(KijkerEvent::Bericht(msg))

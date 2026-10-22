@@ -188,6 +188,18 @@ impl Venster {
     /// Zie [`Venster::zet_bediening`].
     pub fn zet_klembord(&mut self, _tekst: String) {}
 
+    /// Het menu onder de rechterknop is op macOS niet gebouwd; het volume van een stream staat
+    /// in de audio-popover van de app.
+    pub fn zet_menu_stijl(&mut self, _stijl: crate::kijker::MenuStijl) {}
+
+    /// Zie [`Venster::zet_menu_stijl`].
+    pub fn zet_volume(&mut self, _volume: Option<f32>) {}
+
+    /// Zie [`Venster::zet_menu_stijl`].
+    pub fn volume_keuze(&mut self) -> Option<f32> {
+        None
+    }
+
     /// Zet één beeld in de weergavewachtrij. Thread-veilig vanaf de kijk-thread.
     pub fn toon(&mut self, beeld: &Beeld) -> Result<()> {
         let maat = afmetingen(beeld);

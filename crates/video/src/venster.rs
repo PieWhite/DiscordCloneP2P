@@ -27,8 +27,14 @@
 //! lijn. Die gaat in stukjes naar de deler en komt terug zoals hij hem doorgeeft; de lijnen
 //! staan op een eigen doorklikbaar venster boven het beeld ([`crate::tekenlaag`]), dat
 //! alleen opnieuw tekent als de tekening verandert. De swapchain en het videopad weten er
-//! niets van. Het menu is modaal: zolang het open staat wacht deze thread, net als bij
-//! het slepen van het venster, en dan komt het beeld daarna via een keyframe terug.
+//! niets van.
+//!
+//! # Het menu onder de rechterknop
+//!
+//! Een eigen getekend venster ([`crate::kijkmenu`]) met het geluid van de stream (een schuif
+//! op het bureaubladgeluid van de deler, dezelfde sleutel als in de audio-popover van de app),
+//! tekenen en bedienen. Niet modaal: het beeld loopt door terwijl het open staat. Het menu
+//! post zijn muisberichten hierheen; deze procedure beslist, met de staat die het al had.
 //!
 //! # Het scherm van de deler bedienen (beslissing 54)
 //!
@@ -43,6 +49,8 @@
 //! wordt (`crate::klembord`).
 
 use crate::d3d::D3dContext;
+use crate::kijker::MenuStijl;
+use crate::kijkmenu::{Doel, Inhoud, Kijkmenu, WM_KIJKMENU};
 use crate::klembord;
 use crate::tekenlaag::Laag;
 use anyhow::{Context, Result};
@@ -51,7 +59,7 @@ use fitcom_proto::control::{
     ClipboardText, Draw, DrawClear, DrawClearScope, InputEvent, InputKind, RemoteInput,
     RemoteRequest,
 };
-use fitcom_proto::teken::{Tekening, DIKTES, KLEUREN, MAX_PUNTEN_PER_BERICHT, MAX_PUNTEN_PER_LIJN};
+use fitcom_proto::teken::{Tekening, MAX_PUNTEN_PER_BERICHT, MAX_PUNTEN_PER_LIJN};
 use fitcom_proto::ControlMsg;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
@@ -105,6 +113,13 @@ struct Staat {
     /// vensterprocedure zet alleen de stand om; de gevolgen (die zelf weer berichten naar het
     /// venster sturen) doen [`Venster::werk`] en [`Venster::zet_bediening`], buiten de procedure.
     toegepast: Option<(bool, Bedienstand)>,
+    /// Zonder stijl geen menu (tests).
+    stijl: Option<MenuStijl>,
+    menu: Option<Kijkmenu>,
+    /// Het volume van het geluid bij dit beeld zoals de motor het kent, `None` zonder geluid.
+    volume: Option<f32>,
+    /// Wat de schuif in het menu koos en nog naar de motor moet.
+    volume_uit: Option<f32>,
 }
 
 /// Wat er in de titel staat, na de naam van de stream. De enige aanwijzing dat tekenen en
@@ -598,101 +613,108 @@ fn client_kader(hwnd: HWND) -> Option<RECT> {
     })
 }
 
-/// Menu-id's onder de rechterknop.
-const MENU_PEN: usize = 1;
-const MENU_BEDIEN: usize = 2;
-const MENU_KLEUR: usize = 10;
-const MENU_DIKTE: usize = 30;
-const MENU_ONGEDAAN: usize = 40;
-const MENU_WIS: usize = 41;
+/// Wat het menu laat zien, zoals het venster er nu voor staat.
+fn inhoud(s: &Staat) -> Inhoud {
+    Inhoud {
+        kop: s.titel.clone(),
+        volume: s.volume,
+        tekenen: s.teken.tekening.aan,
+        pen: s.teken.pen,
+        kleur: usize::from(PEN_KLEUR.load(Ordering::Relaxed)),
+        dikte: usize::from(PEN_DIKTE.load(Ordering::Relaxed)),
+        bedien: s.bedien.stand,
+    }
+}
 
-/// Het menu onder de rechterknop: bedienen vragen of intrekken, en pen op of neer, kleur,
-/// dikte, ongedaan en wissen. Tijdens het bedienen is de rechterknop van de deler en komt dit
-/// menu niet.
-fn toon_menu(hwnd: HWND, lparam: LPARAM, staat: &mut Staat) {
-    let breed = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
-    // SAFETY: een menu van deze thread, opgeruimd voor we terugkeren.
+/// Het menu onder de rechterknop openen, waar de muis is. Tijdens het bedienen is de
+/// rechterknop van de deler en komt dit menu niet.
+fn open_menu(hwnd: HWND, lparam: LPARAM, staat: &mut Staat) {
+    let Some(stijl) = staat.stijl else {
+        return;
+    };
+    staat.menu = None;
+    let (x, y) = muis_px(lparam);
+    let mut punt = POINT { x, y };
+    // SAFETY: eigen venster.
     unsafe {
-        let Ok(menu) = CreatePopupMenu() else {
-            return;
-        };
-        let voeg = |vlaggen: MENU_ITEM_FLAGS, id: usize, tekst: &str| {
-            let t = breed(tekst);
-            let _ = AppendMenuW(menu, vlaggen, id, PCWSTR(t.as_ptr()));
-        };
-        let vink = |aan: bool| if aan { MF_CHECKED } else { MF_STRING };
-        match staat.bedien.stand {
-            Bedienstand::Mag => voeg(MF_STRING, MENU_BEDIEN, "Take control of this screen"),
-            Bedienstand::Gevraagd => voeg(MF_STRING, MENU_BEDIEN, "Cancel the control request"),
-            Bedienstand::Actief => voeg(MF_STRING, MENU_BEDIEN, "Stop controlling"),
-            Bedienstand::Uit => voeg(MF_GRAYED, 0, "Remote control is off for this stream"),
-        }
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let teken = &mut staat.teken;
-        if teken.tekening.aan {
-            voeg(vink(teken.pen), MENU_PEN, "Draw on the stream\tD");
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let kleur = PEN_KLEUR.load(Ordering::Relaxed) as usize;
-            for (i, k) in KLEUREN.iter().enumerate() {
-                voeg(vink(i == kleur), MENU_KLEUR + i, k.naam);
-            }
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let dikte = PEN_DIKTE.load(Ordering::Relaxed) as usize;
-            for (i, (naam, _)) in DIKTES.iter().enumerate() {
-                voeg(vink(i == dikte), MENU_DIKTE + i, naam);
-            }
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            voeg(MF_STRING, MENU_ONGEDAAN, "Undo my last line\tCtrl+Z");
-            voeg(MF_STRING, MENU_WIS, "Clear my lines\tDel");
-        } else {
-            voeg(MF_GRAYED, 0, "Drawing is off for this stream");
-        }
-
-        let mut punt = POINT {
-            x: muis_px(lparam).0,
-            y: muis_px(lparam).1,
-        };
         let _ = ClientToScreen(hwnd, &mut punt);
-        let keuze = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            punt.x,
-            punt.y,
-            None,
-            hwnd,
-            None,
-        )
-        .0 as usize;
-        let _ = DestroyMenu(menu);
+    }
+    match Kijkmenu::open(hwnd, punt, stijl, &inhoud(staat)) {
+        Ok(m) => staat.menu = Some(m),
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "menu van het kijkvenster"),
+    }
+}
 
-        match keuze {
-            MENU_BEDIEN => match staat.bedien.stand {
-                Bedienstand::Mag => {
-                    // Pen en bedienen sluiten elkaar uit.
-                    staat.teken.zet_pen(false);
-                    staat.bedien.uit.push(BedienUit::Vraag(true));
-                    staat.bedien.stand = Bedienstand::Gevraagd;
-                }
-                Bedienstand::Gevraagd => {
-                    staat.bedien.uit.push(BedienUit::Vraag(false));
-                    staat.bedien.stand = Bedienstand::Mag;
-                }
-                Bedienstand::Actief => staat.bedien.stop(),
-                Bedienstand::Uit => {}
-            },
-            MENU_PEN => teken.zet_pen(!teken.pen),
-            k if (MENU_KLEUR..MENU_KLEUR + KLEUREN.len()).contains(&k) => {
-                PEN_KLEUR.store((k - MENU_KLEUR) as u8, Ordering::Relaxed);
-                teken.zet_pen(true);
-            }
-            k if (MENU_DIKTE..MENU_DIKTE + DIKTES.len()).contains(&k) => {
-                PEN_DIKTE.store((k - MENU_DIKTE) as u8, Ordering::Relaxed);
-                teken.zet_pen(true);
-            }
-            MENU_ONGEDAAN => teken.wis(DrawClearScope::LAST),
-            MENU_WIS => teken.wis(DrawClearScope::MINE),
-            _ => {}
+/// Eén muisbericht van het menu, met de plek in clientpixels van het menu. Een klik ernaast
+/// of de muis kwijt sluit het; loslaten op een rij voert die uit en sluit het, behalve op de
+/// schuif, die het volume zet zolang de knop omlaag is.
+fn menu_bericht(staat: &mut Staat, bericht: u32, lparam: LPARAM) {
+    let Some(menu) = staat.menu.as_mut() else {
+        return;
+    };
+    let (x, y) = muis_px(lparam);
+    let mut volume = None;
+    match bericht {
+        WM_MOUSEMOVE if menu.sleept => volume = menu.volume_op(x),
+        WM_MOUSEMOVE => menu.zet_hover(menu.doel_op(x, y)),
+        WM_LBUTTONDOWN if menu.doel_op(x, y) == Some(Doel::Volume) => {
+            menu.sleept = true;
+            volume = menu.volume_op(x);
         }
+        WM_LBUTTONUP if menu.sleept => menu.sleept = false,
+        WM_LBUTTONUP => match menu.doel_op(x, y) {
+            Some(Doel::Volume) | None => {}
+            Some(doel) => {
+                staat.menu = None;
+                voer_uit(staat, doel);
+            }
+        },
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN if !menu.raakt(x, y) => {
+            staat.menu = None;
+        }
+        WM_CAPTURECHANGED => staat.menu = None,
+        _ => {}
+    }
+    if let Some(v) = volume.filter(|v| staat.volume != Some(*v)) {
+        staat.volume = Some(v);
+        staat.volume_uit = Some(v);
+        let i = inhoud(staat);
+        if let Some(m) = staat.menu.as_mut() {
+            m.toon(&i);
+        }
+    }
+}
+
+/// Wat een gekozen rij doet.
+fn voer_uit(staat: &mut Staat, doel: Doel) {
+    let teken = &mut staat.teken;
+    match doel {
+        Doel::Bedien => match staat.bedien.stand {
+            Bedienstand::Mag => {
+                // Pen en bedienen sluiten elkaar uit.
+                teken.zet_pen(false);
+                staat.bedien.uit.push(BedienUit::Vraag(true));
+                staat.bedien.stand = Bedienstand::Gevraagd;
+            }
+            Bedienstand::Gevraagd => {
+                staat.bedien.uit.push(BedienUit::Vraag(false));
+                staat.bedien.stand = Bedienstand::Mag;
+            }
+            Bedienstand::Actief => staat.bedien.stop(),
+            Bedienstand::Uit => {}
+        },
+        Doel::Pen => teken.zet_pen(!teken.pen),
+        Doel::Kleur(k) => {
+            PEN_KLEUR.store(k as u8, Ordering::Relaxed);
+            teken.zet_pen(true);
+        }
+        Doel::Dikte(d) => {
+            PEN_DIKTE.store(d as u8, Ordering::Relaxed);
+            teken.zet_pen(true);
+        }
+        Doel::Ongedaan => teken.wis(DrawClearScope::LAST),
+        Doel::Wis => teken.wis(DrawClearScope::MINE),
+        Doel::Volume => {}
     }
 }
 
@@ -723,6 +745,10 @@ impl Venster {
             bedien: Bedien::default(),
             titel: titel.to_string(),
             toegepast: None,
+            stijl: None,
+            menu: None,
+            volume: None,
+            volume_uit: None,
         });
 
         let naam: Vec<u16> = titel.encode_utf16().chain(std::iter::once(0)).collect();
@@ -850,6 +876,35 @@ impl Venster {
         }
     }
 
+    /// Hoe het menu onder de rechterknop eruitziet; zonder stijl komt er geen menu.
+    pub fn zet_menu_stijl(&mut self, stijl: MenuStijl) {
+        if let Some(s) = self.staat() {
+            s.stijl = Some(stijl);
+        }
+    }
+
+    /// Het volume van het geluid bij dit beeld, of `None` als er geen is. Een open menu volgt,
+    /// behalve terwijl de schuif vastgehouden wordt: dan is die de bron, en een oudere waarde
+    /// van de motor zou hem terugzetten.
+    pub fn zet_volume(&mut self, volume: Option<f32>) {
+        let Some(s) = self.staat() else {
+            return;
+        };
+        if s.menu.as_ref().is_some_and(|m| m.sleept) {
+            return;
+        }
+        s.volume = volume;
+        let i = inhoud(s);
+        if let Some(m) = s.menu.as_mut() {
+            m.toon(&i);
+        }
+    }
+
+    /// Wat de schuif in het menu koos sinds de vorige keer, voor de motor.
+    pub fn volume_keuze(&mut self) -> Option<f32> {
+        self.staat().and_then(|s| s.volume_uit.take())
+    }
+
     /// Wat de gebruiker tekende, wiste, vroeg of als bediener deed sinds de vorige keer, als
     /// berichten voor de deler. Elke 8 ms gevraagd.
     pub fn werk(&mut self, stream_id: u32) -> Vec<ControlMsg> {
@@ -876,6 +931,8 @@ impl Venster {
         }
         let was = s.toegepast.map(|(_, stand)| stand);
         s.toegepast = Some(nu);
+        // Wat het menu liet zien klopt niet meer.
+        s.menu = None;
         let titel = titel_van(&s.titel, nu.0, nu.1);
         let mut vangst_los = false;
         // SAFETY: eigen venster, eigen thread.
@@ -1347,6 +1404,15 @@ unsafe extern "system" fn venster_proc(
                 staat.gesloten = true;
                 LRESULT(0)
             }
+            WM_KIJKMENU => {
+                menu_bericht(staat, wparam.0 as u32, lparam);
+                LRESULT(0)
+            }
+            // Een toets sluit het menu: wat het liet zien kan erdoor veranderen. Escape doet
+            // dan verder niets.
+            WM_KEYDOWN if staat.menu.take().is_some() && wparam.0 as u16 == VK_ESCAPE.0 => {
+                LRESULT(0)
+            }
             WM_KEYDOWN => {
                 // Escape haalt je alleen uit beeldvullend; als sluitknop is hij te
                 // makkelijk per ongeluk te raken terwijl je meekijkt.
@@ -1389,8 +1455,12 @@ unsafe extern "system" fn venster_proc(
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
-                toon_menu(hwnd, lparam, staat);
+                open_menu(hwnd, lparam, staat);
                 LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                staat.menu = None;
+                DefWindowProcW(hwnd, bericht, wparam, lparam)
             }
             // Een kruisje zolang de pen op is, zodat je ziet dat slepen tekent.
             WM_SETCURSOR if staat.teken.mag() && (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
@@ -1399,6 +1469,7 @@ unsafe extern "system" fn venster_proc(
             }
             // De laag ligt over het clientgebied en moet meeschuiven en meegroeien.
             WM_MOVE | WM_SIZE => {
+                staat.menu = None;
                 staat.teken.herteken(hwnd);
                 DefWindowProcW(hwnd, bericht, wparam, lparam)
             }

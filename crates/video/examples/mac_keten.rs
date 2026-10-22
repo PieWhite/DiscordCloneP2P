@@ -86,6 +86,7 @@ fn main() {
                     codec: Codec::H264,
                     afzender: deler_id,
                     post: post_kijker.clone(),
+                    menu: None,
                 },
             )?;
             let doel = PeerAdres {

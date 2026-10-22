@@ -1249,6 +1249,8 @@ pub(super) mod window_tests {
             path: None,
             app_version: None,
             in_call: false,
+            muted: false,
+            deafened: false,
             volume: 1.0,
             unread: 0,
             last_seen: None,

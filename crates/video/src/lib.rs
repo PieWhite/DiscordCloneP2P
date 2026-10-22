@@ -64,6 +64,9 @@ pub mod fragment;
 #[cfg(windows)]
 pub mod hdr;
 pub mod kijker;
+/// Het menu onder de rechterknop in het kijkvenster. Alleen Windows.
+#[cfg(windows)]
+mod kijkmenu;
 #[cfg(windows)]
 pub mod kleur;
 #[cfg(windows)]
@@ -93,4 +96,4 @@ pub use codec::{Codec, Decoder, Encoder, EncoderConfig};
 pub use d3d::D3dContext;
 pub use deler::{deel, DelerConfig, DelerHandle};
 pub use fragment::{Frame, Reassembler};
-pub use kijker::{kijk, KijkerConfig, KijkerEvent, KijkerHandle, Miniatuur};
+pub use kijker::{kijk, KijkerConfig, KijkerEvent, KijkerHandle, MenuStijl, Miniatuur};

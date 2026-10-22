@@ -2352,7 +2352,7 @@ stuk zou een gat zijn.
 **Het menu is modaal.** `TrackPopupMenu` houdt de kijk-thread vast zolang het open staat, net
 als het slepen van het venster aan zijn titelbalk dat al deed. Het beeld staat dan even stil
 en komt daarna via een keyframe terug. Geaccepteerd; de sneltoetsen (D, Ctrl+Z, Delete) gaan
-er buiten om.
+er buiten om. *Achterhaald door beslissing 55: het menu is nu een eigen, niet-modaal venster.*
 
 **De laag bij de deler, en invariant 4.** Een doorklikbaar, doorzichtig venster bovenop de
 gedeelde monitor (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE |
@@ -3214,6 +3214,38 @@ ingedrukt stond (`Bediener` wordt bewust niet afgewacht in `Drop`): een Shift of
 seconde Escape naar de deler; een spel daar kan zijn menu openen.
 
 **Wat je niet mag omdraaien:** zie de sectie "Een gedeeld scherm bedienen" in `CLAUDE.md`.
+
+### 55. Mute en deafen van anderen zichtbaar, en een getekend menu in het kijkvenster (2026-10-22)
+
+**Mute en deafen.** `VoiceState` (tag 22) stond al in het protocol maar werd nooit gestuurd.
+Nu meldt elke peer zijn eigen stand bij een wissel, direct na zijn `VoiceJoin` als hij niet open
+staat (ook bij een herverbinding en na een apparaatwissel), en de ontvanger wist hem bij
+`VoiceJoin`, `VoiceLeave` en wegvallen. Vluchtig en single-hop, geen op, geen protocolbump: een
+oudere peer stuurt niets en staat dus open. In de spraaklijst één glyph na de naam: koptelefoon
+doorgestreept (deafen, dat mute insluit), microfoon doorgestreept (eigen mute), luidspreker
+doorgestreept (alleen jij zette hem op 0). In de ledenlijst "deafened" of "muted" vóór
+"speaking"; die woorden waren eerder alleen voor jezelf.
+
+**Het menu onder de rechterknop** is geen `TrackPopupMenu` meer maar een eigen layered venster
+(`video/src/kijkmenu.rs`), getekend met `penseel` (nieuw: `Doek::afgerond`) en GDI-tekst als
+masker, net als de spraakoverlay, in de B-tokens (`theme::viewer_menu_style`, via
+`KijkerConfig::menu`). Het is **niet modaal**: het beeld loopt door. Het houdt de muis vast
+(`SetCapture`), pakt nooit de focus, en post elk muisbericht naar het kijkvenster
+(`WM_KIJKMENU`), dat met zijn bestaande staat beslist; posten en niet sturen, zodat de
+vensterprocedure nooit in zichzelf terugkomt. Dicht bij een klik ernaast, de muis kwijt, een
+toets, focusverlies, verplaatsen, en een andere teken- of bedienstand.
+
+**Geluid van de stream in dat menu.** Een schuif op het bureaubladgeluid van dezelfde peer
+(`Engine::geluid_bij_beeld`: alleen voor een scherm, en alleen terwijl we het horen), op
+**dezelfde sleutel** als de schuif in de audio-popover (`zet_stream_volume`, één functie voor
+allebei). De motor stuurt het volume alleen bij een wijziging naar het venster
+(`KijkerHandle::zet_volume`); de schuif terug als `KijkerEvent::Volume`, nooit over de draad.
+Dit is een bewuste tweede plek naast beslissing 48 ("elke volumeschuif woont in de
+audio-popover"): de popover blijft het thuis, het menu is een snelkoppeling naar dezelfde waarde.
+
+**Niet geverifieerd:** het menu in een echt kijkvenster met een tweede machine (alleen
+offscreen getekend en de opmaak getest), mute/deafen tussen twee echte peers, en macOS (daar is
+het menu er niet; de glyphs wel).
 
 ## Bugs die de tests eruit haalden
 

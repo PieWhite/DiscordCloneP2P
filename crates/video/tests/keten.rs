@@ -79,6 +79,7 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             codec: Codec::H264,
             afzender: deler_id,
             post: post_kijker.clone(),
+            menu: None,
         },
     )
     .expect("kijker starten");

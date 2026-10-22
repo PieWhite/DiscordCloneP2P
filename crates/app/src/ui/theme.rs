@@ -190,6 +190,25 @@ const FONTS: [&[u8]; 5] = [
     include_bytes!("assets/fonts/JetBrainsMono-Regular.ttf"),
 ];
 
+/// The pop-out viewer's right-click menu in the B tokens: the popover's ground, hairline and
+/// corners, `popover_item`'s text and hover. The video crate draws it and knows no colours.
+pub fn viewer_menu_style() -> fitcom_video::MenuStijl {
+    let rgb = |c: Rgba| [c.r, c.g, c.b].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+    fitcom_video::MenuStijl {
+        grond: rgb(BG_RAISED),
+        rand: rgb(BORDER),
+        hover: rgb(BG_HOVER),
+        tekst: rgb(TEXT_MUTED),
+        sterk: rgb(TEXT_STRONG),
+        gedimd: rgb(TEXT_DIM),
+        accent: rgb(ACCENT),
+        hoek: f32::from(RADIUS_CARD),
+        hoek_rij: f32::from(RADIUS_CONTROL),
+        font: INTER_MEDIUM,
+        font_naam: "Inter Medium",
+    }
+}
+
 // ------------------------------------------------------------------ shadow
 
 /// `0 20px 50px rgba(0,0,0,.8)`: the only shadow, for popovers and dialogs.

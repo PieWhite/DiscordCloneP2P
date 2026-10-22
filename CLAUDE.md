@@ -111,6 +111,13 @@ crates/app/src/ui/view/        AppView (de wortel) en één bestand per gebied
   JetBrains Mono. Een kleurwaarde of radius die niet uit een token komt is een bug. Geen
   dither, horizonband, harde schaduw of inversie als selectie meer. Elke volumeschuif woont
   in de audio-popover per persoon, mic en deafen blijven in het eigen paneel (beslissing 48).
+  Enige uitzondering: de schuif voor het streamgeluid in het menu van het kijkvenster, op
+  dezelfde sleutel (`zet_stream_volume`, beslissing 55).
+- **Het menu onder de rechterknop in het kijkvenster is een eigen getekend venster**
+  (`video/src/kijkmenu.rs`), niet modaal, kleuren uit `theme::viewer_menu_style`. Het beslist
+  niets: het post muisberichten naar het kijkvenster. Geen `TrackPopupMenu` terug.
+- **Mute en deafen van anderen** komen uit `VoiceState` (tag 22): vluchtig, single-hop, na elke
+  `VoiceJoin` opnieuw. Nooit een op.
   `design/main-window.html` en `design/shots/` zijn oudere anti-referenties; `design/redesign-b/`
   heeft de B-mockups; vergelijken doe je in de fixturemodus (zie Bouwen).
 - **Venstergedrag heeft headless tests** (gpui-kit `test-support`, naast de views):
