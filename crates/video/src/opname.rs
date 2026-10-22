@@ -775,14 +775,17 @@ impl AacEncoder {
             // SAFETY: buffers is een geldige array van één uitvoerbuffer; de MFT is
             // netjes gesynchroniseerd (sync-MFT, één thread).
             let proces = unsafe { self.transform.ProcessOutput(0, &mut buffers, &mut status) };
+            // Altijd terugnemen, ook bij NEED_MORE_INPUT: anders lekt elke aanroep een
+            // monster plus buffer (~4,6 KB, tientallen keren per seconde).
+            let monster = unsafe { std::mem::ManuallyDrop::take(&mut buffers[0].pSample) };
+            drop(unsafe { std::mem::ManuallyDrop::take(&mut buffers[0].pEvents) });
             match proces {
                 Ok(_) => {}
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => break,
                 Err(e) => return Err(e).context("AAC-uitvoer halen"),
             }
 
-            let monster = unsafe { std::mem::ManuallyDrop::take(&mut buffers[0].pSample) }
-                .context("AAC-encoder leverde geen monster")?;
+            let monster = monster.context("AAC-encoder leverde geen monster")?;
             let tijd = unsafe { monster.GetSampleTime() }.unwrap_or(0);
             let duur = unsafe { monster.GetSampleDuration() }.unwrap_or(0);
             unsafe {
