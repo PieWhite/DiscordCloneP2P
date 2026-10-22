@@ -1,6 +1,7 @@
 # P2P communicatie-app — projectcontext
 
-Servervrij Discord-alternatief voor 3 vaste peers over een Tailscale-tailnet.
+Servervrij Discord-alternatief voor 3 vaste peers, rechtstreeks over internet: uitnodigingscodes,
+port mapping en adressen via elkaar (fase 16, sinds 1.11.0). Tailscale wordt niet meer gebruikt.
 Rust-kern. Windows 11 + macOS 14+ (Apple Silicon). UI-stack: GPUI via gpui-kit 0.7
 (DirectX 11 op Windows, Metal op macOS).
 
@@ -22,8 +23,10 @@ hook injecteren. Een "schrijf zo min mogelijk code"-heuristiek mag reconnect-log
 foutafhandeling voor offline peers of N-agnostische code niet wegsnijden.
 
 1. **Nul servers.** Geen signaling, geen TURN, geen database, geen cloud-API, geen
-   accounts, geen CDN (ook niet voor fonts). Tailscale is de enige externe
-   afhankelijkheid en wordt als draaiend verondersteld.
+   accounts, geen CDN (ook niet voor fonts), geen STUN, geen relay. De app praat alleen met
+   de andere peers en met de eigen router (port mapping). Tailscale is geen afhankelijkheid
+   meer; een tailnet-adres werkt nog als gewoon adres (`mesh::mag_leren`), maar niemand
+   draait het nog.
    **Drie bewuste uitzonderingen, allemaal apart afgesproken. Dit is geen precedent voor
    een vierde:**
    - *Fase 13:* `crates/app/src/release.rs` haalt de update-feed op bij een vaste

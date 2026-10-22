@@ -641,8 +641,8 @@ zodat de vector zelf al geen metadata lekt over met wie we nog meer DM's hebben.
 
 ### DM's krijgen geen doorstuurhulp via een derde peer
 
-Er is bewust **geen encryptie** van de opinhoud — alleen QUIC-transport en het tailnet
-als vertrouwensgrens, zie `TODO.md`. Zou een derde peer een DM tussen twee anderen ooit
+Er is bewust **geen encryptie** van de opinhoud — alleen QUIC-transport met de getekende
+handshake (protocol 6) als vertrouwensgrens, zie `TODO.md`. Zou een derde peer een DM tussen twee anderen ooit
 doorsturen of bufferen (het mechanisme uit punt 3 hierboven, bedoeld voor gedeeltelijke
 connectiviteit), dan zou die derde peer de inhoud gewoon kunnen lezen. Daarom synchroniseren
 DM's uitsluitend rechtstreeks tussen de twee betrokkenen; het doorstuur- en
@@ -944,7 +944,7 @@ bij de host. Een gekaapt hostaccount kan wel een bestand vervangen, geen handtek
 maken. `UpdateRequest`/`UpdateResponse` en een inkomende update-uni-stream worden gelogd
 en geweigerd (ook B-21: onze eigen exe gaat nergens meer heen).
 
-**Prijs.** Dit is de enige verbinding die de app buiten het tailnet legt, en dus een
+**Prijs.** Dit is een verbinding naar iets anders dan een peer of de eigen router, en dus een
 bewuste uitzondering op invariant 1. Zie `docs/OVERDRACHT.md`, beslissing 23.
 
 **Releases uitgeven.** `crates/app/src/bin/fitcom-release.rs` maakt het sleutelpaar

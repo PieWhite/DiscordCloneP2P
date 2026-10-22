@@ -2,8 +2,8 @@
 
 Opgesteld 2026-10-18 met Rick. In `ROADMAP.md` is dit fase 16.
 
-**Status 2026-10-19:** fase A is gebouwd (A1 t/m A6) en fase B ook (B1 t/m B6), allebei nog
-niet uitgegeven en nog niet tussen twee machines getest. Wat er bij het bouwen anders uitviel
+**Status 2026-10-22:** fase A (A1 t/m A6) en fase B (B1 t/m B6) zijn gebouwd en uitgegeven in
+1.11.0 (2026-10-19). Tailscale wordt niet meer gebruikt; de peers verbinden op hun codes. Wat er bij het bouwen anders uitviel
 dan hieronder staat, staat in `docs/OVERDRACHT.md` beslissing 46 (A) en 47 (B); de open punten
 met echte machines in `docs/TESTPLAN.md`, "Protocol 6" en "Fase B". **B7 (IPv6) is niet
 gebouwd**: hij wacht op de A0-regels van de vrienden. Fase C: niets gebouwd. A en B kunnen
