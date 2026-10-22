@@ -1767,4 +1767,73 @@ mod tests {
         assert!(venster.teken().is_some_and(|t| t.laag.is_some()));
         pomp_even(&mut venster);
     }
+
+    /// Het menu zonder echte muis: rechtsklikken opent het en het pakt de muis, slepen op de
+    /// schuif levert een volume voor de motor, en een klik ernaast sluit het en laat de muis los.
+    #[test]
+    #[ignore = "opent een echt venster"]
+    fn het_menu_opent_zet_het_volume_en_sluit_bij_een_klik_ernaast() {
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+        let d3d = D3dContext::new().expect("D3D11");
+        let mut venster = Venster::open(&d3d, "FitCom — menutest", 640, 360).expect("venster");
+        let hwnd = venster.hwnd;
+        venster.zet_menu_stijl(MenuStijl {
+            grond: [0, 0, 0],
+            rand: [41, 45, 48],
+            hover: [11, 14, 20],
+            tekst: [161, 164, 165],
+            sterk: [255, 255, 255],
+            gedimd: [110, 114, 122],
+            accent: [212, 215, 219],
+            hoek: 16.0,
+            hoek_rij: 6.0,
+            font: include_bytes!("../../app/src/ui/assets/fonts/Inter-Medium.ttf"),
+            font_naam: "Inter Medium",
+        });
+        venster.zet_volume(Some(0.5));
+        let lp = |x: i32, y: i32| LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
+        let post = |msg: u32, wparam: usize, lparam: LPARAM| {
+            // SAFETY: eigen venster; de berichten komen in onze eigen wachtrij.
+            unsafe { PostMessageW(Some(hwnd), msg, WPARAM(wparam), lparam) }.unwrap();
+        };
+        let pomp_even = |v: &mut Venster| {
+            let tot = Instant::now() + Duration::from_millis(100);
+            while Instant::now() < tot {
+                v.pomp();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        post(WM_RBUTTONUP, 0, lp(100, 100));
+        pomp_even(&mut venster);
+        // SAFETY: kale opzoekingen.
+        let vast = unsafe { GetCapture() };
+        assert!(!vast.is_invalid(), "het menu heeft de muis");
+        assert_eq!(unsafe { GetWindow(vast, GW_OWNER) }.ok(), Some(hwnd));
+
+        let menu = venster.staat().and_then(|s| s.menu.as_ref()).expect("open");
+        let (x, y) = (0..800)
+            .step_by(2)
+            .flat_map(|y| (0..600).step_by(4).map(move |x| (x, y)))
+            .find(|&(x, y)| menu.doel_op(x, y) == Some(Doel::Volume))
+            .expect("een schuif");
+        let x_rechts = (x..x + 600)
+            .find(|&x| menu.volume_op(x) == Some(1.0))
+            .unwrap();
+        post(WM_KIJKMENU, WM_LBUTTONDOWN as usize, lp(x, y));
+        post(WM_KIJKMENU, WM_MOUSEMOVE as usize, lp(x_rechts, y));
+        post(WM_KIJKMENU, WM_LBUTTONUP as usize, lp(x_rechts, y));
+        pomp_even(&mut venster);
+        assert_eq!(venster.volume_keuze(), Some(1.0));
+        assert!(
+            venster.staat().is_some_and(|s| s.menu.is_some()),
+            "de schuif sluit niet"
+        );
+
+        post(WM_KIJKMENU, WM_LBUTTONDOWN as usize, lp(-10, -10));
+        pomp_even(&mut venster);
+        assert!(venster.staat().is_some_and(|s| s.menu.is_none()));
+        assert!(unsafe { GetCapture() }.is_invalid(), "de muis is los");
+    }
 }

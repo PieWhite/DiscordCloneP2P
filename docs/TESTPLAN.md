@@ -1657,3 +1657,31 @@ monitor) en B (Windows, kijkt), allebei op deze versie, plus C als derde kijker.
 14. **Oudere peer en Mac.** A op een versie zonder bedienen: B ziet "off". B op een oudere versie
     kijkt naar A: niets verandert, A krijgt geen vraag. Een Mac die deelt laat zich nooit
     bedienen; een Mac die kijkt heeft geen menu om het te vragen.
+
+## Mute/deafen van anderen en het menu in het kijkvenster (2026-10-22, beslissing 55)
+
+Op deze pc geverifieerd: de opmaak van het menu (elke knop te raken waar hij staat, de schuif
+van 0 tot 100 %, schalen met de dpi, op het scherm blijven), het hele beeld in een geheugen-DC
+(ronde hoeken, haarlijn, hover, gekozen kleur, witte tekst), het woord in de ledenlijst, met
+unit-tests. **Het menu heeft nog nooit in een echt kijkvenster gestaan**:
+`venster::tests::het_menu_opent_zet_het_volume_en_sluit_bij_een_klik_ernaast` (ignored, opent
+kort een venster) doet het zonder echte muis.
+
+1. **Mute en deafen.** A en B in het gesprek. A op mute: bij B staat achter A's naam in de
+   spraaklijst een doorgestreepte microfoon, en in de ledenlijst "muted". A op deafen: een
+   doorgestreepte koptelefoon en "deafened". Weer open: weg. B zet A zelf op 0 in de
+   audio-popover: een doorgestreepte luidspreker en "muted for you".
+2. **Na opnieuw verbinden.** A op mute, trek B's netwerk even weg en laat hem terugkomen: de
+   glyph staat er weer. A verlaat en neemt opnieuw deel: open, tot hij weer op mute gaat. A
+   wisselt van microfoon in Settings terwijl hij op mute staat: blijft "muted" bij B.
+3. **Oudere peer.** Een peer zonder deze versie staat altijd open, nooit een foutmelding.
+4. **Het menu.** Kijk naar A's scherm in het pop-outvenster en klik rechts: een zwart menu met
+   ronde hoeken, het beeld loopt door. Hover licht een rij op. Een klik ernaast, Escape,
+   Alt+Tab of het venster verslepen sluit het. Kleur, dikte, pen, ongedaan, wissen en "Take
+   control" doen wat ze in het oude menu deden. Op een monitor met 150 %: scherp en op maat.
+   Rechtsonder in het venster geklikt: het menu klapt naar links/boven en blijft op het scherm.
+5. **Streamgeluid.** A deelt met bureaubladgeluid, B zit in het gesprek: in het menu "Stream
+   audio" met een schuif. Slepen verandert het volume meteen, en de schuif "Screen audio" in
+   A's audio-popover in het hoofdvenster staat daarna op dezelfde waarde (en andersom: de
+   popover verzetten en het menu opnieuw openen). Zonder bureaubladgeluid of buiten het gesprek:
+   "No stream audio". Naar A's camera kijken: ook "No stream audio".
