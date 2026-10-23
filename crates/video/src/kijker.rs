@@ -72,6 +72,28 @@ pub enum KijkerEvent {
     /// het menu. Lokaal, nooit over de draad: de motor zet het op het bureaubladgeluid van
     /// dezelfde peer, dezelfde sleutel als de schuif in het hoofdvenster.
     Volume(f32),
+    /// De gebruiker gaf het venster deze maat (clientgebied, na een sleep), om de volgende
+    /// kijkvensters zo te openen. Niet in volledig scherm of gemaximaliseerd.
+    Maat(u32, u32),
+}
+
+/// Waar en hoe groot een kijkvenster opengaat (`Venster::open`). Op macOS genegeerd.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Plaatsing {
+    /// Vanzelf geopend: op dit scherm en zonder de focus te pakken. `None`: gewoon geopend.
+    pub vanzelf: Option<Scherm>,
+    /// De laatste maat (clientgebied, fysieke pixels) die de gebruiker een kijkvenster gaf.
+    /// Het beeld wordt daarin gepast in zijn eigen verhouding, en nooit groter dan het scherm.
+    pub maat: Option<(u32, u32)>,
+}
+
+/// Op welk scherm een vanzelf geopend kijkvenster komt.
+#[derive(Debug, Clone, Copy)]
+pub enum Scherm {
+    /// Een ander scherm dan dat van het venster vooraan.
+    Ander,
+    /// Deze monitor (`Bron::handle` van een monitor). Is hij er niet meer, dan `Ander`.
+    Monitor(isize),
 }
 
 #[derive(Debug, Clone)]
@@ -102,9 +124,8 @@ pub struct KijkerConfig {
     pub post: Verdeler,
     /// Hoe het menu onder de rechterknop eruitziet. `None`: geen menu (tests, voorbeelden).
     pub menu: Option<MenuStijl>,
-    /// Vanzelf geopend: op een tweede scherm en zonder de focus te pakken
-    /// (`Venster::open`). Op macOS genegeerd.
-    pub tweede_scherm: bool,
+    /// Waar en hoe groot het venster opengaat.
+    pub plaatsing: Plaatsing,
 }
 
 /// Kleuren, hoeken en lettertype van het menu onder de rechterknop in het kijkvenster, van de
@@ -288,7 +309,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
 
 fn opzetten(d3d: &D3dContext, cfg: &KijkerConfig) -> Result<(Venster, Decoder)> {
     let decoder = Decoder::new(d3d, cfg.codec, cfg.breedte, cfg.hoogte)?;
-    let mut venster = Venster::open(d3d, &cfg.titel, cfg.breedte, cfg.hoogte, cfg.tweede_scherm)?;
+    let mut venster = Venster::open(d3d, &cfg.titel, cfg.breedte, cfg.hoogte, cfg.plaatsing)?;
     if let Some(stijl) = cfg.menu {
         venster.zet_menu_stijl(stijl);
     }
@@ -417,6 +438,10 @@ fn kijk_lus(
             tekenwerk.extend(venster.werk(cfg.stream_id));
             // Alleen de laatste stand van de schuif telt; past hij nu niet, dan de volgende pomp.
             volume = venster.volume_keuze().or(volume);
+            // Eens per sleep; valt hij weg omdat het kanaal vol zit, dan geldt de vorige maat.
+            if let Some((b, h)) = venster.maat_keuze() {
+                let _ = events.try_send(KijkerEvent::Maat(b, h));
+            }
             if let Some(v) = volume {
                 if events.try_send(KijkerEvent::Volume(v)).is_ok() {
                     volume = None;

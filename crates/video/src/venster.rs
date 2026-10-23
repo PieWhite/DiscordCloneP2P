@@ -50,6 +50,7 @@
 
 use crate::d3d::D3dContext;
 use crate::kijker::MenuStijl;
+use crate::kijker::{Plaatsing, Scherm};
 use crate::kijkmenu::{Doel, Inhoud, Kijkmenu, WM_KIJKMENU};
 use crate::klembord;
 use crate::tekenlaag::Laag;
@@ -120,6 +121,8 @@ struct Staat {
     volume: Option<f32>,
     /// Wat de schuif in het menu koos en nog naar de motor moet.
     volume_uit: Option<f32>,
+    /// De maat die de gebruiker het venster gaf, sinds de vorige keer gevraagd.
+    maat_uit: Option<(u32, u32)>,
 }
 
 /// Wat er in de titel staat, na de naam van de stream. De enige aanwijzing dat tekenen en
@@ -731,15 +734,16 @@ impl Venster {
     /// de thread die hem maakt: alleen die thread krijgt zijn berichten, dus alleen
     /// die thread mag [`Venster::pomp`] aanroepen.
     ///
-    /// `tweede_scherm`: vanzelf geopend (een nieuw gedeeld scherm). Dan gaat hij gemaximaliseerd
-    /// op een ander scherm dan het venster vooraan, en **zonder de focus te pakken**: vooraan
-    /// staat misschien een spel, en een alt-tab is precies wat invariant 4 verbiedt.
+    /// `plaatsing.vanzelf`: vanzelf geopend (een nieuw gedeeld scherm). Dan gaat hij naar dat
+    /// scherm en **pakt hij de focus niet**: vooraan staat misschien een spel, en een alt-tab
+    /// is precies wat invariant 4 verbiedt. `plaatsing.maat`: de maat die de gebruiker de
+    /// vorige keer koos, met het beeld erin gepast en nooit groter dan het scherm.
     pub fn open(
         d3d: &D3dContext,
         titel: &str,
         breedte: u32,
         hoogte: u32,
-        tweede_scherm: bool,
+        plaatsing: Plaatsing,
     ) -> Result<Self> {
         registreer_klasse()?;
 
@@ -759,16 +763,22 @@ impl Venster {
             menu: None,
             volume: None,
             volume_uit: None,
+            maat_uit: None,
         });
 
         let naam: Vec<u16> = titel.encode_utf16().chain(std::iter::once(0)).collect();
-        // De opgegeven maat is die van het beeld; het venster moet zijn rand daar nog
-        // omheen krijgen, anders is het beeld precies die rand te klein.
+        let beeld = (breedte.max(1) as i32, hoogte.max(1) as i32);
+        // De maat van het beeld, of het beeld gepast in de maat die de gebruiker koos.
+        let client = plaatsing
+            .maat
+            .map_or(beeld, |(b, h)| pas_in(beeld, (b as i32, h as i32)));
+        // Het venster moet zijn rand daar nog omheen krijgen, anders is het beeld precies die
+        // rand te klein.
         let mut kader = RECT {
             left: 0,
             top: 0,
-            right: breedte as i32,
-            bottom: hoogte as i32,
+            right: client.0,
+            bottom: client.1,
         };
 
         // SAFETY: de klasse is geregistreerd en `staat` wordt in WM_NCCREATE overgenomen.
@@ -791,33 +801,50 @@ impl Venster {
             .context("videovenster aanmaken")?
         };
 
+        let rand = (
+            kader.right - kader.left - client.0,
+            kader.bottom - kader.top - client.1,
+        );
         // SAFETY: `hwnd` is net aangemaakt.
         unsafe {
-            match ander_scherm().filter(|_| tweede_scherm) {
-                // Zo groot als past in de verhouding van het beeld, midden op dat scherm. Niet
-                // maximaliseren: dat activeert altijd, en dan rekt het beeld ook nog uit.
-                Some(r) => {
-                    let rand = (
-                        kader.right - kader.left - breedte as i32,
-                        kader.bottom - kader.top - hoogte as i32,
-                    );
-                    let ruimte = (r.right - r.left - rand.0, r.bottom - r.top - rand.1);
-                    let schaal = (ruimte.0 as f32 / breedte.max(1) as f32)
-                        .min(ruimte.1 as f32 / hoogte.max(1) as f32);
-                    let b = (breedte as f32 * schaal) as i32 + rand.0;
-                    let h = (hoogte as f32 * schaal) as i32 + rand.1;
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        r.left + (r.right - r.left - b) / 2,
-                        r.top + (r.bottom - r.top - h) / 2,
-                        b,
-                        h,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
+            match plaatsing.vanzelf {
+                // Midden op dat scherm, zo groot als past (zonder gekozen maat: zo groot als het
+                // scherm toelaat). Niet maximaliseren: dat activeert altijd, en rekt het beeld.
+                Some(scherm) => {
+                    if let Some(r) = werkgebied(scherm) {
+                        let ruimte = (r.right - r.left - rand.0, r.bottom - r.top - rand.1);
+                        let c = match plaatsing.maat {
+                            Some(_) => niet_groter(client, ruimte),
+                            None => pas_in(beeld, ruimte),
+                        };
+                        let (b, h) = (c.0 + rand.0, c.1 + rand.1);
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            r.left + (r.right - r.left - b) / 2,
+                            r.top + (r.bottom - r.top - h) / 2,
+                            b,
+                            h,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 }
                 None => {
+                    // Een onthouden maat kan van een groter scherm komen: dan kleiner, en
+                    // binnen het scherm waar Windows hem neerzette.
+                    if plaatsing.maat.is_some() {
+                        if let Some(r) = werkgebied_van(hwnd) {
+                            let ruimte = (r.right - r.left - rand.0, r.bottom - r.top - rand.1);
+                            let c = niet_groter(client, ruimte);
+                            let (b, h) = (c.0 + rand.0, c.1 + rand.1);
+                            let mut nu = RECT::default();
+                            let _ = GetWindowRect(hwnd, &mut nu);
+                            let x = nu.left.clamp(r.left, (r.right - b).max(r.left));
+                            let y = nu.top.clamp(r.top, (r.bottom - h).max(r.top));
+                            let _ = SetWindowPos(hwnd, None, x, y, b, h, SWP_NOZORDER);
+                        }
+                    }
                     let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
                 }
             }
@@ -940,6 +967,11 @@ impl Venster {
     /// Wat de schuif in het menu koos sinds de vorige keer, voor de motor.
     pub fn volume_keuze(&mut self) -> Option<f32> {
         self.staat().and_then(|s| s.volume_uit.take())
+    }
+
+    /// De maat die de gebruiker het venster gaf sinds de vorige keer, voor de motor.
+    pub fn maat_keuze(&mut self) -> Option<(u32, u32)> {
+        self.staat().and_then(|s| s.maat_uit.take())
     }
 
     /// Wat de gebruiker tekende, wiste, vroeg of als bediener deed sinds de vorige keer, als
@@ -1174,6 +1206,52 @@ fn maak_swapchain(
 pub fn heeft_tweede_scherm() -> bool {
     // SAFETY: geen argumenten om fout te doen.
     unsafe { GetSystemMetrics(SM_CMONITORS) > 1 }
+}
+
+/// Het grootste dat in `ruimte` past in de verhouding van `beeld` (groter of kleiner).
+fn pas_in(beeld: (i32, i32), ruimte: (i32, i32)) -> (i32, i32) {
+    let schaal =
+        (ruimte.0 as f32 / beeld.0.max(1) as f32).min(ruimte.1 as f32 / beeld.1.max(1) as f32);
+    (
+        ((beeld.0 as f32 * schaal) as i32).max(1),
+        ((beeld.1 as f32 * schaal) as i32).max(1),
+    )
+}
+
+/// `maat` zoals hij is als hij past, anders verkleind tot hij past.
+fn niet_groter(maat: (i32, i32), ruimte: (i32, i32)) -> (i32, i32) {
+    if maat.0 <= ruimte.0 && maat.1 <= ruimte.1 {
+        maat
+    } else {
+        pas_in(maat, ruimte)
+    }
+}
+
+/// Het werkgebied van het gekozen scherm; een monitor die er niet meer is wordt `Ander`.
+fn werkgebied(scherm: Scherm) -> Option<RECT> {
+    if let Scherm::Monitor(h) = scherm {
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: een verouderde handle laat `GetMonitorInfoW` alleen falen.
+        if unsafe { GetMonitorInfoW(HMONITOR(h as *mut _), &mut info) }.as_bool() {
+            return Some(info.rcWork);
+        }
+    }
+    ander_scherm()
+}
+
+/// Het werkgebied van het scherm waar `hwnd` op staat.
+fn werkgebied_van(hwnd: HWND) -> Option<RECT> {
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `hwnd` is geldig.
+    unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) }
+        .as_bool()
+        .then_some(info.rcWork)
 }
 
 /// Het werkgebied van een scherm waar het venster vooraan niet op staat, of `None` met één
@@ -1554,6 +1632,20 @@ unsafe extern "system" fn venster_proc(
                 staat.teken.herteken(hwnd);
                 DefWindowProcW(hwnd, bericht, wparam, lparam)
             }
+            // Eén keer per sleep, niet per beweging: de maat voor de volgende kijkvensters.
+            WM_EXITSIZEMOVE => {
+                let mut r = RECT::default();
+                if !staat.volledig_scherm
+                    && !IsZoomed(hwnd).as_bool()
+                    && !IsIconic(hwnd).as_bool()
+                    && GetClientRect(hwnd, &mut r).is_ok()
+                    && r.right > 0
+                    && r.bottom > 0
+                {
+                    staat.maat_uit = Some((r.right as u32, r.bottom as u32));
+                }
+                DefWindowProcW(hwnd, bericht, wparam, lparam)
+            }
             WM_SIZING => {
                 bewaak_verhouding(
                     wparam.0 as u32,
@@ -1579,6 +1671,15 @@ unsafe extern "system" fn venster_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onthouden_maat_past_het_beeld_in_zijn_verhouding() {
+        // 16:9 in een vierkant van 800: zo breed als kan.
+        assert_eq!(pas_in((1920, 1080), (800, 800)), (800, 450));
+        // Een gekozen maat die op het scherm past blijft, een te grote krimpt in verhouding.
+        assert_eq!(niet_groter((1280, 720), (1920, 1040)), (1280, 720));
+        assert_eq!(niet_groter((2560, 1440), (1280, 1000)), (1280, 720));
+    }
 
     #[test]
     fn verhouding_blijft_gelijk_bij_slepen() {
@@ -1771,7 +1872,8 @@ mod tests {
             .collect();
         let tex = d3d.maak_textuur_met(b, h, &pixels).expect("textuur");
 
-        let mut venster = Venster::open(&d3d, "FitCom — test", b, h, false).expect("venster");
+        let mut venster =
+            Venster::open(&d3d, "FitCom — test", b, h, Plaatsing::default()).expect("venster");
         let tot = Instant::now() + Duration::from_secs(5);
         while Instant::now() < tot && venster.pomp() {
             venster.toon(&tex).expect("tonen");
@@ -1790,8 +1892,8 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
         let d3d = D3dContext::new().expect("D3D11");
-        let mut venster =
-            Venster::open(&d3d, "FitCom — tekentest", 640, 360, false).expect("venster");
+        let mut venster = Venster::open(&d3d, "FitCom — tekentest", 640, 360, Plaatsing::default())
+            .expect("venster");
         let hwnd = venster.hwnd;
         let post = |msg: u32, wparam: usize, x: i32, y: i32| {
             let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
@@ -1858,8 +1960,8 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
         let d3d = D3dContext::new().expect("D3D11");
-        let mut venster =
-            Venster::open(&d3d, "FitCom — menutest", 640, 360, false).expect("venster");
+        let mut venster = Venster::open(&d3d, "FitCom — menutest", 640, 360, Plaatsing::default())
+            .expect("venster");
         let hwnd = venster.hwnd;
         venster.zet_menu_stijl(MenuStijl {
             grond: [0, 0, 0],

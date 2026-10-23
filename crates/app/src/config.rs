@@ -118,6 +118,17 @@ pub struct Config {
     #[serde(default = "waar")]
     pub auto_popout: bool,
 
+    /// Op welk scherm het vanzelf geopende venster komt, op naam uit de schermenlijst (zoals
+    /// `clips.monitor`). `None`, of een scherm dat er niet meer is: een ander scherm dan dat
+    /// van het venster vooraan.
+    #[serde(default)]
+    pub popout_monitor: Option<String>,
+
+    /// De laatste maat (clientgebied, pixels) die je een kijkvenster gaf. Elk nieuw kijkvenster
+    /// opent zo, met het beeld erin gepast en nooit groter dan het scherm.
+    #[serde(default)]
+    pub viewer_size: Option<(u32, u32)>,
+
     /// Wie er in het gesprek zit, als klein venster bovenop je spel (beslissing 53).
     /// Standaard uit.
     #[serde(default)]
@@ -557,6 +568,8 @@ impl Config {
             allow_drawing: true,
             allow_remote_control: false,
             auto_popout: true,
+            popout_monitor: None,
+            viewer_size: None,
             overlay: OverlayConfig::default(),
             download_dir: None,
         }
@@ -936,6 +949,20 @@ mod tests {
         let uit: Config = toml::from_str("display_name = \"Rick\"\nauto_popout = false").unwrap();
         let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
         assert!(!terug.auto_popout);
+    }
+
+    #[test]
+    fn popout_scherm_en_venstermaat_overleven_opslaan() {
+        let mut cfg = Config::template();
+        assert_eq!(
+            (cfg.popout_monitor.as_deref(), cfg.viewer_size),
+            (None, None)
+        );
+        cfg.popout_monitor = Some("Scherm 2560×1440".into());
+        cfg.viewer_size = Some((1280, 720));
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(terug.popout_monitor, cfg.popout_monitor);
+        assert_eq!(terug.viewer_size, Some((1280, 720)));
     }
 
     /// Bedienen staat uit, ook in een config van vóór deze instelling; aan overleeft

@@ -76,7 +76,7 @@ impl Venster {
         titel: &str,
         breedte: u32,
         hoogte: u32,
-        _tweede_scherm: bool,
+        _plaatsing: crate::kijker::Plaatsing,
     ) -> Result<Self> {
         let gesloten = Arc::new(AtomicBool::new(false));
         let gesloten_voor_blok = gesloten.clone();
@@ -208,6 +208,11 @@ impl Venster {
 
     /// Zie [`Venster::zet_menu_stijl`].
     pub fn volume_keuze(&mut self) -> Option<f32> {
+        None
+    }
+
+    /// Zie [`Venster::volume_keuze`]; een maat onthouden is niet gebouwd op macOS.
+    pub fn maat_keuze(&mut self) -> Option<(u32, u32)> {
         None
     }
 

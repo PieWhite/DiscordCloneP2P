@@ -3287,6 +3287,16 @@ herverbinding opnieuw langs.
   `Actie::StartKijken`; de deler gaat dus coderen zoals bij elke kijker. Vandaar dat het alleen
   in een gezamenlijk gesprek gebeurt.
 - Wie pas na het begin van het delen in het gesprek komt, krijgt het niet vanzelf.
+- **Het geluid begint stil.** Vanzelf kijken trekt het bureaubladgeluid mee zoals altijd, maar
+  op volume 0 (`kijkt_vanzelf_naar`), tenzij je voor die stream al een volume koos. De schuif
+  in het menu of de audio-popover zet het aan.
+- **Welk scherm is te kiezen** (`Config::popout_monitor`), op naam uit dezelfde lijst als de
+  clipopname. Bij het openen opgezocht in de schermen van nu (`Engine::popout_scherm`); weg of
+  niet gekozen is "een ander scherm dan dat vooraan".
+- **De maat wordt onthouden** voor elk kijkvenster, ook een met de hand geopend
+  (`Config::viewer_size`). Het venster meldt het clientgebied bij `WM_EXITSIZEMOVE`, dus één keer
+  per sleep en niet in volledig scherm of gemaximaliseerd (`KijkerEvent::Maat`). Een nieuw
+  venster past zijn beeld daarin in zijn eigen verhouding, en krimpt als het scherm te klein is.
 - **macOS:** niet gebouwd; `heeft_tweede_scherm` is daar `false` en Settings zegt het.
 
 **Niet geverifieerd:** beide nog niet met een echte tweede peer of in het venster bekeken

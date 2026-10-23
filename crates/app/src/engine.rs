@@ -271,6 +271,8 @@ pub struct Snapshot {
     pub bedienen: bool,
     /// Een nieuw gedeeld scherm vanzelf op het tweede scherm (`Config::auto_popout`).
     pub auto_popout: bool,
+    /// Het gekozen scherm daarvoor (`Config::popout_monitor`).
+    pub popout_monitor: Option<String>,
     /// De spraakoverlay (beslissing 53): aan of uit, en zijn plek bij het starten. De
     /// overlay-thread houdt de plek daarna zelf bij en meldt een nieuwe met `ZetOverlayPlek`.
     pub overlay: OverlayConfig,
@@ -380,6 +382,8 @@ pub enum UiCommand {
     /// Een nieuw gedeeld scherm vanzelf openen op het tweede scherm. Opgeslagen
     /// (`Config::auto_popout`).
     ZetAutoPopout(bool),
+    /// Op welk scherm dat venster komt, op naam. Leeg = een ander scherm dan dat vooraan.
+    ZetPopoutMonitor(String),
     /// Hetzelfde voor bedienen (beslissing 54, `Config::allow_remote_control`). Uit maakt ook
     /// een eind aan elke vraag en elk bedienen.
     ZetBedienen(bool),
@@ -2085,6 +2089,14 @@ impl Engine {
                     is_geluid,
                     tweede_scherm,
                 } => {
+                    // Het geluid bij een vanzelf geopend scherm begint stil; de schuif zet het
+                    // aan. Een volume dat de gebruiker al koos blijft staan.
+                    if is_geluid
+                        && !self.stream_volumes.contains_key(&(eigenaar, stream_id))
+                        && self.kijkt_vanzelf_naar(eigenaar)
+                    {
+                        self.zet_stream_volume(eigenaar, stream_id, 0.0);
+                    }
                     let uitkomst = if is_geluid {
                         self.luister_mee(eigenaar, stream_id)
                     } else {
@@ -2372,6 +2384,28 @@ impl Engine {
         self.voer_uit(acties);
     }
 
+    /// Kijken we nu naar een scherm van `eigenaar` dat vanzelf openging?
+    fn kijkt_vanzelf_naar(&self, eigenaar: PeerId) -> bool {
+        self.streams.vreemd().iter().any(|s| {
+            s.eigenaar == eigenaar && s.kijken && self.vanzelf_geopend.contains(&(eigenaar, s.id))
+        })
+    }
+
+    /// Het gekozen scherm voor een vanzelf geopend venster (`Config::popout_monitor`), op
+    /// naam in de schermenlijst van nu. Weg of niet gekozen: een ander scherm.
+    fn popout_scherm(&self) -> fitcom_video::Scherm {
+        let Some(naam) = &self.cfg.popout_monitor else {
+            return fitcom_video::Scherm::Ander;
+        };
+        fitcom_video::beschikbare_bronnen()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|b| b.soort == fitcom_video::BronSoort::Monitor && &b.naam == naam)
+            .map_or(fitcom_video::Scherm::Ander, |b| {
+                fitcom_video::Scherm::Monitor(b.handle)
+            })
+    }
+
     fn start_kijker(
         &mut self,
         eigenaar: PeerId,
@@ -2415,7 +2449,10 @@ impl Engine {
                 afzender: eigenaar,
                 post: self.mesh.post.clone(),
                 menu: Some(crate::ui::theme::viewer_menu_style()),
-                tweede_scherm,
+                plaatsing: fitcom_video::Plaatsing {
+                    vanzelf: tweede_scherm.then(|| self.popout_scherm()),
+                    maat: self.cfg.viewer_size,
+                },
             },
         )?;
 
@@ -2504,6 +2541,14 @@ impl Engine {
                 let (cmds, acties) = self.streams.stop_kijken(eigenaar, stream_id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
+            }
+            KijkerEvent::Maat(b, h) => {
+                if self.cfg.viewer_size != Some((b, h)) {
+                    self.cfg.viewer_size = Some((b, h));
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
             }
             KijkerEvent::Volume(vol) => {
                 if let Some((id, _)) = self.geluid_bij_beeld(eigenaar, stream_id) {
@@ -2930,6 +2975,15 @@ impl Engine {
                 let (cmds, acties) = self.streams.stop_kijken(eigenaar, id);
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
+            }
+            UiCommand::ZetPopoutMonitor(naam) => {
+                let gekozen = Some(naam.trim().to_string()).filter(|n| !n.is_empty());
+                if self.cfg.popout_monitor != gekozen {
+                    self.cfg.popout_monitor = gekozen;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
             }
             UiCommand::ZetAutoPopout(aan) => {
                 if self.cfg.auto_popout != aan {
@@ -3951,6 +4005,7 @@ impl Engine {
             tekenen: self.cfg.allow_drawing,
             bedienen: self.cfg.allow_remote_control && BEDIENEN_KAN,
             auto_popout: self.cfg.auto_popout,
+            popout_monitor: self.cfg.popout_monitor.clone(),
             overlay: self.cfg.overlay.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),

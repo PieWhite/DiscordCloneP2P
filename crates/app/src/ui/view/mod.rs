@@ -927,6 +927,11 @@ impl AppView {
                 let monitors = commands::clip_monitors(&self.ui);
                 self.v_mut().clip_monitors = Some(monitors);
             }
+            // The same list picks the screen a new share pops out on.
+            SettingsTab::Video if self.v.clip_monitors.is_none() => {
+                let monitors = commands::clip_monitors(&self.ui);
+                self.v_mut().clip_monitors = Some(monitors);
+            }
             SettingsTab::Recap => self.refresh_recap(),
             _ => {}
         }

@@ -5,8 +5,10 @@
 //! Every codec/rate change goes out as the whole triple, so the two values it did not touch
 //! are the engine's current ones.
 
-use super::controls::{control_row, help, label, note, readout, switch, Body, Piece, Range, Seg};
-use super::SettingsPane;
+use super::controls::{
+    auto_width, control_row, help, label, note, readout, select, switch, Body, Piece, Range, Seg,
+};
+use super::{SettingsPane, AUTO_POPOUT};
 use crate::ui::commands;
 use crate::ui::view::format;
 use crate::ui::view::widgets::{Btn, BtnKind};
@@ -45,6 +47,24 @@ impl SettingsPane {
         let draw_toggle =
             Rc::new(move |_: &_, _: &mut _, _: &mut _| commands::set_drawing(&ui_draw, !drawing));
         let (ui_popout, popout) = (snap.ui.clone(), snap.s.auto_popout);
+        // Before the list of screens arrived the select shows just the chosen one.
+        let chosen = snap.s.popout_monitor.clone();
+        let (items, wanted) = match &snap.v.clip_monitors {
+            None => {
+                let only = chosen.unwrap_or_else(|| AUTO_POPOUT.into());
+                (vec![only.clone()], only)
+            }
+            Some(monitors) => {
+                let mut items = vec![AUTO_POPOUT.to_string()];
+                items.extend(monitors.iter().cloned());
+                let wanted = chosen
+                    .filter(|m| monitors.contains(m))
+                    .unwrap_or_else(|| AUTO_POPOUT.to_string());
+                (items, wanted)
+            }
+        };
+        let popout_width = auto_width(&items, 280.);
+        self.popout_monitor.sync(items, &wanted, window, cx);
         let popout_toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| {
             commands::set_auto_popout(&ui_popout, !popout)
         });
@@ -185,9 +205,18 @@ impl SettingsPane {
                             .child(label("Pop out new screen shares").mb(px(2.)))
                             .child(help(concat!(
                                 "When someone in the call starts sharing a screen, it opens by ",
-                                "itself in a window on your other monitor, without taking focus ",
-                                "from your game. Only with two or more monitors."
-                            ))),
+                                "itself in a window on another monitor, without taking focus ",
+                                "from your game, and with its sound at 0. Only with two or more ",
+                                "monitors. Every viewer window opens at the size you last gave one."
+                            )))
+                            .when(popout, |d| {
+                                d.child(control_row().mt(px(8.)).child(select(
+                                    "popout-monitor",
+                                    &self.popout_monitor,
+                                    popout_width,
+                                    false,
+                                )))
+                            }),
                     )
                     .child(switch("auto-popout", popout, Some(popout_toggle)))
             } else {

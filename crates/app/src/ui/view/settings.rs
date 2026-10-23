@@ -38,6 +38,8 @@ use std::sync::Arc;
 const DEFAULT_DEVICE: &str = "Windows default";
 /// The first option of the screen select: an empty name in the engine.
 const AUTO_MONITOR: &str = "Automatic (main screen)";
+/// The first option of the pop-out screen select: an empty name in the engine.
+const AUTO_POPOUT: &str = "Automatic (the other screen)";
 
 pub struct SettingsPane {
     app: AppHandle,
@@ -53,6 +55,8 @@ pub struct SettingsPane {
     /// The key that operates the microphone gate (push-to-talk / push-to-mute).
     ptt_key: Choices,
     monitor: Choices,
+    /// Video: the screen a new share pops out on.
+    popout_monitor: Choices,
     clip_length: Choices,
     bitrate: Ranged,
     sound_volume: Ranged,
@@ -74,6 +78,7 @@ impl SettingsPane {
         let speaker = Choices::new(window, cx);
         let ptt_key = Choices::new(window, cx);
         let monitor = Choices::new(window, cx);
+        let popout_monitor = Choices::new(window, cx);
         let clip_length = Choices::new(window, cx);
         let bitrate = Ranged::new(4., 40., cx);
         let sound_volume = Ranged::new(0., 100., cx);
@@ -117,6 +122,20 @@ impl SettingsPane {
                         label.as_str()
                     };
                     commands::set_clip_monitor(&this.ui, name);
+                },
+            ),
+            cx.subscribe(
+                popout_monitor.state(),
+                |this, _, ev: &SelectEvent<Vec<String>>, _| {
+                    let SelectEvent::Confirm(Some(label)) = ev else {
+                        return;
+                    };
+                    let name = if label == AUTO_POPOUT {
+                        ""
+                    } else {
+                        label.as_str()
+                    };
+                    commands::set_popout_monitor(&this.ui, name);
                 },
             ),
             cx.subscribe(
@@ -170,6 +189,7 @@ impl SettingsPane {
             speaker,
             ptt_key,
             monitor,
+            popout_monitor,
             clip_length,
             bitrate,
             sound_volume,

@@ -53,6 +53,8 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         allow_drawing: true,
         allow_remote_control: false,
         auto_popout: false,
+        popout_monitor: None,
+        viewer_size: None,
         overlay: Default::default(),
         download_dir: None,
     }

@@ -272,6 +272,11 @@ pub fn set_auto_popout(ui: &Ui, on: bool) {
     send(ui, UiCommand::ZetAutoPopout(on));
 }
 
+/// Which monitor that window opens on. Empty = another screen than the one in front.
+pub fn set_popout_monitor(ui: &Ui, name: &str) {
+    send(ui, UiCommand::ZetPopoutMonitor(name.to_string()));
+}
+
 /// The default for remote control of a new monitor share (decision 54). Off also ends every
 /// request and every control session.
 pub fn set_remote_control(ui: &Ui, on: bool) {

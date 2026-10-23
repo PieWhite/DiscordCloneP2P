@@ -49,6 +49,8 @@ fn config(naam: &str, poort: u16, downloads: &Path) -> Config {
         allow_drawing: true,
         allow_remote_control: false,
         auto_popout: false,
+        popout_monitor: None,
+        viewer_size: None,
         overlay: Default::default(),
         download_dir: Some(downloads.to_path_buf()),
     }

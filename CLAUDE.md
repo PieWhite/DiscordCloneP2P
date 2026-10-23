@@ -630,7 +630,10 @@ het uitklappen. Wat je niet mag omdraaien:
   geen camera), alleen als wij en de deler in het gesprek zitten, er een tweede scherm is en we
   hem niet al eens openden. Standaard aan (`auto_popout`).
 - **Het vanzelf geopende venster pakt nooit de focus** (`SW_SHOWNOACTIVATE`, niet
-  maximaliseren) en gaat naar een ander scherm dan dat van het voorgrondvenster (invariant 4).
+  maximaliseren) en gaat naar het gekozen scherm (`popout_monitor`), anders een ander scherm dan
+  dat van het voorgrondvenster (invariant 4). Zijn geluid begint op 0.
+- **De venstermaat (`viewer_size`) gaat één keer per sleep naar de motor** (`WM_EXITSIZEMOVE`),
+  nooit per beweging, en nooit uit volledig scherm of gemaximaliseerd.
 
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het

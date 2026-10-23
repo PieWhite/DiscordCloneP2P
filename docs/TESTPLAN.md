@@ -1703,5 +1703,12 @@ lengtegrens en de configstandaard. **Niets hiervan is al in een venster bekeken.
    A deelt zijn scherm: bij B opent het kijkvenster op scherm 2, het spel houdt de focus (geen
    haperen, geen alt-tab). B sluit het venster; A's verbinding valt even weg en komt terug: het
    komt niet terug. A stopt en deelt opnieuw (ook na een herstart van A): het komt wel.
+   Het geluid van A's scherm staat op 0; de schuif zet het aan.
+   In Settings → Video een scherm kiezen: het venster komt daar, ook als het spel er staat.
+   Dat scherm loskoppelen: het venster komt op het andere.
+5. **Maat onthouden.** Een kijkvenster groter of kleiner slepen en sluiten. Het volgende (ook
+   met de hand geopend, ook na een herstart) opent op die maat, met een beeld van een andere
+   verhouding erin gepast. Een maat van een groot scherm op een klein scherm: past erop.
+   F11 of maximaliseren verandert de onthouden maat niet.
    A deelt een camera: niets vanzelf. Instelling uit: niets vanzelf. B met één
    scherm: niets vanzelf. B buiten het gesprek: niets vanzelf.

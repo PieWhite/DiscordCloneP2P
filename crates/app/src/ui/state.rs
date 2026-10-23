@@ -677,6 +677,10 @@ pub struct UiState {
     /// `config.toml`; Windows only, like remote control.
     #[serde(default)]
     pub auto_popout: bool,
+    /// The monitor it opens on, by name from the screen list. `None`: another screen than the
+    /// one in front.
+    #[serde(default)]
+    pub popout_monitor: Option<String>,
     /// The in-game overlay of who is in the call (decision 53). Comes from `config.toml`.
     #[serde(default)]
     pub overlay: OverlayState,
@@ -1073,6 +1077,7 @@ impl UiState {
             allow_remote_control: snap.bedienen,
             remote_control_available: remote_control_available(),
             auto_popout: snap.auto_popout,
+            popout_monitor: snap.popout_monitor.clone(),
             overlay: OverlayState {
                 enabled: snap.overlay.enabled,
                 available: overlay_available(),

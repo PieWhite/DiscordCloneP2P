@@ -96,4 +96,6 @@ pub use codec::{Codec, Decoder, Encoder, EncoderConfig};
 pub use d3d::D3dContext;
 pub use deler::{deel, DelerConfig, DelerHandle};
 pub use fragment::{Frame, Reassembler};
-pub use kijker::{kijk, KijkerConfig, KijkerEvent, KijkerHandle, MenuStijl, Miniatuur};
+pub use kijker::{
+    kijk, KijkerConfig, KijkerEvent, KijkerHandle, MenuStijl, Miniatuur, Plaatsing, Scherm,
+};
