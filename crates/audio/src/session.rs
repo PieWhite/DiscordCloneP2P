@@ -433,16 +433,43 @@ pub fn start(cfg: VoiceConfig) -> Result<VoiceHandle> {
 // Apparaten
 // ---------------------------------------------------------------------------
 
-/// Het apparaat met deze naam, of `None` als er geen naam gekozen is of hij niet meer
-/// bestaat (apparaten komen en gaan). De beller valt dan terug op het standaardapparaat.
-/// Ook gebruikt door de microfoon-tap voor clips: die moet dezelfde microfoon pakken als
-/// het gesprek, anders neem je iets anders op dan je hoort.
-pub(crate) fn kies_apparaat<I: Iterator<Item = cpal::Device>>(
-    apparaten: I,
+/// Het apparaat met deze naam, of het standaardapparaat van Windows als er geen naam gekozen
+/// is of hij niet meer bestaat (apparaten komen en gaan). Ook gebruikt door de microfoon-tap
+/// voor clips: die moet dezelfde microfoon pakken als het gesprek, anders neem je iets anders
+/// op dan je hoort.
+///
+/// **Altijd een concreet eindpunt, nooit cpal's eigen standaard-`Device`.** Op een stream van
+/// dat laatste registreert cpal een `IMMNotificationClient`, en die initialiseert COM als STA
+/// op de threadpoolthread van Windows waarop de callback binnenkomt (bij elk apparaat dat
+/// wegvalt: een slapende monitor, een draadloze headset). Die thread blijft STA, en wat
+/// Windows er later op draait — `ActivateAudioInterfaceAsync`, een Store-decoder zoals HEVC —
+/// faalt met `RPC_E_CHANGED_MODE` tot de app herstart. De prijs: een stream volgt een wissel
+/// van standaardapparaat niet; opnieuw deelnemen pakt de nieuwe.
+pub(crate) fn kies_apparaat(
+    host: &cpal::Host,
+    invoer: bool,
     naam: Option<&str>,
-) -> Option<cpal::Device> {
-    let naam = naam?;
-    apparaten.into_iter().find(|d| d.to_string() == naam)
+) -> Result<Option<cpal::Device>> {
+    let alle: Vec<cpal::Device> = if invoer {
+        host.input_devices()?.collect()
+    } else {
+        host.output_devices()?.collect()
+    };
+    let standaard = if invoer {
+        host.default_input_device()
+    } else {
+        host.default_output_device()
+    };
+    let standaard_id = standaard.as_ref().and_then(|d| d.id().ok());
+    let gekozen = naam.and_then(|n| alle.iter().position(|d| d.to_string() == n));
+    let plek = gekozen.or_else(|| {
+        let id = standaard_id.as_ref()?;
+        alle.iter().position(|d| d.id().ok().as_ref() == Some(id))
+    });
+    // Zonder concreet eindpunt in de lijst liever het standaardapparaat dan geen geluid.
+    Ok(plek
+        .map(|i| alle.into_iter().nth(i).expect("plek komt uit deze lijst"))
+        .or(standaard))
 }
 
 fn open_apparaten(
@@ -452,25 +479,17 @@ fn open_apparaten(
 ) -> Result<(Apparaten, cpal::Stream, cpal::Stream)> {
     let host = cpal::default_host();
 
-    let invoer = kies_apparaat(host.input_devices()?, cfg.input_device.as_deref())
-        .or_else(|| host.default_input_device())
+    let invoer = kies_apparaat(&host, true, cfg.input_device.as_deref())?
         .context("geen microfoon gevonden")?;
-    let uitvoer = kies_apparaat(host.output_devices()?, cfg.output_device.as_deref())
-        .or_else(|| host.default_output_device())
+    let uitvoer = kies_apparaat(&host, false, cfg.output_device.as_deref())?
         .context("geen weergaveapparaat gevonden")?;
 
-    let (invoer, in_cfg) = met_terugval(
-        invoer,
-        || host.input_devices(),
-        |d| d.default_input_config(),
-    )
-    .context("microfoon-instellingen")?;
-    let (uitvoer, uit_cfg) = met_terugval(
-        uitvoer,
-        || host.output_devices(),
-        |d| d.default_output_config(),
-    )
-    .context("weergave-instellingen")?;
+    let in_cfg = invoer
+        .default_input_config()
+        .context("microfoon-instellingen")?;
+    let uit_cfg = uitvoer
+        .default_output_config()
+        .context("weergave-instellingen")?;
 
     let invoer_rate = in_cfg.sample_rate();
     let uitvoer_rate = uit_cfg.sample_rate();
@@ -501,28 +520,6 @@ fn open_apparaten(
         in_stream,
         uit_stream,
     ))
-}
-
-/// cpal's standaardapparaat activeert via `ActivateAudioInterfaceAsync`, en dat geeft in een
-/// draaiend proces soms blijvend `RPC_E_CHANGED_MODE` (gezien na minuten tot uren; pas een
-/// herstart verhielp het). Dan nog één keer op het concrete eindpunt met dezelfde naam, via
-/// `IMMDevice::Activate`. Dat volgt een wissel van standaardapparaat niet, maar het werkt.
-fn met_terugval<I: Iterator<Item = cpal::Device>>(
-    dev: cpal::Device,
-    alle: impl FnOnce() -> Result<I, cpal::Error>,
-    config: impl Fn(&cpal::Device) -> Result<cpal::SupportedStreamConfig, cpal::Error>,
-) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
-    let fout = match config(&dev) {
-        Ok(c) => return Ok((dev, c)),
-        Err(e) => e,
-    };
-    let naam = dev.description().ok().map(|d| d.name().to_owned());
-    let Some(concreet) = alle().ok().and_then(|a| kies_apparaat(a, naam.as_deref())) else {
-        return Err(fout.into());
-    };
-    tracing::warn!(error = %fout, apparaat = %concreet, "standaardapparaat weigert, eindpunt rechtstreeks");
-    let c = config(&concreet)?;
-    Ok((concreet, c))
 }
 
 fn fout_melden(e: cpal::Error) {
@@ -951,8 +948,7 @@ fn open_bureaublad_bron(
                 "proces-exclusieve loopback niet beschikbaar, terugval op gewone loopback (eigen stem kan meekomen)"
             );
             let host = cpal::default_host();
-            let dev = kies_apparaat(host.output_devices()?, apparaat.map(String::as_str))
-                .or_else(|| host.default_output_device())
+            let dev = kies_apparaat(&host, false, apparaat.map(String::as_str))?
                 .context("geen weergaveapparaat om geluid van af te tappen")?;
             let cfg = dev
                 .default_output_config()

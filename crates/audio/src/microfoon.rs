@@ -13,7 +13,7 @@
 #[cfg(windows)]
 use anyhow::{bail, Context, Result};
 #[cfg(windows)]
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
@@ -94,9 +94,8 @@ fn bouw_en_speel(
 ) -> Result<cpal::Stream> {
     use anyhow::Context as _;
     let host = cpal::default_host();
-    let device = crate::session::kies_apparaat(host.input_devices()?, naam)
-        .or_else(|| host.default_input_device())
-        .context("geen microfoon gevonden")?;
+    let device =
+        crate::session::kies_apparaat(&host, true, naam)?.context("geen microfoon gevonden")?;
     let cfg = device.default_input_config().context("microfoon-config")?;
     // Welke microfoon dit is hoort in de log: "mijn stem staat niet in de clip" is
     // meestal een apparaatkwestie, en dan wil je die naam zien zonder te hoeven raden.
