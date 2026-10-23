@@ -1702,5 +1702,6 @@ lengtegrens en de configstandaard. **Niets hiervan is al in een venster bekeken.
 4. **Uitklappen.** B heeft twee schermen en speelt een spel op scherm 1; A en B in het gesprek.
    A deelt zijn scherm: bij B opent het kijkvenster op scherm 2, het spel houdt de focus (geen
    haperen, geen alt-tab). B sluit het venster; A's verbinding valt even weg en komt terug: het
-   komt niet terug. A deelt een camera: niets vanzelf. Instelling uit: niets vanzelf. B met één
+   komt niet terug. A stopt en deelt opnieuw (ook na een herstart van A): het komt wel.
+   A deelt een camera: niets vanzelf. Instelling uit: niets vanzelf. B met één
    scherm: niets vanzelf. B buiten het gesprek: niets vanzelf.

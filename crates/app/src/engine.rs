@@ -423,7 +423,8 @@ pub enum UiCommand {
     /// verwerkt, net als bij het opstarten.
     ZetNaam(String),
     /// Eigen profielfoto: een gekozen plaatje, of `None` om hem weg te halen. Verkleinen
-    /// gebeurt op de motor, net als hashen bij aanbieden.
+    /// gebeurt op de motor zelf (een paar honderd ms bij een grote foto; één klik in Settings,
+    /// en voice en media draaien op eigen threads).
     ZetAvatar(Option<PathBuf>),
     /// Niet-storenmodus aan/uit. Onderdrukt alle Windows-meldingen, ook een tag.
     NietStoren(bool),
@@ -666,7 +667,7 @@ struct Engine {
     /// je wilt kunnen zien wie er praat voordat je zelf aansluit.
     peers_in_voice: HashSet<PeerId>,
     /// Streams die we al eens vanzelf openden (`Config::auto_popout`). Wie het venster sloot
-    /// wil het na een herverbinding niet terug.
+    /// wil het na een herverbinding niet terug; een `StreamRevoke` haalt hem eruit.
     vanzelf_geopend: HashSet<(PeerId, u32)>,
 
     /// Wie deelt wat en wie kijkt waarnaar. Neemt alle beslissingen; hieronder staat
@@ -1238,6 +1239,11 @@ impl Engine {
                         }
                         if let Some(id) = nieuw_scherm {
                             self.klap_uit(from, id);
+                        }
+                        // Gestopt is gestopt: stream-id's tellen per proces vanaf 1, dus na een
+                        // herstart van de deler is "dezelfde" id een nieuw scherm.
+                        if let ControlMsg::StreamRevoke(r) = &andere {
+                            self.vanzelf_geopend.remove(&(from, r.stream_id));
                         }
                     }
 

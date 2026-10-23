@@ -3274,7 +3274,8 @@ kanaal. Vouwen als `SetNick`: per auteur de laatste `(lamport, author)`, leeg is
 delen, dan opent het kijkvenster vanzelf, als:
 wij in het gesprek zitten, de deler ook, er meer dan één monitor is
 (`venster::heeft_tweede_scherm`), en we deze stream niet al eens vanzelf openden
-(`Engine::vanzelf_geopend`: wie het venster sloot krijgt het na een herverbinding niet terug).
+(`Engine::vanzelf_geopend`: wie het venster sloot krijgt het na een herverbinding niet terug;
+een `StreamRevoke` haalt hem eruit, want stream-id's beginnen na een herstart weer bij 1).
 "Nieuw" is een `StreamAnnounce` die `Streams::kent` nog niet kende, want die komt bij elke
 herverbinding opnieuw langs.
 
