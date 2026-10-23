@@ -1685,3 +1685,22 @@ kort een venster) doet het zonder echte muis.
    A's audio-popover in het hoofdvenster staat daarna op dezelfde waarde (en andersom: de
    popover verzetten en het menu opnieuw openen). Zonder bureaubladgeluid of buiten het gesprek:
    "No stream audio". Naar A's camera kijken: ook "No stream audio".
+
+## Profielfoto's en vanzelf uitklappen (2026-10-23, beslissing 56)
+
+Op deze pc geverifieerd: unit-tests op het verkleinen en de controle bij de ontvanger
+(`avatar::tests`), de vouwregel (`laatste_profielfoto_wint_en_leeg_haalt_hem_weg`), de
+lengtegrens en de configstandaard. **Niets hiervan is al in een venster bekeken.**
+
+1. **Foto kiezen.** A kiest in Settings → Account een foto (een liggende, een PNG met
+   doorzichtigheid, een grote telefoonfoto). Bij A en B staat hij rond in de ledenlijst, de
+   DM-lijst, de spraaklijst, het eigen paneel, bij berichten en in Recap. Remove: weer de
+   beginletter, bij beiden.
+2. **Offline.** A zet een foto en sluit af. C komt pas daarna online: C ziet A's foto toch
+   (hij komt via B mee).
+3. **Oudere peer.** Een peer zonder deze versie ziet de beginletter en geeft geen fout.
+4. **Uitklappen.** B heeft twee schermen en speelt een spel op scherm 1; A en B in het gesprek.
+   A deelt zijn scherm: bij B opent het kijkvenster op scherm 2, het spel houdt de focus (geen
+   haperen, geen alt-tab). B sluit het venster; A's verbinding valt even weg en komt terug: het
+   komt niet terug. A deelt een camera: niets vanzelf. Instelling uit: niets vanzelf. B met één
+   scherm: niets vanzelf. B buiten het gesprek: niets vanzelf.

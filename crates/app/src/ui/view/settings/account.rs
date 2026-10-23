@@ -8,10 +8,11 @@ use super::{text_field, SettingsPane};
 use crate::ui::commands;
 use crate::ui::icons::Icon;
 use crate::ui::state::UpdateState;
-use crate::ui::view::widgets::{Btn, BtnKind};
+use crate::ui::view::widgets::{avatar, face, Btn, BtnKind};
 use crate::ui::view::AppSnapshot;
 use gpui_kit::{
-    div, px, relative, ClipboardItem, Context, IntoElement, ParentElement, Styled, Window,
+    div, prelude::FluentBuilder, px, relative, ClipboardItem, Context, IntoElement, ParentElement,
+    Styled, Window,
 };
 use std::rc::Rc;
 
@@ -84,6 +85,41 @@ impl SettingsPane {
                                     commands::set_display_name(&this.ui, &name);
                                 })),
                         ),
+                    ),
+            )
+            .field(
+                div()
+                    .child(label("Profile picture"))
+                    .child(help(concat!(
+                        "Shown instead of your initial, also while you are offline. Cropped to a ",
+                        "square and made small before it goes to the others."
+                    )))
+                    .child(
+                        control_row()
+                            .child(avatar(
+                                &s.me.name,
+                                s.me.avatar,
+                                face(&snap.ui, s.me.picture.as_deref()),
+                                32.,
+                                None,
+                                false,
+                            ))
+                            .child(
+                                Btn::new("pick-avatar", "Choose\u{2026}")
+                                    .kind(BtnKind::Ghost)
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        commands::pick_avatar(&this.ui)
+                                    })),
+                            )
+                            .when(s.me.picture.is_some(), |r| {
+                                r.child(
+                                    Btn::new("remove-avatar", "Remove")
+                                        .kind(BtnKind::Ghost)
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            commands::remove_avatar(&this.ui)
+                                        })),
+                                )
+                            }),
                     ),
             )
             .field(

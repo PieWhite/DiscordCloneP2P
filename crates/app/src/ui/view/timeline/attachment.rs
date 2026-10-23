@@ -42,7 +42,7 @@ fn picture_size(path: &Path) -> Option<(u32, u32)> {
 /// A picture from disk for `img()`, or `None` when the path is not one this window may
 /// read. Debug fixture runs decode it right here: their window draws a single frame behind
 /// a locked screen, so an asynchronous load would never show up. Never in a real run.
-pub(super) fn picture(ui: &Ui, path: &Path) -> Option<ImageSource> {
+pub(in crate::ui::view) fn picture(ui: &Ui, path: &Path) -> Option<ImageSource> {
     if !ui.image_path_allowed(path) {
         return None;
     }

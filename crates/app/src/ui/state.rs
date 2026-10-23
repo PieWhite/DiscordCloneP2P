@@ -57,6 +57,11 @@ pub fn parse_channel(key: &str) -> Channel {
     }
 }
 
+/// Someone's profile picture as the engine put it on disk.
+fn picture_of(snap: &Snapshot, peer: PeerId) -> Option<String> {
+    snap.avatars.get(&peer).map(|p| p.display().to_string())
+}
+
 /// The three avatar fills from `DESIGN.md` are identity, not state: one hue per peer for
 /// the life of the install.
 ///
@@ -95,6 +100,9 @@ pub struct PeerState {
     pub name: String,
     pub address: String,
     pub avatar: u8,
+    /// Their profile picture on disk (`Snapshot::avatars`), drawn instead of the monogram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
     pub presence: Presence,
     /// The status this peer chose for itself ("away", "busy"), while it is online. `None`
     /// means it never sent one (or is offline): plain online, nothing extra to draw.
@@ -151,6 +159,9 @@ pub struct SelfState {
     pub id: String,
     pub name: String,
     pub avatar: u8,
+    /// Their profile picture on disk (`Snapshot::avatars`), drawn instead of the monogram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
     /// Our own chosen status: "online", "away" or "busy".
     pub status: String,
     /// The game we have in front, for the "Stream <game>" button. Only moves on a switch.
@@ -600,6 +611,9 @@ pub struct RecapRow {
     pub peer: String,
     pub name: String,
     pub avatar: u8,
+    /// Their profile picture on disk (`Snapshot::avatars`), drawn instead of the monogram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
     pub mine: bool,
     /// Seconds in the call, as this machine saw it. Someone who talked while we were
     /// offline is not counted — see `crate::gebruik` for why that is the honest number.
@@ -659,6 +673,10 @@ pub struct UiState {
     /// False on macOS, where a screen cannot be controlled: the switches are not drawn.
     #[serde(default = "remote_control_available")]
     pub remote_control_available: bool,
+    /// Open someone's new screen share by itself on a second monitor. Comes from
+    /// `config.toml`; Windows only, like remote control.
+    #[serde(default)]
+    pub auto_popout: bool,
     /// The in-game overlay of who is in the call (decision 53). Comes from `config.toml`.
     #[serde(default)]
     pub overlay: OverlayState,
@@ -916,6 +934,7 @@ impl UiState {
                     },
                     address: p.address.clone(),
                     avatar: id.and_then(|i| hues.get(&i).copied()).unwrap_or(3),
+                    picture: id.and_then(|i| picture_of(snap, i)),
                     presence,
                     user_status: p
                         .user_status
@@ -971,6 +990,7 @@ impl UiState {
                 id: c.me.to_string(),
                 name: my_name,
                 avatar: hues.get(&c.me).copied().unwrap_or(1),
+                picture: picture_of(snap, c.me),
                 status: snap.eigen_status.to_string(),
                 playing: snap.eigen_spel.clone(),
             },
@@ -1052,6 +1072,7 @@ impl UiState {
             allow_drawing: snap.tekenen,
             allow_remote_control: snap.bedienen,
             remote_control_available: remote_control_available(),
+            auto_popout: snap.auto_popout,
             overlay: OverlayState {
                 enabled: snap.overlay.enabled,
                 available: overlay_available(),
@@ -1125,6 +1146,7 @@ pub fn recap_of(snap: &Snapshot, me: PeerId) -> Recap {
                 peer: r.peer.to_string(),
                 name: display_name(snap, r.peer, &r.peer.to_string()[..8]),
                 avatar: hues.get(&r.peer).copied().unwrap_or(3),
+                picture: picture_of(snap, r.peer),
                 mine: r.peer == me,
                 voice_sec: r.voice_ms / 1000,
                 shared_sec: r.deel_ms / 1000,

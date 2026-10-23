@@ -11,8 +11,8 @@ use super::super::icons::Icon;
 use super::super::state::{ChannelState, PeerState, UiState};
 use super::super::theme;
 use super::widgets::{
-    avatar, badge, focus_ring, icon_btn, live_pill, meter_view, pane_head, pane_title, selectable,
-    tooltip, tracked, Btn, BtnKind, Dot,
+    avatar, badge, face, focus_ring, icon_btn, live_pill, meter_view, pane_head, pane_title,
+    selectable, tooltip, tracked, Btn, BtnKind, Dot,
 };
 use super::{AppHandle, AppSnapshot, Dialog, PaneInit, View};
 use gpui_kit::{
@@ -278,7 +278,14 @@ fn dm_row(snap: &AppSnapshot, p: &PeerState, current: bool) -> AnyElement {
     let group = SharedString::from(format!("dm-{}", p.id));
     let id = p.id.clone();
     menu_row(ElementId::Name(group), current, p.unread)
-        .child(avatar(&p.name, p.avatar, 20., Some(Dot::of_peer(p)), false))
+        .child(avatar(
+            &p.name,
+            p.avatar,
+            face(&snap.ui, p.picture.as_deref()),
+            20.,
+            Some(Dot::of_peer(p)),
+            false,
+        ))
         .child(row_name(&p.name))
         .when(p.unread > 0, |d| d.child(badge(p.unread, false)))
         .on_click(
@@ -388,11 +395,12 @@ enum VoicePeer<'a> {
 /// whole row is a meter view: the ring and the name's white both follow the speaking level.
 fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut App) -> AnyElement {
     let s = &snap.s;
-    let (key, name, hue, glyph, live, watch) = match who {
+    let (key, name, hue, picture, glyph, live, watch) = match who {
         VoicePeer::Me => (
             None,
             s.me.name.clone(),
             s.me.avatar,
+            face(&snap.ui, s.me.picture.as_deref()),
             mute_glyph(s.voice.deafened, s.voice.muted, false),
             s.own_streams.iter().any(|st| !st.is_audio),
             None,
@@ -401,6 +409,7 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
             Some(p.id.clone()),
             p.name.clone(),
             p.avatar,
+            face(&snap.ui, p.picture.as_deref()),
             mute_glyph(p.deafened, p.muted, p.volume == 0.0),
             s.streams.iter().any(|st| st.owner == p.id && !st.is_audio),
             s.streams
@@ -433,7 +442,7 @@ fn voice_peer(snap: &AppSnapshot, who: VoicePeer, window: &mut Window, cx: &mut 
                 theme::TEXT
             })
             .group(group.clone())
-            .child(avatar(&name, hue, 22., None, speaking))
+            .child(avatar(&name, hue, picture.clone(), 22., None, speaking))
             .child(
                 div()
                     .flex_1()
@@ -518,9 +527,18 @@ fn self_row(snap: &AppSnapshot, narrow: bool, window: &mut Window, cx: &mut App)
     let s = &snap.s;
     let name = s.me.name.clone();
     let hue = s.me.avatar;
+    let picture = face(&snap.ui, s.me.picture.as_deref());
     let dot = self_dot(s);
     let ring = meter_view("self-avatar", &snap.meters, window, cx, move |m, _, _| {
-        avatar(&name, hue, 32., Some(dot), m.self_speaking()).into_any_element()
+        avatar(
+            &name,
+            hue,
+            picture.clone(),
+            32.,
+            Some(dot),
+            m.self_speaking(),
+        )
+        .into_any_element()
     });
     let sub = if s.do_not_disturb {
         "Do not disturb"
@@ -651,6 +669,7 @@ pub(super) mod tests {
             name: name.into(),
             address: format!("{name}:41650"),
             avatar: 1,
+            picture: None,
             presence,
             user_status: None,
             activity: None,

@@ -12,6 +12,7 @@
 //! bottom (`PIN_SLACK`), as `render()` did; a conversation change always jumps to the newest.
 
 mod attachment;
+pub(super) use attachment::picture;
 mod message;
 
 use super::super::commands::{self, YoutubePreview};
@@ -423,7 +424,7 @@ impl Render for TimelinePane {
 
         if snap.tl.is_empty() {
             return match &dm_peer {
-                Some(peer) => message::render_dm_empty(peer).into_any_element(),
+                Some(peer) => message::render_dm_empty(&snap.ui, peer).into_any_element(),
                 None => message::render_empty(&snap.active_name()).into_any_element(),
             };
         }

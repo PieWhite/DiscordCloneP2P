@@ -112,6 +112,12 @@ pub struct Config {
     #[serde(default)]
     pub allow_remote_control: bool,
 
+    /// Een nieuw gedeeld scherm van een ander vanzelf bekijken, in een venster op je tweede
+    /// scherm (2026-10-23). Alleen met twee schermen en terwijl jullie samen in het gesprek
+    /// zitten; het venster pakt de focus niet. Standaard aan. Op macOS doet hij niets.
+    #[serde(default = "waar")]
+    pub auto_popout: bool,
+
     /// Wie er in het gesprek zit, als klein venster bovenop je spel (beslissing 53).
     /// Standaard uit.
     #[serde(default)]
@@ -550,6 +556,7 @@ impl Config {
             share_activity: default_share_activity(),
             allow_drawing: true,
             allow_remote_control: false,
+            auto_popout: true,
             overlay: OverlayConfig::default(),
             download_dir: None,
         }
@@ -919,6 +926,16 @@ mod tests {
         let uit: Config = toml::from_str("display_name = \"Rick\"\nallow_drawing = false").unwrap();
         let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
         assert!(!terug.allow_drawing);
+    }
+
+    #[test]
+    fn auto_popout_staat_standaard_aan_ook_in_een_oude_config() {
+        let oud: Config = toml::from_str(r#"display_name = "Rick""#).unwrap();
+        assert!(oud.auto_popout);
+        assert!(Config::template().auto_popout);
+        let uit: Config = toml::from_str("display_name = \"Rick\"\nauto_popout = false").unwrap();
+        let terug: Config = toml::from_str(&toml::to_string_pretty(&uit).unwrap()).unwrap();
+        assert!(!terug.auto_popout);
     }
 
     /// Bedienen staat uit, ook in een config van vóór deze instelling; aan overleeft

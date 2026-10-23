@@ -114,6 +114,10 @@ pub struct Timeline {
     /// Op weergavevolgorde: `(lamport, author)`.
     pub messages: Vec<Message>,
     pub nicknames: HashMap<PeerId, String>,
+    /// De laatste profielfoto per auteur, als de bytes uit `OpKind::SetAvatar`. Wie er geen
+    /// heeft of hem weghaalde staat er niet in. Ongecontroleerd: de app kijkt zelf of het
+    /// een plaatje is voordat er iets mee gebeurt.
+    pub avatars: HashMap<PeerId, Vec<u8>>,
     /// Alle bekende aanbiedingen, op weergavevolgorde. Geen bewerken of intrekken in v1
     /// — zie `TODO.md`.
     pub files: Vec<FileEntry>,
@@ -177,6 +181,7 @@ pub fn build(ops: &[Op]) -> Timeline {
     }
     let mut changes: HashMap<OpId, ((u64, PeerId), Change)> = HashMap::new();
     let mut nicknames: HashMap<PeerId, ((u64, PeerId), String)> = HashMap::new();
+    let mut avatars: HashMap<PeerId, ((u64, PeerId), Vec<u8>)> = HashMap::new();
     // Titel of verwijderd, per subkanaal — dezelfde laatste-schrijver-wint-vergelijking
     // als Edit/Delete bij een bericht. Geen apart auteurschap: elke peer mag een
     // subkanaal aanmaken/hernoemen/verwijderen.
@@ -258,6 +263,17 @@ pub fn build(ops: &[Op]) -> Timeline {
                     }
                 }
             }
+            // Alleen van het algemene kanaal: in een DM zou hij maar bij twee peers landen.
+            OpKind::SetAvatar { image } if op.channel == Channel::GENERAL => {
+                let k = key(op);
+                match avatars.get(&op.author) {
+                    Some((prev, _)) if *prev >= k => {}
+                    _ => {
+                        avatars.insert(op.author, (k, image.into_vec()));
+                    }
+                }
+            }
+            OpKind::SetAvatar { .. } => {}
             OpKind::FileMeta { name, size, hash } => {
                 file_aanbiedingen.push((
                     op.id(),
@@ -442,6 +458,11 @@ pub fn build(ops: &[Op]) -> Timeline {
     Timeline {
         messages,
         nicknames: nicknames.into_iter().map(|(p, (_, n))| (p, n)).collect(),
+        avatars: avatars
+            .into_iter()
+            .filter(|(_, (_, foto))| !foto.is_empty())
+            .map(|(p, (_, foto))| (p, foto))
+            .collect(),
         files,
         wordle,
         wordle_cards: wordle_cards
@@ -1133,6 +1154,23 @@ mod tests {
         );
         let t = build(&[b, a]);
         assert_eq!(t.nicknames[&peer(1)], "Rick2");
+    }
+
+    #[test]
+    fn laatste_profielfoto_wint_en_leeg_haalt_hem_weg() {
+        let foto = |seq, lamport, bytes: &[u8]| {
+            op(
+                peer(1),
+                seq,
+                lamport,
+                OpKind::SetAvatar {
+                    image: fitcom_proto::ByteBuf::from(bytes.to_vec()),
+                },
+            )
+        };
+        let (a, b, weg) = (foto(1, 1, b"een"), foto(2, 5, b"twee"), foto(3, 9, b""));
+        assert_eq!(build(&[b.clone(), a.clone()]).avatars[&peer(1)], b"twee");
+        assert!(!build(&[weg, a, b]).avatars.contains_key(&peer(1)));
     }
 
     fn reactie(

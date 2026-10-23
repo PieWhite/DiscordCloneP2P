@@ -111,6 +111,8 @@ pub enum Actie {
         /// Geluid in plaats van beeld: geen venster, geen eigen poort — dat komt binnen
         /// op de voice-poort en gaat de bestaande mixer in.
         is_geluid: bool,
+        /// Vanzelf geopend (`Config::auto_popout`): op het tweede scherm, zonder focus.
+        tweede_scherm: bool,
     },
     /// Sluit het venster.
     StopKijken { eigenaar: PeerId, stream_id: u32 },
@@ -616,7 +618,16 @@ impl Streams {
             breedte: s.breedte,
             hoogte: s.hoogte,
             is_geluid: s.kind.is_geluid(),
+            tweede_scherm: false,
         }]
+    }
+
+    /// Kennen we deze stream van deze peer al? Een `StreamAnnounce` komt bij elke
+    /// herverbinding opnieuw langs; alleen een onbekende is een nieuw gedeeld scherm.
+    pub fn kent(&self, eigenaar: PeerId, stream_id: u32) -> bool {
+        self.vreemd
+            .iter()
+            .any(|s| s.eigenaar == eigenaar && s.id == stream_id)
     }
 
     /// Bureaubladgeluid volgt het beeld: kijken naar het scherm van een peer betekent

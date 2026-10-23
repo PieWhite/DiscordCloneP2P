@@ -616,6 +616,22 @@ omdraaien:
 - **macOS:** niet gebouwd. `BEDIENEN_KAN` is daar onwaar, dus een mac-deler kondigt het nooit
   aan; `mac/bediening.rs` en de mac-venstermethodes zijn leeg.
 
+## Profielfoto's en vanzelf uitklappen (2026-10-23)
+Beslissing 56 in `docs/OVERDRACHT.md`. `crates/app/src/avatar.rs` is de foto, `Engine::klap_uit`
+het uitklappen. Wat je niet mag omdraaien:
+
+- **De foto staat in de op** (`OpKind::SetAvatar`, tag 32), geen bestand om te downloaden: dan
+  zag je hem niet van wie offline is. Per auteur wint de laatste, alleen op het algemene kanaal,
+  leeg is weg. Hooguit `MAX_AVATAR_LEN`; de motor maakt er 128×128 JPEG van.
+- **Bytes van een ander gaan door `avatar::op_schijf`**: PNG of JPEG, kop ≤ 512×512, naam is de
+  hash. Het venster tekent alleen de paden uit `Snapshot::avatars`, en `image_path_allowed`
+  laat precies die door — niet de hele map.
+- **Vanzelf uitklappen alleen voor een nieuw scherm** (niet bij een herhaalde `StreamAnnounce`,
+  geen camera), alleen als wij en de deler in het gesprek zitten, er een tweede scherm is en we
+  hem niet al eens openden. Standaard aan (`auto_popout`).
+- **Het vanzelf geopende venster pakt nooit de focus** (`SW_SHOWNOACTIVATE`, niet
+  maximaliseren) en gaat naar een ander scherm dan dat van het voorgrondvenster (invariant 4).
+
 ## Releases uitgeven
 Het manifest pint zijn download vast op een tag, dus **de release moet bestaan vóór het
 manifest live gaat**. De volgorde staat in `docs/OVERDRACHT.md` § "Een release uitgeven";

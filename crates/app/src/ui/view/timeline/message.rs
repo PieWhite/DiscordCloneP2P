@@ -4,7 +4,8 @@
 use super::super::super::icons::Icon;
 use super::super::super::state::{OpRef, PeerState, ReactionState, TimelineItem};
 use super::super::super::theme::{self, c};
-use super::super::widgets::{avatar, tooltip, tracked};
+use super::super::super::Ui;
+use super::super::widgets::{avatar, face, tooltip, tracked};
 use super::super::{commands, format, markup, wordle, Dialog, ReplyTo};
 use super::{attachment, Row, RowCtx};
 use gpui_kit::{
@@ -28,7 +29,7 @@ fn op_key(op: &OpRef) -> SharedString {
 pub(super) fn render_row(ctx: &RowCtx, ix: usize, window: &mut Window, cx: &mut App) -> AnyElement {
     if ix < ctx.offset {
         return match &ctx.dm_peer {
-            Some(peer) => render_dm_intro(peer).into_any_element(),
+            Some(peer) => render_dm_intro(&ctx.snap.ui, peer).into_any_element(),
             None => div().into_any_element(),
         };
     }
@@ -100,6 +101,7 @@ fn new_line() -> Div {
 struct Who {
     name: String,
     avatar: u8,
+    picture: Option<String>,
 }
 
 /// `renderMessage`'s `author`: myself, the peer as the roster knows it now, or what the
@@ -109,16 +111,19 @@ fn who(ctx: &RowCtx, author: &str, author_name: &str, avatar_no: u8, mine: bool)
         return Who {
             name: ctx.snap.s.me.name.clone(),
             avatar: ctx.snap.s.me.avatar,
+            picture: ctx.snap.s.me.picture.clone(),
         };
     }
     match ctx.snap.peer(author) {
         Some(p) => Who {
             name: p.name.clone(),
             avatar: p.avatar,
+            picture: p.picture.clone(),
         },
         None => Who {
             name: author_name.to_string(),
             avatar: avatar_no,
+            picture: None,
         },
     }
 }
@@ -186,7 +191,14 @@ fn render_message(
                     .when(!hovered, |d| d.invisible())
                     .child(time.clone())
             } else {
-                d.child(avatar(&who.name, who.avatar, 36., None, false))
+                d.child(avatar(
+                    &who.name,
+                    who.avatar,
+                    face(&ctx.snap.ui, who.picture.as_deref()),
+                    36.,
+                    None,
+                    false,
+                ))
             }
         });
 
@@ -697,12 +709,19 @@ fn actions(ctx: &RowCtx, ix: usize, item: &TimelineItem, key: &SharedString) -> 
 // ------------------------------------------------------------------ conversation blocks
 
 /// `.dm-intro`: whose DM this is and why it is never relayed.
-pub(super) fn render_dm_intro(peer: &PeerState) -> Div {
+pub(super) fn render_dm_intro(ui: &Ui, peer: &PeerState) -> Div {
     div()
         .pt(px(6.))
         .px(px(28.))
         .pb(px(4.))
-        .child(avatar(&peer.name, peer.avatar, 40., None, false))
+        .child(avatar(
+            &peer.name,
+            peer.avatar,
+            face(ui, peer.picture.as_deref()),
+            40.,
+            None,
+            false,
+        ))
         .child(
             div()
                 .mt(px(10.))
@@ -724,7 +743,7 @@ pub(super) fn render_dm_intro(peer: &PeerState) -> Div {
 }
 
 /// A DM with no messages: the intro, then who it reaches and when, on the composer.
-pub(super) fn render_dm_empty(peer: &PeerState) -> Div {
+pub(super) fn render_dm_empty(ui: &Ui, peer: &PeerState) -> Div {
     let when = if peer.presence == super::super::super::state::Presence::Online {
         "straight away"
     } else {
@@ -737,7 +756,7 @@ pub(super) fn render_dm_empty(peer: &PeerState) -> Div {
         .justify_end()
         .pt(px(18.))
         .pb(px(12.))
-        .child(render_dm_intro(peer))
+        .child(render_dm_intro(ui, peer))
         .child(
             div()
                 .mt(px(20.))

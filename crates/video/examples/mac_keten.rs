@@ -87,6 +87,7 @@ fn main() {
                     afzender: deler_id,
                     post: post_kijker.clone(),
                     menu: None,
+                    tweede_scherm: false,
                 },
             )?;
             let doel = PeerAdres {

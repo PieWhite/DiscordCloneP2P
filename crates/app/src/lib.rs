@@ -5,6 +5,7 @@
 //! integratietest te controleren in plaats van met twee vensters en een logbestand.
 
 pub mod adressen;
+pub mod avatar;
 pub mod chat;
 pub mod clips;
 pub mod codes;

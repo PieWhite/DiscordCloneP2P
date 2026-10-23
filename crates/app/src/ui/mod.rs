@@ -127,6 +127,13 @@ impl Ui {
         let pictures = self.engine.snapshot.borrow().pictures_dir.clone();
         (!pictures.as_os_str().is_empty() && path.starts_with(&pictures))
             || path.starts_with(&self.youtube_dir)
+            || self
+                .engine
+                .snapshot
+                .borrow()
+                .avatars
+                .values()
+                .any(|a| a == path)
     }
 
     /// "Last seen 22:14, 3 August" is the roster's line for a peer who is away, and the

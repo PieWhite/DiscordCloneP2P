@@ -102,6 +102,9 @@ pub struct KijkerConfig {
     pub post: Verdeler,
     /// Hoe het menu onder de rechterknop eruitziet. `None`: geen menu (tests, voorbeelden).
     pub menu: Option<MenuStijl>,
+    /// Vanzelf geopend: op een tweede scherm en zonder de focus te pakken
+    /// (`Venster::open`). Op macOS genegeerd.
+    pub tweede_scherm: bool,
 }
 
 /// Kleuren, hoeken en lettertype van het menu onder de rechterknop in het kijkvenster, van de
@@ -285,7 +288,7 @@ pub fn kijk(d3d: &D3dContext, cfg: KijkerConfig) -> Result<KijkerHandle> {
 
 fn opzetten(d3d: &D3dContext, cfg: &KijkerConfig) -> Result<(Venster, Decoder)> {
     let decoder = Decoder::new(d3d, cfg.codec, cfg.breedte, cfg.hoogte)?;
-    let mut venster = Venster::open(d3d, &cfg.titel, cfg.breedte, cfg.hoogte)?;
+    let mut venster = Venster::open(d3d, &cfg.titel, cfg.breedte, cfg.hoogte, cfg.tweede_scherm)?;
     if let Some(stijl) = cfg.menu {
         venster.zet_menu_stijl(stijl);
     }

@@ -21,6 +21,8 @@ pub use media::{
     MEDIA_KOP_LEN, MEDIA_SLEUTEL_LABEL, MEDIA_TAG_LEN, PARITEIT_PAYLOAD_LEN, VOICE_STREAM_ID,
 };
 pub use op::{Op, OpKind, VersionVector};
+/// Het bytetype van `OpKind::SetAvatar`, zodat wie een op maakt geen eigen `serde_bytes` nodig heeft.
+pub use serde_bytes::ByteBuf;
 
 /// Verhoog dit alleen bij een breuk die niet met `#[serde(default)]` of het negeren
 /// van een onbekende tag op te vangen is. Peers draaien handmatig gekopieerde binaries,

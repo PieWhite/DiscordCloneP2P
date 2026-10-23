@@ -11,8 +11,8 @@ use super::super::theme::{self, c};
 use super::super::Ui;
 use super::channels::{group_head, self_dot};
 use super::widgets::{
-    avatar, focus_ring, meter_view, pane_head, pane_title, popover_surface, selectable, tooltip,
-    tracked, Dot,
+    avatar, face, focus_ring, meter_view, pane_head, pane_title, popover_surface, selectable,
+    tooltip, tracked, Dot,
 };
 use super::{format, AppHandle, AppSnapshot, PaneInit};
 use gpui_kit::base::slider::{SliderEvent, SliderState};
@@ -471,11 +471,12 @@ impl MembersPane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let s = &snap.s;
-        let (key, name, hue, dot, peer) = match row.who {
+        let (key, name, hue, picture, dot, peer) = match row.who {
             Who::Me => (
                 "@self".to_string(),
                 s.me.name.clone(),
                 s.me.avatar,
+                face(&snap.ui, s.me.picture.as_deref()),
                 self_dot(s),
                 None,
             ),
@@ -486,7 +487,14 @@ impl MembersPane {
                 } else {
                     p.id.clone()
                 };
-                (key, p.name.clone(), p.avatar, Dot::of_peer(p), Some(p))
+                (
+                    key,
+                    p.name.clone(),
+                    p.avatar,
+                    face(&snap.ui, p.picture.as_deref()),
+                    Dot::of_peer(p),
+                    Some(p),
+                )
             }
         };
         let me = peer.is_none();
@@ -508,7 +516,7 @@ impl MembersPane {
                     } else {
                         m.speaking(&id)
                     };
-                    avatar(&name, hue, 32., Some(dot), speaking).into_any_element()
+                    avatar(&name, hue, picture.clone(), 32., Some(dot), speaking).into_any_element()
                 },
             )
         };
@@ -725,7 +733,14 @@ impl MembersPane {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(avatar(&p.name, p.avatar, 28., None, false))
+                    .child(avatar(
+                        &p.name,
+                        p.avatar,
+                        face(&snap.ui, p.picture.as_deref()),
+                        28.,
+                        None,
+                        false,
+                    ))
                     .child(pane_title(p.name.clone(), px(21.)).flex_1())
                     .child(
                         div()
@@ -847,6 +862,7 @@ mod tests {
             name: name.into(),
             address: format!("{name}:41650"),
             avatar: 1,
+            picture: None,
             presence,
             user_status: None,
             activity: None,

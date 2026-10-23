@@ -52,6 +52,7 @@ fn config(naam: &str, eigen: u16, ander: u16) -> Config {
         share_activity: false,
         allow_drawing: true,
         allow_remote_control: false,
+        auto_popout: false,
         overlay: Default::default(),
         download_dir: None,
     }

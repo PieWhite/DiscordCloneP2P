@@ -80,6 +80,7 @@ fn scherm_komt_via_udp_in_het_venster_terecht() {
             afzender: deler_id,
             post: post_kijker.clone(),
             menu: None,
+            tweede_scherm: false,
         },
     )
     .expect("kijker starten");

@@ -63,10 +63,21 @@ pub struct Venster {
 
 type ProtocolObjectNS = objc2::runtime::ProtocolObject<dyn NSObjectProtocol>;
 
+/// Zelf naar een tweede scherm springen is niet gebouwd op macOS; de motor vraagt het hier.
+pub fn heeft_tweede_scherm() -> bool {
+    false
+}
+
 impl Venster {
     /// Maakt het venster aan vanaf de kijk-thread; het echte werk gebeurt op de
     /// main-queue en het resultaat komt via een kanaal terug.
-    pub fn open(_d3d: &D3dContext, titel: &str, breedte: u32, hoogte: u32) -> Result<Self> {
+    pub fn open(
+        _d3d: &D3dContext,
+        titel: &str,
+        breedte: u32,
+        hoogte: u32,
+        _tweede_scherm: bool,
+    ) -> Result<Self> {
         let gesloten = Arc::new(AtomicBool::new(false));
         let gesloten_voor_blok = gesloten.clone();
         let titel = titel.to_string();

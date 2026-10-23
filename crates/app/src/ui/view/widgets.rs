@@ -2,7 +2,7 @@
 //!
 //! | Piece | Use |
 //! |---|---|
-//! | [`avatar`] | monogram in the identity hue, hairline ring (green while speaking), presence dot |
+//! | [`avatar`] | profile picture, or monogram in the identity hue, hairline ring (green while speaking), presence dot |
 //! | [`Btn`] | text buttons: ghost first, bone outline for the one primary action, red for danger |
 //! | [`icon_btn`] | 28×28 glyph buttons |
 //! | [`dk_btn`] | the call panel's framed glyph buttons |
@@ -22,13 +22,16 @@ use super::super::bridge::Meters;
 use super::super::icons::Icon;
 use super::super::state::{PeerState, Presence, UiState};
 use super::super::theme::{self, c};
+use super::super::Ui;
 use super::format;
 use gpui_kit::{
-    div, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, Context, Div,
-    ElementId, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Refineable, Render, RenderOnce, Rgba, SharedString, Stateful,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window,
+    div, img, prelude::FluentBuilder, px, relative, AnyElement, App, ClickEvent, Context, Div,
+    ElementId, Entity, FocusHandle, FontWeight, ImageSource, InteractiveElement, IntoElement,
+    MouseButton, ObjectFit, ParentElement, Pixels, Refineable, Render, RenderOnce, Rgba,
+    SharedString, Stateful, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage,
+    Window,
 };
+use std::path::Path;
 use std::rc::Rc;
 
 // ------------------------------------------------------------------ avatar
@@ -76,7 +79,19 @@ impl Dot {
 /// A circle with one monogram in the identity hue on a lift, a hairline ring that turns
 /// green while speaking, and optionally the presence dot on its corner. `size` is the
 /// diameter in px.
-pub fn avatar(name: &str, hue: u8, size: f32, dot: Option<Dot>, speaking: bool) -> Div {
+/// A profile picture from the state (`PeerState::picture`), if this window may draw it.
+pub fn face(ui: &Ui, picture: Option<&str>) -> Option<ImageSource> {
+    super::timeline::picture(ui, Path::new(picture?))
+}
+
+pub fn avatar(
+    name: &str,
+    hue: u8,
+    picture: Option<ImageSource>,
+    size: f32,
+    dot: Option<Dot>,
+    speaking: bool,
+) -> Div {
     let font = match size as u32 {
         0..=22 => 11.,
         23..=30 => 12.,
@@ -105,7 +120,15 @@ pub fn avatar(name: &str, hue: u8, size: f32, dot: Option<Dot>, speaking: bool) 
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_size(px(font))
                 .line_height(px(size))
-                .child(format::monogram(name)),
+                .map(|d| match picture {
+                    Some(src) => d.overflow_hidden().child(
+                        img(src)
+                            .size_full()
+                            .rounded_full()
+                            .object_fit(ObjectFit::Cover),
+                    ),
+                    None => d.child(format::monogram(name)),
+                }),
         )
         .when_some(dot, |d, dot| d.child(presence_dot(dot)))
 }

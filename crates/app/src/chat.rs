@@ -194,6 +194,21 @@ impl Chat {
         )
     }
 
+    /// Legt de eigen profielfoto vast (leeg = weghalen), net als `zet_naam`: niets als hij
+    /// al klopt, en altijd op het algemene kanaal.
+    pub fn zet_avatar(&mut self, bytes: Vec<u8>) -> Result<Vec<MeshCommand>> {
+        let huidig = self.timeline.avatars.get(&self.me()).map(Vec::as_slice);
+        if huidig.unwrap_or_default() == bytes.as_slice() {
+            return Ok(Vec::new());
+        }
+        self.eigen_op(
+            Channel::GENERAL,
+            OpKind::SetAvatar {
+                image: fitcom_proto::ByteBuf::from(bytes),
+            },
+        )
+    }
+
     /// Maakt een subkanaal aan of hernoemt er een — hetzelfde mechanisme, want de laatste
     /// `SetTopicTitle` per `id` wint, precies als bij een bijnaam. Altijd op het algemene
     /// kanaal: dit is metadata over kanalen zelf, geen gespreksinhoud van een specifiek

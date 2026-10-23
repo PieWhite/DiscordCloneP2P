@@ -7,7 +7,7 @@ use crate::ui::icons::Icon;
 use crate::ui::state::{PeerState, Presence};
 use crate::ui::theme::{self, c};
 use crate::ui::view::format;
-use crate::ui::view::widgets::{avatar, focus_ring, meter_view, tooltip, Btn, BtnKind, Dot};
+use crate::ui::view::widgets::{avatar, face, focus_ring, meter_view, tooltip, Btn, BtnKind, Dot};
 use crate::ui::view::{AppSnapshot, Dialog};
 use gpui_kit::{
     div, prelude::FluentBuilder, px, ClipboardItem, Context, Div, InteractiveElement, IntoElement,
@@ -209,7 +209,14 @@ fn peer_row(
         .px(px(12.))
         .py(px(10.))
         .when(index > 0, |d| d.border_t_1().border_color(theme::BORDER))
-        .child(avatar(&p.name, p.avatar, 24., Some(Dot::of_peer(p)), false))
+        .child(avatar(
+            &p.name,
+            p.avatar,
+            face(&snap.ui, p.picture.as_deref()),
+            24.,
+            Some(Dot::of_peer(p)),
+            false,
+        ))
         .child(
             div()
                 .flex_1()

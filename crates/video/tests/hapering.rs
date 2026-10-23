@@ -120,7 +120,8 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
                         .expect("brontextuur")
                 })
                 .collect();
-            let mut venster = Venster::open(&bron_d3d, BRON_TITEL, b, h).expect("bronvenster");
+            let mut venster =
+                Venster::open(&bron_d3d, BRON_TITEL, b, h, false).expect("bronvenster");
 
             let stap = Duration::from_nanos(1_000_000_000 / 60);
             let mut deadline = Instant::now();
@@ -172,6 +173,7 @@ fn gelijkmatige_bron_hoort_gelijkmatig_aan_te_komen() {
             afzender: deler_id,
             post: post_kijker.clone(),
             menu: None,
+            tweede_scherm: false,
         },
     )
     .expect("kijker starten");

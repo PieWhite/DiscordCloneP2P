@@ -267,6 +267,11 @@ pub fn set_drawing(ui: &Ui, on: bool) {
     send(ui, UiCommand::ZetTekenen(on));
 }
 
+/// Open a new screen share by itself on the second monitor. Saved to `config.toml`.
+pub fn set_auto_popout(ui: &Ui, on: bool) {
+    send(ui, UiCommand::ZetAutoPopout(on));
+}
+
 /// The default for remote control of a new monitor share (decision 54). Off also ends every
 /// request and every control session.
 pub fn set_remote_control(ui: &Ui, on: bool) {
@@ -430,6 +435,26 @@ pub fn set_display_name(ui: &Ui, name: &str) {
     if !name.is_empty() {
         send(ui, UiCommand::ZetNaam(name));
     }
+}
+
+/// Opens the file picker for a profile picture. The engine crops and shrinks it.
+pub fn pick_avatar(ui: &Arc<Ui>) {
+    ui.runtime.spawn({
+        let ui = ui.clone();
+        async move {
+            if let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp"])
+                .pick_file()
+                .await
+            {
+                send(&ui, UiCommand::ZetAvatar(Some(file.path().to_path_buf())));
+            }
+        }
+    });
+}
+
+pub fn remove_avatar(ui: &Ui) {
+    send(ui, UiCommand::ZetAvatar(None));
 }
 
 /// Opens the file picker and offers whatever comes back. Runs on the tokio runtime: the

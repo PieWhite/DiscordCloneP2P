@@ -3247,6 +3247,51 @@ audio-popover"): de popover blijft het thuis, het menu is een snelkoppeling naar
 offscreen getekend en de opmaak getest), mute/deafen tussen twee echte peers, en macOS (daar is
 het menu er niet; de glyphs wel).
 
+### 56. Profielfoto's in de log, en een nieuw gedeeld scherm vanzelf op je tweede scherm (2026-10-23)
+
+**Profielfoto.** Settings → Account, "Choose…". De motor (`crate::avatar::maak`) snijdt het
+midden vierkant uit, maakt er een JPEG van 128×128 van (q85, een paar KiB; doorzichtig op
+zwart) en legt hem vast als `OpKind::SetAvatar { image }` (tag 32), altijd op het algemene
+kanaal. Vouwen als `SetNick`: per auteur de laatste `(lamport, author)`, leeg is weg
+(`Timeline::avatars`); een `SetAvatar` uit een ander kanaal telt niet mee.
+
+- **De bytes staan in de op, geen `FileMeta` met een download.** Anders zie je de foto van wie
+  offline is niet (invariant 7) en komt er bij elke wissel een kaart in de chat. De prijs: elke
+  oude foto blijft in de log (invariant 6). Plafond `MAX_AVATAR_LEN` = 48 KiB, ruim onder
+  `MAX_OP_LEN`. Tag 32 en niet 12-19: die staan als gereserveerd.
+- **De ontvanger vertrouwt de bytes niet** (`avatar::op_schijf`): alleen PNG of JPEG, alleen
+  een kop van hooguit 512×512 (gelezen zonder te decoderen), en de bestandsnaam is de BLAKE3 van
+  de inhoud in `<data>/avatars/`. Het venster krijgt alleen die paden (`Snapshot::avatars`) en
+  `Ui::image_path_allowed` laat precies die door, niet de map.
+- **Op schijf zetten alleen bij een nieuwe tijdlijn-`Arc`** (`werk_avatars_bij`, met een `Weak`
+  zodat het adres niet hergebruikt wordt), dus niet per tik.
+- **In `UiState` alleen het pad** (`PeerState`/`SelfState`/`RecapRow::picture`); het verandert
+  alleen bij een nieuwe foto. `widgets::avatar` tekent hem rond in de ring, anders de
+  beginletter zoals vroeger. Een bericht vindt zijn foto via de peer, niet via het item.
+
+**Vanzelf uitklappen.** Settings → Video, "Pop out new screen shares", standaard aan
+(`Config::auto_popout`). Begint iemand een **scherm** (monitor of venster, geen camera) te
+delen, dan opent het kijkvenster vanzelf, als:
+wij in het gesprek zitten, de deler ook, er meer dan één monitor is
+(`venster::heeft_tweede_scherm`), en we deze stream niet al eens vanzelf openden
+(`Engine::vanzelf_geopend`: wie het venster sloot krijgt het na een herverbinding niet terug).
+"Nieuw" is een `StreamAnnounce` die `Streams::kent` nog niet kende, want die komt bij elke
+herverbinding opnieuw langs.
+
+- **Het venster pakt de focus niet.** `Venster::open(.., tweede_scherm: true)` zet hem op een
+  ander scherm dan dat van het voorgrondvenster (`ander_scherm`), zo groot als past in de
+  verhouding van het beeld, en toont met `SW_SHOWNOACTIVATE`. Niet maximaliseren: dat activeert
+  altijd, en vooraan staat misschien een spel (invariant 4).
+- **Het is gewoon kijken.** `wil_kijken` zoals de knop, alleen met `tweede_scherm` op de
+  `Actie::StartKijken`; de deler gaat dus coderen zoals bij elke kijker. Vandaar dat het alleen
+  in een gezamenlijk gesprek gebeurt.
+- Wie pas na het begin van het delen in het gesprek komt, krijgt het niet vanzelf.
+- **macOS:** niet gebouwd; `heeft_tweede_scherm` is daar `false` en Settings zegt het.
+
+**Niet geverifieerd:** beide nog niet met een echte tweede peer of in het venster bekeken
+(geen fixture met een foto); het uitklappen nog nooit op een pc met twee schermen. Zie
+`docs/TESTPLAN.md`, "Profielfoto's en vanzelf uitklappen".
+
 ## Bugs die de tests eruit haalden
 
 Allemaal dingen die met handmatig testen niet betrouwbaar te vinden waren.

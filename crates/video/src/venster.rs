@@ -65,7 +65,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use windows::core::{w, Interface, PCWSTR};
+use windows::core::{w, Interface, BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -78,8 +78,8 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST,
+    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, ScreenToClient, HDC,
+    HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
@@ -730,7 +730,17 @@ impl Venster {
     /// Maakt het venster aan **op de aanroepende thread**. Een Win32-venster hoort bij
     /// de thread die hem maakt: alleen die thread krijgt zijn berichten, dus alleen
     /// die thread mag [`Venster::pomp`] aanroepen.
-    pub fn open(d3d: &D3dContext, titel: &str, breedte: u32, hoogte: u32) -> Result<Self> {
+    ///
+    /// `tweede_scherm`: vanzelf geopend (een nieuw gedeeld scherm). Dan gaat hij gemaximaliseerd
+    /// op een ander scherm dan het venster vooraan, en **zonder de focus te pakken**: vooraan
+    /// staat misschien een spel, en een alt-tab is precies wat invariant 4 verbiedt.
+    pub fn open(
+        d3d: &D3dContext,
+        titel: &str,
+        breedte: u32,
+        hoogte: u32,
+        tweede_scherm: bool,
+    ) -> Result<Self> {
         registreer_klasse()?;
 
         let staat = Box::new(Staat {
@@ -783,7 +793,34 @@ impl Venster {
 
         // SAFETY: `hwnd` is net aangemaakt.
         unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            match ander_scherm().filter(|_| tweede_scherm) {
+                // Zo groot als past in de verhouding van het beeld, midden op dat scherm. Niet
+                // maximaliseren: dat activeert altijd, en dan rekt het beeld ook nog uit.
+                Some(r) => {
+                    let rand = (
+                        kader.right - kader.left - breedte as i32,
+                        kader.bottom - kader.top - hoogte as i32,
+                    );
+                    let ruimte = (r.right - r.left - rand.0, r.bottom - r.top - rand.1);
+                    let schaal = (ruimte.0 as f32 / breedte.max(1) as f32)
+                        .min(ruimte.1 as f32 / hoogte.max(1) as f32);
+                    let b = (breedte as f32 * schaal) as i32 + rand.0;
+                    let h = (hoogte as f32 * schaal) as i32 + rand.1;
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        r.left + (r.right - r.left - b) / 2,
+                        r.top + (r.bottom - r.top - h) / 2,
+                        b,
+                        h,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
+                None => {
+                    let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+                }
+            }
         }
 
         let (swapchain, tearing) = maak_swapchain(d3d, hwnd, breedte, hoogte)?;
@@ -1131,6 +1168,50 @@ fn maak_swapchain(
     };
 
     Ok((swapchain, tearing))
+}
+
+/// Heeft deze pc meer dan één scherm? Goedkoop genoeg om bij elke nieuwe stream te vragen.
+pub fn heeft_tweede_scherm() -> bool {
+    // SAFETY: geen argumenten om fout te doen.
+    unsafe { GetSystemMetrics(SM_CMONITORS) > 1 }
+}
+
+/// Het werkgebied van een scherm waar het venster vooraan niet op staat, of `None` met één
+/// scherm. Vooraan is waar je nu bent (je spel); het andere scherm is "je tweede scherm".
+fn ander_scherm() -> Option<RECT> {
+    unsafe extern "system" fn per_monitor(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+        // SAFETY: `ander_scherm` geeft precies dit type mee achter `LPARAM`.
+        let (vooraan, uit) = unsafe { &mut *(data.0 as *mut (HMONITOR, Option<RECT>)) };
+        if m == *vooraan {
+            return BOOL(1);
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `m` komt van de enumeratie.
+        if unsafe { GetMonitorInfoW(m, &mut info) }.as_bool() {
+            *uit = Some(info.rcWork);
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+
+    // SAFETY: zonder voorgrondvenster valt `MonitorFromWindow` terug op het hoofdscherm; de
+    // callback krijgt een pointer naar een lokale die de hele opsomming blijft leven.
+    unsafe {
+        let mut zoek = (
+            MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY),
+            None,
+        );
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(per_monitor),
+            LPARAM(&mut zoek as *mut _ as isize),
+        );
+        zoek.1
+    }
 }
 
 /// Beeldvullend zonder modeswitch: rand eraf en over het scherm heen waar het venster
@@ -1690,7 +1771,7 @@ mod tests {
             .collect();
         let tex = d3d.maak_textuur_met(b, h, &pixels).expect("textuur");
 
-        let mut venster = Venster::open(&d3d, "FitCom — test", b, h).expect("venster");
+        let mut venster = Venster::open(&d3d, "FitCom — test", b, h, false).expect("venster");
         let tot = Instant::now() + Duration::from_secs(5);
         while Instant::now() < tot && venster.pomp() {
             venster.toon(&tex).expect("tonen");
@@ -1709,7 +1790,8 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
         let d3d = D3dContext::new().expect("D3D11");
-        let mut venster = Venster::open(&d3d, "FitCom — tekentest", 640, 360).expect("venster");
+        let mut venster =
+            Venster::open(&d3d, "FitCom — tekentest", 640, 360, false).expect("venster");
         let hwnd = venster.hwnd;
         let post = |msg: u32, wparam: usize, x: i32, y: i32| {
             let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
@@ -1776,7 +1858,8 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
         let d3d = D3dContext::new().expect("D3D11");
-        let mut venster = Venster::open(&d3d, "FitCom — menutest", 640, 360).expect("venster");
+        let mut venster =
+            Venster::open(&d3d, "FitCom — menutest", 640, 360, false).expect("venster");
         let hwnd = venster.hwnd;
         venster.zet_menu_stijl(MenuStijl {
             grond: [0, 0, 0],

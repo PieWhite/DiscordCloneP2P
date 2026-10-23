@@ -453,6 +453,7 @@ enum OpKind {
     DeleteTopic{ id: TopicId },                    // fase 9, zie "Kanalen"
     WordleResult{ day: u32, guesses: u8, solved: bool, pattern: String,
                   seconds: Option<u32> },                                 // zie "Wordle"
+    SetAvatar{ image: ByteBuf },   // tag 32, profielfoto als JPEG/PNG, ≤ 48 KiB; vouwt als SetNick
 }
 ```
 

@@ -13,7 +13,7 @@ use super::super::commands;
 use super::super::icons::Icon;
 use super::super::state::{OpRef, PeerState, UiState};
 use super::super::theme::{self, c};
-use super::widgets::{self, avatar};
+use super::widgets::{self, avatar, face};
 use super::{active_channel, AppHandle, AppSnapshot, Overlay, PaneInit, View, ViewState};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{Sizable, Size};
@@ -437,7 +437,14 @@ impl ComposerPane {
                 let selected = i == snap.v.ac_index;
                 let name = p.name.clone();
                 widgets::popover_item(("ac-item", i), selected)
-                    .child(avatar(&p.name, p.avatar, 20., None, false))
+                    .child(avatar(
+                        &p.name,
+                        p.avatar,
+                        face(&snap.ui, p.picture.as_deref()),
+                        20.,
+                        None,
+                        false,
+                    ))
                     .child(p.name.clone())
                     .when(selected, |d| d.child(item_note("Tab")))
                     .on_click(
@@ -1242,6 +1249,7 @@ pub(super) mod window_tests {
             name: name.into(),
             address: String::new(),
             avatar: 1,
+            picture: None,
             presence: Presence::Online,
             user_status: None,
             activity: None,

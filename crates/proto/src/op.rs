@@ -35,6 +35,9 @@ pub const MAX_WORDLE_PATROON_LEN: usize = 30;
 /// ZWJ-reeks met huidtinten komt ruim uit onder 32 bytes; alles daarboven is geen
 /// emoji meer maar een aanval op de frameruimte (B-43).
 pub const MAX_EMOJI_LEN: usize = 32;
+/// Een profielfoto (`OpKind::SetAvatar`). De motor maakt er een JPEG van 128×128 van, en
+/// dat is een paar KiB; 48 KiB laat ruimte voor een drukke foto en houdt de log klein.
+pub const MAX_AVATAR_LEN: usize = 48 * 1024;
 
 fn grens(veld: &'static str, waarde: &str, limiet: usize) -> crate::Result<()> {
     if waarde.len() > limiet {
@@ -309,6 +312,16 @@ op_kinds! {
     // eerste op `(lamport, author)` en gooit de rest weg, dus er staat nooit meer dan één
     // kaart per dag. Zie `docs/ARCHITECTURE.md`, "Wordle van de dag".
     31 => WordleCard { day: u32, number: u32 },
+    // De eigen profielfoto (2026-10-23). Zelfde vouwregel als `SetNick`: per auteur wint
+    // de laatste `(lamport, author)`, altijd op het algemene kanaal. Leeg = geen foto.
+    //
+    // De bytes staan in de op zelf, geen `FileMeta` met een download: dan zag je de foto
+    // van wie offline is niet (invariant 7) en kwam er bij elke wissel een kaart in de
+    // chat. De prijs is dat elke oude foto in de log blijft (invariant 6) — bij drie
+    // vrienden die zelden wisselen een paar KiB per keer. Een JPEG of PNG, door de motor
+    // verkleind; de ontvanger controleert formaat en afmeting zelf voordat hij hem op
+    // schijf zet (`crate::avatar` in de app). Additief, geen protocolbump.
+    32 => SetAvatar { image: serde_bytes::ByteBuf },
     // Nieuwe soorten toevoegen kost geen migratie — dat is het hele punt van deze opzet.
 }
 
@@ -334,6 +347,14 @@ impl OpKind {
             }
             // Twee getallen, geen string: niets om een grens op te zetten.
             Self::WordleCard { .. } => Ok(()),
+            Self::SetAvatar { image } if image.len() > MAX_AVATAR_LEN => {
+                Err(crate::ProtoError::VeldTeLang {
+                    veld: "profielfoto",
+                    len: image.len(),
+                    limiet: MAX_AVATAR_LEN,
+                })
+            }
+            Self::SetAvatar { .. } => Ok(()),
         }
     }
 }
@@ -491,6 +512,9 @@ mod tests {
                 solved: true,
                 pattern: "000100120102201222222".into(),
                 seconds: Some(97),
+            },
+            OpKind::SetAvatar {
+                image: serde_bytes::ByteBuf::from(vec![0xff, 0xd8, 0xff, 0x00, 0x80]),
             },
         ];
         for kind in kinds {
@@ -758,6 +782,12 @@ mod tests {
                     seconds: None,
                 },
                 "wordle-patroon",
+            ),
+            (
+                OpKind::SetAvatar {
+                    image: serde_bytes::ByteBuf::from(vec![0; MAX_AVATAR_LEN + 1]),
+                },
+                "profielfoto",
             ),
         ] {
             let op = rauwe_op(1, 1, kind.tag(), kind.encode_payload().unwrap());

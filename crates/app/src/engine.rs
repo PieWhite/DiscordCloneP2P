@@ -269,6 +269,8 @@ pub struct Snapshot {
     /// Mogen kijkers vragen je monitor te bedienen (`Config::allow_remote_control`): de
     /// standaard voor een nieuw scherm.
     pub bedienen: bool,
+    /// Een nieuw gedeeld scherm vanzelf op het tweede scherm (`Config::auto_popout`).
+    pub auto_popout: bool,
     /// De spraakoverlay (beslissing 53): aan of uit, en zijn plek bij het starten. De
     /// overlay-thread houdt de plek daarna zelf bij en meldt een nieuwe met `ZetOverlayPlek`.
     pub overlay: OverlayConfig,
@@ -284,6 +286,9 @@ pub struct Snapshot {
     /// leidt het pad van elke afbeelding er zelf uit af — zie
     /// `config::resolve_pictures_dir` en `files::hash_bestandsnaam`.
     pub pictures_dir: PathBuf,
+    /// Profielfoto's op schijf, per peer (ook wijzelf). Alleen deze paden mag het venster als
+    /// avatar tekenen (`Ui::image_path_allowed`); zie `crate::avatar`.
+    pub avatars: HashMap<PeerId, PathBuf>,
     /// A0: wat de router en de interfaces over onze bereikbaarheid zeggen, één keer gemeten
     /// kort na het starten. `None` zolang die meting loopt.
     pub bereik: Option<fitcom_net::bereik::Bereik>,
@@ -372,6 +377,9 @@ pub enum UiCommand {
     /// standaard). Uit zet het ook uit op elk scherm dat loopt en wist daar alles; aan laat
     /// lopende schermen zoals ze zijn. Wordt opgeslagen (`Config::allow_drawing`).
     ZetTekenen(bool),
+    /// Een nieuw gedeeld scherm vanzelf openen op het tweede scherm. Opgeslagen
+    /// (`Config::auto_popout`).
+    ZetAutoPopout(bool),
     /// Hetzelfde voor bedienen (beslissing 54, `Config::allow_remote_control`). Uit maakt ook
     /// een eind aan elke vraag en elk bedienen.
     ZetBedienen(bool),
@@ -414,6 +422,9 @@ pub enum UiCommand {
     /// Eigen weergavenaam wijzigen. Legt een `SetNick`-op vast zodra de motor hem
     /// verwerkt, net als bij het opstarten.
     ZetNaam(String),
+    /// Eigen profielfoto: een gekozen plaatje, of `None` om hem weg te halen. Verkleinen
+    /// gebeurt op de motor, net als hashen bij aanbieden.
+    ZetAvatar(Option<PathBuf>),
     /// Niet-storenmodus aan/uit. Onderdrukt alle Windows-meldingen, ook een tag.
     NietStoren(bool),
     /// Wist alle bestanden in `pictures_dir` van schijf. Raakt alleen lokale
@@ -575,6 +586,7 @@ pub fn spawn(
         verbonden: HashMap::new(),
         voice: None,
         peers_in_voice: HashSet::new(),
+        vanzelf_geopend: HashSet::new(),
         streams,
         d3d: None,
         bronnen: HashMap::new(),
@@ -590,6 +602,9 @@ pub fn spawn(
         files,
         downloads_dir,
         pictures_dir,
+        avatar_dir: data_dir.join("avatars"),
+        avatars: HashMap::new(),
+        avatars_van: std::sync::Weak::new(),
         paden_index,
         wordle: Wordle::nieuw(&data_dir),
         wordle_aankondigen: false,
@@ -650,6 +665,9 @@ struct Engine {
     /// Peers die gemeld hebben dat ze in het gesprek zitten. Los van of wij meedoen:
     /// je wilt kunnen zien wie er praat voordat je zelf aansluit.
     peers_in_voice: HashSet<PeerId>,
+    /// Streams die we al eens vanzelf openden (`Config::auto_popout`). Wie het venster sloot
+    /// wil het na een herverbinding niet terug.
+    vanzelf_geopend: HashSet<(PeerId, u32)>,
 
     /// Wie deelt wat en wie kijkt waarnaar. Neemt alle beslissingen; hieronder staat
     /// alleen het uitvoeren ervan.
@@ -688,6 +706,12 @@ struct Engine {
     /// Content-adresseerbare map voor afbeeldingen: `<hash-hex>.<ext>`, zowel voor wat
     /// wij aanbieden als voor wat we downloaden. Zie `files::hash_bestandsnaam`.
     pictures_dir: PathBuf,
+    /// Waar de profielfoto's uit de log op schijf komen (`<data>/avatars`), en wat er nu
+    /// staat. Alleen opnieuw bekeken als de tijdlijn een nieuwe `Arc` is.
+    avatar_dir: PathBuf,
+    avatars: HashMap<PeerId, PathBuf>,
+    /// Een `Weak`, zodat het adres niet hergebruikt kan worden zolang we het vergelijken.
+    avatars_van: std::sync::Weak<Timeline>,
     /// Waar de padkaarten van `files` op schijf staan. Zie [`PadenIndex`].
     paden_index: PathBuf,
     /// Het raadsel van de dag, de eigen gokken en waar dat op schijf staat.
@@ -1196,6 +1220,14 @@ impl Engine {
                         // `StreamAnnounce` komt bij elke herverbinding opnieuw langs voor
                         // een stream die we al kenden, en daar hoort geen geluidje bij.
                         let voor = self.zichtbare_streams_van(from);
+                        let nieuw_scherm = match &andere {
+                            ControlMsg::StreamAnnounce(a)
+                                if a.kind.is_scherm() && !self.streams.kent(from, a.stream_id) =>
+                            {
+                                Some(a.stream_id)
+                            }
+                            _ => None,
+                        };
                         let (cmds, acties) = self.streams.bij_bericht(from, ip, &andere);
                         self.stuur_alles(cmds);
                         self.voer_uit(acties);
@@ -1203,6 +1235,9 @@ impl Engine {
                             std::cmp::Ordering::Greater => self.geluid(geluid::Geluid::StreamAan),
                             std::cmp::Ordering::Less => self.geluid(geluid::Geluid::StreamUit),
                             std::cmp::Ordering::Equal => {}
+                        }
+                        if let Some(id) = nieuw_scherm {
+                            self.klap_uit(from, id);
                         }
                     }
 
@@ -2042,11 +2077,19 @@ impl Engine {
                     breedte,
                     hoogte,
                     is_geluid,
+                    tweede_scherm,
                 } => {
                     let uitkomst = if is_geluid {
                         self.luister_mee(eigenaar, stream_id)
                     } else {
-                        self.start_kijker(eigenaar, stream_id, titel, breedte, hoogte)
+                        self.start_kijker(
+                            eigenaar,
+                            stream_id,
+                            titel,
+                            breedte,
+                            hoogte,
+                            tweede_scherm,
+                        )
                     };
                     if let Err(e) = uitkomst {
                         tracing::error!(error = %format!("{e:#}"), "kijken starten mislukt");
@@ -2301,6 +2344,28 @@ impl Engine {
         }
     }
 
+    /// Een ander begon een scherm te delen: vanzelf kijken, op het tweede scherm
+    /// (`Config::auto_popout`). Alleen als wij en hij in het gesprek zitten, er een tweede
+    /// scherm is en we deze stream niet al eens openden.
+    fn klap_uit(&mut self, eigenaar: PeerId, stream_id: u32) {
+        if !self.cfg.auto_popout
+            || self.voice.is_none()
+            || !self.peers_in_voice.contains(&eigenaar)
+            || !self.streams.kent(eigenaar, stream_id)
+            || !fitcom_video::venster::heeft_tweede_scherm()
+            || !self.vanzelf_geopend.insert((eigenaar, stream_id))
+        {
+            return;
+        }
+        let mut acties = self.streams.wil_kijken(eigenaar, stream_id);
+        for a in &mut acties {
+            if let Actie::StartKijken { tweede_scherm, .. } = a {
+                *tweede_scherm = true;
+            }
+        }
+        self.voer_uit(acties);
+    }
+
     fn start_kijker(
         &mut self,
         eigenaar: PeerId,
@@ -2308,6 +2373,7 @@ impl Engine {
         titel: String,
         breedte: u32,
         hoogte: u32,
+        tweede_scherm: bool,
     ) -> Result<()> {
         if !self.verbonden.contains_key(&eigenaar) {
             anyhow::bail!("die peer is niet verbonden");
@@ -2343,6 +2409,7 @@ impl Engine {
                 afzender: eigenaar,
                 post: self.mesh.post.clone(),
                 menu: Some(crate::ui::theme::viewer_menu_style()),
+                tweede_scherm,
             },
         )?;
 
@@ -2858,6 +2925,14 @@ impl Engine {
                 self.stuur_alles(cmds);
                 self.voer_uit(acties);
             }
+            UiCommand::ZetAutoPopout(aan) => {
+                if self.cfg.auto_popout != aan {
+                    self.cfg.auto_popout = aan;
+                    if let Err(e) = self.cfg.save(&self.config_path) {
+                        self.fout = Some(format!("config opslaan: {e:#}"));
+                    }
+                }
+            }
             UiCommand::ZetTekenen(aan) => {
                 if self.cfg.allow_drawing != aan {
                     self.cfg.allow_drawing = aan;
@@ -2942,6 +3017,7 @@ impl Engine {
             }
             UiCommand::DownloadBestand(file) => self.download_bestand(file),
             UiCommand::ZetNaam(naam) => self.zet_naam(&naam),
+            UiCommand::ZetAvatar(pad) => self.zet_avatar(pad.as_deref()),
             UiCommand::VoegCodesToe(tekst) => self.voeg_codes_toe(&tekst),
             UiCommand::VerwijderPeer(plek) => self.verwijder_peer(plek),
             UiCommand::NietStoren(aan) => self.niet_storen = aan,
@@ -3127,6 +3203,37 @@ impl Engine {
             }
         }
         tracing::info!(verwijderd, "picturesmap opgeschoond");
+    }
+
+    /// Maakt van een gekozen plaatje de eigen profielfoto (of haalt hem weg) en legt dat
+    /// vast als `SetAvatar`-op. Een plaatje dat niet te lezen is wordt een melding.
+    fn zet_avatar(&mut self, pad: Option<&Path>) {
+        let bytes = match pad.map(crate::avatar::maak).transpose() {
+            Ok(b) => b.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "profielfoto maken mislukt");
+                self.fout = Some(format!("Profile picture: {e:#}"));
+                return;
+            }
+        };
+        match self.chat.zet_avatar(bytes) {
+            Ok(cmds) => self.stuur_alles(cmds),
+            Err(e) => tracing::error!(error = %format!("{e:#}"), "profielfoto vastleggen mislukt"),
+        }
+    }
+
+    /// Zet de profielfoto's uit de tijdlijn op schijf, maar alleen als die tijdlijn nieuw is.
+    fn werk_avatars_bij(&mut self) {
+        let timeline = self.chat.timeline_arc();
+        if self.avatars_van.ptr_eq(&Arc::downgrade(&timeline)) {
+            return;
+        }
+        self.avatars_van = Arc::downgrade(&timeline);
+        self.avatars = timeline
+            .avatars
+            .iter()
+            .filter_map(|(p, b)| Some((*p, crate::avatar::op_schijf(&self.avatar_dir, b)?)))
+            .collect();
     }
 
     /// Legt een nieuwe weergavenaam vast: eerst in `config.toml` (zodat hij de volgende
@@ -3711,6 +3818,7 @@ impl Engine {
     }
 
     fn publiceer(&mut self) {
+        self.werk_avatars_bij();
         let niveaus = self.voice.as_ref().map(|v| v.niveaus()).unwrap_or_default();
 
         // Het volume in het menu van elk kijkvenster; de handle stuurt alleen een wijziging.
@@ -3836,11 +3944,13 @@ impl Engine {
             eigen_spel: self.speelt_rust.huidig().map(str::to_owned),
             tekenen: self.cfg.allow_drawing,
             bedienen: self.cfg.allow_remote_control && BEDIENEN_KAN,
+            auto_popout: self.cfg.auto_popout,
             overlay: self.cfg.overlay.clone(),
             input_device: self.cfg.input_device.clone(),
             output_device: self.cfg.output_device.clone(),
             download_dir: self.downloads_dir.clone(),
             pictures_dir: self.pictures_dir.clone(),
+            avatars: self.avatars.clone(),
             bereik: self.bereik.clone(),
             files,
             ongelezen: self.chat.ongelezen,

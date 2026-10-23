@@ -44,6 +44,10 @@ impl SettingsPane {
         let (ui_draw, drawing) = (snap.ui.clone(), snap.s.allow_drawing);
         let draw_toggle =
             Rc::new(move |_: &_, _: &mut _, _: &mut _| commands::set_drawing(&ui_draw, !drawing));
+        let (ui_popout, popout) = (snap.ui.clone(), snap.s.auto_popout);
+        let popout_toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| {
+            commands::set_auto_popout(&ui_popout, !popout)
+        });
         let (ui_control, control) = (snap.ui.clone(), snap.s.allow_remote_control);
         let control_toggle = Rc::new(move |_: &_, _: &mut _, _: &mut _| {
             commands::set_remote_control(&ui_control, !control)
@@ -168,6 +172,27 @@ impl SettingsPane {
             } else {
                 div()
                     .child(label("Remote control").mb(px(2.)))
+                    .child(help("Not available on macOS."))
+            })
+            .field(if snap.s.remote_control_available {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(label("Pop out new screen shares").mb(px(2.)))
+                            .child(help(concat!(
+                                "When someone in the call starts sharing a screen, it opens by ",
+                                "itself in a window on your other monitor, without taking focus ",
+                                "from your game. Only with two or more monitors."
+                            ))),
+                    )
+                    .child(switch("auto-popout", popout, Some(popout_toggle)))
+            } else {
+                div()
+                    .child(label("Pop out new screen shares").mb(px(2.)))
                     .child(help("Not available on macOS."))
             })
             .field(note(&[Piece::Text(concat!(

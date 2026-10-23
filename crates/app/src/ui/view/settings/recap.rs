@@ -6,8 +6,9 @@ use crate::ui::icons::Icon;
 use crate::ui::state::RecapRow;
 use crate::ui::theme;
 use crate::ui::view::format;
-use crate::ui::view::widgets::{avatar, Btn, BtnKind};
+use crate::ui::view::widgets::{avatar, face, Btn, BtnKind};
 use crate::ui::view::AppSnapshot;
+use crate::ui::Ui;
 use gpui_kit::{div, prelude::FluentBuilder, px, Div, ParentElement, Styled};
 
 /// The second line of a recap row: everything except the call time, which is the figure on
@@ -75,7 +76,13 @@ impl SettingsPane {
                 .border_1()
                 .border_color(theme::BORDER)
                 .overflow_hidden()
-                .children(recap.rows.iter().enumerate().map(|(i, r)| recap_row(i, r)))
+                .children(
+                    recap
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| recap_row(&snap.ui, i, r)),
+                )
         };
 
         body.field(
@@ -109,7 +116,7 @@ impl SettingsPane {
     }
 }
 
-fn recap_row(index: usize, r: &RecapRow) -> Div {
+fn recap_row(ui: &Ui, index: usize, r: &RecapRow) -> Div {
     let line = recap_line(r);
     div()
         .flex()
@@ -118,7 +125,14 @@ fn recap_row(index: usize, r: &RecapRow) -> Div {
         .px(px(12.))
         .py(px(10.))
         .when(index > 0, |d| d.border_t_1().border_color(theme::BORDER))
-        .child(avatar(&r.name, r.avatar, 24., None, false))
+        .child(avatar(
+            &r.name,
+            r.avatar,
+            face(ui, r.picture.as_deref()),
+            24.,
+            None,
+            false,
+        ))
         .child(
             div()
                 .flex_1()
@@ -153,6 +167,7 @@ mod tests {
             peer: "p".into(),
             name: "Rick".into(),
             avatar: 1,
+            picture: None,
             mine: true,
             voice_sec: 0,
             shared_sec: 0,
