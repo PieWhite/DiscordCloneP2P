@@ -459,12 +459,18 @@ fn open_apparaten(
         .or_else(|| host.default_output_device())
         .context("geen weergaveapparaat gevonden")?;
 
-    let in_cfg = invoer
-        .default_input_config()
-        .context("microfoon-instellingen")?;
-    let uit_cfg = uitvoer
-        .default_output_config()
-        .context("weergave-instellingen")?;
+    let (invoer, in_cfg) = met_terugval(
+        invoer,
+        || host.input_devices(),
+        |d| d.default_input_config(),
+    )
+    .context("microfoon-instellingen")?;
+    let (uitvoer, uit_cfg) = met_terugval(
+        uitvoer,
+        || host.output_devices(),
+        |d| d.default_output_config(),
+    )
+    .context("weergave-instellingen")?;
 
     let invoer_rate = in_cfg.sample_rate();
     let uitvoer_rate = uit_cfg.sample_rate();
@@ -495,6 +501,28 @@ fn open_apparaten(
         in_stream,
         uit_stream,
     ))
+}
+
+/// cpal's standaardapparaat activeert via `ActivateAudioInterfaceAsync`, en dat geeft in een
+/// draaiend proces soms blijvend `RPC_E_CHANGED_MODE` (gezien na minuten tot uren; pas een
+/// herstart verhielp het). Dan nog één keer op het concrete eindpunt met dezelfde naam, via
+/// `IMMDevice::Activate`. Dat volgt een wissel van standaardapparaat niet, maar het werkt.
+fn met_terugval<I: Iterator<Item = cpal::Device>>(
+    dev: cpal::Device,
+    alle: impl FnOnce() -> Result<I, cpal::Error>,
+    config: impl Fn(&cpal::Device) -> Result<cpal::SupportedStreamConfig, cpal::Error>,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    let fout = match config(&dev) {
+        Ok(c) => return Ok((dev, c)),
+        Err(e) => e,
+    };
+    let naam = dev.description().ok().map(|d| d.name().to_owned());
+    let Some(concreet) = alle().ok().and_then(|a| kies_apparaat(a, naam.as_deref())) else {
+        return Err(fout.into());
+    };
+    tracing::warn!(error = %fout, apparaat = %concreet, "standaardapparaat weigert, eindpunt rechtstreeks");
+    let c = config(&concreet)?;
+    Ok((concreet, c))
 }
 
 fn fout_melden(e: cpal::Error) {
